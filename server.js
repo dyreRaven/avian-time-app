@@ -96,21 +96,20 @@ app.get('/quickbooks/oauth/callback', async (req, res) => {
 
   if (realmId) {
     console.log('QuickBooks realmId:', realmId);
-    // Copy this value into QBO_REALM_ID in your .env file after first connect
   }
 
   try {
     await exchangeCodeForTokens(code);
 
-    res.send(`
-      <h2>QuickBooks connected ✅</h2>
-      <p>You can close this window and go back to the app.</p>
-    `);
+    // 🔥 Auto redirect back to admin app
+    return res.redirect('https://time.aviangp.com');
+
   } catch (err) {
     console.error('Callback error:', err.message);
     res.status(500).send('Error connecting to QuickBooks.');
   }
 });
+
 
 
 /* ───────── SYNC ENDPOINTS (vendors & projects) ───────── */
