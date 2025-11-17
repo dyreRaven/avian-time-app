@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Avian Time & Payroll</title>
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- PWA meta -->
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#10b981" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Avian Kiosk" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- LEFT SIDEBAR -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <div class="sidebar-logo-mark">
+          <img src="/logo.png" alt="Avian Group logo" />
+        </div>
+        <div class="sidebar-logo-text">
+          <div class="sidebar-title">Avian Time</div>
+          <div class="sidebar-sub">Admin Console</div>
+        </div>
+      </div>
+
+      <nav class="nav-list">
+        <button class="nav-item active" data-section="employees">👷‍♀️ Employees</button>
+        <button class="nav-item" data-section="projects">📂 Projects</button>
+        <button class="nav-item" data-section="time-entries">⏱️ Time Entries</button>
+        <button class="nav-item" data-section="payroll">💰 Payroll</button>
+        <button class="nav-item" data-section="reports">📊 Reports</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        Avian Group LLC<br />
+        Time &amp; Payroll
+      </div>
+    </aside>
+
+    <!-- RIGHT CONTENT -->
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1>Avian Time &amp; Payroll</h1>
+          <p class="topbar-sub">
+            QuickBooks-integrated time &amp; payroll for Avian Group field and admin teams.
+          </p>
+        </div>
+      </header>
+
+      <div class="main-inner">
+        <!-- QUICKBOOKS CARD (always visible) -->
+        <section class="card qb-card">
+          <div class="card-header">
+            <div>
+              <h2>QuickBooks Connection</h2>
+              <p class="card-sub">
+                Connect once, then sync vendors and projects as needed.
+              </p>
+              <p id="qb-status">Checking status...</p>
+            </div>
+            <div class="qb-actions">
+              <button id="connect" class="btn primary">Connect</button>
+              <button id="sync-vendors" class="btn secondary">Sync Vendors</button>
+              <button id="sync-projects" class="btn secondary">Sync Projects</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- EMPLOYEES SECTION -->
+        <section id="section-employees" class="section active">
+          <div class="card">
+            <div class="card-header">
+              <h2>Employees &amp; Rates</h2>
+              <p class="card-sub">
+                Use the form below to add new employees. To view or edit an existing employee,
+                click their row in the table.
+              </p>
+            </div>
+
+            <!-- NEW EMPLOYEE FORM (CREATE ONLY) -->
+            <div class="employee-form-panel">
+              <div class="employee-form-header">
+                <h3>New Employee</h3>
+              </div>
+
+              <div class="form-grid">
+                <div class="form-field">
+                  <label for="employee-name">Employee Name</label>
+                  <input id="employee-name" type="text" />
+                </div>
+
+                <div class="form-field">
+                  <label for="employee-nickname">Nickname (optional)</label>
+                  <input id="employee-nickname" type="text" />
+                </div>
+
+                <div class="form-field">
+                  <label for="employee-name-on-checks">Name on checks (optional)</label>
+                  <input id="employee-name-on-checks" type="text" />
+                </div>
+
+                <div class="form-field">
+                  <label for="employee-rate">Hourly Rate</label>
+                  <input id="employee-rate" type="number" min="0" step="0.01" />
+                </div>
+
+                <div class="form-field form-field-button">
+                  <button id="save-employee" class="btn primary">Add Employee</button>
+                </div>
+
+                <div class="form-field form-field-button">
+                  <button id="employee-clear-edit" class="btn secondary">
+                    Clear Form
+                  </button>
+                </div>
+              </div>
+
+              <p id="employee-message" class="message"></p>
+            </div>
+
+            <div class="employee-list-header-row">
+              <h3>Current Employees</h3>
+              <button id="employee-toggle-inactive" class="btn secondary btn-sm">
+                Show Inactive
+              </button>
+            </div>
+
+            <div class="table-wrapper">
+              <table class="clickable-rows">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Nickname</th>
+                    <th>Name on checks</th>
+                    <th>Rate</th>
+                  </tr>
+                </thead>
+                <tbody id="employees-table-body">
+                  <tr>
+                    <td colspan="4">(no employees yet)</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p class="message">
+                Click a row to open full employee details, edit, or make inactive.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <!-- PROJECTS SECTION -->
+        <section id="section-projects" class="section">
+          <div class="card">
+            <div class="card-header">
+              <h2>Projects</h2>
+              <p class="card-sub">
+                Projects are synced from QuickBooks and used when creating time entries.
+              </p>
+            </div>
+
+            <p class="message">
+              Right now projects come in from QuickBooks via the Sync Projects button above.
+              (We can add editing here later if you want.)
+            </p>
+
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>Customer</th>
+                  </tr>
+                </thead>
+                <tbody id="projects-table-body">
+                  <tr>
+                    <td colspan="2">(projects are managed in QuickBooks)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- TIME ENTRIES SECTION -->
+        <section id="section-time-entries" class="section">
+          <div class="card">
+            <div class="card-header">
+              <h2>Time Entries</h2>
+              <p class="card-sub">
+                Select an employee and project, enter the date range and hours worked.
+                The total pay will be calculated automatically using the employee's rate.
+              </p>
+            </div>
+
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="te-employee">Employee</label>
+                <select id="te-employee">
+                  <option value="">(select employee)</option>
+                </select>
+              </div>
+
+              <div class="form-field">
+                <label for="te-project">Project</label>
+                <select id="te-project">
+                  <option value="">(select project)</option>
+                </select>
+              </div>
+
+              <div class="form-field">
+                <label for="te-start">Start Date</label>
+                <input id="te-start" type="date" />
+              </div>
+
+              <div class="form-field">
+                <label for="te-end">End Date</label>
+                <input id="te-end" type="date" />
+              </div>
+
+              <div class="form-field">
+                <label for="te-hours">Hours</label>
+                <input id="te-hours" type="number" min="0" step="0.01" />
+              </div>
+
+              <div class="form-field form-field-button">
+                <button id="save-time-entry" class="btn primary">Save Time Entry</button>
+              </div>
+            </div>
+
+            <p id="time-message" class="message"></p>
+
+            <h3>Recent Time Entries</h3>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Project</th>
+                    <th>Dates</th>
+                    <th>Hours</th>
+                    <th>Total Pay</th>
+                  </tr>
+                </thead>
+                <tbody id="time-table-body">
+                  <tr>
+                    <td colspan="5">(no time entries yet)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- PAYROLL SECTION -->
+        <section id="section-payroll" class="section">
+          <div class="card">
+            <div class="card-header">
+              <h2>Payroll / Checks</h2>
+              <p class="card-sub">
+                Choose a pay period to see total hours and pay per employee.
+                Then create checks in QuickBooks.
+              </p>
+            </div>
+
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="pay-start">Pay Period Start</label>
+                <input id="pay-start" type="date" />
+              </div>
+
+              <div class="form-field">
+                <label for="pay-end">Pay Period End</label>
+                <input id="pay-end" type="date" />
+              </div>
+
+              <div class="form-field form-field-button">
+                <button id="load-payroll" class="btn secondary">Load Payroll Summary</button>
+              </div>
+
+              <div class="form-field form-field-button">
+                <button id="create-checks" class="btn primary">Create Checks in QuickBooks</button>
+              </div>
+            </div>
+
+            <p id="payroll-message" class="message"></p>
+
+            <h3>Summary by Employee</h3>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>By Project</th>
+                    <th>Total Hours</th>
+                    <th>Total Pay</th>
+                  </tr>
+                </thead>
+                <tbody id="payroll-table-body">
+                  <tr>
+                    <td colspan="4">(no data yet)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- REPORTS SECTION -->
+        <section id="section-reports" class="section">
+          <div class="card">
+            <div class="card-header">
+              <h2>Reports</h2>
+              <p class="card-sub">
+                View past payroll runs that have been sent to QuickBooks, see
+                check details, and download check information.
+              </p>
+            </div>
+
+            <p class="message" id="reports-message"></p>
+
+            <h3>Payroll Runs</h3>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Pay Period</th>
+                    <th>Created</th>
+                    <th>Total Hours</th>
+                    <th>Total Pay</th>
+                    <th>Checks (Paid / Total)</th>
+                  </tr>
+                </thead>
+                <tbody id="reports-runs-body">
+                  <tr>
+                    <td colspan="5">(no payroll runs yet)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>Run Details</h3>
+            <div class="reports-actions">
+              <button id="reports-download" class="btn secondary" disabled>
+                Download CSV (checks in this run)
+              </button>
+            </div>
+
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Hours</th>
+                    <th>Total Pay</th>
+                    <th>Check #</th>
+                    <th>Paid?</th>
+                  </tr>
+                </thead>
+                <tbody id="reports-details-body">
+                  <tr>
+                    <td colspan="5">(select a payroll run above)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+      </div> <!-- /.main-inner -->
+    </main>
+  </div> <!-- /.app-shell -->
+
+  <!-- EMPLOYEE DETAILS / EDIT MODAL -->
+  <div id="employee-edit-backdrop" class="modal-backdrop hidden"></div>
+
+  <div id="employee-edit-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="employee-edit-title">Employee Details</h3>
+        <button
+          id="employee-edit-close"
+          class="icon-button"
+          type="button"
+          aria-label="Close employee dialog"
+        >
+          ×
+        </button>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="edit-employee-name">Employee Name</label>
+          <input id="edit-employee-name" type="text" />
+        </div>
+
+        <div class="form-field">
+          <label for="edit-employee-nickname">Nickname (optional)</label>
+          <input id="edit-employee-nickname" type="text" />
+        </div>
+
+        <div class="form-field">
+          <label for="edit-employee-name-on-checks">Name on checks (optional)</label>
+          <input id="edit-employee-name-on-checks" type="text" />
+        </div>
+
+        <div class="form-field">
+          <label for="edit-employee-rate">Hourly Rate</label>
+          <input id="edit-employee-rate" type="number" min="0" step="0.01" />
+        </div>
+      </div>
+
+      <p id="employee-edit-message" class="message"></p>
+
+      <div class="modal-footer">
+        <button id="employee-edit-toggle-active" type="button" class="btn tertiary">
+          Make Inactive
+        </button>
+        <button id="employee-edit-cancel" type="button" class="btn secondary">
+          Close
+        </button>
+        <button id="employee-edit-edit" type="button" class="btn secondary">
+          Edit
+        </button>
+        <button id="employee-edit-save" type="button" class="btn primary hidden">
+          Save Changes
+        </button>
+      </div>
+    </div> <!-- /.modal-card -->
+  </div> <!-- /#employee-edit-modal -->
+
+  <script src="app.js"></script>
+  <script>
+    // Optional: also register service worker from the admin app
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker
+          .register('/service-worker.js')
+          .catch(err => {
+            console.warn('Service worker registration failed:', err);
+          });
+      });
+    }
+  </script>
+</body>
+</html>

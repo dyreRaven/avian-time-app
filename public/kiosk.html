@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Avian Time – Kiosk</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#10b981" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Avian Kiosk" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+  <style>
+   :root {
+  --emerald-500: #0c816d;
+  --emerald-600: #059669;
+  --emerald-50:  #ecfdf5;
+
+  --slate-900: #020617;
+  --slate-800: #0f172a;
+  --slate-700: #1f2937;
+  --slate-600: #4b5563;
+  --slate-500: #6b7280;
+  --slate-400: #94a3b8;
+  --slate-300: #cbd5e1;
+  --slate-200: #e5e7eb;
+  --slate-100: #f1f5f9;
+}
+
+/* GLOBAL RESET */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background: var(--slate-100);
+}
+
+body {
+  color: var(--slate-800);
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* FULL SCREEN LAYOUT */
+
+.kiosk-shell {
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+}
+
+/* MAIN CANVAS (fills screen) */
+
+.kiosk-card {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-radius: 0;
+  padding: 40px 42px 36px;
+  background: #ffffff;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow-y: auto;
+}
+
+/* HEADER */
+
+.kiosk-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+}
+
+.kiosk-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.kiosk-logo {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: white;
+  box-shadow:
+    0 8px 20px rgba(0, 0, 0, 0.08),
+    0 0 0 1px var(--slate-200);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kiosk-logo img {
+  width: 36px;
+  height: auto;
+  display: block;
+}
+
+.kiosk-title {
+  font-size: 1.05rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--slate-800);
+  font-weight: 600;
+}
+
+.kiosk-sub {
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--slate-500);
+  margin-top: 4px;
+}
+
+.kiosk-header-right {
+  text-align: right;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--slate-500);
+}
+
+/* FORM BODY CENTERING */
+
+.kiosk-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* INPUT FIELDS */
+
+.kiosk-field {
+  margin-top: 24px;
+}
+
+.kiosk-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--slate-500);
+  margin-bottom: 10px;
+}
+
+.kiosk-label-note {
+  font-size: 0.7rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--slate-500);
+}
+
+.kiosk-select {
+  width: 100%;
+  padding: 14px 20px;
+  border-radius: 14px;
+  border: none;
+  background: var(--slate-100);
+  font-size: 1rem;
+  color: var(--slate-800);
+  box-shadow: inset 0 0 0 1px var(--slate-300);
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--slate-400) 50%),
+    linear-gradient(135deg, var(--slate-400) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 12px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.kiosk-select:focus {
+  background: #ffffff;
+  outline: none;
+  box-shadow:
+    inset 0 0 0 2px var(--emerald-500),
+    0 8px 18px rgba(16, 185, 129, 0.25);
+}
+
+/* BIG ACTION BUTTON */
+
+.kiosk-btn {
+  margin: 48px auto 0;
+  width: 220px;
+  height: 220px;
+  border-radius: 999px;
+  border: none;
+  background: radial-gradient(circle at 30% 20%, var(--emerald-500), var(--emerald-600));
+  box-shadow:
+    0 28px 60px rgba(16, 185, 129, 0.35),
+    0 0 0 12px rgba(16, 185, 129, 0.08);
+  color: #ecfdf5;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.25s ease;
+}
+
+.kiosk-btn:hover {
+  transform: translateY(-4px);
+  box-shadow:
+    0 40px 80px rgba(16, 185, 129, 0.45),
+    0 0 0 14px rgba(16, 185, 129, 0.1);
+}
+
+.kiosk-btn:active {
+  transform: translateY(0);
+}
+
+/* STATUS TEXT */
+
+.kiosk-status {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--slate-500);
+}
+
+.kiosk-status-error {
+  color: #b91c1c;
+}
+.kiosk-status-ok {
+  color: #15803d;
+}
+
+/* MODAL BACKDROP */
+
+/* MODAL BACKDROP – stays centered on screen */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 80;
+}
+
+/* MODAL – centered content, stacked vertically */
+.modal {
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  background: #ffffff;
+  border-radius: 24px;
+  padding: 32px 28px 24px;
+  box-shadow:
+    0 32px 70px rgba(0, 0, 0, 0.28),
+    0 0 0 1px var(--slate-200);
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 16px;
+}
+
+/* HEADER – title centered, X in top-right */
+.modal-header {
+  width: 100%;
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.modal-title {
+  font-size: 0.95rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--slate-800);
+}
+
+.close-btn {
+  position: absolute;
+  right: 4px;
+  top: -4px;
+  background: none;
+  border: none;
+  font-size: 1.6rem;
+  color: var(--slate-500);
+  cursor: pointer;
+}
+
+/* EMPLOYEE NAME */
+#pin-employee-name {
+  font-size: 0.9rem;
+  color: var(--slate-500);
+}
+
+/* PIN INPUT – centered, nice breathing room */
+.pin-input {
+  width: 100%;
+  max-width: 260px;
+  padding: 16px;
+  font-size: 1.3rem;
+  letter-spacing: 0.35em;
+  text-align: center;
+  border-radius: 12px;
+  background: var(--slate-100);
+  border: none;
+  box-shadow: inset 0 0 0 1px var(--slate-300);
+  margin-top: 4px;
+}
+
+.pin-input:focus {
+  background: #ffffff;
+  outline: none;
+  box-shadow:
+    inset 0 0 0 2px var(--emerald-500),
+    0 8px 18px rgba(16, 185, 129, 0.25);
+}
+
+/* STATUS TEXT UNDER PIN */
+.modal-status {
+  min-height: 18px;
+  font-size: 0.78rem;
+  color: var(--slate-500);
+}
+
+/* CAMERA SECTION – full width, but still under everything, stacked */
+.camera-area {
+  width: 100%;
+  margin-top: 8px;
+  padding: 16px;
+  background: var(--slate-100);
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px var(--slate-300);
+  text-align: left;
+}
+
+.camera-area > div:first-child {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--slate-600);
+}
+
+.camera-area video,
+.camera-area img {
+  width: 100%;
+  margin-top: 12px;
+  background: #000;
+  border-radius: 14px;
+  max-height: 260px;
+  object-fit: cover;
+}
+
+/* BUTTON ROWS – centered under content */
+.camera-buttons {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+
+/* SMALL BUTTONS */
+.btn-small {
+  padding: 10px 20px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.25s ease;
+}
+
+.btn-small:not(.btn-outline) {
+  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-600));
+  color: #ecfdf5;
+  box-shadow: 0 10px 24px rgba(16, 185, 129, 0.35);
+}
+
+.btn-small:not(.btn-outline):hover {
+  transform: translateY(-2px);
+}
+
+.btn-outline {
+  background: white;
+  color: var(--slate-700);
+  box-shadow: inset 0 0 0 1px var(--slate-300);
+}
+
+.btn-outline:hover {
+  background: var(--slate-100);
+}
+
+  </style>
+</head>
+<body>
+  <div class="kiosk-shell">
+    <div class="kiosk-card">
+      <div class="kiosk-header">
+        <div class="kiosk-brand">
+          <div class="kiosk-logo">
+            <!-- make sure this points to your logo file -->
+            <img src="/logo.png" alt="Avian Group logo" />
+          </div>
+          <div>
+            <div class="kiosk-title">Avian Time</div>
+            <div class="kiosk-sub">Jobsite Kiosk</div>
+          </div>
+        </div>
+        <div class="kiosk-header-right">
+          <span>Clock&nbsp;In&nbsp;/&nbsp;Out</span>
+          <span>Secure&nbsp;PIN</span>
+        </div>
+      </div>
+
+      <div class="kiosk-body">
+        <div class="kiosk-field">
+          <label class="kiosk-label">
+            Project
+            <span class="kiosk-label-note">(selected by foreman)</span>
+          </label>
+          <select id="kiosk-project" class="kiosk-select">
+            <option value="">Select project</option>
+          </select>
+        </div>
+
+        <div class="kiosk-field">
+          <label class="kiosk-label">Employee</label>
+          <select id="kiosk-employee" class="kiosk-select">
+            <option value="">Select your name</option>
+          </select>
+        </div>
+
+        <button id="kiosk-punch" class="kiosk-btn">
+          Tap to Clock In
+        </button>
+
+        <div id="kiosk-status" class="kiosk-status"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PIN + PHOTO MODAL -->
+  <div id="pin-backdrop" class="modal-backdrop hidden">
+    <div class="modal">
+
+      <div class="modal-header">
+        <div class="modal-title">Employee PIN</div>
+        <button class="close-btn" id="pin-close-btn">×</button>
+      </div>
+
+      <div id="pin-employee-name"></div>
+
+      <input
+        id="pin-input"
+        class="pin-input"
+        type="password"
+        inputmode="numeric"
+        maxlength="8"
+        autocomplete="off"
+        placeholder="Enter PIN"
+      />
+
+      <div id="pin-modal-status" class="modal-status"></div>
+
+      <!-- PHOTO SECTION -->
+      <div id="camera-section" class="camera-area hidden">
+        <div>Photo Required</div>
+        <video id="cam-video" class="hidden" autoplay muted playsinline></video>
+        <img id="cam-preview" class="hidden" />
+        <canvas id="cam-canvas" class="hidden"></canvas>
+
+        <div class="camera-buttons">
+          <button id="start-camera" class="btn-small btn-outline">Start Camera</button>
+          <button id="take-photo" class="btn-small hidden">Take Photo</button>
+          <button id="retake-photo" class="btn-small hidden btn-outline">Retake</button>
+        </div>
+      </div>
+
+      <div class="camera-buttons" style="margin-top:16px;">
+        <button id="pin-cancel" class="btn-small btn-outline">Cancel</button>
+        <button id="pin-continue" class="btn-small">Continue</button>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="kiosk.js"></script>
+</body>
+</html>

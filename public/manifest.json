@@ -1,0 +1,20 @@
+{
+  "name": "Avian Time – Kiosk",
+  "short_name": "Avian Kiosk",
+  "start_url": "/kiosk",
+  "display": "standalone",
+  "background_color": "#022c22",
+  "theme_color": "#10b981",
+  "icons": [
+    {
+      "src": "/icons/avian-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/avian-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
