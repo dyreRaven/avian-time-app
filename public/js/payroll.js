@@ -946,9 +946,9 @@ function setupPayrollActions() {
   if (retryBtn) retryBtn.addEventListener('click', retryFailedChecksForCurrentRun);
 }
 
-function initPayrollTabIfNeeded() {
-  if (window.payrollTabInitialized) return;
-  window.payrollTabInitialized = true;
+function initPayrollUiTab() {
+  if (window.payrollUiInitialized) return;
+  window.payrollUiInitialized = true;
   setupPayrollSettingsCollapse();
   setupPayrollRowToggle();
   setupViewTimeEntriesButtons();
@@ -964,6 +964,9 @@ function initPayrollTabIfNeeded() {
   setupPayrollActions();
 }
 
+// Expose for nav hook in app.js
+window.initPayrollUiTab = initPayrollUiTab;
+
 document.addEventListener('DOMContentLoaded', () => {
-  initPayrollTabIfNeeded();
+  initPayrollUiTab();
 });
