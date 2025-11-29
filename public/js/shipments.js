@@ -716,7 +716,23 @@ function setupItemVerificationModal() {
   if (inlineSave) {
     inlineSave.addEventListener('click', (e) => {
       e.preventDefault();
-      // Inline button no longer triggers save; main Save handles persistence.
+      if (inlineSave.disabled) return;
+
+      const isEditing = inlineSave.dataset.editing === '1';
+
+      if (!isEditing) {
+        // First click: unlock fields for override/edit without closing modal
+        setVerificationInputsDisabled(false);
+        inlineSave.dataset.editing = '1';
+        inlineSave.textContent = 'Click here to save updated verification information';
+        inlineSave.classList.add('inline-save-active');
+        inlineSave.classList.remove('override-state');
+        return;
+      }
+
+      // Second click: commit via main save button
+      const saveButton = document.getElementById('item-verification-save');
+      if (saveButton) saveButton.click();
     });
   }
 
@@ -914,6 +930,8 @@ function openItemVerificationModal(row) {
   const editStatusBtn = document.getElementById('item-verification-edit-status');
   const historyList = document.getElementById('item-verification-history');
   const historyToggle = document.getElementById('item-verification-toggle-history');
+  const historyPanel = document.getElementById('item-verification-history-panel');
+  const historyClose = document.getElementById('item-verification-history-close');
 
   // Default "verified by" = existing value or current logged-in employee
   const { name: currentEmpName } = getCurrentVerifierInfo();
@@ -927,22 +945,40 @@ function openItemVerificationModal(row) {
   if (storageInp) storageInp.value = v.storage_override || '';
   if (notesInput) notesInput.value = v.notes || '';
   if (issueSel)  issueSel.value  = v.issue_type || '';
-  renderItemVerificationHistory(v, historyList);
+  const itemLabel = desc || sku || '';
+  renderItemVerificationHistory(v, historyList, itemLabel);
 
   if (historyToggle) {
     historyToggle.textContent = 'View log';
     historyToggle.onclick = () => {
-      if (!historyList) return;
-      const isHidden = historyList.classList.contains('hidden');
-      historyList.classList.toggle('hidden', !isHidden);
-      historyToggle.textContent = isHidden ? 'Hide log' : 'View log';
+      if (!historyList || !historyPanel) return;
+      const itemLabel = desc || sku || '';
+      renderItemVerificationHistory(v, historyList, itemLabel);
+      historyPanel.classList.remove('hidden');
+    };
+  }
+
+  if (historyClose && historyPanel) {
+    historyClose.onclick = () => {
+      historyPanel.classList.add('hidden');
     };
   }
 
   if (editStatusBtn) {
     const locked = !!(v.status && v.status.trim());
-    editStatusBtn.classList.toggle('hidden', locked);
-    editStatusBtn.textContent = 'Save verification info';
+    editStatusBtn.classList.remove('hidden');
+    editStatusBtn.disabled = false;
+    editStatusBtn.textContent = locked
+      ? 'Shipment already verified — click here to override'
+      : 'Edit verification info';
+    editStatusBtn.dataset.editing = '0';
+    if (locked) {
+      editStatusBtn.classList.remove('inline-save-active');
+      editStatusBtn.classList.remove('override-state');
+    } else {
+      editStatusBtn.classList.remove('override-state');
+      editStatusBtn.classList.remove('inline-save-active');
+    }
   }
   // Lock editing if already verified; allow when empty.
   const locked = !!(v.status && v.status.trim());
@@ -951,11 +987,24 @@ function openItemVerificationModal(row) {
   modal.classList.remove('hidden');
 }
 
-function renderItemVerificationHistory(vMeta = {}, listEl) {
+function renderItemVerificationHistory(vMeta = {}, listEl, itemLabel = '') {
   if (!listEl) return;
   listEl.innerHTML = '';
 
   const history = Array.isArray(vMeta.history) ? vMeta.history.slice() : [];
+
+  // Add header row
+  const header = document.createElement('li');
+  header.className = 'verification-history-header-row';
+  header.innerHTML = `
+    <span>Item</span>
+    <span>Status</span>
+    <span>By</span>
+    <span>Date</span>
+    <span>Notes</span>
+  `;
+  listEl.appendChild(header);
+
   if (history.length === 0) {
     const li = document.createElement('li');
     li.textContent = 'No history yet.';
@@ -970,18 +1019,20 @@ function renderItemVerificationHistory(vMeta = {}, listEl) {
     .forEach(entry => {
       const li = document.createElement('li');
       const when = entry.at ? new Date(entry.at).toLocaleString() : '';
+      const status = entry.to_status || '(unknown)';
+      const by = entry.by_name || 'Unknown';
+      const note = entry.notes && entry.notes.trim() ? entry.notes : '—';
+      const statusClass = status
+        ? `hist-status-${status.replace(/\s+/g, '_').toLowerCase()}`
+        : 'hist-status-unknown';
+
+      li.className = 'verification-history-row';
       li.innerHTML = `
-        <div class="hist-line">
-          <strong>${entry.to_status || '(unknown)'}</strong>
-          <span class="hist-meta">
-            ${entry.by_name || 'Unknown'} • ${when || ''}
-          </span>
-        </div>
-        ${
-          entry.notes
-            ? `<div class="hist-notes">${entry.notes}</div>`
-            : ''
-        }
+        <span class="hist-item">${itemLabel || '(Item)'}</span>
+        <span class="hist-status ${statusClass}">${status}</span>
+        <span class="hist-meta hist-by">${by}</span>
+        <span class="hist-meta hist-date">${when || ''}</span>
+        <span class="hist-notes">${note}</span>
       `;
       listEl.appendChild(li);
     });
@@ -3388,7 +3439,19 @@ function setupShipmentsUI() {
     search.setAttribute('autocorrect', 'off');
     search.setAttribute('autocapitalize', 'off');
     search.setAttribute('spellcheck', 'false');
-    search.setAttribute('name', 'shipments-search-no-autofill');
+    // Unique-ish name to prevent browser remembering previous value
+    search.setAttribute('name', `shipments-search-${Date.now()}`);
+    // Clear any prefill the browser might have applied on load
+    search.value = '';
+    search.dataset.userCleared = 'false';
+
+    search.addEventListener('focus', () => {
+      // If browser auto-filled before focus, wipe it once
+      if (search.dataset.userCleared === 'false' && search.value) {
+        search.value = '';
+        search.dataset.userCleared = 'true';
+      }
+    });
 
     search.addEventListener('input', () => {
       // If the shipment modal is open, ignore any “mystery” input (autofill)

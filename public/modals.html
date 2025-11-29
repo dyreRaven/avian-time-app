@@ -1136,31 +1136,39 @@
         </div>
       </div>
 
-      <div class="form-field" style="grid-column: 1 / -1;">
-        <label for="item-verification-storage">Storage info (optional)</label>
-        <input
-          id="item-verification-storage"
-          type="text"
-          placeholder="Pallet, rack, extra notes…"
-        />
-      </div>
+        <div class="form-field" style="grid-column: 1 / -1;">
+          <label for="item-verification-storage">Storage info (optional)</label>
+          <input
+            id="item-verification-storage"
+            type="text"
+            placeholder="Pallet, rack, extra notes…"
+          />
+        </div>
 
-      <div class="form-field" style="grid-column: 1 / -1;">
-        <label for="item-verification-notes">Issues / notes</label>
-        <textarea
-          id="item-verification-notes"
-          rows="3"
-          placeholder="Missing items, damaged boxes, etc."
-        ></textarea>
+        <div class="form-field" style="grid-column: 1 / -1;">
+          <label for="item-verification-notes">Issues / notes</label>
+          <textarea
+            id="item-verification-notes"
+            rows="4"
+            placeholder="Missing items, damaged boxes, etc."
+          ></textarea>
+        </div>
       </div>
-    </div>
 
     <div class="history-actions">
       <button type="button" id="item-verification-toggle-history" class="btn btn-sm tertiary">
         View log
       </button>
     </div>
-    <ul id="item-verification-history" class="verification-history hidden"></ul>
+    <div id="item-verification-history-panel" class="verification-history-panel hidden">
+      <div class="verification-history-card">
+        <div class="verification-history-header">
+          <h4>Verification history</h4>
+          <button type="button" id="item-verification-history-close" class="icon-button">×</button>
+        </div>
+        <ul id="item-verification-history" class="verification-history"></ul>
+      </div>
+    </div>
 
     <div class="modal-footer">
       <button

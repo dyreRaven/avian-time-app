@@ -171,6 +171,121 @@ function getPosition() {
   });
 }
 
+function getGreetingPrefix() {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good Morning';
+  if (hour < 17) return 'Good Afternoon';
+  return 'Good Evening';
+}
+
+function updateGreetingUI() {
+  const greetingEl = document.getElementById('kiosk-greeting');
+  const subEl = document.getElementById('kiosk-greeting-sub');
+  const empSel = document.getElementById('kiosk-employee');
+
+  const selectedName =
+    empSel && empSel.value && empSel.selectedOptions.length
+      ? (empSel.selectedOptions[0].textContent || '').trim()
+      : '';
+
+  const prefix = getGreetingPrefix();
+
+  if (greetingEl) {
+    const label = selectedName || 'Crew';
+    greetingEl.textContent = `${prefix}, ${label}!`;
+  }
+
+  if (subEl) {
+    subEl.textContent = '';
+  }
+}
+
+function updateProjectChip() {
+  const chip = document.getElementById('kiosk-project-pill');
+  const projSel = document.getElementById('kiosk-project');
+  if (!chip || !projSel) return;
+
+  const label =
+    projSel.value && projSel.selectedOptions.length
+      ? (projSel.selectedOptions[0].textContent || '').trim()
+      : '';
+
+  if (!projSel.value) {
+    chip.textContent = '';
+    chip.classList.add('hidden');
+    chip.classList.remove('chip-warning');
+    return;
+  }
+
+  chip.classList.remove('hidden');
+  chip.classList.remove('chip-warning');
+  chip.textContent = label || 'Project';
+}
+
+function updateClockDisplay() {
+  const dayEl = document.getElementById('kiosk-day-label');
+  const dateEl = document.getElementById('kiosk-date-label');
+  const timeEl = document.getElementById('kiosk-time-label');
+
+  const now = new Date();
+  const day = now.toLocaleDateString(undefined, { weekday: 'long' });
+  const date = now.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+  const time = now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
+  if (dayEl) dayEl.textContent = day;
+  if (dateEl) dateEl.textContent = date;
+  if (timeEl) timeEl.textContent = time;
+
+  // If the daypart shifts while kiosk is open, keep greeting fresh
+  updateGreetingUI();
+}
+
+function startClockLoop() {
+  updateClockDisplay();
+  setInterval(updateClockDisplay, 1000);
+}
+
+function setDefaultPunchButton(button) {
+  if (!button) return;
+  button.classList.remove('kiosk-btn-danger');
+  button.classList.add('btn-primary');
+  button.textContent = 'Tap to Clock In';
+}
+
+function animateButtonPress(btn) {
+  if (!btn) return;
+  btn.classList.add('kiosk-btn-pressed');
+  setTimeout(() => btn.classList.remove('kiosk-btn-pressed'), 180);
+}
+
+function playClickSound() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.value = 180;
+
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12);
+
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.15);
+  } catch (err) {
+    // ignore sound failures
+  }
+}
+
+function tapFeedback(btn) {
+  animateButtonPress(btn);
+  playClickSound();
+}
+
 function getOrCreateDeviceId() {
   let id = localStorage.getItem(DEVICE_ID_KEY);
   if (!id) {
@@ -204,6 +319,7 @@ function applyKioskProjectDefault() {
   // 🔒 Lock the dropdown so crew cannot change it
   projSel.disabled = true;
   projSel.classList.add('kiosk-select-locked');
+  updateProjectChip();
 }
 
 
@@ -300,6 +416,7 @@ async function loadEmployeesAndProjects() {
       projSel.value = saved;
     }
 
+    updateProjectChip();
     status.textContent = '';
   } catch {
     const emps = loadCache(CACHE_EMP_KEY) || [];
@@ -316,6 +433,7 @@ async function loadEmployeesAndProjects() {
       projSel.value = saved;
     }
 
+    updateProjectChip();
     if (emps.length || projs.length) {
       status.textContent = 'Offline lists loaded.';
     } else {
@@ -325,7 +443,8 @@ async function loadEmployeesAndProjects() {
 }
 
 function fillEmployeeSelect(sel, list) {
-  sel.innerHTML = '<option value="">Select your name</option>';
+  sel.innerHTML =
+    '<option value="">Select your name / Seleccione su nombre / Chwazi non ou</option>';
 
   const rows = (list || []).filter(e => {
     // 🔹 Always show admins, even if uses_timekeeping is off
@@ -857,7 +976,8 @@ async function performPunch(employee_id) {
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
-    if (btn) btn.textContent = 'Tap to Clock In';
+    setDefaultPunchButton(btn);
+    updateGreetingUI();
 
     return;
   }
@@ -899,7 +1019,8 @@ async function performPunch(employee_id) {
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
-    if (btn) btn.textContent = 'Tap to Clock In';
+    setDefaultPunchButton(btn);
+    updateGreetingUI();
   } catch (err) {
     console.error('Error syncing punch', err);
     status.textContent = 'Could not sync — saved offline.';
@@ -908,7 +1029,8 @@ async function performPunch(employee_id) {
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
-    if (btn) btn.textContent = 'Tap to Clock In';
+    setDefaultPunchButton(btn);
+    updateGreetingUI();
   }
 }
 
@@ -955,17 +1077,13 @@ async function updatePunchButtonForEmployee(employeeId) {
 
   // No employee selected → reset to Clock In (green)
   if (!employeeId) {
-    button.textContent = 'Tap to Clock In';
-    button.classList.remove('kiosk-btn-danger');
-    button.classList.add('btn-primary'); // or your green class
+    setDefaultPunchButton(button);
     return;
   }
 
   // Offline → still show as "Clock In"
   if (!navigator.onLine) {
-    button.textContent = 'Tap to Clock In';
-    button.classList.remove('kiosk-btn-danger');
-    button.classList.add('btn-primary');
+    setDefaultPunchButton(button);
     return;
   }
 
@@ -1029,10 +1147,12 @@ async function onEmployeeChange() {
 
   if (!empId) {
     await updatePunchButtonForEmployee(null);
+    updateGreetingUI();
     return;
   }
 
   await updatePunchButtonForEmployee(empId);
+  updateGreetingUI();
 }
 
 // ====== PUNCH BUTTON ======
@@ -1115,6 +1235,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load data, then fetch kiosk config so default project can be applied
   await loadEmployeesAndProjects();
   await initKioskConfig();
+  startClockLoop();
+  updateGreetingUI();
+  updateProjectChip();
+  setDefaultPunchButton(document.getElementById('kiosk-punch'));
 
   // Sync any offline stuff
   syncPendingEmployees();
@@ -1127,12 +1251,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Main kiosk controls
   const punchBtn = document.getElementById('kiosk-punch');
   if (punchBtn) {
-    punchBtn.addEventListener('click', onPunchClick);
+    punchBtn.addEventListener('click', () => {
+      tapFeedback(punchBtn);
+      onPunchClick();
+    });
   }
 
   const empSel = document.getElementById('kiosk-employee');
   if (empSel) {
     empSel.addEventListener('change', onEmployeeChange);
+  }
+
+  const projSel = document.getElementById('kiosk-project');
+  if (projSel) {
+    projSel.addEventListener('change', updateProjectChip);
   }
 
   // PIN modal buttons
