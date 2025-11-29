@@ -36,6 +36,8 @@ let shipmentNotificationPref = { ...DEFAULT_NOTIFICATION_PREF };
 let shipmentNotificationTimer = null;
 let lastShipmentNotificationKey = '';
 let itemVerificationEditMode = false;
+let shipmentSettingsCache = null;
+let shipmentSettingsPromise = null;
 
 // Fire once on load; result is cached in global vars above.
 async function loadCurrentUserContext() {
@@ -2464,7 +2466,7 @@ function openShipmentCreateModal() {
 
   // Reset storage due date / fees
   if (storageDueInput) storageDueInput.value = '';
-  if (storageDailyInput) storageDailyInput.value = storageDailyInput.value || '';
+  if (storageDailyInput) storageDailyInput.value = '';
   if (storageEstimate) storageEstimate.value = '$0.00';
   if (storageEstimateHelp) {
     storageEstimateHelp.textContent = '';
@@ -2554,6 +2556,7 @@ function openShipmentCreateModal() {
   const vendorApplyAll = document.getElementById('shipment-vendor-apply-all');
   if (vendorApplyAll) vendorApplyAll.checked = false;
 
+  applyDefaultStorageLateFeeFromSettings();
   updateStorageFeeEstimate();
 
   // Show modal
@@ -2920,6 +2923,7 @@ function openShipmentEditModal(shipment, items = []) {
       shipment.storage_daily_late_fee != null
         ? Number(shipment.storage_daily_late_fee).toFixed(2)
         : '';
+  updateStorageFeeEstimate();
 
   // Post-pickup + payments
   if (pickedUpByInput)   pickedUpByInput.value   = shipment.picked_up_by || '';
@@ -2945,6 +2949,7 @@ if (customsPaidAmt)
       : '';
 
   updateStorageFeeEstimate();
+  applyDefaultStorageLateFeeFromSettings();
 
   // Verification header fields
   if (verifyAllChk) verifyAllChk.checked = !!shipment.items_verified;
@@ -3903,6 +3908,43 @@ function showDocsUI() {
   if (listContainer) listContainer.classList.remove("hidden");
 }
 
+async function loadShipmentSettingsCached() {
+  // Always fetch fresh to reflect any Settings changes without reload.
+  if (shipmentSettingsPromise) return shipmentSettingsPromise;
+
+  shipmentSettingsPromise = (async () => {
+    try {
+      const res = await fetchJSON('/api/settings');
+      shipmentSettingsCache = (res && res.settings) || {};
+    } catch (err) {
+      console.warn('[SHIPMENTS] Failed to load settings for storage fees', err);
+    } finally {
+      shipmentSettingsPromise = null;
+    }
+    return shipmentSettingsCache || {};
+  })();
+
+  return shipmentSettingsPromise;
+}
+
+async function applyDefaultStorageLateFeeFromSettings() {
+  const feeInput = document.getElementById('shipment-storage-daily-fee');
+  if (!feeInput || (feeInput.value && feeInput.value.trim() !== '')) return;
+
+  const settings = await loadShipmentSettingsCached();
+  const dailyFeeRaw = settings ? settings.daily_fee : null;
+  const dailyFeeNum = Number(dailyFeeRaw);
+
+  if (Number.isNaN(dailyFeeNum) || dailyFeeNum < 0) return;
+
+  feeInput.value = dailyFeeNum.toFixed(2);
+  updateStorageFeeEstimate();
+}
+function clearShipmentSettingsCache() {
+  shipmentSettingsCache = null;
+}
+window.clearShipmentSettingsCache = clearShipmentSettingsCache;
+
 function calculateStorageLateFees(dueDateStr, dailyFeeRaw) {
   const dailyFee = Number(dailyFeeRaw);
   if (!dueDateStr || Number.isNaN(dailyFee) || dailyFee < 0) {
@@ -3935,25 +3977,34 @@ function updateStorageFeeEstimate() {
   const { daysLate, estimate } = calculateStorageLateFees(dueDate, dailyFeeRaw);
 
   if (estimateDisplay) {
-    estimateDisplay.value = `$${estimate.toFixed(2)}`;
+    const overdueText =
+      daysLate > 0
+        ? ` [${daysLate} day${daysLate === 1 ? '' : 's'} overdue]`
+        : '';
+    estimateDisplay.value = `$${estimate.toFixed(2)}${overdueText}`;
+    estimateDisplay.style.color = estimate > 0 ? '#b91c1c' : '';
   }
 
   if (helper) {
-    if (daysLate > 0) {
-      helper.textContent = `${daysLate} day${daysLate === 1 ? '' : 's'} past due`;
-      helper.style.display = 'block';
-    } else {
-      helper.textContent = '';
-      helper.style.display = 'none';
-    }
+    helper.textContent = '';
+    helper.style.display = 'none';
   }
 }
 
 function setupStorageLateFeeListeners() {
   const dueInput = document.getElementById('shipment-storage-due-date');
+  const feeInput = document.getElementById('shipment-storage-daily-fee');
 
   if (dueInput) {
     dueInput.addEventListener('change', updateStorageFeeEstimate);
+  }
+
+  if (feeInput) {
+    feeInput.addEventListener('input', updateStorageFeeEstimate);
+    feeInput.addEventListener('blur', () => {
+      formatMoneyInput(feeInput);
+      updateStorageFeeEstimate();
+    });
   }
 }
 

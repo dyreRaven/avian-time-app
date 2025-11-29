@@ -1555,6 +1555,11 @@ if (connectBtn) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+
+      if (typeof window.clearShipmentSettingsCache === 'function') {
+        window.clearShipmentSettingsCache();
+      }
+
       if (settingsStatus) {
         settingsStatus.textContent = 'Settings saved.';
         settingsStatus.style.color = 'green';
