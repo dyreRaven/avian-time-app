@@ -24,6 +24,41 @@ const createSQLiteStore = require('./session-store');
 // Global in-memory lock to prevent concurrent payroll runs
 let isPayrollRunInProgress = false;
 
+// Helper: log time entry actions to time_exception_actions for auditing
+async function logTimeEntryAudit({
+  entryId,
+  action,
+  before = null,
+  after = null,
+  note = null,
+  req
+}) {
+  try {
+    const actorUserId = req?.session?.user?.id || null;
+    const actorEmployeeId = req?.session?.user?.employee_id || null;
+    const actorName = req?.session?.user?.email || req?.session?.user?.name || 'unknown';
+    await dbRun(
+      `
+        INSERT INTO time_exception_actions
+          (source_type, source_id, action, actor_user_id, actor_employee_id, actor_name, note, changes_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        'time_entry',
+        entryId,
+        action,
+        actorUserId,
+        actorEmployeeId,
+        actorName,
+        note || null,
+        JSON.stringify({ before, after })
+      ]
+    );
+  } catch (err) {
+    console.error('Failed to write time entry audit log:', err);
+  }
+}
+
 // ───────── SHIPMENT DOCUMENT UPLOADS ─────────
 
 const uploadsRoot = path.join(__dirname, 'public', 'uploads', 'shipments');
@@ -3151,7 +3186,8 @@ app.post('/api/time-entries/:id', (req, res) => {
     end_date,
     start_time,
     end_time,
-    hours
+    hours,
+    note
   } = req.body || {};
 
   const empIdNum = Number(employee_id);
@@ -3198,7 +3234,7 @@ app.post('/api/time-entries/:id', (req, res) => {
       db.get(
         'SELECT rate FROM employees WHERE id = ?',
         [empIdNum],
-        (err, row) => {
+        async (err, row) => {
           if (err) {
             console.error('Error fetching employee rate:', err.message);
             return res.status(500).json({ error: err.message });
@@ -3236,19 +3272,35 @@ app.post('/api/time-entries/:id', (req, res) => {
             id
           ];
 
-          db.run(sql, params, function (err2) {
-            if (err2) {
-              console.error('Error updating time entry:', err2.message);
-              return res.status(500).json({ error: err2.message });
-            }
+          try {
+            const beforeRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+            db.run(sql, params, async function (err2) {
+              if (err2) {
+                console.error('Error updating time entry:', err2.message);
+                return res.status(500).json({ error: err2.message });
+              }
 
-            if (this.changes === 0) {
-              // Should be rare since we already checked existence, but keep as extra guard
-              return res.status(404).json({ error: 'Time entry not found.' });
-            }
+              if (this.changes === 0) {
+                // Should be rare since we already checked existence, but keep as extra guard
+                return res.status(404).json({ error: 'Time entry not found.' });
+              }
 
+              const afterRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+              logTimeEntryAudit({
+                entryId: id,
+                action: 'modify',
+                before: beforeRow,
+                after: afterRow,
+                note: note || null,
+                req
+              });
+
+              res.json({ ok: true, id, total_pay: totalPay });
+            });
+          } catch (auditErr) {
+            console.error('Error auditing time entry update:', auditErr);
             res.json({ ok: true, id, total_pay: totalPay });
-          });
+          }
         }
       );
     }
@@ -3262,40 +3314,57 @@ app.post('/api/time-entries/:id/verify', (req, res) => {
     return res.status(400).json({ error: 'Invalid time entry id.' });
   }
 
-  const { verified, verified_by_employee_id } = req.body || {};
+  const { verified, verified_by_employee_id, note } = req.body || {};
   const isVerified = !!verified;
   const verifierId = verified_by_employee_id ? Number(verified_by_employee_id) : null;
 
   // If marking verified, stamp now; if clearing, null out fields
   const verifiedAt = isVerified ? new Date().toISOString() : null;
 
-  db.run(
-    `
-    UPDATE time_entries
-    SET
-      verified = ?,
-      verified_at = ?,
-      verified_by_employee_id = ?
-    WHERE id = ?
-    `,
-    [isVerified ? 1 : 0, verifiedAt, isVerified ? verifierId : null, id],
-    function (err) {
-      if (err) {
-        console.error('Error updating verification for time entry:', err.message);
-        return res.status(500).json({ error: err.message });
-      }
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'Time entry not found.' });
-      }
+  dbGet('SELECT * FROM time_entries WHERE id = ?', [id])
+    .then(beforeRow => {
+      db.run(
+        `
+        UPDATE time_entries
+        SET
+          verified = ?,
+          verified_at = ?,
+          verified_by_employee_id = ?
+        WHERE id = ?
+        `,
+        [isVerified ? 1 : 0, verifiedAt, isVerified ? verifierId : null, id],
+        async function (err) {
+          if (err) {
+            console.error('Error updating verification for time entry:', err.message);
+            return res.status(500).json({ error: err.message });
+          }
+          if (this.changes === 0) {
+            return res.status(404).json({ error: 'Time entry not found.' });
+          }
 
-      return res.json({
-        id,
-        verified: isVerified ? 1 : 0,
-        verified_at: verifiedAt,
-        verified_by_employee_id: verifierId
-      });
-    }
-  );
+          const afterRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+          logTimeEntryAudit({
+            entryId: id,
+            action: isVerified ? 'verify' : 'unverify',
+            before: beforeRow,
+            after: afterRow,
+            note: note || null,
+            req
+          });
+
+          return res.json({
+            id,
+            verified: isVerified ? 1 : 0,
+            verified_at: verifiedAt,
+            verified_by_employee_id: verifierId
+          });
+        }
+      );
+    })
+    .catch(err => {
+      console.error('Error auditing verification change:', err);
+      return res.status(500).json({ error: 'Failed to update verification.' });
+    });
 });
 
 // Mark a time entry as "exception resolved" (admin/foreman)
@@ -3305,38 +3374,55 @@ app.post('/api/time-entries/:id/resolve', (req, res) => {
     return res.status(400).json({ error: 'Invalid time entry id.' });
   }
 
-  const { resolved, resolved_by } = req.body || {};
+  const { resolved, resolved_by, note } = req.body || {};
   const isResolved = !!resolved;
   const resolvedBy = resolved_by || 'admin'; // later: use logged-in user
   const resolvedAt = isResolved ? new Date().toISOString() : null;
 
-  db.run(
-    `
-      UPDATE time_entries
-      SET
-        resolved    = ?,
-        resolved_at = ?,
-        resolved_by = ?
-      WHERE id = ?
-    `,
-    [isResolved ? 1 : 0, resolvedAt, isResolved ? resolvedBy : null, id],
-    function (err) {
-      if (err) {
-        console.error('Error resolving time entry:', err.message);
-        return res.status(500).json({ error: err.message });
-      }
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'Time entry not found.' });
-      }
+  dbGet('SELECT * FROM time_entries WHERE id = ?', [id])
+    .then(beforeRow => {
+      db.run(
+        `
+          UPDATE time_entries
+          SET
+            resolved    = ?,
+            resolved_at = ?,
+            resolved_by = ?
+          WHERE id = ?
+        `,
+        [isResolved ? 1 : 0, resolvedAt, isResolved ? resolvedBy : null, id],
+        async function (err) {
+          if (err) {
+            console.error('Error resolving time entry:', err.message);
+            return res.status(500).json({ error: err.message });
+          }
+          if (this.changes === 0) {
+            return res.status(404).json({ error: 'Time entry not found.' });
+          }
 
-      return res.json({
-        id,
-        resolved: isResolved ? 1 : 0,
-        resolved_at: resolvedAt,
-        resolved_by: isResolved ? resolvedBy : null
-      });
-    }
-  );
+          const afterRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+          logTimeEntryAudit({
+            entryId: id,
+            action: isResolved ? 'resolve' : 'unresolve',
+            before: beforeRow,
+            after: afterRow,
+            note: note || null,
+            req
+          });
+
+          return res.json({
+            id,
+            resolved: isResolved ? 1 : 0,
+            resolved_at: resolvedAt,
+            resolved_by: isResolved ? resolvedBy : null
+          });
+        }
+      );
+    })
+    .catch(err => {
+      console.error('Error auditing resolve change:', err);
+      return res.status(500).json({ error: 'Failed to update resolve status.' });
+    });
 });
 
 

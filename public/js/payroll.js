@@ -14,7 +14,10 @@ let currentPayrollRange = { start: null, end: null };
 let payrollOverrides = {}; // per-employee memo/line overrides
 let payrollExpenseAccounts = [];
 let payrollClasses = [];
+let payrollSettingsPromise = null;
+let payrollSettingsLoaded = false;
 let additionalLinesByEmployee = {}; // { empId: [ { id, description, amount, expenseAccountName, className } ] }
+let payrollExpandedRows = new Set(); // track expanded detail rows
 let lastPayrollResults = null;
 let lastPayrollRunId = null;
 let lastTimeEntriesContext = null;
@@ -87,11 +90,15 @@ function validatePayrollDates(start, end) {
 }
 
 async function loadPayrollSettings() {
+  if (payrollSettingsPromise) return payrollSettingsPromise;
+  payrollSettingsPromise = (async () => {
   const bankSelect = document.getElementById('payroll-bank-account');
   const expenseSelect = document.getElementById('payroll-expense-account');
   const memoInput = document.getElementById('payroll-memo-template');
   const lineDescInput = document.getElementById('payroll-line-desc-template');
   const statusEl = getPayrollSettingsStatusEl();
+    if (bankSelect) bankSelect.classList.add('with-arrow');
+    if (expenseSelect) expenseSelect.classList.add('with-arrow');
   try {
     const [settingsRes, optsRes, classesRes] = await Promise.all([
       fetch('/api/payroll/settings'),
@@ -103,12 +110,12 @@ async function loadPayrollSettings() {
     const classesPayload = classesRes.ok ? await classesRes.json() : { classes: [] };
     payrollExpenseAccounts = opts.expenseAccounts || [];
     payrollClasses = classesPayload.classes || [];
-    // Do not preload defaults; force admin to select each visit
     currentPayrollSettings = {
-      bank_account_name: null,
-      expense_account_name: null,
-      default_memo: '',
-      line_description_template: ''
+      // Keep actual saved values for defaults in logic, but we won't preselect in the UI dropdowns.
+      bank_account_name: settings.bank_account_name || null,
+      expense_account_name: settings.expense_account_name || null,
+      default_memo: settings.default_memo || 'Payroll {start} – {end}',
+      line_description_template: settings.line_description_template || 'Labor {hours} hrs – {project}'
     };
     if (bankSelect) {
       bankSelect.innerHTML = '<option value="">(select bank account)</option>';
@@ -118,6 +125,7 @@ async function loadPayrollSettings() {
         const opt = document.createElement('option');
         opt.value = fullName;
         opt.textContent = fullName;
+        // Intentionally not selecting; user must choose each visit.
         bankSelect.appendChild(opt);
       });
     }
@@ -129,15 +137,20 @@ async function loadPayrollSettings() {
         const opt = document.createElement('option');
         opt.value = fullName;
         opt.textContent = fullName;
+        // Intentionally not selecting; user must choose each visit.
         expenseSelect.appendChild(opt);
       });
     }
-    if (memoInput) memoInput.value = '';
-    if (lineDescInput) lineDescInput.value = '';
+    if (memoInput) memoInput.value = currentPayrollSettings.default_memo;
+    if (lineDescInput) lineDescInput.value = currentPayrollSettings.line_description_template;
     if (statusEl) statusEl.textContent = '';
   } catch (err) {
     console.error('Error loading payroll settings/options:', err);
   }
+  payrollSettingsLoaded = true;
+  return currentPayrollSettings;
+  })();
+  return payrollSettingsPromise;
 }
 
 async function savePayrollSettings() {
@@ -184,6 +197,8 @@ async function savePayrollSettings() {
     statusEl.textContent = 'Payroll settings saved.';
     statusEl.style.color = '#0f5132';
   }
+  payrollSettingsLoaded = true;
+  payrollSettingsPromise = null;
 }
 
 function setupPayrollSettingsCollapse() {
@@ -244,6 +259,8 @@ let timeEntriesCloseBound = false;
 function closeTimeEntriesModal() {
   const modal = document.getElementById('time-entries-modal');
   const backdrop = document.getElementById('time-entries-backdrop');
+  hideInlineTimeEntryEditor();
+  lastTimeEntriesContext = null;
   if (modal) modal.classList.add('hidden');
   if (backdrop) backdrop.classList.add('hidden');
 }
@@ -328,6 +345,7 @@ function bindInlineTimeEntryEditor() {
       e.preventDefault();
       e.stopPropagation();
       hidePanel();
+      closeTimeEntriesModal();
     });
   }
   if (saveBtn && !saveBtn._bound) {
@@ -391,6 +409,7 @@ async function openTimeEntriesModal(employeeId, employeeName, projectId = null, 
   const bodyEl = document.getElementById('time-entries-body');
   const titleEl = document.getElementById('time-entries-title');
   bindTimeEntriesCloseHandlers();
+  bindInlineTimeEntryEditor();
   if (!modal || !backdrop || !bodyEl || !titleEl) return;
   const { start, end } = currentPayrollRange || {};
   if (!start || !end) {
@@ -517,7 +536,14 @@ function setupViewTimeEntriesButtons() {
 function renderPayrollSummaryTable() {
   const tbody = document.getElementById('payroll-summary-body');
   if (!tbody) return;
+  const previouslyExpanded = new Set(payrollExpandedRows);
   tbody.innerHTML = '';
+  if (!currentPayrollRows.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="5">(no data yet)</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
   const byEmployee = new Map();
   for (const row of currentPayrollRows) {
     const key = row.employee_id;
@@ -606,7 +632,8 @@ function renderPayrollSummaryTable() {
                         const hours = Number(p.hours || 0);
                         const amount = Number(p.total_pay || 0);
                         const lineDesc = buildLineDescription(currentPayrollSettings.line_description_template, { employee_name: agg.employee_name, project_name: p.project_name, project_hours: hours }, currentPayrollRange.start, currentPayrollRange.end);
-                        const defaultExpenseName = currentPayrollSettings.expense_account_name || '';
+                        const selectedExpenseDefault = document.getElementById('payroll-expense-account')?.value || currentPayrollSettings.expense_account_name || '';
+                        const defaultExpenseName = selectedExpenseDefault || '';
                         const expenseOptions = (payrollExpenseAccounts || []).map(acc => {
                           const fullName = acc.fullName || acc.name || '';
                           if (!fullName) return '';
@@ -625,11 +652,11 @@ function renderPayrollSummaryTable() {
                         }
                         return `
                           <tr>
-                            <td><select class="line-expense-select" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">(Use default${defaultExpenseName ? ': ' + defaultExpenseName : ''})</option>${expenseOptions}</select></td>
+                            <td><select class="line-expense-select with-arrow" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">${defaultExpenseName ? `Use default (${defaultExpenseName})` : '(select expense)'}</option>${expenseOptions}</select></td>
                             <td><input type="text" class="line-desc-input" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}" value="${lineDesc}" /></td>
                             <td>$${amount.toFixed(2)}</td>
                             <td>${p.project_name || ''}</td>
-                            <td><select class="line-class-select" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">(none)</option>${classOptions}</select></td>
+                            <td><select class="line-class-select with-arrow" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">(none)</option>${classOptions}</select></td>
                             <td><button type="button" class="btn secondary btn-compact btn-view-time-entries" data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}" data-project-id="${p.project_id || ''}" data-project-name="${p.project_name || ''}">View Time Entries</button></td>
                           </tr>
                         `;
@@ -649,11 +676,11 @@ function renderPayrollSummaryTable() {
                         }).join('');
                         return `
                           <tr class="custom-line-row" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">
-                            <td><select class="line-expense-select" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(Use default${currentPayrollSettings.expense_account_name ? ': ' + currentPayrollSettings.expense_account_name : ''})</option>${expenseOptions}</select></td>
+                            <td><select class="line-expense-select with-arrow" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">${currentPayrollSettings.expense_account_name ? `Use default (${currentPayrollSettings.expense_account_name})` : '(select expense)'}</option>${expenseOptions}</select></td>
                             <td><input type="text" class="line-desc-input" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${line.description || ''}" placeholder="(custom description)" /></td>
                             <td><input type="number" step="0.01" min="0" class="line-amount-input" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${Number(line.amount || 0).toFixed(2)}" /></td>
                             <td>(Custom)</td>
-                            <td><select class="line-class-select" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(none)</option>${classOptions}</select></td>
+                            <td><select class="line-class-select with-arrow" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(none)</option>${classOptions}</select></td>
                             <td><button type="button" class="btn tertiary btn-compact btn-remove-line" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">Remove</button></td>
                           </tr>
                         `;
@@ -669,6 +696,9 @@ function renderPayrollSummaryTable() {
     `;
     tbody.appendChild(tr);
     tbody.appendChild(detailsTr);
+    if (previouslyExpanded.has(agg.employee_id)) {
+      detailsTr.classList.remove('hidden');
+    }
   }
 }
 
@@ -682,7 +712,12 @@ function setupPayrollRowToggle() {
     const empId = tr.dataset.employeeId;
     const detailsRow = tbody.querySelector(`tr.payroll-details-row[data-employee-id="${empId}"]`);
     if (!detailsRow) return;
-    detailsRow.classList.toggle('hidden');
+    const nowHidden = detailsRow.classList.toggle('hidden');
+    if (nowHidden) {
+      payrollExpandedRows.delete(Number(empId));
+    } else {
+      payrollExpandedRows.add(Number(empId));
+    }
   });
 }
 
@@ -744,6 +779,10 @@ function setupPayrollOverrideInputs() {
 }
 
 async function loadPayrollSummary() {
+  // ensure settings (and classes) are loaded first
+  if (!payrollSettingsLoaded) {
+    await loadPayrollSettings();
+  }
   const startInput = document.getElementById('payroll-start');
   const endInput = document.getElementById('payroll-end');
   if (!startInput?.value || !endInput?.value) setDefaultBillingCycleDates();
@@ -773,6 +812,7 @@ function addCustomLine(empId) {
   const newId = Date.now() + '-' + Math.round(Math.random() * 1e6);
   lines.push({ id: newId, description: '', amount: 0, expenseAccountName: null, className: null });
   additionalLinesByEmployee[empId] = lines;
+  payrollExpandedRows.add(Number(empId));
   renderPayrollSummaryTable();
   setupPayrollOverrideInputs();
 }
@@ -814,8 +854,8 @@ async function createChecksForCurrentRange() {
   const expenseSelect = document.getElementById('payroll-expense-account');
   const memoInput = document.getElementById('payroll-memo-template');
   const lineDescInput = document.getElementById('payroll-line-desc-template');
-  currentPayrollSettings.bank_account_name = bankSelect ? bankSelect.value || null : null;
-  currentPayrollSettings.expense_account_name = expenseSelect ? expenseSelect.value || null : null;
+  currentPayrollSettings.bank_account_name = bankSelect ? bankSelect.value || currentPayrollSettings.bank_account_name : currentPayrollSettings.bank_account_name;
+  currentPayrollSettings.expense_account_name = expenseSelect ? expenseSelect.value || currentPayrollSettings.expense_account_name : currentPayrollSettings.expense_account_name;
   currentPayrollSettings.default_memo = memoInput ? memoInput.value || null : null;
   currentPayrollSettings.line_description_template = lineDescInput ? lineDescInput.value || null : null;
   const overridesArray = [];
@@ -1041,7 +1081,6 @@ function initPayrollUiTab() {
   if (refreshBtn) refreshBtn.addEventListener('click', loadPayrollSummary);
   setDefaultBillingCycleDates();
   loadPayrollSettings();
-  loadPayrollSummary();
   setupPayrollActions();
 }
 

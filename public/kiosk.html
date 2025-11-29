@@ -7,6 +7,9 @@
   <!-- Fixed: make these root-relative so they load at /kiosk -->
   <link rel="stylesheet" href="/styles.css" />
   <link rel="manifest" href="/manifest.json" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 
   <meta name="theme-color" content="#10b981" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -29,6 +32,8 @@
   --slate-300: #cbd5e1;
   --slate-200: #e5e7eb;
   --slate-100: #f1f5f9;
+  --blue-50: #e0f2fe;
+  --emerald-soft: #ecfdf5;
 }
 
 /* GLOBAL RESET */
@@ -37,9 +42,9 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: 'Space Grotesk', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
-  background: var(--slate-100);
+  background: radial-gradient(circle at 20% 20%, #e0f2fe 0, #ecfeff 30%, #ecfdf5 65%, #f8fafc 100%);
 }
 
 body {
@@ -53,12 +58,13 @@ body {
 /* FULL SCREEN LAYOUT */
 
 .kiosk-shell {
-  height: 100vh;
+  min-height: 100vh;
   width: 100vw;
   display: flex;
   align-items: stretch;
   justify-content: stretch;
-  padding: 0;
+  padding: 16px;
+  box-sizing: border-box;
 }
 
 /* MAIN CANVAS (fills screen) */
@@ -67,11 +73,15 @@ body {
   flex: 1;
   width: 100%;
   height: 100%;
+  min-height: calc(100vh - 32px);
   max-width: none;
-  border-radius: 0;
-  padding: 40px 42px 36px;
-  background: #ffffff;
-  box-shadow: none;
+  border-radius: 30px;
+  padding: 36px 40px 34px;
+  background: #ffffffcc;
+  backdrop-filter: blur(6px);
+  box-shadow:
+    0 30px 80px rgba(15, 118, 110, 0.14),
+    0 0 0 1px var(--slate-200);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -136,13 +146,130 @@ body {
   color: var(--slate-500);
 }
 
+/* HERO STRIP */
+
+.kiosk-hero {
+  position: relative;
+  border-radius: 22px;
+  background: linear-gradient(135deg, #0f766e, #10b981);
+  color: #ecfdf5;
+  padding: 22px 26px;
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 18px;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(16, 185, 129, 0.25);
+}
+
+.kiosk-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 20% 20%, rgba(255,255,255,0.08), transparent 30%),
+              radial-gradient(circle at 80% 30%, rgba(255,255,255,0.12), transparent 32%),
+              radial-gradient(circle at 50% 80%, rgba(255,255,255,0.06), transparent 40%);
+  pointer-events: none;
+}
+
+.kiosk-hero-left,
+.kiosk-hero-right {
+  position: relative;
+  z-index: 1;
+}
+
+.kiosk-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #ecfdf5;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.kiosk-chip.chip-warning {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fef9c3;
+}
+
+.kiosk-greeting {
+  font-size: clamp(1.6rem, 2vw, 1.9rem);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin-top: 6px;
+}
+
+.kiosk-greeting-sub {
+  margin-top: 8px;
+  color: rgba(236, 253, 245, 0.8);
+  font-size: 1rem;
+}
+
+.kiosk-hero-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  text-align: right;
+}
+
+.kiosk-day {
+  font-size: 0.95rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(236, 253, 245, 0.85);
+}
+
+.kiosk-date-big {
+  font-size: clamp(1.05rem, 2vw, 1.35rem);
+  font-weight: 600;
+  margin: 2px 0 4px;
+  color: rgba(236, 253, 245, 0.86);
+}
+
+.kiosk-time {
+  font-size: clamp(2.4rem, 5vw, 3.1rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #f8fafc;
+}
+
+.kiosk-form-panel {
+  background: #ffffff;
+  border-radius: 18px;
+  padding: 18px 18px 24px;
+  min-height: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  box-shadow:
+    0 20px 40px rgba(15, 118, 110, 0.08),
+    0 0 0 1px var(--slate-200);
+}
+
+.kiosk-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 36px;
+  padding-top: 10px;
+  padding-bottom: 4px;
+}
+
 /* FORM BODY CENTERING */
 
 .kiosk-body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  gap: 22px;
+  justify-content: flex-start;
+  width: min(1100px, 100%);
+  margin: 0 auto;
 }
 
 /* INPUT FIELDS */
@@ -199,7 +326,7 @@ body {
 /* BIG ACTION BUTTON */
 
 .kiosk-btn {
-  margin: 48px auto 0;
+  margin: 24px auto 0;
   width: 220px;
   height: 220px;
   border-radius: 999px;
@@ -215,6 +342,13 @@ body {
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.25s ease;
+}
+
+.kiosk-btn-pressed {
+  transform: translateY(3px) scale(0.98);
+  box-shadow:
+    0 14px 32px rgba(16, 185, 129, 0.35),
+    0 0 0 10px rgba(16, 185, 129, 0.08);
 }
 
 .kiosk-btn:hover {
@@ -644,10 +778,22 @@ body {
 @media (max-width: 900px) {
   .kiosk-card {
     padding: 24px 20px 24px;
+    border-radius: 22px;
+    min-height: calc(100vh - 48px);
   }
 
   .kiosk-body {
     padding-top: 8px;
+  }
+
+  .kiosk-hero {
+    grid-template-columns: 1fr;
+    padding: 18px 20px;
+  }
+
+  .kiosk-hero-right {
+    align-items: flex-start;
+    text-align: left;
   }
 
   .kiosk-label {
@@ -677,6 +823,20 @@ body {
   .kiosk-card {
     padding: 24px 16px 24px;  /* a bit more top/bottom padding */
     border-radius: 0;
+    min-height: calc(100vh - 48px);
+  }
+
+  .kiosk-hero {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .kiosk-date-big {
+    font-size: 1.15rem;
+  }
+
+  .kiosk-time {
+    font-size: 2.2rem;
   }
 
   .kiosk-header {
@@ -770,28 +930,42 @@ body {
       </div>
 
       <div class="kiosk-body">
-        <div class="kiosk-field">
-          <label class="kiosk-label">
-            Project
-            <span class="kiosk-label-note">(selected by foreman)</span>
-          </label>
-            <select id="kiosk-project" class="kiosk-select kiosk-select-locked" disabled>
-              <option value="">Project will be set by foreman</option>
+        <div class="kiosk-hero">
+          <div class="kiosk-hero-left">
+            <div class="kiosk-greeting" id="kiosk-greeting">Welcome crew</div>
+            <div class="kiosk-greeting-sub" id="kiosk-greeting-sub"></div>
+          </div>
+          <div class="kiosk-hero-right">
+            <div class="kiosk-day" id="kiosk-day-label">Thursday</div>
+            <div class="kiosk-date-big" id="kiosk-date-label">March 7, 2024</div>
+            <div class="kiosk-time" id="kiosk-time-label">10:24 AM</div>
+          </div>
+        </div>
+
+        <div class="kiosk-form-panel">
+          <div class="kiosk-field">
+            <label class="kiosk-label">
+              Project
+              <span class="kiosk-label-note">(selected by foreman)</span>
+            </label>
+              <select id="kiosk-project" class="kiosk-select kiosk-select-locked" disabled>
+                <option value="">Project will be set by foreman</option>
+              </select>
+          </div>
+
+          <div class="kiosk-field">
+            <label class="kiosk-label">Employee</label>
+            <select id="kiosk-employee" class="kiosk-select">
+              <option value="">Select your name / Seleccione su nombre / Chwazi non ou</option>
             </select>
+          </div>
 
-
+          <div class="kiosk-actions">
+            <button id="kiosk-punch" class="kiosk-btn">
+              Tap to Clock In
+            </button>
+          </div>
         </div>
-
-        <div class="kiosk-field">
-          <label class="kiosk-label">Employee</label>
-          <select id="kiosk-employee" class="kiosk-select">
-            <option value="">Select your name</option>
-          </select>
-        </div>
-
-        <button id="kiosk-punch" class="kiosk-btn">
-          Tap to Clock In
-        </button>
 
         <div id="kiosk-status" class="kiosk-status"></div>
       </div>

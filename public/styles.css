@@ -957,6 +957,22 @@ table.vendors-table th:first-child {
   background: #f9fafb;
 }
 
+/* Dropdown arrow styling */
+.with-arrow {
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--slate-600) 50%),
+    linear-gradient(135deg, var(--slate-600) 50%, transparent 50%),
+    linear-gradient(to right, transparent, transparent);
+  background-position:
+    calc(100% - 14px) calc(50% - 3px),
+    calc(100% - 9px)  calc(50% - 3px),
+    100% 0;
+  background-size: 6px 6px, 6px 6px, 2.5em 2.5em;
+  background-repeat: no-repeat;
+  padding-right: 2.6em;
+}
+
 .payroll-details .details-columns {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -2461,35 +2477,102 @@ input[type="checkbox"]:disabled {
   border: 1px solid var(--slate-200);
   border-radius: 10px;
   background: #fff;
-  max-height: 180px;
+  max-height: 70vh;
   overflow-y: auto;
 }
 
 #item-verification-modal .verification-history li {
-  padding: 8px 10px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--slate-200);
+  display: grid;
+  grid-template-columns: 1.4fr 0.7fr 0.9fr 0.9fr 1.1fr;
+  gap: 6px 12px;
+  align-items: center;
+  font-size: 0.9rem;
+  color: var(--slate-800);
+  text-align: left;
+}
+
+#item-verification-modal .verification-history li:nth-child(odd) {
+  background: #f8fafc;
 }
 
 #item-verification-modal .verification-history li:last-child {
   border-bottom: none;
 }
 
-#item-verification-modal .hist-line {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
+#item-verification-modal .verification-history-header-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.7fr 0.9fr 0.9fr 1.1fr;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  font-weight: 700;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--slate-600);
+  border-bottom: 1px solid var(--slate-200);
+  background: #f1f5f9;
+}
+
+#item-verification-modal .verification-history-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.7fr 0.9fr 0.9fr 1.1fr;
+  gap: 8px 12px;
+  align-items: center;
   font-size: 0.9rem;
 }
 
+#item-verification-modal .hist-item {
+  font-weight: 600;
+  color: var(--slate-800);
+}
+
+#item-verification-modal .hist-status {
+  background: #eef2ff;
+  color: #312e81;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  display: inline-block;
+  font-size: 0.85rem;
+}
+
+#item-verification-modal .hist-status-verified {
+  background: #dcfce7;
+  color: #166534;
+}
+
+#item-verification-modal .hist-status-missing {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+#item-verification-modal .hist-status-damaged,
+#item-verification-modal .hist-status-issue {
+  background: #fef9c3;
+  color: #92400e;
+}
+
+#item-verification-modal .hist-status-wrong_item {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
 #item-verification-modal .hist-meta {
-  color: var(--slate-500);
-  font-size: 0.8rem;
+  color: var(--slate-600);
+  font-size: 0.85rem;
 }
 
 #item-verification-modal .hist-notes {
-  margin-top: 4px;
   color: var(--slate-700);
   font-size: 0.85rem;
+  background: #f8fafc;
+  border: 1px solid var(--slate-200);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 52px;
+  display: block;
 }
 
 #item-verification-status-ui.disabled {
@@ -2499,10 +2582,15 @@ input[type="checkbox"]:disabled {
 
 #item-verification-modal .verification-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1.2fr 1.2fr 1fr 1fr;
   gap: 12px;
   align-items: end;
   width: 100%;
+}
+
+#item-verification-modal .inline-save-active {
+  background: #16a34a;
+  color: #fff;
 }
 
 @media (max-width: 640px) {
@@ -2519,10 +2607,65 @@ input[type="checkbox"]:disabled {
   grid-column: 1 / -1;
 }
 
+/* Make history table columns a bit wider for notes */
+#item-verification-modal .verification-history li,
+#item-verification-modal .verification-history-header-row,
+#item-verification-modal .verification-history-row {
+  grid-template-columns: 1.4fr 0.7fr 1fr 1fr 1.6fr;
+}
+
 #item-verification-modal .verification-actions {
   margin-top: 6px;
   width: 100%;
 }
+
+#item-verification-modal .verification-actions .btn.inline-save-active {
+  background: #16a34a;
+  color: #ffffff;
+  box-shadow:
+    0 10px 22px rgba(22, 163, 74, 0.3),
+    0 0 0 1px rgba(21, 128, 61, 0.4);
+}
+
+#item-verification-modal .verification-actions .btn.override-state {
+  background: #f3f4f6;
+  color: #111827;
+  border: 1px solid #d1d5db;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+#item-verification-history-panel {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+}
+
+#item-verification-history-panel.hidden {
+  display: none;
+}
+
+#item-verification-modal .verification-history-card {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.25);
+  width: min(620px, 90vw);
+  max-height: 70vh;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#item-verification-modal .verification-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 
 #item-verification-modal .verification-group {
   background: #f8fafc;
