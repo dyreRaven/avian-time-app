@@ -50,6 +50,14 @@ function buildLineDescription(template, row, start, end) {
     .replace('{end}', endUS);
 }
 
+function getProjectLabel(projectId, projectName, customerName) {
+  const fromPayload = customerName ? `${customerName} : ${projectName || ''}` : projectName || '';
+  if (fromPayload) return fromPayload;
+  const match = payrollProjects.find(p => Number(p.id) === Number(projectId));
+  if (!match) return projectName || '';
+  return match.customer_name ? `${match.customer_name} : ${match.name}` : (match.name || '');
+}
+
 function setDefaultBillingCycleDates() {
   const startInput = document.getElementById('payroll-start');
   const endInput = document.getElementById('payroll-end');
@@ -114,10 +122,10 @@ async function loadPayrollSettings() {
     payrollExpenseAccounts = opts.expenseAccounts || [];
     payrollClasses = classesPayload.classes || [];
     payrollProjects = Array.isArray(projectsPayload) ? projectsPayload : (projectsPayload.projects || []);
+    // Do not preload bank/expense; admin must choose each visit
     currentPayrollSettings = {
-      // Keep actual saved values for defaults in logic, but we won't preselect in the UI dropdowns.
-      bank_account_name: settings.bank_account_name || null,
-      expense_account_name: settings.expense_account_name || null,
+      bank_account_name: null,
+      expense_account_name: null,
       default_memo: settings.default_memo || 'Payroll {start} – {end}',
       line_description_template: settings.line_description_template || 'Labor {hours} hrs – {project}'
     };
@@ -429,6 +437,10 @@ async function openTimeEntriesModal(employeeId, employeeName, projectId = null, 
     const params = new URLSearchParams({ employeeId: String(employeeId), start, end });
     const res = await fetch('/api/payroll/time-entries?' + params.toString());
     let entries = await res.json();
+    if (!res.ok || (entries && entries.error)) {
+      throw new Error(entries?.error || 'Failed to load time entries.');
+    }
+    if (!Array.isArray(entries)) entries = [];
     if (projectId) {
       const pid = Number(projectId);
       entries = entries.filter(e => Number(e.project_id) === pid);
@@ -555,17 +567,23 @@ function renderPayrollSummaryTable() {
       byEmployee.set(key, {
         employee_id: row.employee_id,
         employee_name: row.employee_name,
+        vendor_qbo_id: row.employee_vendor_qbo_id || null,
+        employee_qbo_id: row.employee_employee_qbo_id || null,
         total_hours: 0,
         total_pay: 0,
+        any_paid: false,
         projects: []
       });
     }
     const agg = byEmployee.get(key);
     agg.total_hours += Number(row.project_hours || 0);
     agg.total_pay += Number(row.project_pay || 0);
+    agg.any_paid = agg.any_paid || !!row.any_paid;
     agg.projects.push({
       project_id: row.project_id,
       project_name: row.project_name,
+      project_customer_name: row.project_customer_name,
+      project_name_raw: row.project_name_raw,
       hours: row.project_hours,
       total_pay: row.project_pay,
       class_name: row.class_name || ''
@@ -580,20 +598,28 @@ function renderPayrollSummaryTable() {
     const customLines = additionalLinesByEmployee[agg.employee_id] || [];
     const customTotal = customLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
     const displayTotalPay = agg.total_pay + customTotal;
+    const unpayButtonHtml = agg.any_paid
+      ? `<button type="button" class="btn tertiary btn-compact btn-unpay" data-employee-id="${agg.employee_id}">Mark unpaid</button>`
+      : '';
     const tr = document.createElement('tr');
     tr.classList.add('payroll-row');
     tr.dataset.employeeId = agg.employee_id;
     tr.dataset.employeeName = agg.employee_name || '';
+    const paidBadge = agg.any_paid ? '<span class="paid-badge">Paid</span>' : '';
+    const sendChecked = agg.any_paid ? '' : 'checked';
     tr.innerHTML = `
-      <td>${agg.employee_name || ''}</td>
+      <td>${agg.employee_name || ''} ${paidBadge}</td>
       <td>(multiple)</td>
       <td>${agg.total_hours.toFixed(2)}</td>
       <td>$${displayTotalPay.toFixed(2)}</td>
       <td>
-        <label class="checkbox-inline">
-          <input type="checkbox" class="payroll-send-checkbox" data-employee-id="${agg.employee_id}" checked />
-          Send to QB
-        </label>
+        <div class="actions-inline">
+          <label class="checkbox-inline">
+            <input type="checkbox" class="payroll-send-checkbox" data-employee-id="${agg.employee_id}" ${sendChecked} />
+            Send to QB
+          </label>
+          ${unpayButtonHtml}
+        </div>
       </td>
     `;
     const memoText = memoTemplate
@@ -635,7 +661,7 @@ function renderPayrollSummaryTable() {
                       ${agg.projects.map(p => {
                         const hours = Number(p.hours || 0);
                         const amount = Number(p.total_pay || 0);
-                        const lineDesc = buildLineDescription(currentPayrollSettings.line_description_template, { employee_name: agg.employee_name, project_name: p.project_name, project_hours: hours }, currentPayrollRange.start, currentPayrollRange.end);
+                        const lineDesc = buildLineDescription(currentPayrollSettings.line_description_template, { employee_name: agg.employee_name, project_name: p.project_name_raw || p.project_name, project_hours: hours }, currentPayrollRange.start, currentPayrollRange.end);
                         const selectedExpenseDefault = document.getElementById('payroll-expense-account')?.value || currentPayrollSettings.expense_account_name || '';
                         const defaultExpenseName = selectedExpenseDefault || '';
                         const expenseOptions = (payrollExpenseAccounts || []).map(acc => {
@@ -654,12 +680,13 @@ function renderPayrollSummaryTable() {
                         if (defaultClassName && !(payrollClasses || []).some(c => (c.fullName || c.name) === defaultClassName)) {
                           classOptions = `<option value="${defaultClassName}" selected>${defaultClassName}</option>` + classOptions;
                         }
+                        const projectLabel = getProjectLabel(p.project_id, p.project_name_raw || p.project_name, p.project_customer_name);
                         return `
-                          <tr>
-                            <td><select class="line-expense-select with-arrow" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">${defaultExpenseName ? `Use default (${defaultExpenseName})` : '(select expense)'}</option>${expenseOptions}</select></td>
+                          <tr data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}">
+                            <td><select class="line-expense-select with-arrow" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="${defaultExpenseName || ''}" ${defaultExpenseName ? 'selected' : ''}>${defaultExpenseName ? `Use default (${defaultExpenseName})` : '(select expense)'}</option>${expenseOptions}</select></td>
                             <td><input type="text" class="line-desc-input" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}" value="${lineDesc}" /></td>
                             <td>$${amount.toFixed(2)}</td>
-                            <td>${p.customer_name ? `${p.customer_name} : ` : ''}${p.project_name || ''}</td>
+                            <td data-project-id="${p.project_id}" data-customer-name="${p.project_customer_name || ''}" data-project-name="${p.project_name_raw || p.project_name || ''}">${projectLabel}</td>
                             <td><select class="line-class-select with-arrow" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">(none)</option>${classOptions}</select></td>
                             <td><button type="button" class="btn secondary btn-compact btn-view-time-entries" data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}" data-project-id="${p.project_id || ''}" data-project-name="${p.project_name || ''}">View Time Entries</button></td>
                           </tr>
@@ -689,7 +716,7 @@ function renderPayrollSummaryTable() {
                           return `<option value="${name}"${selected}>${name}</option>`;
                         }).join('');
                         return `
-                          <tr class="custom-line-row" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">
+                          <tr class="custom-line-row" data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}" data-line-id="${line.id}">
                             <td><select class="line-expense-select with-arrow ${hasExpense ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select expense account)</option>${expenseOptions}</select></td>
                             <td><input type="text" class="line-desc-input ${hasDesc ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${line.description || ''}" placeholder="(custom description)" /></td>
                             <td><input type="number" step="0.01" min="0" class="line-amount-input ${hasAmount ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${hasAmount ? amountVal.toFixed(2) : ''}" placeholder="0.00" /></td>
@@ -813,7 +840,9 @@ async function loadPayrollSummary() {
   if (!validatePayrollDates(start, end)) return;
   currentPayrollRange = { start, end };
   payrollOverrides = {};
-  const params = new URLSearchParams({ start, end });
+  const includePaidCheckbox = document.getElementById('payroll-include-paid');
+  const includePaid = includePaidCheckbox?.checked ? '1' : '0';
+  const params = new URLSearchParams({ start, end, includePaid });
   const url = `/api/payroll-summary?${params.toString()}`;
   try {
     const res = await fetch(url);
@@ -925,6 +954,24 @@ async function createChecksForCurrentRange() {
     .filter(n => Number.isFinite(n));
   // Basic pre-flight validation
   const errors = [];
+  const missingVendors = [];
+  const classNames = new Set((payrollClasses || []).map(c => c.fullName || c.name).filter(Boolean));
+  const employeeById = new Map();
+currentPayrollRows.forEach(r => {
+  employeeById.set(Number(r.employee_id), {
+    name: r.employee_name,
+    vendor_qbo_id: r.employee_vendor_qbo_id || null,
+    employee_qbo_id: r.employee_employee_qbo_id || null
+  });
+});
+  employeeById.forEach((info, id) => {
+    if (!info.vendor_qbo_id && !info.employee_qbo_id) {
+      missingVendors.push(`${info.name || 'Employee ' + id}`);
+    }
+  });
+  if (missingVendors.length) {
+    errors.push('Missing QuickBooks payee for:\n' + missingVendors.join('\n'));
+  }
   if (!currentPayrollSettings.bank_account_name) {
     errors.push('Bank account is not selected in payroll settings.');
   }
@@ -936,41 +983,61 @@ async function createChecksForCurrentRange() {
   document.querySelectorAll('#payroll-summary-body .line-items-box .input-error').forEach(el => {
     el.classList.remove('input-error');
   });
+  const debugLines = [];
   document.querySelectorAll('#payroll-summary-body .line-items-box tr').forEach(row => {
-    const empId = row.closest('tr')?.dataset.employeeId || row.dataset.employeeId || '';
+    const empId = row.dataset.employeeId || row.closest('tr')?.dataset.employeeId || '';
+    const empName = row.dataset.employeeName || '';
     const projectSel = row.querySelector('.line-project-select');
+    const projectLabelCell = (!projectSel && row.children[3] && row.children[3].dataset) ? row.children[3] : null;
     const expenseEl = row.querySelector('.line-expense-select');
     const descEl = row.querySelector('.line-desc-input');
     const classEl = row.querySelector('.line-class-select');
     const amountEl = row.querySelector('.line-amount-input');
-    const projectVal = projectSel?.value || '';
+    const isCustom = row.classList.contains('custom-line-row') || row.dataset.lineId;
+    // Skip header/placeholder rows that have no inputs/selects at all
+    if (!expenseEl && !descEl && !classEl && !amountEl && !projectSel) return;
+    let projectVal = projectSel?.value || '';
+    if (!projectVal && projectLabelCell && projectLabelCell.dataset.projectId) {
+      projectVal = projectLabelCell.dataset.projectId || '';
+    }
     const expense = expenseEl?.value || '';
     const desc = descEl?.value || '';
     const cls = classEl?.value || '';
     const amountVal = amountEl ? Number(amountEl.value) : null;
     const needsAmount = !!amountEl;
     const amountOk = needsAmount ? Number.isFinite(amountVal) && amountVal > 0 : true;
-    if (!expense || !desc || !cls || !amountOk || (projectSel && !projectVal)) {
-      const projLabel = row.querySelector('td:nth-child(4)')?.textContent || '(project)';
+    const allEmptyCustom = isCustom && !expense && !desc && !cls && (!amountEl || amountEl.value === '' || Number(amountEl.value) === 0) && (!projectVal);
+    if (allEmptyCustom) return; // ignore totally blank custom rows
+    const classKnown = cls ? classNames.has(cls) : false;
+    if (!expense || !desc || !cls || !amountOk || (projectSel && !projectVal) || (cls && !classKnown)) {
+      const projLabel = row.querySelector('td:nth-child(4)')?.textContent?.trim() || '(project)';
+      debugLines.push({ empId, projLabel, expense, desc, cls, amount: amountEl?.value || '', projectVal, isCustom });
       if (projectSel && !projectVal) projectSel.classList.add('input-error');
       if (!expense && expenseEl) expenseEl.classList.add('input-error');
       if (!desc && descEl) descEl.classList.add('input-error');
       if (!cls && classEl) classEl.classList.add('input-error');
+      if (cls && !classKnown && classEl) classEl.classList.add('input-error');
       if (!amountOk && amountEl) amountEl.classList.add('input-error');
-      missingLines.push(`Employee ${empId} / ${projLabel} missing ${[
+      missingLines.push(`${empName || 'Employee ' + empId} / ${projLabel} missing ${[
         projectSel && !projectVal ? 'customer/project' : '',
         !expense ? 'expense' : '',
         !desc ? 'description' : '',
-        !cls ? 'class' : '',
+        !cls ? 'class' : (!classKnown ? 'class (no matching QBO class)' : ''),
         !amountOk ? 'amount' : ''
       ].filter(Boolean).join(', ')}`);
     }
   });
+  if (debugLines.length) {
+    console.warn('[PAYROLL VALIDATION] Missing line data:', debugLines);
+  }
   if (missingLines.length) errors.push('Line items incomplete:\n' + missingLines.join('\n'));
   if (errors.length) {
     alert('Please fix the following before creating checks:\n\n' + errors.join('\n'));
     return;
   }
+
+  // All good → show loading
+  showPayrollLoading();
 
   const payload = {
     start,
@@ -1022,6 +1089,7 @@ async function createChecksForCurrentRange() {
     console.error('Error calling /api/payroll/create-checks:', err);
     alert('There was a problem contacting the server while creating checks.\n\n' + (err.message || err));
   } finally {
+    hidePayrollLoading();
     if (createBtn) createBtn.disabled = false;
   }
 }
@@ -1029,12 +1097,15 @@ async function createChecksForCurrentRange() {
 async function retryFailedChecksForCurrentRun() {
   const { start, end } = currentPayrollRange || {};
   if (!validatePayrollDates(start, end)) return;
+  showPayrollLoading();
   if (!Array.isArray(lastPayrollResults) || !lastPayrollResults.length) {
     alert('There is no previous payroll run to retry.');
+    hidePayrollLoading();
     return;
   }
   if (!lastPayrollRunId) {
     alert('Cannot retry: no original payroll run ID is available.');
+    hidePayrollLoading();
     return;
   }
   const failed = lastPayrollResults.filter(r => r && r.ok === false && r.employeeId);
@@ -1098,6 +1169,7 @@ async function retryFailedChecksForCurrentRun() {
     console.error('Error calling /api/payroll/create-checks (retry):', err);
     alert('There was a problem contacting the server while retrying failed checks.\n\n' + (err.message || err));
   } finally {
+    hidePayrollLoading();
     if (createBtn) createBtn.disabled = false;
   }
 }
@@ -1107,6 +1179,38 @@ function setupPayrollActions() {
   const retryBtn = document.getElementById('payroll-retry-failed');
   if (createBtn) createBtn.addEventListener('click', createChecksForCurrentRange);
   if (retryBtn) retryBtn.addEventListener('click', retryFailedChecksForCurrentRun);
+  const tbody = document.getElementById('payroll-summary-body');
+  if (tbody) {
+    tbody.addEventListener('click', async e => {
+      const btn = e.target.closest('.btn-unpay');
+      if (!btn) return;
+      e.stopPropagation();
+      const empId = Number(btn.dataset.employeeId);
+      const { start, end } = currentPayrollRange || {};
+      if (!empId || !start || !end) {
+        alert('Select a date range and employee before marking unpaid.');
+        return;
+      }
+      const reason = prompt('Reason for marking unpaid (optional):', 'manual unpay');
+      if (reason === null) return;
+      try {
+        const res = await fetch('/api/payroll/unpay', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ employeeId: empId, start, end, reason })
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || 'Failed to mark unpaid.');
+        }
+        alert('Marked unpaid. Reloading payroll summary.');
+        if (typeof loadPayrollSummary === 'function') loadPayrollSummary();
+      } catch (err) {
+        console.error('Unpay error:', err);
+        alert('Failed to mark unpaid: ' + (err.message || err));
+      }
+    });
+  }
 }
 
 function initPayrollUiTab() {
@@ -1132,3 +1236,20 @@ window.initPayrollUiTab = initPayrollUiTab;
 document.addEventListener('DOMContentLoaded', () => {
   initPayrollUiTab();
 });
+
+// Simple loading overlay helpers
+function showPayrollLoading() {
+  let overlay = document.getElementById('payroll-loading');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'payroll-loading';
+    overlay.innerHTML = '<div class="spinner"></div><div class="spinner-text">Creating checks...</div>';
+    document.body.appendChild(overlay);
+  }
+  overlay.classList.remove('hidden');
+}
+
+function hidePayrollLoading() {
+  const overlay = document.getElementById('payroll-loading');
+  if (overlay) overlay.classList.add('hidden');
+}

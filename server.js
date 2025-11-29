@@ -59,6 +59,35 @@ async function logTimeEntryAudit({
   }
 }
 
+async function logPayrollEvent({
+  event_type,
+  message,
+  payroll_run_id = null,
+  details = null
+}) {
+  try {
+    await dbRun(
+      `
+        INSERT INTO payroll_audit_log (
+          event_type,
+          payroll_run_id,
+          message,
+          details_json,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, datetime('now'))
+      `,
+      [
+        event_type,
+        payroll_run_id || null,
+        message || null,
+        details ? JSON.stringify(details) : null
+      ]
+    );
+  } catch (err) {
+    console.error('Failed to write payroll audit log:', err);
+  }
+}
 // ───────── SHIPMENT DOCUMENT UPLOADS ─────────
 
 const uploadsRoot = path.join(__dirname, 'public', 'uploads', 'shipments');
@@ -239,46 +268,7 @@ async function validatePayrollRangeServer(start, end) {
       `Payroll period is ${Math.round(diffDays)} days, which exceeds the allowed maximum of ${MAX_PAYROLL_DAYS} days.`
     );
   }
-
-  // Exact match
-  const existingExact = await dbGet(
-    `
-      SELECT id, start_date, end_date, total_hours, total_pay, created_at
-      FROM payroll_runs
-      WHERE start_date = ? AND end_date = ?
-      LIMIT 1
-    `,
-    [start, end]
-  );
-
-  if (existingExact) {
-    throw new Error(
-      `A payroll run already exists for this exact period (${existingExact.start_date} to ${existingExact.end_date}). ` +
-      `Run ID: ${existingExact.id}.`
-    );
-  }
-
-  // Overlap: NOT (existing.end < new.start OR existing.start > new.end)
-  const overlapping = await dbAll(
-    `
-      SELECT id, start_date, end_date, total_hours, total_pay, created_at
-      FROM payroll_runs
-      WHERE NOT (date(end_date) < date(?) OR date(start_date) > date(?))
-    `,
-    [start, end]
-  );
-
-  if (overlapping && overlapping.length) {
-    const summary = overlapping
-      .map(r => `• Run ID ${r.id}: ${r.start_date} → ${r.end_date} (Total: ${r.total_pay || 0})`)
-      .join('\n');
-
-    throw new Error(
-      'This payroll period overlaps with an existing payroll run:\n\n' +
-      summary +
-      '\n\nPlease adjust the dates so they do not overlap.'
-    );
-  }
+  // Previously we blocked exact/overlapping runs; now allowed for reruns. Caller may log overlaps if needed.
 }
 
 /* ───────── PAYROLL AUDIT LOG HELPER ───────── */
@@ -804,6 +794,50 @@ app.get('/api/auth/me', async (req, res) => {
   }
 });
 
+// ───────── AUTH: CHANGE PASSWORD ─────────
+app.post('/api/auth/change-password', requireAuth, async (req, res) => {
+  const { current_password, new_password } = req.body || {};
+
+  if (!current_password || !new_password) {
+    return res
+      .status(400)
+      .json({ error: 'Current password and new password are required.' });
+  }
+
+  if (String(new_password).length < 8) {
+    return res
+      .status(400)
+      .json({ error: 'New password must be at least 8 characters long.' });
+  }
+
+  try {
+    const user = await dbGet(
+      'SELECT id, password_hash FROM users WHERE id = ?',
+      [req.session.userId]
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    const matches = bcrypt.compareSync(current_password, user.password_hash);
+    if (!matches) {
+      return res.status(401).json({ error: 'Current password is incorrect.' });
+    }
+
+    const newHash = bcrypt.hashSync(new_password, 10);
+    await dbRun(
+      'UPDATE users SET password_hash = ? WHERE id = ?',
+      [newHash, user.id]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ error: 'Failed to update password.' });
+  }
+});
+
 
 /* ───────── 3. QUICKBOOKS STATUS & AUTH ───────── */
 
@@ -967,7 +1001,11 @@ app.post('/api/payroll/settings', requireAuth, (req, res) => {
 
 // PAYROLL SUMMARY ENDPOINT (UNPAID ONLY)
 app.get('/api/payroll-summary', requireAuth, (req, res) => {
-  const { start, end } = req.query;
+  const { start, end, includePaid } = req.query;
+  const includePaidBool =
+    includePaid === '1' ||
+    includePaid === 'true' ||
+    includePaid === true;
 
   if (!start || !end) {
     return res
@@ -982,19 +1020,33 @@ app.get('/api/payroll-summary', requireAuth, (req, res) => {
       .json({ error: 'end must be on or after start.' });
   }
 
-  const sql = `
+  let sql = `
   SELECT
     e.id AS employee_id,
     e.name AS employee_name,
+    e.vendor_qbo_id AS employee_vendor_qbo_id,
+    e.employee_qbo_id AS employee_employee_qbo_id,
     p.id AS project_id,
     COALESCE(p.name, '(No project)') AS project_name,
+    p.qbo_id AS project_qbo_id,
+    p.customer_name AS project_customer_name,
+    p.name AS project_name_raw,
+    MAX(COALESCE(t.paid, 0)) AS any_paid,
+    MAX(t.paid_date) AS last_paid_date,
+    MAX(COALESCE(t.paid, 0)) AS line_paid,
+    MAX(t.paid_date) AS line_paid_date,
     SUM(t.hours)     AS project_hours,
     SUM(t.total_pay) AS project_pay
   FROM time_entries t
   JOIN employees e ON t.employee_id = e.id
   LEFT JOIN projects p ON t.project_id = p.id
   WHERE t.start_date >= ? AND t.end_date <= ?
-    AND (t.paid IS NULL OR t.paid = 0)
+`;
+  const params = [start, end];
+  if (!includePaidBool) {
+    sql += ` AND (t.paid IS NULL OR t.paid = 0)`;
+  }
+  sql += `
   GROUP BY
     e.id, e.name,
     p.id, p.name
@@ -1003,13 +1055,111 @@ app.get('/api/payroll-summary', requireAuth, (req, res) => {
     project_name
 `;
 
-
-
-  db.all(sql, [start, end], (err, rows) => {
+  db.all(sql, params, (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows);
   });
-})
+});
+
+// Mark checks/time entries as unpaid for an employee in a period (to allow resend)
+app.post('/api/payroll/unpay', requireAuth, async (req, res) => {
+  const {
+    employeeId,
+    start,
+    end,
+    reason,
+    payrollCheckId: payrollCheckIdRaw
+  } = req.body || {};
+  const empIdNum = Number(employeeId);
+  const payrollCheckId =
+    payrollCheckIdRaw && Number.isFinite(Number(payrollCheckIdRaw))
+      ? Number(payrollCheckIdRaw)
+      : null;
+  if (!empIdNum || !start || !end) {
+    return res.status(400).json({ ok: false, error: 'employeeId, start, and end are required.' });
+  }
+  try {
+    // find payroll_run_id if it exists for this period
+    const run = await dbGet(
+      `SELECT id FROM payroll_runs WHERE start_date = ? AND end_date = ? ORDER BY id DESC LIMIT 1`,
+      [start, end]
+    );
+    const runId = run ? run.id : null;
+
+    // mark payroll_checks as voided/unpaid for this employee/period
+    if (runId) {
+      if (payrollCheckId) {
+        await dbRun(
+          `
+            UPDATE payroll_checks
+            SET paid = 0,
+                voided_at = datetime('now'),
+                voided_reason = ?
+            WHERE payroll_run_id = ?
+              AND employee_id = ?
+              AND id = ?
+          `,
+          [reason || 'manual unpay', runId, empIdNum, payrollCheckId]
+        );
+      } else {
+        await dbRun(
+          `
+            UPDATE payroll_checks
+            SET paid = 0,
+                voided_at = datetime('now'),
+                voided_reason = ?
+            WHERE payroll_run_id = ?
+              AND employee_id = ?
+          `,
+          [reason || 'manual unpay', runId, empIdNum]
+        );
+      }
+      // recalc totals for the run
+      await dbRun(
+        `
+          UPDATE payroll_runs
+          SET total_hours = (
+                SELECT IFNULL(SUM(total_hours), 0)
+                FROM payroll_checks
+                WHERE payroll_run_id = ?
+              ),
+              total_pay = (
+                SELECT IFNULL(SUM(total_pay), 0)
+                FROM payroll_checks
+                WHERE payroll_run_id = ?
+              )
+          WHERE id = ?
+        `,
+        [runId, runId, runId]
+      );
+    }
+
+    // unmark time entries as paid
+    await dbRun(
+      `
+        UPDATE time_entries
+        SET paid = 0,
+            paid_date = NULL
+        WHERE employee_id = ?
+          AND start_date >= ?
+          AND end_date   <= ?
+      `,
+      [empIdNum, start, end]
+    );
+
+    await logPayrollEvent({
+      event_type: 'PAYROLL_UNPAY',
+      payroll_run_id: runId,
+      message: `Unlocked payroll for employee ${empIdNum} (${start}→${end})`,
+      details: { employeeId: empIdNum, start, end, reason: reason || null }
+    });
+
+    return res.json({ ok: true, payrollRunId: runId });
+  } catch (err) {
+    console.error('Error unpaying payroll:', err);
+    return res.status(500).json({ ok: false, error: err.message || 'Failed to unpay payroll.' });
+  }
+});
 
 // Get raw time entries for an employee in a date range (for payroll UI)
 app.get('/api/payroll/time-entries', requireAuth, (req, res) => {
@@ -1246,12 +1396,12 @@ app.post('/api/payroll/create-checks', requireAuth, async (req, res) => {
       await validatePayrollRangeServer(start, end);
 
       // 🔎 Audit log: run started
-      await logPayrollEvent({
-        event_type: 'PAYROLL_RUN_STARTED',
-        message: `Payroll run started for ${start} → ${end}`,
-        details: { start, end, bankAccountName, expenseAccountName, onlyEmployeeIds },
-        payroll_run_id: null
-      });
+    await logPayrollEvent({
+      event_type: 'PAYROLL_RUN_STARTED',
+      message: `Payroll run started for ${start} → ${end}`,
+      details: { start, end, bankAccountName, expenseAccountName, onlyEmployeeIds },
+      payroll_run_id: null
+    });
     }
 
     // 2) Call QuickBooks helper to actually build & create checks.
@@ -1692,6 +1842,7 @@ const sql = `
     pin,
     uses_timekeeping,
     email,
+    language,
     employee_qbo_id,
     kiosk_can_view_shipments       -- 👈 NEW
   FROM employees
@@ -1717,6 +1868,7 @@ app.get('/api/kiosk/employees', (req, res) => {
       pin,
       uses_timekeeping,
       kiosk_can_view_shipments,
+      language,
       IFNULL(active, 1) AS active
     FROM employees
     WHERE employee_qbo_id IS NOT NULL
@@ -1875,7 +2027,8 @@ app.post('/api/employees', requireAuth, async (req, res) => {
       uses_timekeeping,
       nickname,
       name_on_checks,
-      kiosk_can_view_shipments 
+      kiosk_can_view_shipments,
+      language
     } = req.body;
 
     // ✅ Block manual creation: require an id
@@ -1899,12 +2052,9 @@ app.post('/api/employees', requireAuth, async (req, res) => {
     const incomingRate =
       rate === undefined || rate === null ? null : Number(rate);
 
-    if (canModifyRates) {
-      if (incomingRate === null || Number.isNaN(incomingRate)) {
-        return res.status(400).json({ error: 'Valid hourly rate is required.' });
-      }
-    } else {
-      const currentRate = existing.rate;
+    const currentRate = existing.rate;
+
+    if (!canModifyRates) {
       const rateChanged =
         incomingRate !== null &&
         !Number.isNaN(incomingRate) &&
@@ -1916,10 +2066,16 @@ app.post('/api/employees', requireAuth, async (req, res) => {
       }
     }
 
-    const safeRate =
-      canModifyRates && incomingRate !== null && !Number.isNaN(incomingRate)
-        ? incomingRate
-        : existing.rate;
+    let safeRate = currentRate;
+    if (canModifyRates && incomingRate !== null && !Number.isNaN(incomingRate)) {
+      safeRate = incomingRate;
+    }
+
+    const allowedLanguages = ['en', 'es', 'ht'];
+    const normalizedLanguage = (() => {
+      const raw = (language || '').toString().trim().toLowerCase();
+      return allowedLanguages.includes(raw) ? raw : 'en';
+    })();
 
     const isAdminFlag = is_admin ? 1 : 0;
     const usesTimekeepingFlag =
@@ -1939,7 +2095,8 @@ app.post('/api/employees', requireAuth, async (req, res) => {
         uses_timekeeping = ?,
         nickname = ?,          -- 🔹 new
         name_on_checks = ?,     -- 🔹 new (optional, but you're already sending it)
-        kiosk_can_view_shipments = ?    -- 👈 NEW
+        kiosk_can_view_shipments = ?,    -- 👈 NEW
+        language = ?
       WHERE id = ?
       `,
       [
@@ -1949,6 +2106,7 @@ app.post('/api/employees', requireAuth, async (req, res) => {
         nickname || null,
         name_on_checks || null,
         viewShipmentsFlag,
+        normalizedLanguage,
         id
       ],
       function (err) {
@@ -1965,7 +2123,8 @@ app.post('/api/employees', requireAuth, async (req, res) => {
           is_admin: isAdminFlag,
           uses_timekeeping: usesTimekeepingFlag,
           nickname: nickname || null,
-          name_on_checks: name_on_checks || null
+          name_on_checks: name_on_checks || null,
+          language: normalizedLanguage
         });
       }
     );
@@ -1999,34 +2158,107 @@ app.post('/api/employees/:id/active', requireAuth, (req, res) => {
   );
 });
 
-app.post('/api/employees/:id/pin', requireAuth, (req, res) => {
+// Lightweight endpoint just to update language (used by kiosk admin)
+// Note: kiosk admin is PIN-gated in the UI, so we allow unauthenticated here.
+app.post('/api/employees/:id/language', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  const allowedLanguages = ['en', 'es', 'ht'];
+  const raw = (req.body && req.body.language) || '';
+  const lang = allowedLanguages.includes(String(raw).toLowerCase())
+    ? String(raw).toLowerCase()
+    : 'en';
+
+  db.run(
+    'UPDATE employees SET language = ? WHERE id = ?',
+    [lang, id],
+    function (err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      if (this.changes === 0) {
+        return res.status(404).json({ error: 'Employee not found.' });
+      }
+      res.json({ ok: true, language: lang });
+    }
+  );
+});
+
+app.post('/api/employees/:id/pin', async (req, res) => {
 
   const id = parseInt(req.params.id, 10);
   if (!id) {
     return res.status(400).json({ error: 'Invalid employee id.' });
   }
 
-  const { pin, allowOverride, require_photo } = req.body || {};
+  const { pin, allowOverride, require_photo, device_id, device_secret } = req.body || {};
+
+  // Allow either a normal logged-in session OR a registered kiosk device
+  const hasSession = req.session && req.session.userId;
+  let kioskOk = false;
+
+  if (!hasSession) {
+    const devId = (device_id || '').trim();
+    const devSecret = (device_secret || '').trim();
+    if (devId && devSecret) {
+      try {
+        const kioskRow = await dbGet(
+          'SELECT id FROM kiosks WHERE device_id = ? LIMIT 1',
+          [devId]
+        );
+        if (kioskRow) {
+          // Support old kiosks without a secret: treat as not OK if secret missing on either side
+          const secretRow = await dbGet(
+            'SELECT device_secret FROM kiosks WHERE id = ?',
+            [kioskRow.id]
+          );
+          const expected = (secretRow && secretRow.device_secret) || '';
+          if (expected && expected === devSecret) {
+            kioskOk = true;
+          } else if (!expected) {
+            kioskOk = false; // secret required from now on
+          }
+        }
+      } catch (err) {
+        console.error('Error looking up kiosk by device_id:', err);
+        return res.status(500).json({ error: 'Internal server error.' });
+      }
+    }
+  }
+
+  if (!hasSession && !kioskOk) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
 
   // Build the SET clause dynamically so we can optionally include require_photo
   const setParts = [];
-  const params = [];  // 🔹 add this
+  const params = [];
 
   // PIN logic:
   // - If allowOverride is true, we always set pin (can be null to clear).
   // - If allowOverride is false/omitted, we only set pin if it is currently NULL.
+  const overrideFlag = allowOverride === true || allowOverride === 'true';
   let whereExtra = '';
   setParts.push('pin = ?');
   params.push(pin || null);
-  if (!allowOverride) {
+  if (!overrideFlag) {
     // Don't overwrite an existing PIN unless explicitly allowed
     whereExtra = ' AND pin IS NULL';
   }
 
   // Optional require_photo toggle
-  if (typeof require_photo === 'boolean') {
+  const hasRequirePhoto =
+    typeof require_photo === 'boolean' ||
+    require_photo === 1 ||
+    require_photo === '1';
+  if (hasRequirePhoto) {
+    const requirePhotoFlag =
+      require_photo === true || require_photo === 'true' || require_photo === 1;
     setParts.push('require_photo = ?');
-    params.push(require_photo ? 1 : 0);
+    params.push(requirePhotoFlag ? 1 : 0);
   }
 
   if (setParts.length === 0) {
@@ -2040,17 +2272,19 @@ app.post('/api/employees/:id/pin', requireAuth, (req, res) => {
   `;
   params.push(id);
 
-  db.run(sql, params, function (err) {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const result = await dbRun(sql, params);
 
-    if (this.changes === 0) {
+    if (!result || result.changes === 0) {
       return res.status(409).json({
         error: 'PIN already set for this employee. Use allowOverride to change it.'
       });
     }
 
     res.json({ ok: true });
-  });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 /* ───────── 5.5 SYNC (QuickBooks → SQLite ) ───────── */
@@ -2716,6 +2950,25 @@ app.post('/api/time-exceptions/:id/review', async (req, res) => {
     updates = {}
   } = req.body || {};
 
+  // Small helpers for validation
+  const toDate = value => {
+    if (value == null) return null;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+
+  const dateOnly = value => {
+    const d = toDate(value);
+    return d ? d.toISOString().slice(0, 10) : null;
+  };
+
+  const parseHm = value => {
+    if (value == null) return null;
+    const m = /^([0-1]?\d|2[0-3]):([0-5]\d)$/.exec(String(value));
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
+
   const allowedSources = ['punch', 'time_entry'];
   const allowedActions = ['approve', 'modify', 'reject'];
 
@@ -2759,26 +3012,127 @@ app.post('/api/time-exceptions/:id/review', async (req, res) => {
         'clock_out_project_id'
       ]);
 
+
       const sets = [];
       const params = [];
 
       if (action === 'modify') {
-        if (updates.clock_in_ts) {
-          sets.push('clock_in_ts = ?');
-          params.push(updates.clock_in_ts);
+        // ───────── Validation for punch modifications ─────────
+        const finalClockIn =
+          updates.clock_in_ts !== undefined && updates.clock_in_ts !== ''
+            ? updates.clock_in_ts
+            : punch.clock_in_ts;
+        const finalClockOut =
+          updates.clock_out_ts !== undefined && updates.clock_out_ts !== ''
+            ? updates.clock_out_ts
+            : punch.clock_out_ts;
+
+        const clockInDate = finalClockIn ? toDate(finalClockIn) : null;
+        const clockOutDate = finalClockOut ? toDate(finalClockOut) : null;
+
+        if (finalClockIn && !clockInDate) {
+          return res.status(400).json({ ok: false, error: 'Invalid clock-in timestamp.' });
         }
-        if (updates.clock_out_ts) {
-          sets.push('clock_out_ts = ?');
-          params.push(updates.clock_out_ts);
+        if (finalClockOut && !clockOutDate) {
+          return res.status(400).json({ ok: false, error: 'Invalid clock-out timestamp.' });
         }
-        if (updates.project_id !== undefined) {
-          sets.push('project_id = ?');
-          params.push(updates.project_id || null);
+        if (clockInDate && clockOutDate) {
+          if (clockOutDate < clockInDate) {
+            return res
+              .status(400)
+              .json({ ok: false, error: 'Clock-out cannot be before clock-in.' });
+          }
+
+          const inDay = dateOnly(clockInDate);
+          const outDay = dateOnly(clockOutDate);
+          if (inDay && outDay && inDay !== outDay) {
+            return res.status(400).json({
+              ok: false,
+              error: 'Clock-in and clock-out must stay on the same day when modifying a punch.'
+            });
+          }
+
+          const durationHours = (clockOutDate - clockInDate) / (1000 * 60 * 60);
+          if (durationHours > 24) {
+            return res.status(400).json({
+              ok: false,
+              error: 'A single punch cannot span more than 24 hours.'
+            });
+          }
         }
-        if (updates.clock_out_project_id !== undefined) {
-          sets.push('clock_out_project_id = ?');
-          params.push(updates.clock_out_project_id || null);
+
+        const finalProjectIdRaw =
+          updates.project_id !== undefined ? updates.project_id : punch.project_id;
+        const finalOutProjectIdRaw =
+          updates.clock_out_project_id !== undefined
+            ? updates.clock_out_project_id
+            : punch.clock_out_project_id !== undefined
+              ? punch.clock_out_project_id
+              : null;
+
+        const finalProjectId =
+          finalProjectIdRaw === '' || finalProjectIdRaw == null
+            ? null
+            : Number(finalProjectIdRaw);
+        if (
+          updates.project_id !== undefined &&
+          finalProjectIdRaw !== '' &&
+          finalProjectIdRaw != null &&
+          Number.isNaN(finalProjectId)
+        ) {
+          return res
+            .status(400)
+            .json({ ok: false, error: 'Project must be a valid project ID.' });
         }
+
+        const finalOutProjectId =
+          finalOutProjectIdRaw === '' || finalOutProjectIdRaw == null
+            ? null
+            : Number(finalOutProjectIdRaw);
+        if (
+          updates.clock_out_project_id !== undefined &&
+          finalOutProjectIdRaw !== '' &&
+          finalOutProjectIdRaw != null &&
+          Number.isNaN(finalOutProjectId)
+        ) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Clock-out project must be a valid project ID.'
+          });
+        }
+
+        if (finalOutProjectId != null && finalProjectId == null) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Cannot set a clock-out project without a clock-in project.'
+          });
+        }
+
+        const resolvedOutProjectId =
+          finalOutProjectId == null ? finalProjectId : finalOutProjectId;
+
+        if (
+          finalProjectId != null &&
+          resolvedOutProjectId != null &&
+          finalProjectId !== resolvedOutProjectId
+        ) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Clock-in and clock-out projects must match when modifying a punch.'
+          });
+        }
+
+        sets.push('clock_in_ts = ?');
+        params.push(finalClockIn || null);
+
+        sets.push('clock_out_ts = ?');
+        params.push(finalClockOut || null);
+
+        sets.push('project_id = ?');
+        params.push(finalProjectId == null ? null : finalProjectId);
+
+        sets.push('clock_out_project_id = ?');
+        params.push(resolvedOutProjectId == null ? null : resolvedOutProjectId);
       }
 
       sets.push('exception_resolved = 1');
@@ -2839,30 +3193,101 @@ app.post('/api/time-exceptions/:id/review', async (req, res) => {
       const params = [];
 
       if (action === 'modify') {
-        if (updates.start_date) {
-          sets.push('start_date = ?');
-          params.push(updates.start_date);
+        const finalStartDate = updates.start_date || entry.start_date;
+        const finalEndDate = updates.end_date || entry.end_date || finalStartDate;
+
+        if (!finalStartDate || !finalEndDate) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Start and end dates are required when modifying a time entry.'
+          });
         }
-        if (updates.end_date) {
-          sets.push('end_date = ?');
-          params.push(updates.end_date);
+
+        if (finalStartDate !== finalEndDate) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Time entry modifications must stay within a single day.'
+          });
         }
-        if (updates.start_time !== undefined) {
-          sets.push('start_time = ?');
-          params.push(updates.start_time || null);
+
+        const finalStartTime = updates.start_time !== undefined ? updates.start_time : entry.start_time;
+        const finalEndTime = updates.end_time !== undefined ? updates.end_time : entry.end_time;
+
+        const startMinutes = finalStartTime ? parseHm(finalStartTime) : null;
+        const endMinutes = finalEndTime ? parseHm(finalEndTime) : null;
+
+        if (finalStartTime && startMinutes == null) {
+          return res.status(400).json({ ok: false, error: 'Invalid start time format.' });
         }
-        if (updates.end_time !== undefined) {
-          sets.push('end_time = ?');
-          params.push(updates.end_time || null);
+        if (finalEndTime && endMinutes == null) {
+          return res.status(400).json({ ok: false, error: 'Invalid end time format.' });
         }
-        if (updates.hours !== undefined) {
-          sets.push('hours = ?');
-          params.push(updates.hours);
+        if (startMinutes != null && endMinutes != null && endMinutes < startMinutes) {
+          return res.status(400).json({
+            ok: false,
+            error: 'End time cannot be before start time.'
+          });
         }
-        if (updates.project_id !== undefined) {
-          sets.push('project_id = ?');
-          params.push(updates.project_id || null);
+        if (startMinutes != null && endMinutes != null) {
+          const durationHours = (endMinutes - startMinutes) / 60;
+          if (durationHours > 24) {
+            return res.status(400).json({
+              ok: false,
+              error: 'A single time entry cannot span more than 24 hours.'
+            });
+          }
         }
+
+        const finalHours =
+          updates.hours !== undefined
+            ? Number(updates.hours)
+            : entry.hours != null
+              ? Number(entry.hours)
+              : null;
+        if (updates.hours !== undefined && Number.isNaN(finalHours)) {
+          return res.status(400).json({ ok: false, error: 'Hours must be numeric.' });
+        }
+        if (finalHours != null && (finalHours < 0 || finalHours > 24)) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Hours must be between 0 and 24 when modifying a time entry.'
+          });
+        }
+
+        const finalProjectIdRaw =
+          updates.project_id !== undefined ? updates.project_id : entry.project_id;
+        const finalProjectId =
+          finalProjectIdRaw === '' || finalProjectIdRaw == null
+            ? null
+            : Number(finalProjectIdRaw);
+        if (
+          updates.project_id !== undefined &&
+          finalProjectIdRaw !== '' &&
+          finalProjectIdRaw != null &&
+          Number.isNaN(finalProjectId)
+        ) {
+          return res
+            .status(400)
+            .json({ ok: false, error: 'Project must be a valid project ID.' });
+        }
+
+        sets.push('start_date = ?');
+        params.push(finalStartDate);
+
+        sets.push('end_date = ?');
+        params.push(finalEndDate);
+
+        sets.push('start_time = ?');
+        params.push(finalStartTime || null);
+
+        sets.push('end_time = ?');
+        params.push(finalEndTime || null);
+
+        sets.push('hours = ?');
+        params.push(finalHours);
+
+        sets.push('project_id = ?');
+        params.push(finalProjectId == null ? null : finalProjectId);
       }
 
       sets.push('resolved = 1');
@@ -5608,6 +6033,116 @@ app.delete(
   }
 });
 
+// Update storage & pickup details for a shipment (kiosk-friendly)
+app.post('/api/shipments/:id/storage', async (req, res) => {
+  try {
+    const shipmentId = Number(req.params.id);
+    if (!shipmentId) {
+      return res.status(400).json({ error: 'Invalid shipment id.' });
+    }
+
+    const {
+      storage_due_date,
+      storage_daily_late_fee,
+      expected_arrival_date,
+      storage_room,
+      storage_details,
+      picked_up_by,
+      picked_up_date,
+      employee_id
+    } = req.body || {};
+
+    // Auth guard: normal session OR kiosk admin/foreman identified by employee_id
+    if (!(req.session && req.session.userId)) {
+      const empId = Number(employee_id);
+      if (!empId) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+
+      const emp = await dbGet(
+        `
+          SELECT id, is_admin, kiosk_can_view_shipments, IFNULL(active, 1) AS active
+          FROM employees
+          WHERE id = ?
+        `,
+        [empId]
+      );
+
+      if (
+        !emp ||
+        !emp.active ||
+        !(emp.is_admin || emp.kiosk_can_view_shipments)
+      ) {
+        return res.status(403).json({ error: 'Not authorized' });
+      }
+    }
+
+    const existing = await dbGet(
+      `SELECT id FROM shipments WHERE id = ?`,
+      [shipmentId]
+    );
+    if (!existing) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
+
+    const normalizeText = (val) => {
+      if (val === undefined || val === null) return null;
+      const s = String(val).trim();
+      return s === '' ? null : s;
+    };
+
+    const feeValStr =
+      storage_daily_late_fee === undefined || storage_daily_late_fee === null
+        ? ''
+        : String(storage_daily_late_fee).trim();
+    const feeValNum = feeValStr === '' ? null : Number(feeValStr);
+    const feeVal = Number.isFinite(feeValNum) ? feeValNum : null;
+
+    await dbRun(
+      `
+        UPDATE shipments
+        SET
+          storage_due_date = ?,
+          storage_daily_late_fee = ?,
+          expected_arrival_date = ?,
+          storage_room = ?,
+          storage_details = ?,
+          picked_up_by = ?,
+          picked_up_date = ?,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `,
+      [
+        normalizeText(storage_due_date),
+        feeVal,
+        normalizeText(expected_arrival_date),
+        normalizeText(storage_room),
+        normalizeText(storage_details),
+        normalizeText(picked_up_by),
+        normalizeText(picked_up_date),
+        shipmentId
+      ]
+    );
+
+    const row = await dbGet(
+      `SELECT s.*,
+        COALESCE(s.vendor_name, v.name) AS vendor_name,
+        p.name AS project_name,
+        p.customer_name
+       FROM shipments s
+       LEFT JOIN vendors  v ON v.id = s.vendor_id
+       LEFT JOIN projects p ON p.id = s.project_id
+       WHERE s.id = ?`,
+      [shipmentId]
+    );
+
+    res.json({ shipment: row });
+  } catch (err) {
+    console.error('Error updating shipment storage from kiosk:', err);
+    res.status(500).json({ error: 'Failed to update storage/pickup.' });
+  }
+});
+
 // Save verification for shipment items from kiosk-admin / field devices
 app.post('/api/shipments/:id/verify-items', async (req, res) => {
   const shipmentId = Number(req.params.id);
@@ -6236,6 +6771,21 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
           p.name AS project_name,
           p.customer_name,
           s.items_verified,
+          (
+            SELECT COUNT(*) FROM shipment_items si
+            WHERE si.shipment_id = s.id
+          ) AS items_total,
+          (
+            SELECT COUNT(*)
+            FROM shipment_items si
+            WHERE si.shipment_id = s.id
+              AND LOWER(
+                COALESCE(
+                  NULLIF(json_extract(si.verification_json, '$.status'), ''),
+                  CASE WHEN IFNULL(si.verified, 0) = 1 THEN 'verified' ELSE '' END
+                )
+              ) = 'verified'
+          ) AS items_verified_count,
           s.picked_up_by,
           s.picked_up_date,
           s.verified_by,

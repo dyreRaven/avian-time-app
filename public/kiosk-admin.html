@@ -316,52 +316,56 @@
   <div class="card-header"><h2>Settings</h2></div>
   <div class="card-body">
 
-    <div class="form-field">
-      <label for="ka-lang-search">Language preferences</label>
-      <div class="ka-dual-row">
-        <div class="ka-dual-left">
-          <input id="ka-lang-search" type="text" placeholder="Search employees/admins" />
-          <select id="ka-lang-employee" class="ka-select-arrow"></select>
-        </div>
-        <div class="ka-dual-right">
-          <select id="ka-lang-choice" class="ka-select-arrow">
-            <option value="en">English</option>
-            <option value="es">Spanish</option>
-            <option value="ht">Haitian Creole</option>
-          </select>
-          <button type="button" id="ka-lang-save" class="btn secondary btn-sm">Update Language</button>
-        </div>
-      </div>
-      <p class="ka-label-note">Pick a person, then set their preferred language.</p>
-      <p id="ka-lang-status" class="ka-status"></p>
-    </div>
+    <div id="ka-admin-settings-block">
+      <div class="form-divider"></div>
 
-    <div class="form-divider"></div>
-
-    <div class="form-field">
-      <label for="ka-pin-search">Change PIN (employees & admins)</label>
-      <div class="ka-dual-row">
-        <div class="ka-dual-left">
-          <input id="ka-pin-search" type="text" placeholder="Search employees/admins" />
-          <select id="ka-pin-employee" class="ka-select-arrow"></select>
-        </div>
-        <div class="ka-dual-right">
-          <div class="ka-pin-row">
-            <input type="password" id="ka-pin-new" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="New 4-digit PIN" />
-            <input type="password" id="ka-pin-confirm" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="Confirm PIN" />
+      <div class="form-field">
+        <label for="ka-lang-search" class="ka-settings-section-label">Language preferences</label>
+        <div class="ka-dual-row">
+          <div class="ka-dual-left">
+            <select id="ka-lang-employee" class="ka-select-arrow"></select>
+            <input id="ka-lang-search" type="text" placeholder="Search employees/admins" />
           </div>
-          <div class="ka-pin-actions">
-            <button type="button" id="ka-pin-save" class="btn secondary btn-sm">Update PIN</button>
+          <div class="ka-dual-right">
+            <select id="ka-lang-choice" class="ka-select-arrow">
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="ht">Haitian Creole</option>
+            </select>
+            <button type="button" id="ka-lang-save" class="btn secondary btn-sm">Update Language</button>
           </div>
         </div>
+        <p class="ka-label-note">Pick a person, then set their preferred language.</p>
+        <p id="ka-lang-status" class="ka-status"></p>
       </div>
-      <p id="ka-pin-status" class="ka-status"></p>
-    </div>
 
-    <div class="form-divider"></div>
+      <div class="form-divider"></div>
+
+      <div class="form-field">
+        <label for="ka-pin-search" class="ka-settings-section-label">Change PIN (employees & admins)</label>
+        <div class="ka-dual-row">
+          <div class="ka-dual-left">
+            <select id="ka-pin-employee" class="ka-select-arrow"></select>
+            <input id="ka-pin-search" type="text" placeholder="Search employees/admins" />
+          </div>
+          <div class="ka-dual-right">
+            <div class="ka-pin-row">
+              <input type="password" id="ka-pin-new" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="New 4-digit PIN" />
+              <input type="password" id="ka-pin-confirm" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="Confirm PIN" />
+            </div>
+            <div class="ka-pin-actions">
+              <button type="button" id="ka-pin-save" class="btn secondary btn-sm">Update PIN</button>
+            </div>
+          </div>
+        </div>
+        <p id="ka-pin-status" class="ka-status"></p>
+      </div>
+
+      <div class="form-divider"></div>
+    </div>
 
     <div class="form-field" id="ka-rates-block">
-      <label class="ka-shipments-filter-label">
+      <label class="ka-shipments-filter-label ka-settings-section-label">
         <input type="checkbox" id="ka-rates-toggle" />
         View and edit rates
       </label>

@@ -807,7 +807,8 @@ v.history.push({
   to_status: newStatus || '',
   by_employee_id: currentEmpId || null,
   by_name: finalName || null,
-  notes: notes || null
+  notes: notes || null,
+  storage_override: storageOverride || null
 });
 
 
@@ -1003,7 +1004,9 @@ function renderItemVerificationHistory(vMeta = {}, listEl, itemLabel = '') {
     <span>Status</span>
     <span>By</span>
     <span>Date</span>
+    <span>Time</span>
     <span>Notes</span>
+    <span>Storage</span>
   `;
   listEl.appendChild(header);
 
@@ -1020,10 +1023,16 @@ function renderItemVerificationHistory(vMeta = {}, listEl, itemLabel = '') {
     .reverse()
     .forEach(entry => {
       const li = document.createElement('li');
-      const when = entry.at ? new Date(entry.at).toLocaleString() : '';
+      const whenDate = entry.at ? new Date(entry.at) : null;
+      const dateStr = whenDate ? whenDate.toLocaleDateString() : '';
+      const timeStr = whenDate ? whenDate.toLocaleTimeString() : '';
       const status = entry.to_status || '(unknown)';
       const by = entry.by_name || 'Unknown';
       const note = entry.notes && entry.notes.trim() ? entry.notes : '—';
+      const storage =
+        entry.storage_override && entry.storage_override.trim()
+          ? entry.storage_override
+          : '—';
       const statusClass = status
         ? `hist-status-${status.replace(/\s+/g, '_').toLowerCase()}`
         : 'hist-status-unknown';
@@ -1033,8 +1042,10 @@ function renderItemVerificationHistory(vMeta = {}, listEl, itemLabel = '') {
         <span class="hist-item">${itemLabel || '(Item)'}</span>
         <span class="hist-status ${statusClass}">${status}</span>
         <span class="hist-meta hist-by">${by}</span>
-        <span class="hist-meta hist-date">${when || ''}</span>
+        <span class="hist-meta hist-date">${dateStr}</span>
+        <span class="hist-meta hist-time">${timeStr}</span>
         <span class="hist-notes">${note}</span>
+        <span class="hist-storage">${storage}</span>
       `;
       listEl.appendChild(li);
     });
@@ -2473,6 +2484,11 @@ function openShipmentCreateModal() {
     storageEstimateHelp.style.display = 'none';
   }
 
+  // Default payments to unpaid and disable amounts
+  applyPaymentCheckboxState(vendorPaidChk, vendorPaidAmt, vendorPaidChk?.checked);
+  applyPaymentCheckboxState(shipperPaidChk, shipperPaidAmt, shipperPaidChk?.checked);
+  applyPaymentCheckboxState(customsPaidChk, customsPaidAmt, customsPaidChk?.checked);
+
   if (idInput) idInput.value = '';
   if (header) header.textContent = 'New Shipment';
 
@@ -2625,19 +2641,19 @@ async function saveShipmentFromModal() {
 
   const vendorPaid       = vendorPaidChk && vendorPaidChk.checked ? 1 : 0;
   const vendorPaidAmount =
-    vendorPaidAmtInput && vendorPaidAmtInput.value
+    vendorPaid && vendorPaidAmtInput && vendorPaidAmtInput.value
       ? Number(vendorPaidAmtInput.value)
       : null;
 
   const shipperPaid       = shipperPaidChk && shipperPaidChk.checked ? 1 : 0;
   const shipperPaidAmount =
-    shipperPaidAmtInput && shipperPaidAmtInput.value
+    shipperPaid && shipperPaidAmtInput && shipperPaidAmtInput.value
       ? Number(shipperPaidAmtInput.value)
       : null;
 
   const customsPaid       = customsPaidChk && customsPaidChk.checked ? 1 : 0;
   const customsPaidAmount =
-    customsPaidAmtInput && customsPaidAmtInput.value
+    customsPaid && customsPaidAmtInput && customsPaidAmtInput.value
       ? Number(customsPaidAmtInput.value)
       : null;
 
@@ -2947,6 +2963,23 @@ if (customsPaidAmt)
     shipment.customs_paid_amount != null
       ? Number(shipment.customs_paid_amount).toFixed(2)
       : '';
+
+  // Disable/clear payment amounts when unpaid
+  applyPaymentCheckboxState(
+    vendorPaidChk,
+    vendorPaidAmt,
+    !!shipment.vendor_paid
+  );
+  applyPaymentCheckboxState(
+    shipperPaidChk,
+    shipperPaidAmt,
+    !!shipment.shipper_paid
+  );
+  applyPaymentCheckboxState(
+    customsPaidChk,
+    customsPaidAmt,
+    !!shipment.customs_paid
+  );
 
   updateStorageFeeEstimate();
   applyDefaultStorageLateFeeFromSettings();
@@ -4035,6 +4068,24 @@ function updateShipmentTotalPaid() {
 }
 
 function setupShipmentPaymentListeners() {
+  const paymentPairs = [
+    ['shipment-vendor-paid', 'shipment-vendor-paid-amount'],
+    ['shipment-shipper-paid', 'shipment-shipper-paid-amount'],
+    ['shipment-customs-paid', 'shipment-customs-paid-amount']
+  ];
+
+  paymentPairs.forEach(([chkId, amtId]) => {
+    const chk = document.getElementById(chkId);
+    const amt = document.getElementById(amtId);
+    if (chk) {
+      chk.addEventListener('change', () => {
+        applyPaymentCheckboxState(chk, amt, chk.checked);
+      });
+      // Initialize state on load
+      applyPaymentCheckboxState(chk, amt, chk.checked);
+    }
+  });
+
   [
     'shipment-vendor-paid-amount',
     'shipment-shipper-paid-amount',
@@ -4093,3 +4144,13 @@ document.addEventListener('click', async (evt) => {
     }
   }
 });
+function applyPaymentCheckboxState(chk, amtInput, enabled) {
+  if (!chk || !amtInput) return;
+  if (!enabled) {
+    amtInput.value = '';
+    amtInput.disabled = true;
+  } else {
+    amtInput.disabled = false;
+  }
+  updateShipmentTotalPaid();
+}

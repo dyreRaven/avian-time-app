@@ -33,6 +33,15 @@
       </div>
 
       <div class="form-field">
+        <label for="edit-employee-language">Preferred language</label>
+        <select id="edit-employee-language">
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+          <option value="ht">Haitian Creole</option>
+        </select>
+      </div>
+
+      <div class="form-field">
         <label for="edit-employee-name-on-checks">Name on checks (optional)</label>
         <input id="edit-employee-name-on-checks" type="text" />
       </div>
@@ -1118,7 +1127,7 @@
             </div>
           </div>
 
-          <div class="form-field">
+          <div class="form-field verification-by-field">
             <label for="item-verification-verified-by">Verified by</label>
             <input
               id="item-verification-verified-by"
@@ -1127,7 +1136,7 @@
             />
           </div>
 
-          <div class="form-field">
+          <div class="form-field verification-date-field">
             <label for="item-verification-date">Verified date</label>
             <input id="item-verification-date" type="date" />
           </div>

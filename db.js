@@ -67,6 +67,7 @@ db.run(`
     is_admin         INTEGER NOT NULL DEFAULT 0,
     uses_timekeeping INTEGER NOT NULL DEFAULT 1,
     email            TEXT,
+    language         TEXT DEFAULT 'en',
     kiosk_can_view_shipments INTEGER NOT NULL DEFAULT 0  -- 👈 NEW
   )
 `);
@@ -136,6 +137,15 @@ db.run(`
     }
   );
 
+  db.run(
+    `ALTER TABLE employees ADD COLUMN language TEXT DEFAULT 'en'`,
+    err => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('Error adding employees.language column:', err.message);
+      }
+    }
+  );
+
 
   // Simple admin users for login
   db.run(`
@@ -168,12 +178,23 @@ db.run(`
       name          TEXT NOT NULL,
       location      TEXT,
       device_id     TEXT UNIQUE,           -- ID for the physical device/browser
+      device_secret TEXT,                  -- per-kiosk shared secret for offline auth
       project_id    INTEGER,               -- default project for this kiosk (optional)
       require_photo INTEGER NOT NULL DEFAULT 0,
       created_at    TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (project_id) REFERENCES projects(id)
     )
   `);
+
+  // Add device_secret to existing kiosks tables
+  db.run(
+    `ALTER TABLE kiosks ADD COLUMN device_secret TEXT`,
+    err => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('Error adding kiosks.device_secret column:', err.message);
+      }
+    }
+  );
 
   // Per-device project sessions (so admins can swap projects mid-day without clocking everyone out)
   db.run(`
@@ -421,10 +442,31 @@ CREATE TABLE IF NOT EXISTS time_entries (
       check_number   TEXT,
       paid           INTEGER DEFAULT 0,
       qbo_txn_id     TEXT,
+      voided_at      TEXT,
+      voided_reason  TEXT,
       FOREIGN KEY (payroll_run_id) REFERENCES payroll_runs(id),
       FOREIGN KEY (employee_id)    REFERENCES employees(id)
     )
   `);
+
+  // Backfill newer payroll_checks columns
+  db.run(
+    `ALTER TABLE payroll_checks ADD COLUMN voided_at TEXT`,
+    err => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('Error adding payroll_checks.voided_at column:', err.message);
+      }
+    }
+  );
+
+  db.run(
+    `ALTER TABLE payroll_checks ADD COLUMN voided_reason TEXT`,
+    err => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('Error adding payroll_checks.voided_reason column:', err.message);
+      }
+    }
+  );
 
   // Payroll audit log (events when creating/retrying checks, etc.)
   db.run(`

@@ -924,7 +924,7 @@ body {
           </div>
           <div>
             <div class="kiosk-title">Avian Time</div>
-            <div class="kiosk-sub">Jobsite Kiosk</div>
+            <div class="kiosk-sub" id="kiosk-subtitle">Jobsite Kiosk</div>
           </div>
         </div>
       </div>
@@ -945,18 +945,18 @@ body {
         <div class="kiosk-form-panel">
           <div class="kiosk-field">
             <label class="kiosk-label">
-              Project
-              <span class="kiosk-label-note">(selected by foreman)</span>
+              <span id="kiosk-project-label">Project</span>
+              <span class="kiosk-label-note" id="kiosk-project-note">(selected by foreman)</span>
             </label>
-              <select id="kiosk-project" class="kiosk-select kiosk-select-locked" disabled>
-                <option value="">Project will be set by foreman</option>
-              </select>
+            <select id="kiosk-project" class="kiosk-select kiosk-select-locked" disabled>
+              <option value="" id="kiosk-project-placeholder">Project will be set by foreman</option>
+            </select>
           </div>
 
           <div class="kiosk-field">
-            <label class="kiosk-label">Employee</label>
+            <label class="kiosk-label" id="kiosk-employee-label">Employee</label>
             <select id="kiosk-employee" class="kiosk-select">
-              <option value="">Select your name / Seleccione su nombre / Chwazi non ou</option>
+              <option value="" id="kiosk-employee-placeholder">Select your name / Seleccione su nombre / Chwazi non ou</option>
             </select>
           </div>
 
@@ -1137,7 +1137,7 @@ body {
     <div id="success-message" class="success-message"></div>
 
     <button id="success-close-btn" class="btn btn-small" style="margin-top:16px;">
-      Back to Clock-In
+      <span id="success-close-label">Back to Clock-In</span>
     </button>
   </div>
 </div>
