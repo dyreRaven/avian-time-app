@@ -4327,9 +4327,22 @@ async function kaLoadTimeEntries() {
     const proj = t.project_name || '(No project)';
     const dateLabel = t.start_date || t.end_date || '';
     const hours = t.hours != null ? Number(t.hours).toFixed(2) : '0.00';
-    const rate = t.rate != null ? Number(t.rate).toFixed(2) : '--';
+    const rawRate = (() => {
+      if (t.rate != null) return Number(t.rate);
+      if (t.hourly_rate != null) return Number(t.hourly_rate);
+      if (t.pay_rate != null) return Number(t.pay_rate);
+      if (t.employee_rate != null) return Number(t.employee_rate);
+      const hrsNum = Number(t.hours);
+      const payNum = Number(t.total_pay);
+      if (!Number.isNaN(hrsNum) && hrsNum > 0 && !Number.isNaN(payNum)) {
+        return payNum / hrsNum;
+      }
+      return null;
+    })();
     const rateDisplay = payEnabled
-      ? (kaRatesUnlockedAll || kaUnlockedRates.has(t.id) ? `$${rate}` : '••••')
+      ? (kaRatesUnlockedAll || kaUnlockedRates.has(t.id)
+          ? (rawRate != null ? `$${rawRate.toFixed(2)}` : '—')
+          : '••••')
       : '';
     const pay = t.total_pay != null ? Number(t.total_pay).toFixed(2) : '0.00';
     const paid = t.paid ? 'Paid' : 'Unpaid';

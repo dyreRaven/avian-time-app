@@ -1326,6 +1326,11 @@ function initPayrollTabIfNeeded() {
   if (typeof setupTimeExceptionsSection === 'function') {
     setupTimeExceptionsSection();
   }
+
+  // Also initialize the dedicated payroll UI (settings/summary) if present.
+  if (typeof window.initPayrollUiTab === 'function') {
+    window.initPayrollUiTab();
+  }
 }
 
 
