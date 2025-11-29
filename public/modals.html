@@ -1,0 +1,1201 @@
+<!-- EMPLOYEE DETAILS / EDIT MODAL -->
+<div id="employee-edit-backdrop" class="modal-backdrop hidden"></div>
+
+<div id="employee-edit-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="employee-edit-title">Employee Details</h3>
+      <button
+        id="employee-edit-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close employee dialog"
+      >
+        ×
+      </button>
+    </div>
+
+    <!-- INFORMATION -->
+    <div class="form-grid employee-info-grid">
+      <div class="form-field">
+        <label for="edit-employee-name">Employee Name</label>
+        <input id="edit-employee-name" type="text" />
+      </div>
+
+      <div class="form-field">
+        <label for="edit-employee-email">Email (from QuickBooks)</label>
+        <input id="edit-employee-email" type="email" readonly />
+      </div>
+
+      <div class="form-field">
+        <label for="edit-employee-nickname">Nickname (optional)</label>
+        <input id="edit-employee-nickname" type="text" />
+      </div>
+
+      <div class="form-field">
+        <label for="edit-employee-name-on-checks">Name on checks (optional)</label>
+        <input id="edit-employee-name-on-checks" type="text" />
+      </div>
+
+      <div class="form-field">
+        <label for="edit-employee-rate">Hourly Rate</label>
+        <input id="edit-employee-rate" type="number" min="0" step="0.01" />
+      </div>
+    </div>
+
+    <!-- ACCESS -->
+   <div class="modal-section">
+  <h2>Access</h2>
+  <div class="two-col">
+    <label class="checkbox-inline">
+      <input
+        type="checkbox"
+        id="edit-employee-uses-timekeeping"
+      />
+      Timekeeping Access
+    </label>
+
+    <label class="checkbox-inline">
+      <input
+        id="edit-employee-is-admin"
+        type="checkbox"
+      />
+      Admin Access
+    </label>
+
+    <label class="checkbox-inline">
+      <input
+        id="edit-employee-can-view-shipments"
+        type="checkbox"
+      />
+      Can view Shipments in kiosk admin
+    </label>
+  </div>
+</div>
+
+
+<!-- TIME EXCEPTION REVIEW MODAL -->
+<div id="time-exception-review-backdrop" class="modal-backdrop hidden"></div>
+<div id="time-exception-review-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card modal-card-wide">
+    <div class="modal-header">
+      <h3 id="te-review-title">Review Time Exception</h3>
+      <button id="te-review-close" class="icon-button" type="button" aria-label="Close time exception dialog">
+        ×
+      </button>
+    </div>
+
+    <div class="modal-section">
+      <p id="te-review-meta" class="text-sm text-gray-700"></p>
+      <p><strong>Flags:</strong> <span id="te-review-flags"></span></p>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-field">
+        <label for="te-review-actor">Reviewer</label>
+        <input type="text" id="te-review-actor" placeholder="Your name" />
+      </div>
+
+      <div class="form-field">
+        <label for="te-review-action">Action</label>
+        <select id="te-review-action">
+          <option value="approve">Approve</option>
+          <option value="modify">Modify</option>
+          <option value="reject">Reject</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-field">
+        <label for="te-review-start">Start time</label>
+        <input type="datetime-local" id="te-review-start" />
+      </div>
+      <div class="form-field">
+        <label for="te-review-end">End time</label>
+        <input type="datetime-local" id="te-review-end" />
+      </div>
+      <div class="form-field" id="te-review-hours-wrap">
+        <label for="te-review-hours">Hours</label>
+        <input type="number" step="0.01" min="0" id="te-review-hours" placeholder="Optional" />
+      </div>
+    </div>
+
+    <div class="form-field">
+      <label for="te-review-note">Notes</label>
+      <textarea id="te-review-note" rows="3" placeholder="Required when modifying"></textarea>
+      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when modifying an exception.</p>
+    </div>
+
+    <p id="te-review-message" class="message"></p>
+
+    <div class="modal-footer">
+      <button id="te-review-cancel" type="button" class="btn secondary">Cancel</button>
+      <button id="te-review-save" type="button" class="btn primary">Save</button>
+    </div>
+  </div>
+</div>
+
+
+    <!-- PIN SETTINGS -->
+    <div class="modal-section">
+      <h2>PIN Settings</h2>
+      <div class="two-col">
+        <div class="form-field">
+          <label for="edit-employee-pin">PIN (optional)</label>
+          <input
+            id="edit-employee-pin"
+            type="password"
+            autocomplete="off"
+            placeholder="Leave blank to keep current"
+          />
+        </div>
+
+        <div class="form-field">
+          <label for="edit-employee-pin-confirm">Confirm PIN</label>
+          <input
+            id="edit-employee-pin-confirm"
+            type="password"
+            autocomplete="off"
+            placeholder="Re-type PIN"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- PIN status text -->
+    <p id="employee-edit-pin-status" class="message"></p>
+
+    <!-- General message text -->
+    <p id="employee-edit-message" class="message"></p>
+
+    <div class="modal-footer">
+      <button
+        id="employee-edit-cancel"
+        type="button"
+        class="btn secondary"
+      >
+        Close
+      </button>
+
+      <!-- Single main button that flips between Edit / Save -->
+      <button
+        id="employee-edit-edit"
+        type="button"
+        class="btn primary"
+      >
+        Edit
+      </button>
+
+      <!-- Optional hidden Save (kept for compatibility, but JS doesn’t use it) -->
+      <button
+        id="employee-edit-save"
+        type="button"
+        class="btn primary hidden"
+      >
+        Save
+      </button>
+    </div>
+  </div>
+</div>
+
+
+
+
+<!-- DETAIL PANEL / MODAL -->
+<div id="shipment-detail-backdrop" class="modal-backdrop hidden"></div>
+
+<div
+  id="shipment-detail-modal"
+  class="modal hidden"
+  role="dialog"
+  aria-modal="true"
+>
+  <div class="modal-card modal-card-wide">
+    <div class="modal-header">
+      <h3 id="shipment-detail-title">Shipment</h3>
+      <button id="shipment-detail-close" class="icon-button" type="button" aria-label="Close shipment details">
+        ×
+      </button>
+    </div>
+
+    <div class="ship-detail-tabs" style="display:flex; gap:8px; margin-bottom:10px;">
+      <button class="btn secondary btn-sm ship-detail-tab active" data-tab="overview">Overview</button>
+      <button class="btn secondary btn-sm ship-detail-tab" data-tab="payments">Payments</button>
+      <button class="btn secondary btn-sm ship-detail-tab" data-tab="timeline">Timeline</button>
+      <button class="btn secondary btn-sm ship-detail-tab" data-tab="documents">Documents</button>
+      <button class="btn secondary btn-sm ship-detail-tab" data-tab="comments">Comments</button>
+    </div>
+
+    <div id="ship-detail-overview" class="ship-detail-tabpanel">
+      <!-- filled from /api/shipments/:id -->
+    </div>
+    <div id="ship-detail-payments" class="ship-detail-tabpanel hidden"></div>
+    <div id="ship-detail-timeline" class="ship-detail-tabpanel hidden"></div>
+    <div id="ship-detail-documents" class="ship-detail-tabpanel hidden"></div>
+    <div id="ship-detail-comments" class="ship-detail-tabpanel hidden"></div>
+  </div>
+</div>
+
+
+<!-- VENDOR DETAILS / EDIT MODAL -->
+<div id="vendor-edit-backdrop" class="modal-backdrop hidden"></div>
+
+<div id="vendor-edit-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="vendor-edit-title">Vendor Details</h3>
+      <button
+        id="vendor-edit-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close vendor dialog"
+      >
+        ×
+      </button>
+    </div>
+
+    <div class="form-grid">
+
+      <!-- NAME -->
+      <div class="form-field">
+        <label for="edit-vendor-name">Vendor Name</label>
+        <input
+          id="edit-vendor-name"
+          type="text"
+          readonly
+          class="readonly-field"
+        />
+      </div>
+
+      <!-- QBO ID -->
+      <div class="form-field">
+        <label for="edit-vendor-qbo-id">QuickBooks ID</label>
+        <input
+          id="edit-vendor-qbo-id"
+          type="text"
+          readonly
+          class="readonly-field"
+        />
+      </div>
+
+      <!-- PIN -->
+      <div class="form-field">
+        <label for="edit-vendor-pin">PIN (optional)</label>
+        <input
+          id="edit-vendor-pin"
+          type="password"
+          inputmode="numeric"
+          autocomplete="off"
+        />
+      </div>
+
+      <!-- CONFIRM PIN -->
+      <div class="form-field">
+        <label for="edit-vendor-pin-confirm">Confirm PIN</label>
+        <input
+          id="edit-vendor-pin-confirm"
+          type="password"
+          inputmode="numeric"
+          autocomplete="off"
+        />
+      </div>
+
+      <!-- CHECKBOXES MOVED BELOW PIN -->
+      <div class="form-field checkbox-field" style="margin-top: 10px;">
+        <label>
+          <input
+            id="edit-vendor-is-freight-forwarder"
+            type="checkbox"
+          />
+          Freight forwarder
+        </label>
+      </div>
+
+      <div class="form-field checkbox-field">
+        <label>
+          <input
+            id="edit-vendor-uses-timekeeping"
+            type="checkbox"
+          />
+          Uses timekeeping (can clock in)
+        </label>
+      </div>
+
+    </div>
+
+    <p id="vendor-edit-pin-status" class="message"></p>
+
+    <div class="modal-footer">
+      <button id="vendor-edit-cancel" type="button" class="btn secondary">
+        Cancel
+      </button>
+      <button id="vendor-edit-save" type="button" class="btn primary">
+        Save vendor
+      </button>
+    </div>
+  </div>
+</div>
+
+
+<!-- PROJECT DETAILS / EDIT MODAL -->
+<div id="project-edit-backdrop" class="modal-backdrop hidden"></div>
+
+<div id="project-edit-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="project-edit-title">Project Details</h3>
+      <button
+        id="project-edit-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close project dialog"
+      >
+        ×
+      </button>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-field">
+        <label for="project-edit-name">Project</label>
+        <input id="project-edit-name" type="text" readonly />
+      </div>
+
+      <div class="form-field">
+        <label for="project-edit-customer">Customer</label>
+        <input id="project-edit-customer" type="text" readonly />
+      </div>
+
+      <div class="form-field">
+        <label for="project-edit-lat">Geofence Latitude</label>
+        <input id="project-edit-lat" type="number" step="0.000001" />
+      </div>
+
+      <div class="form-field">
+        <label for="project-edit-lng">Geofence Longitude</label>
+        <input id="project-edit-lng" type="number" step="0.000001" />
+      </div>
+
+      <div class="form-field">
+        <label>Geofence Radius (meters)</label>
+        <input id="project-edit-radius" type="number" min="0" step="1" />
+      </div>
+
+      <div class="form-field">
+        <label for="project-edit-timezone">Time zone</label>
+        <select id="project-edit-timezone">
+          <option value="">(select time zone)</option>
+          <option value="America/Puerto_Rico">AST (America/Puerto_Rico)</option>
+          <option value="America/New_York">ET (America/New_York)</option>
+          <option value="America/Chicago">CT (America/Chicago)</option>
+          <option value="America/Denver">MT (America/Denver)</option>
+          <option value="America/Los_Angeles">PT (America/Los_Angeles)</option>
+          <option value="UTC">UTC</option>
+        </select>
+      </div>
+    </div>
+
+    <p id="project-edit-message" class="message"></p>
+
+    <div class="modal-footer">
+      <button id="project-edit-cancel" type="button" class="btn secondary">
+        Close
+      </button>
+      <button id="project-edit-save" type="button" class="btn primary">
+        Save Project
+      </button>
+    </div>
+  </div>
+</div>
+
+
+<!-- TIME ENTRIES MODAL (Payroll) -->
+<div id="time-entries-backdrop" class="modal-backdrop hidden"></div>
+
+<div id="time-entries-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="time-entries-title">Time Entries</h3>
+      <button
+        id="time-entries-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close time entries dialog"
+      >
+        ×
+      </button>
+    </div>
+
+    <div id="time-entries-body">
+      <!-- Filled in by JS -->
+      <p>Loading…</p>
+    </div>
+
+    <div id="time-entry-edit" class="modal-subpanel hidden">
+      <h4>Edit Time Entry</h4>
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="edit-entry-start-date">Start date</label>
+          <input id="edit-entry-start-date" type="date" />
+        </div>
+        <div class="form-field">
+          <label for="edit-entry-start-time">Start time</label>
+          <input id="edit-entry-start-time" type="time" step="60" />
+        </div>
+        <div class="form-field">
+          <label for="edit-entry-end-date">End date</label>
+          <input id="edit-entry-end-date" type="date" />
+        </div>
+        <div class="form-field">
+          <label for="edit-entry-end-time">End time</label>
+          <input id="edit-entry-end-time" type="time" step="60" />
+        </div>
+        <div class="form-field">
+          <label for="edit-entry-hours">Hours</label>
+          <input id="edit-entry-hours" type="number" min="0" step="0.01" readonly />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="edit-entry-cancel" type="button" class="btn secondary">Cancel</button>
+        <button id="edit-entry-save" type="button" class="btn primary">Save Entry</button>
+      </div>
+      <p class="small" id="edit-entry-error" style="color: #b91c1c;"></p>
+    </div>
+  </div>
+</div>
+
+
+<!-- Kiosk Add/Edit Modal -->
+<div id="kiosk-modal-backdrop" class="modal-backdrop hidden"></div>
+
+<div id="kiosk-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="kiosk-modal-title">Add kiosk</h3>
+      <button
+        id="kiosk-modal-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close kiosk dialog"
+      >
+        ×
+      </button>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-field">
+        <label for="kiosk-modal-name">Kiosk name</label>
+        <input id="kiosk-modal-name" type="text" />
+      </div>
+
+      <div class="form-field">
+        <label for="kiosk-modal-location">Location / note</label>
+        <input id="kiosk-modal-location" type="text" />
+      </div>
+
+      <div class="form-field">
+        <label for="kiosk-modal-device-id">Device ID</label>
+        <input id="kiosk-modal-device-id" type="text" />
+        <small class="card-sub">
+          Copy this from the kiosk screen (Kiosk ID).
+        </small>
+      </div>
+
+      <div class="form-field">
+        <label for="kiosk-modal-project-select">Default project (optional)</label>
+        <select id="kiosk-modal-project-select">
+          <option value="">(none)</option>
+        </select>
+      </div>
+
+      <div class="form-field checkbox-field">
+        <label>
+          <input id="kiosk-modal-require-photo" type="checkbox" />
+          Require photo at this kiosk
+        </label>
+      </div>
+    </div>
+
+    <p id="kiosk-modal-status" class="message"></p>
+
+    <div class="modal-footer">
+      <button id="kiosk-modal-cancel" type="button" class="btn secondary">
+        Cancel
+      </button>
+      <button id="kiosk-modal-save" type="button" class="btn primary">
+        Save kiosk
+      </button>
+    </div>
+  </div>
+</div>
+
+
+<!-- CREATE SHIPMENT MODAL -->
+<div id="shipment-create-backdrop" class="modal-backdrop hidden"></div>
+
+<div
+  id="shipment-create-modal"
+  class="modal hidden"
+  role="dialog"
+  aria-modal="true"
+>
+  <div class="modal-card modal-card-wide">
+    <div class="modal-header">
+      <h3>New Shipment</h3>
+      <button
+        id="shipment-create-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close new shipment dialog"
+      >
+        ×
+      </button>
+    </div>
+
+    <!-- 🌟 SINGLE FORM STARTS HERE -->
+    <form id="shipment-create-form">
+      <input type="hidden" id="shipment-id" />
+
+      <div class="shipment-modal-body">
+        <div id="shipment-form" class="shipment-form-grid">
+                   <!-- LEFT COLUMN -->
+          <div class="shipment-column">
+            <h3 class="shipment-section-title">Basic Info</h3>
+
+            <!-- Title + Status in the same row -->
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-title">Shipment Title *</label>
+                <input type="text" id="shipment-title" name="title" required />
+              </div>
+
+              <div class="form-group">
+                <label for="shipment-status">Status</label>
+                <select id="shipment-status" name="status"></select>
+              </div>
+            </div>
+
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-po-number">PO #</label>
+                <input type="text" id="shipment-po-number" name="po_number" />
+              </div>
+              <div class="form-group">
+                <!-- Reuse the old SKU spot as a generic internal reference -->
+                <label for="shipment-sku">Internal Ref # (optional)</label>
+                <input type="text" id="shipment-sku" name="sku" />
+              </div>
+            </div>
+
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-project">Project *</label>
+                <select id="shipment-project" name="project_id" required></select>
+              </div>
+              <div class="form-group">
+                <label for="shipment-destination">Destination</label>
+                <input
+                  type="text"
+                  id="shipment-destination"
+                  name="destination"
+                />
+              </div>
+            </div>
+
+           <div class="form-row-2">
+  <div class="form-group">
+    <label for="shipment-vendor">Default vendor (optional)</label>
+
+    <div class="shipment-vendor-inline">
+      <select id="shipment-vendor" name="vendor_id">
+        <option value="">(none)</option>
+      </select>
+
+      <label class="checkbox-inline shipment-vendor-apply-label">
+        <input
+          type="checkbox"
+          id="shipment-vendor-apply-all"
+        />
+        <span>Use this vendor on all items</span>
+      </label>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label for="shipment-forwarder">Freight Forwarder</label>
+    <!-- this can be populated from vendors marked as freight forwarders -->
+    <select id="shipment-forwarder" name="freight_forwarder">
+      <option value="">Select forwarder…</option>
+    </select>
+  </div>
+</div>
+
+
+            <!-- Website moved under vendor/forwarder -->
+            <div class="form-group">
+              <label for="shipment-website-url">Website / Order URL</label>
+              <input
+                type="text"
+                id="shipment-website-url"
+                name="website_url"
+                placeholder="Website / Order URL (optional)"
+              />
+            </div>
+
+            <h3 class="shipment-section-title">Dates &amp; Tracking</h3>
+
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-expected-ship-date">Expected Ship Date</label>
+                <input
+                  type="date"
+                  id="shipment-expected-ship-date"
+                  name="expected_ship_date"
+                />
+              </div>
+              <div class="form-group">
+                <label for="shipment-expected-arrival-date">Expected Arrival</label>
+                <input
+                  type="date"
+                  id="shipment-expected-arrival-date"
+                  name="expected_arrival_date"
+                />
+              </div>
+            </div>
+
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-tracking-number">Tracking #</label>
+                <input
+                  type="text"
+                  id="shipment-tracking-number"
+                  name="tracking_number"
+                />
+                <!-- JS fills this with a "Track Shipment" link -->
+                <div
+                  id="shipment-tracking-helper"
+                  class="tracking-helper-text"
+                ></div>
+              </div>
+
+              <div class="form-group">
+                <label for="shipment-bol-number">BOL #</label>
+                <input type="text" id="shipment-bol-number" name="bol_number" />
+              </div>
+            </div>
+
+            <!-- NOTES now lives INSIDE the left column -->
+            <div class="shipment-notes-section">
+              <div class="form-group">
+                <label for="shipment-notes">Notes</label>
+                <textarea
+                  id="shipment-notes"
+                  name="notes"
+                  rows="4"
+                  placeholder="Extra details, special handling, etc."
+                ></textarea>
+              </div>
+            </div>
+          </div>
+
+
+          <!-- RIGHT COLUMN -->
+          <div class="shipment-column">
+            <h3 class="shipment-section-title">Storage &amp; Pickup</h3>
+
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-storage-due-date">Storage Due Date</label>
+                <input
+                  type="date"
+                  id="shipment-storage-due-date"
+                  name="storage_due_date"
+                />
+              </div>
+              <div class="form-group">
+                <label for="shipment-storage-fees-estimate">Estimated Storage Fees (auto)</label>
+                <div class="currency-field">
+                  <span class="currency-prefix">$</span>
+                  <input
+                    type="text"
+                    id="shipment-storage-fees-estimate"
+                    class="readonly-field"
+                    readonly
+                  />
+                </div>
+                <p id="shipment-storage-fees-helper" class="small-muted"></p>
+              </div>
+            </div>
+
+              <input type="hidden" id="shipment-storage-daily-fee" name="storage_daily_late_fee" />
+
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-storage-room">Storage Room</label>
+                <input
+                  type="text"
+                  id="shipment-storage-room"
+                  name="storage_room"
+                  placeholder="Container, room #, shelf..."
+                />
+              </div>
+              <div class="form-group">
+                <label for="shipment-storage-details">Storage Details</label>
+                <input
+                  type="text"
+                  id="shipment-storage-details"
+                  name="storage_details"
+                  placeholder="Pallet #, rack, notes..."
+                />
+              </div>
+            </div>
+
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-picked-up-by">Picked Up By</label>
+                <input
+                  type="text"
+                  id="shipment-picked-up-by"
+                  name="picked_up_by"
+                  placeholder="Person or company"
+                />
+              </div>
+              <div class="form-group">
+                <label for="shipment-picked-up-date">Pickup Date</label>
+                <input
+                  type="date"
+                  id="shipment-picked-up-date"
+                  name="picked_up_date"
+                />
+              </div>
+            </div>
+
+<h3 class="shipment-section-title">Payments</h3>
+
+<!-- Row 1 -->
+<div class="form-row-2">
+  <div class="form-group payment-flag">
+    <label>
+      <input
+        type="checkbox"
+        id="shipment-vendor-paid"
+        name="vendor_paid"
+      />
+      Vendor Paid
+    </label>
+    <div class="currency-field">
+  <span class="currency-prefix">$</span>
+  <input
+    type="number"
+    id="shipment-vendor-paid-amount"
+    name="shipment-vendor-paid-amount"
+    min="0"
+    step="0.01"
+    placeholder="0.00"
+  />
+</div>
+  </div>
+
+  <div class="form-group payment-flag">
+    <label>
+      <input
+        type="checkbox"
+        id="shipment-shipper-paid"
+        name="shipper_paid"
+      />
+      Freight Forwarder Paid
+    </label>
+    <div class="currency-field">
+  <span class="currency-prefix">$</span>
+  <input
+    type="number"
+    id="shipment-shipper-paid-amount"
+    name="shipment-shipper-paid-amount"
+    min="0"
+    step="0.01"
+  />
+</div>
+  </div>
+</div>
+
+<div class="form-row-2">
+  <div class="form-group payment-flag">
+    <label>
+      <input
+        type="checkbox"
+        id="shipment-customs-paid"
+        name="customs_paid"
+      />
+      Customs Paid
+    </label>
+<div class="currency-field">
+  <span class="currency-prefix">$</span>
+  <input
+    type="number"
+    id="shipment-customs-paid-amount"
+    name="shipment-customs-paid-amount"
+    min="0"
+    step="0.01"
+  />
+</div>
+  </div>
+
+  <!-- ⭐ TOTAL PAID (auto-calculated) -->
+  <div class="form-group">
+    <label for="shipment-total-paid-display">Total Paid (auto)</label>
+    <div class="currency-field">
+  <span class="currency-prefix">$</span>
+  <input
+    type="text"
+    id="shipment-total-paid-display"
+    class="readonly-field"
+    readonly
+  />
+</div>
+
+
+    <!-- Hidden field that actually gets sent to the server -->
+    <input
+      type="hidden"
+      id="shipment-total-paid"
+      name="total_paid"
+    />
+  </div>
+</div>
+
+
+<!-- DOCUMENTS SECTION -->
+<section id="shipment-docs-section" class="shipment-section">
+  <h3 class="shipment-section-title">Documents</h3>
+
+  <!-- 🔹 Placeholder shown BEFORE first save -->
+  <p id="shipment-docs-placeholder" class="small-muted">
+    After you save this shipment, you’ll be able to reopen it and upload
+    documents here (invoices, BOL, customs forms, etc.).
+  </p>
+
+  <!-- 🔹 Upload area – hidden until we’re in EDIT mode -->
+  <div id="shipment-docs-upload-area" class="form-group hidden">
+    <label for="shipment-documents">Upload documents</label>
+
+    <div class="shipment-docs-upload-row">
+      <div class="form-col">
+        <label class="small-muted" for="shipment-documents">File(s)</label>
+        <input
+          type="file"
+          id="shipment-documents"
+          name="documents"
+          multiple
+        />
+      </div>
+
+      <div class="form-col">
+        <label class="small-muted" for="shipment-doc-type">Document type</label>
+        <select id="shipment-doc-type">
+          <option value="">Select type…</option>
+          <option value="Shippers Invoice">Shippers Invoice</option>
+          <option value="BOL">BOL</option>
+          <option value="Country of Origin Certificate">Country of Origin Certificate</option>
+          <option value="Tally Sheet">Tally Sheet</option>
+          <option value="Freight Forwarder Proof of Payment">Freight Forwarder Proof of Payment</option>
+          <option value="Customs & Clearing Proof of Payment">Customs & Clearing Proof of Payment</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+
+      <div class="form-col" id="shipment-doc-label-wrapper" hidden>
+        <label class="small-muted" for="shipment-doc-label">If “Other”, enter a label</label>
+        <input
+          type="text"
+          id="shipment-doc-label"
+          name="shipment-doc-label"
+          placeholder="e.g. Insurance form"
+        />
+      </div>
+
+    </div>
+
+    <div class="shipment-docs-upload-actions">
+      <button
+        type="button"
+        id="shipment-upload-docs-btn"
+        class="btn btn-sm secondary"
+      >
+        Upload docs
+      </button>
+    </div>
+
+  </div>
+
+  <!-- 🔹 Existing documents list container – also hidden until EDIT mode -->
+  <div id="shipment-docs-list-container" class="form-group hidden">
+    <ul id="shipment-docs-list" class="shipment-docs-list">
+      <li class="shipment-docs-empty">(No documents uploaded yet.)</li>
+    </ul>
+  </div>
+</section>
+
+
+          </div>
+
+          <!-- FULL-WIDTH ITEMS SECTION ACROSS BOTTOM -->
+<section class="shipment-section shipment-section-items">
+  <div class="form-row between">
+    <h4 class="shipment-section-title">Items in this shipment</h4>
+    <button
+      type="button"
+      class="btn secondary btn-small"
+      id="shipment-add-item-row"
+    >
+      + Add item
+    </button>
+  </div>
+
+<div class="shipment-items-header">
+  <div>Name/Description</div>
+  <div>SKU</div>
+  <div>Vendor</div>
+  <div>Qty</div>
+  <div>Price / Unit</div>
+  <div>Total</div>
+  <div>Status</div>
+  <div>Actions</div>
+</div>
+
+
+
+
+  <div id="shipment-items-rows"></div>
+
+  <div class="shipment-items-footer">
+    <span>Items total:</span>
+    <span id="shipment-items-total-display">$0.00</span>
+  </div>
+
+  <div
+    id="shipment-items-verification"
+    class="shipment-items-verification hidden"
+  >
+    <div class="form-row between">
+      <label class="checkbox-inline">
+        <input type="checkbox" id="shipment-verify-all" />
+        <span>All items verified</span>
+      </label>
+
+    </div>
+  </div>
+
+  <!-- Used by JS when posting to server -->
+  <input
+    type="hidden"
+    id="shipment-total-price"
+    name="total_price"
+  />
+</section>
+
+</div><!-- /shipment-form -->
+</div><!-- /shipment-modal-body -->
+
+<p id="shipment-create-status" class="message"></p>
+
+<div class="modal-footer">
+  <button type="button" class="btn secondary" id="shipment-close-bottom">
+    Close
+  </button>
+
+  <button type="button" id="shipment-delete-btn" class="btn danger">
+    Delete
+  </button>
+
+  <button type="submit" class="btn primary">
+    Save shipment
+  </button>
+</div>
+</form>
+<!-- 🌟 SINGLE FORM ENDS HERE -->
+</div>
+</div>
+
+<!-- ITEM VERIFICATION DETAIL MODAL -->
+<div id="item-verification-backdrop" class="modal-backdrop hidden"></div>
+
+<div
+  id="item-verification-modal"
+  class="modal hidden"
+  role="dialog"
+  aria-modal="true"
+>
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="item-verification-header">Item Verification</h3>
+      <button
+        id="item-verification-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close item verification dialog"
+      >
+        ×
+      </button>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-field" style="grid-column: 1 / -1;">
+        <label>Item</label>
+        <div id="item-verification-item-label" class="small-muted"></div>
+      </div>
+
+      <div class="verification-group">
+        <div class="verification-grid">
+          <div class="form-field">
+            <label for="item-verification-status">Status</label>
+
+            <!-- Real select (hidden but still used by JS + form) -->
+            <select
+              id="item-verification-status"
+              class="visually-hidden-select shipment-item-status"
+            >
+              <option value="">Not checked</option>
+              <option value="verified">Verified ✓</option>
+              <option value="missing">Missing ✕</option>
+              <option value="damaged">Damaged ⚠</option>
+              <option value="wrong_item">Wrong item</option>
+            </select>
+
+            <!-- Pretty custom dropdown UI -->
+            <div
+              id="item-verification-status-ui"
+              class="item-verification-status-ui"
+            >
+              <button
+                type="button"
+                class="select-trigger"
+              >
+                <span class="select-label">Not checked</span>
+                <span class="select-chevron">▾</span>
+              </button>
+
+              <div class="select-menu hidden">
+                <button
+                  type="button"
+                  class="select-option"
+                  data-value=""
+                >
+                  Not checked
+                </button>
+                <button
+                  type="button"
+                  class="select-option"
+                  data-value="verified"
+                >
+                  Verified ✓
+                </button>
+                <button
+                  type="button"
+                  class="select-option"
+                  data-value="missing"
+                >
+                  Missing ✕
+                </button>
+                <button
+                  type="button"
+                  class="select-option"
+                  data-value="damaged"
+                >
+                  Damaged ⚠
+                </button>
+                <button
+                  type="button"
+                  class="select-option"
+                  data-value="wrong_item"
+                >
+                  Wrong item
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label for="item-verification-verified-by">Verified by</label>
+            <input
+              id="item-verification-verified-by"
+              type="text"
+              readonly
+            />
+          </div>
+
+          <div class="form-field">
+            <label for="item-verification-date">Verified date</label>
+            <input id="item-verification-date" type="date" />
+          </div>
+
+          <div class="form-field">
+            <label>&nbsp;</label>
+            <button type="button" id="item-verification-edit-status" class="btn btn-sm tertiary full-width">
+              Edit verification info
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-field" style="grid-column: 1 / -1;">
+        <label for="item-verification-storage">Storage info (optional)</label>
+        <input
+          id="item-verification-storage"
+          type="text"
+          placeholder="Pallet, rack, extra notes…"
+        />
+      </div>
+
+      <div class="form-field" style="grid-column: 1 / -1;">
+        <label for="item-verification-notes">Issues / notes</label>
+        <textarea
+          id="item-verification-notes"
+          rows="3"
+          placeholder="Missing items, damaged boxes, etc."
+        ></textarea>
+      </div>
+    </div>
+
+    <div class="history-actions">
+      <button type="button" id="item-verification-toggle-history" class="btn btn-sm tertiary">
+        View log
+      </button>
+    </div>
+    <ul id="item-verification-history" class="verification-history hidden"></ul>
+
+    <div class="modal-footer">
+      <button
+        id="item-verification-delete"
+        type="button"
+        class="btn danger"
+      >
+        Delete item
+      </button>
+
+      <button
+        id="item-verification-cancel"
+        type="button"
+        class="btn secondary"
+      >
+        Close
+      </button>
+
+      <button
+        id="item-verification-save"
+        type="button"
+        class="btn primary"
+      >
+        Save
+      </button>
+    </div>
+  </div>
+</div>
+
+
+
+<!-- SUCCESS OVERLAY -->
+<div id="success-backdrop" class="modal-backdrop hidden">
+  <div class="modal success-modal">
+    <div id="success-message" class="success-message"></div>
+  </div>
+</div>

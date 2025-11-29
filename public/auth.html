@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Avian Time & Payroll – Sign In</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell auth-page">
+      <main class="auth-main">
+        <div class="card auth-card">
+          <!-- Logo -->
+          <div class="auth-logo">
+            <div class="sidebar-logo-mark">
+              <img src="/images/logo.png" alt="Avian Group logo" />
+            </div>
+            <div>
+              <div class="sidebar-title">Avian Group</div>
+            </div>
+          </div>
+
+          <!-- Optional heading container (we're not using it in JS now) -->
+          <div class="auth-header-text"></div>
+
+          <div class="card-body">
+            <!-- Sign in form -->
+           <form id="login-form" class="stack-vert" autocomplete="on">
+  <label>
+    <span class="field-label">Email</span>
+    <input
+      id="login-email"
+      type="email"
+      required
+      autocomplete="email"
+    />
+  </label>
+
+  <label>
+    <span class="field-label">Password</span>
+    <input
+      id="login-password"
+      type="password"
+      required
+      autocomplete="current-password"
+    />
+  </label>
+
+  <!-- NEW: Remember me -->
+  <label class="checkbox-inline" style="margin-top: 4px;">
+    <input type="checkbox" id="login-remember" />
+    <span>Keep me signed in on this device</span>
+  </label>
+
+  <button type="submit" class="btn primary w-full">
+    Sign in
+  </button>
+</form>
+
+
+            <!-- Register form (hidden by default) -->
+            <form
+              id="register-form"
+              class="stack-vert hidden"
+              autocomplete="on"
+            >
+              <label>
+                <span class="field-label">Email</span>
+                <input
+                  id="register-email"
+                  type="email"
+                  required
+                  autocomplete="email"
+                />
+              </label>
+
+              <label>
+                <span class="field-label">Password</span>
+                <input
+                  id="register-password"
+                  type="password"
+                  required
+                  minlength="6"
+                  autocomplete="new-password"
+                />
+              </label>
+
+              <label>
+                <span class="field-label">Confirm password</span>
+                <input
+                  id="register-password-confirm"
+                  type="password"
+                  required
+                  minlength="6"
+                  autocomplete="new-password"
+                />
+              </label>
+
+              <button type="submit" class="btn primary w-full">
+                Create account
+              </button>
+            </form>
+
+            <p id="auth-message" class="message auth-message"></p>
+
+            <div id="register-confirm-modal" class="auth-confirm-modal hidden">
+  <div class="auth-confirm-title">We found an employee with this email</div>
+  <p id="confirm-employee-text" class="auth-confirm-text"></p>
+  <div class="auth-confirm-actions">
+    <button
+      id="confirm-employee-yes"
+      type="button"
+      class="btn primary btn-sm"
+    >
+      Yes, that’s me
+    </button>
+    <button
+      id="confirm-employee-no"
+      type="button"
+      class="btn secondary btn-sm"
+    >
+      No, that’s not me
+    </button>
+  </div>
+</div>
+
+
+            <div class="auth-toggle">
+              <span id="auth-toggle-text">Don’t have an account?</span>
+              <button
+                id="auth-toggle-btn"
+                type="button"
+                class="btn tertiary"
+              >
+                Create one
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      // Fallback for environments where cached JS might be stale
+      window.fetchJSON = window.fetchJSON || (async (url, options = {}) => {
+        const res = await fetch(url, options);
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+        if (!res.ok) {
+          const msg = data.error || data.message || 'Request failed';
+          throw new Error(msg);
+        }
+        return data;
+      });
+    </script>
+    <script src="/auth.js"></script>
+  </body>
+</html>
