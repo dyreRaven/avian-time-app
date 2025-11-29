@@ -584,6 +584,12 @@ input[disabled] {
   cursor: not-allowed;
 }
 
+/* Wider box for storage fee estimate so long amounts fit comfortably */
+#shipment-storage-fees-estimate {
+  width: 100%;
+  min-width: 14ch;
+}
+
 /* ───────── TABLES ───────── */
 
 .table-wrapper {
@@ -971,6 +977,11 @@ table.vendors-table th:first-child {
   background-size: 6px 6px, 6px 6px, 2.5em 2.5em;
   background-repeat: no-repeat;
   padding-right: 2.6em;
+}
+
+.input-error {
+  border: 1px solid #b91c1c !important;
+  background: #fef2f2;
 }
 
 .payroll-details .details-columns {
