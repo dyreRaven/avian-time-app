@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Avian Time – Kiosk Admin</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#10b981" />
+
+</head>
+<body>
+  <div class="ka-shell">
+<div class="ka-main">
+  <!-- HEADER -->
+  <header class="ka-header">
+    <div class="ka-header-left">
+      <div class="ka-logo">
+        <img src="/images/logo.png" alt="Avian Group logo" />
+      </div>
+      <div>
+        <div class="ka-title-main">Kiosk Admin</div>
+        <div class="ka-title-sub" id="ka-kiosk-name">Loading kiosk…</div>
+      </div>
+    </div>
+<div class="ka-header-right">
+  <div id="ka-back-to-kiosk" class="ka-header-back-link">
+    ← Back to Worker Clock-In
+  </div>
+</div>
+
+
+  </header>
+  <p id="ka-kiosk-status" class="ka-status"></p>
+
+  <!-- ============================
+       VIEW: LIVE WORKERS
+       ============================ -->
+<section id="ka-view-live">
+  <div class="card" id="ka-sessions-card">
+    <div class="card-header">
+      <div>
+        <h2>Today's Sessions</h2>
+        <p class="card-sub">
+          Pick a project to start a session, then set it active for this tablet.
+          The active session is the project workers will be clocked into on this device.
+        </p>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="ka-session-inline">
+        <label class="ka-session-label" for="ka-project-select">Project</label>
+        <select id="ka-project-select"></select>
+        <button id="ka-add-session-btn" class="btn primary btn-sm">Start New Session</button>
+      </div>
+      <div id="ka-session-status" class="ka-status"></div>
+      <div id="ka-session-list" class="ka-muted">(loading…)</div>
+    </div>
+  </div>
+
+  <div class="card" id="ka-live-card">
+    <div class="card-header">
+      <div>
+        <h2>Current Workers</h2>
+        <p id="ka-live-project-label" class="card-sub">
+          Project not set yet.
+        </p>
+      </div>
+      <span id="ka-live-count-tag" class="ka-tag gray">0 active</span>
+    </div>
+
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Employee</th>
+            <th>Time Clocked In</th>
+            <th>Time on Clock</th>
+          </tr>
+        </thead>
+        <tbody id="ka-live-body">
+          <tr><td colspan="3" class="ka-muted">(loading…)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="ka-live-actions">
+      <button id="ka-end-session-live" class="btn danger btn-sm" style="display:none;">
+        End Session & Clock Out All
+      </button>
+    </div>
+  </div>
+</section>
+
+  <!-- ============================
+       VIEW: DAILY SETTINGS (FIRST CLOCK-IN)
+       ============================ -->
+  <!-- ============================
+     VIEW: SHIPMENTS
+     ============================ -->
+
+<section id="ka-view-shipments" class="hidden">
+  <div id="ka-shipments-card" class="card">
+    <div class="card-header">
+      <h2>Shipments – Ready to Pick Up</h2>
+      <p class="card-sub">
+        Tap a shipment to see details, download documents, and verify items in the field.
+      </p>
+      <button id="ka-notify-open" class="ka-icon-btn" type="button" aria-label="Shipment notifications">
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 3a6 6 0 0 0-6 6v3.586l-.707.707A1 1 0 0 0 6 15h12a1 1 0 0 0 .707-1.707L18 12.586V9a6 6 0 0 0-6-6Zm0 18a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 21Z"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="ka-shipments-filters">
+      <button id="ka-shipments-refresh" class="btn secondary btn-sm ka-ship-refresh">
+        ⟳ Refresh
+      </button>
+
+      <label class="ka-shipments-filter-label">
+        Status:
+        <select id="ka-shipments-filter" class="ka-select-arrow">
+          <option value="status:Cleared - Ready for Release" selected>Cleared – Ready for Pickup</option>
+          <option value="all">All statuses</option>
+          <optgroup label="Filter by status">
+            <option value="status:Pre-Order">Pre-Order</option>
+            <option value="status:Ordered">Ordered</option>
+            <option value="status:In Transit to Forwarder">In Transit to Forwarder</option>
+            <option value="status:Arrived at Forwarder">Arrived at Forwarder</option>
+            <option value="status:Sailed">Sailed</option>
+            <option value="status:Arrived at Port">Arrived at Port</option>
+            <option value="status:Awaiting Clearance">Awaiting Clearance</option>
+            <option value="status:Cleared - Ready for Release">Cleared - Ready for Release</option>
+            <option value="status:Picked Up">Picked Up</option>
+          <option value="status:Archived">Archived</option>
+        </optgroup>
+      </select>
+    </label>
+
+      <label class="ka-shipments-filter-label">
+        Project:
+        <select id="ka-shipments-project" class="ka-select-arrow">
+          <option value="">All projects</option>
+        </select>
+      </label>
+    </div>
+
+    <div id="ka-shipments-list" class="ka-shipments-list">
+      <!-- JS will populate shipment cards -->
+    </div>
+  </div>
+</section> <!-- ✅ CLOSE SHIPMENTS VIEW HERE -->
+
+<!-- Notifications modal -->
+<div id="ka-notify-backdrop" class="ka-modal-backdrop hidden"></div>
+<div id="ka-notify-modal" class="ka-modal hidden">
+  <div class="ka-modal-header">
+    <h3>Shipment Notifications</h3>
+    <button id="ka-notify-close" class="ka-icon-btn" type="button" aria-label="Close">✕</button>
+  </div>
+  <p class="ka-muted">
+    Alerts show on this device for the admin logged in. Pick statuses, optional time, and optional specific shipments.
+  </p>
+
+  <div class="ka-modal-body ka-ship-notify-grid">
+    <div class="ka-notify-enable-row">
+      <label class="ka-toggle">
+        <input type="checkbox" id="ka-notify-enabled" />
+        <span>Enable notifications</span>
+      </label>
+    </div>
+
+    <div id="ka-notify-fields">
+      <div class="ka-notify-group ka-notify-reminders">
+        <div class="ka-inline-header">
+          <div class="ka-inline-field">
+            <label for="ka-notify-every-days">Reminder every…</label>
+            <div class="ka-inline">
+              <input type="number" id="ka-notify-every-days" min="1" step="1" value="1" style="max-width: 90px;" />
+              <span class="ka-muted">day(s)</span>
+            </div>
+          </div>
+          <div class="ka-inline-field">
+            <label for="ka-notify-time">Reminder time</label>
+            <input type="time" id="ka-notify-time" value="09:00" />
+          </div>
+        </div>
+      </div>
+
+      <div class="ka-notify-group">
+        <label>Status filters</label>
+        <button id="ka-notify-statuses-btn" class="ka-notify-select" type="button">
+          <span id="ka-notify-statuses-label" class="placeholder">All statuses</span>
+          <span class="ka-caret">▾</span>
+        </button>
+        <div id="ka-notify-statuses-menu" class="ka-notify-menu hidden"></div>
+      </div>
+      <div class="ka-notify-group">
+        <label for="ka-notify-projects">Projects (optional)</label>
+        <button id="ka-notify-projects-btn" class="ka-notify-select" type="button">
+          <span id="ka-notify-projects-label" class="placeholder">All projects</span>
+          <span class="ka-caret">▾</span>
+        </button>
+        <div id="ka-notify-projects-menu" class="ka-notify-menu hidden"></div>
+        <p class="ka-muted small">Leave empty to include all projects.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="ka-ship-notify-actions">
+    <button class="btn secondary btn-sm" id="ka-notify-test" type="button">Test notification</button>
+    <button class="btn primary btn-sm" id="ka-notify-save" type="button">Save notification settings</button>
+    <span id="ka-notify-msg" class="ka-status"></span>
+  </div>
+</div>
+
+    <!-- ============================
+       VIEW: TIME ENTRIES
+       ============================ -->
+  <section id="ka-view-time" class="hidden">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="ka-time-title">Time Entries</h2>
+          <p class="card-sub">
+            View and verify time entries for this kiosk over any date range.
+            Paid entries are locked for editing but can still be verified for accuracy.
+          </p>
+        </div>
+      </div>
+
+      <div id="ka-time-orientation" class="ka-orientation-hint">
+        Rotate your tablet to landscape to view the time entries report.
+      </div>
+
+      <div class="card-body ka-time-content">
+        <div class="ka-time-filters">
+          <div class="ka-time-filter-row">
+            <label class="ka-shipments-filter-label">
+              Date Range:
+              <select id="ka-time-range" class="ka-time-range-select ka-select-arrow">
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="last7">Last 7 Days</option>
+                <option value="custom">Custom Range</option>
+              </select>
+            </label>
+            <label class="ka-shipments-filter-label ka-pay-toggle" style="display:none;">
+              <input type="checkbox" id="ka-time-show-pay" />
+              Show pay info
+            </label>
+            <label class="ka-shipments-filter-label ka-approvals-toggle" style="display:none;">
+              <input type="checkbox" id="ka-time-show-approvals" />
+              Show approvals
+            </label>
+            <label class="ka-shipments-filter-label ka-hide-resolved" style="display:none;">
+              <input type="checkbox" id="ka-time-hide-resolved" />
+              Hide resolved
+            </label>
+            <div style="flex:1"></div>
+            <button id="ka-time-run" class="btn secondary btn-sm ka-time-refresh-btn">
+              Run Report
+            </button>
+          </div>
+          <div class="ka-time-date-row hidden" id="ka-time-custom">
+            <div class="ka-small">
+              From:
+              <input type="date" id="ka-time-start" />
+            </div>
+            <div class="ka-small">
+              To:
+              <input type="date" id="ka-time-end" />
+            </div>
+            <button id="ka-time-refresh" class="btn secondary btn-sm ka-time-refresh-btn">
+              Apply
+            </button>
+          </div>
+        </div>
+
+        <div class="table-wrapper">
+          <table class="ka-table">
+            <thead>
+              <tr>
+              <th>Employee</th>
+              <th>Project</th>
+                <th>Date</th>
+                <th>Start</th>
+                <th>End</th>
+                <th class="ka-right">Hours</th>
+              <th class="ka-right ka-pay-col ka-rate-col">Rate</th>
+              <th class="ka-right ka-pay-col">Pay</th>
+              <th class="ka-right ka-pay-col ka-paystatus-col">Pay Status</th>
+              <th class="ka-status-col">Status</th>
+              <th class="ka-approve-col">Approved By</th>
+              <th class="ka-actions-col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="ka-time-body">
+            <tr>
+              <td colspan="9" class="ka-muted">(loading…)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+        <p id="ka-time-status" class="ka-status"></p>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ============================
+       VIEW: SETTINGS
+       ============================ -->
+  <section id="ka-view-settings" class="hidden">
+    <div class="card">
+  <div class="card-header"><h2>Settings</h2></div>
+  <div class="card-body">
+
+    <div class="form-field">
+      <label for="ka-lang-search">Language preferences</label>
+      <div class="ka-dual-row">
+        <div class="ka-dual-left">
+          <input id="ka-lang-search" type="text" placeholder="Search employees/admins" />
+          <select id="ka-lang-employee" class="ka-select-arrow"></select>
+        </div>
+        <div class="ka-dual-right">
+          <select id="ka-lang-choice" class="ka-select-arrow">
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="ht">Haitian Creole</option>
+          </select>
+          <button type="button" id="ka-lang-save" class="btn secondary btn-sm">Update Language</button>
+        </div>
+      </div>
+      <p class="ka-label-note">Pick a person, then set their preferred language.</p>
+      <p id="ka-lang-status" class="ka-status"></p>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <div class="form-field">
+      <label for="ka-pin-search">Change PIN (employees & admins)</label>
+      <div class="ka-dual-row">
+        <div class="ka-dual-left">
+          <input id="ka-pin-search" type="text" placeholder="Search employees/admins" />
+          <select id="ka-pin-employee" class="ka-select-arrow"></select>
+        </div>
+        <div class="ka-dual-right">
+          <div class="ka-pin-row">
+            <input type="password" id="ka-pin-new" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="New 4-digit PIN" />
+            <input type="password" id="ka-pin-confirm" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="Confirm PIN" />
+          </div>
+          <div class="ka-pin-actions">
+            <button type="button" id="ka-pin-save" class="btn secondary btn-sm">Update PIN</button>
+          </div>
+        </div>
+      </div>
+      <p id="ka-pin-status" class="ka-status"></p>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <div class="form-field" id="ka-rates-block">
+      <label class="ka-shipments-filter-label">
+        <input type="checkbox" id="ka-rates-toggle" />
+        View and edit rates
+      </label>
+      <div id="ka-rates-pin-row" class="ka-rates-pin hidden">
+        <input
+          type="password"
+          id="ka-rates-pin"
+          inputmode="numeric"
+          pattern="[0-9]*"
+          maxlength="4"
+          placeholder="Re-enter your PIN"
+        />
+        <button type="button" id="ka-rates-pin-submit" class="btn secondary btn-sm">Unlock</button>
+        <button type="button" id="ka-rates-pin-cancel" class="btn tertiary btn-sm">Cancel</button>
+      </div>
+      <p class="ka-label-note">Requires pay-rate access. Unlocking expires after a short time.</p>
+      <p id="ka-rates-status" class="ka-status"></p>
+    </div>
+
+    <div id="ka-rates-editor" class="ka-rates-editor hidden">
+      <div class="table-wrapper">
+        <table class="ka-table">
+          <thead>
+            <tr>
+              <th>Employee</th>
+              <th class="ka-right">Current rate</th>
+              <th class="ka-right">New rate</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="ka-rates-body">
+            <tr><td colspan="4" class="ka-muted">(locked)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+  </section>
+
+  <div class="ka-footer">
+    This view is limited for kiosk foremen. Full admin tools are available on the desktop console.
+  </div>
+</div>
+
+<!-- ============================
+     NEW BOTTOM NAVIGATION
+     ============================ -->
+<nav class="ka-bottom-nav">
+  <button type="button" data-ka-view="live">Sessions</button>
+    <button type="button" data-ka-view="time">Time Entries</button>
+    <button type="button" data-ka-view="shipments">
+    <span class="label">Shipments</span>
+  </button>
+  <button type="button" data-ka-view="settings">Settings</button>
+</nav>
+
+<script src="/utils.js"></script>
+<script src="/kiosk-admin.js"></script>
+<!-- Items modal -->
+<div id="ka-items-modal" class="hidden">
+  <div class="ka-items-modal-content">
+    <div class="ka-items-modal-header">
+      <div class="ka-items-modal-title" id="ka-items-modal-title">Verify items</div>
+      <button type="button" class="ka-items-modal-close" id="ka-items-modal-close">×</button>
+    </div>
+    <div class="ka-items-modal-body" id="ka-items-modal-body">
+      <div class="ka-ship-muted">(loading items…)</div>
+    </div>
+    <div class="ka-items-modal-footer">
+      <button class="btn btn-secondary btn-sm" id="ka-items-modal-cancel">Close</button>
+      <button class="btn btn-primary btn-sm" id="ka-items-modal-save">Save verification</button>
+    </div>
+  </div>
+</div>
+
+<!-- Return prompt modal -->
+<div id="ka-return-backdrop" class="ka-modal-backdrop hidden">
+  <div class="ka-modal">
+    <h3 id="ka-return-title">Return to worker clock-in?</h3>
+    <p id="ka-return-message">Project is set and you are clocked in.</p>
+    <div class="ka-modal-actions">
+      <button class="btn secondary btn-sm" id="ka-return-no">Stay on admin dashboard</button>
+      <button class="btn primary btn-sm" id="ka-return-yes">Yes, go to worker clock-in page</button>
+    </div>
+  </div>
+ </div>
+
+<!-- Time entry action modal -->
+<div id="ka-time-action-backdrop" class="ka-modal-backdrop hidden">
+  <div class="ka-modal" style="max-width: 540px;">
+    <h3 id="ka-time-action-title">Update Time Entry</h3>
+    <p id="ka-time-action-sub" class="ka-label-note"></p>
+    <div class="ka-time-action-original">
+      <div class="ka-time-action-pair">
+        <div><strong>Original date:</strong> <span id="ka-time-action-orig-date">—</span></div>
+        <div><strong>New date (locked):</strong> <input type="date" id="ka-time-action-date" disabled /></div>
+      </div>
+      <div class="ka-time-action-pair">
+        <div><strong>Original project:</strong> <span id="ka-time-action-orig-project">—</span></div>
+        <div><strong>New project (optional):</strong> <select id="ka-time-action-project"></select></div>
+      </div>
+      <div class="ka-time-action-pair">
+        <div><strong>Original clock-in:</strong> <span id="ka-time-action-orig-start">—</span></div>
+        <div><strong>New clock-in (optional):</strong> <input type="time" id="ka-time-action-start" /></div>
+      </div>
+      <div class="ka-time-action-pair">
+        <div><strong>Original clock-out:</strong> <span id="ka-time-action-orig-end">—</span></div>
+        <div><strong>New clock-out (optional):</strong> <input type="time" id="ka-time-action-end" /></div>
+      </div>
+    </div>
+    <div class="form-field">
+      <label for="ka-time-action-note">Note (required)</label>
+      <textarea id="ka-time-action-note" rows="3" placeholder="Add a brief reason"></textarea>
+    </div>
+    <div class="form-field" id="ka-time-action-hours-wrap">
+      <label for="ka-time-action-hours">Hours (optional)</label>
+      <input type="number" step="0.01" id="ka-time-action-hours" />
+    </div>
+    <p id="ka-time-action-status" class="ka-status"></p>
+    <div class="ka-modal-actions">
+      <button class="btn secondary btn-sm" id="ka-time-action-cancel">Cancel</button>
+      <button class="btn primary btn-sm" id="ka-time-action-submit">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rate unlock modal -->
+<div id="ka-rate-backdrop" class="ka-modal-backdrop hidden">
+  <div class="ka-modal" style="max-width: 420px;">
+    <h3>Unlock rates</h3>
+    <p class="ka-label-note">Enter your PIN to view rates. To modify someone's PIN, go to Settings.</p>
+    <div class="form-field">
+      <label for="ka-rate-pin">Admin PIN</label>
+      <input id="ka-rate-pin" type="password" inputmode="numeric" pattern="[0-9]*" />
+    </div>
+    <p id="ka-rate-status" class="ka-status"></p>
+    <div class="ka-modal-actions">
+      <button class="btn secondary btn-sm" id="ka-rate-cancel">Cancel</button>
+      <button class="btn secondary btn-sm" id="ka-rate-unlock-one">Unlock this rate</button>
+      <button class="btn primary btn-sm" id="ka-rate-unlock-all">Unlock all rates</button>
+    </div>
+  </div>
+</div>
+
+<!-- End session modal -->
+<div id="ka-end-session-backdrop" class="ka-modal-backdrop hidden">
+  <div class="ka-modal">
+    <h3>End session and clock out everyone?</h3>
+    <p>Enter your PIN twice to confirm ending the active session and clocking out all workers on this kiosk.</p>
+    <div class="form-field">
+      <label for="ka-end-pin-1">Enter PIN</label>
+      <input id="ka-end-pin-1" type="password" inputmode="numeric" pattern="[0-9]*" />
+    </div>
+    <div class="form-field">
+      <label for="ka-end-pin-2">Confirm PIN</label>
+      <input id="ka-end-pin-2" type="password" inputmode="numeric" pattern="[0-9]*" />
+    </div>
+    <p id="ka-end-session-status" class="ka-status"></p>
+    <div class="ka-modal-actions">
+      <button class="btn secondary btn-sm" id="ka-end-session-cancel">Cancel</button>
+      <button class="btn danger btn-sm" id="ka-end-session-confirm">End Session & Clock Out All</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

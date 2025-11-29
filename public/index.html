@@ -19,157 +19,360 @@
     <aside class="sidebar">
       <div class="sidebar-logo">
         <div class="sidebar-logo-mark">
-          <img src="/logo.png" alt="Avian Group logo" />
+          <img src="/images/logo.png" alt="Avian Group logo" />
         </div>
         <div class="sidebar-logo-text">
-          <div class="sidebar-title">Avian Time</div>
+          <div class="sidebar-title">Avian Group</div>
           <div class="sidebar-sub">Admin Console</div>
         </div>
       </div>
 
+      <!-- Navigation -->
       <nav class="nav-list">
-        <button class="nav-item active" data-section="employees">👷‍♀️ Employees</button>
-        <button class="nav-item" data-section="projects">📂 Projects</button>
-        <button class="nav-item" data-section="time-entries">⏱️ Time Entries</button>
-        <button class="nav-item" data-section="payroll">💰 Payroll</button>
-        <button class="nav-item" data-section="reports">📊 Reports</button>
+        <!-- OPERATIONS -->
+        <div class="nav-section-label">Operations</div>
+
+        <button class="nav-item active" data-section="employees">
+          <img src="/icons/employee.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Employees</span>
+        </button>
+
+        <button class="nav-item" data-section="vendors">
+          <img src="/icons/vendor.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Vendors</span>
+        </button>
+
+        <button class="nav-item" data-section="projects">
+          <img src="/icons/projects.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Projects</span>
+        </button>
+
+        <button class="nav-item" data-section="shipments">
+          <img src="/icons/shipments.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Shipments</span>
+        </button>
+
+        <!-- TIME & PAY -->
+        <div class="nav-section-label">Time &amp; Pay</div>
+
+        <button class="nav-item" data-section="kiosks">
+          <img src="/icons/kiosks.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Sessions</span>
+        </button>
+        <button class="nav-item" data-section="time-exceptions">
+          <img src="/icons/alerts.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Time Exceptions</span>
+        </button>
+
+        <button class="nav-item" data-section="payroll">
+          <img src="/icons/payroll.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Payroll</span>
+        </button>
+
+ <!-- REPORTS -->
+<div class="nav-section-label">Reports</div>
+
+<button class="nav-item" data-section="time-entries">
+  <img src="/icons/clock.svg" class="nav-icon" alt="" aria-hidden="true" />
+  <span>Time Entry Report</span>
+</button>
+
+<button class="nav-item" data-section="shipments-report">
+  <img src="/icons/verification.svg" class="nav-icon" alt="" aria-hidden="true" />
+  <span>Shipment Verification Report</span>
+</button>
+
+<!-- SETTINGS -->
+<div class="nav-section-label">Settings</div>
+<button class="nav-item" data-section="settings">
+  <img src="/icons/settings.svg" class="nav-icon" alt="" aria-hidden="true" />
+  <span>Settings</span>
+</button>
+
+
       </nav>
 
-      <div class="sidebar-footer">
-        Avian Group LLC<br />
-        Time &amp; Payroll
-      </div>
+<!-- 🔹 Logout button pinned above the footer -->
+<div class="sidebar-logout-container">
+  <button id="logout-btn" class="nav-item nav-item-logout" type="button">
+    <img src="/icons/logout.svg" class="nav-icon" alt="" aria-hidden="true" />
+    <span>Logout</span>
+  </button>
+</div>
+
+<div class="sidebar-footer">
+  Avian Group LLC<br />
+  Time &amp; Payroll
+</div>
+
     </aside>
 
     <!-- RIGHT CONTENT -->
-    <main class="main">
-      <header class="topbar">
-        <div class="topbar-left">
-          <h1>Avian Time &amp; Payroll</h1>
-          <p class="topbar-sub">
-            QuickBooks-integrated time &amp; payroll for Avian Group field and admin teams.
+   <main class="main">
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1>Time &amp; Payroll</h1>
+      <p class="topbar-sub">
+        QuickBooks-integrated time &amp; payroll for Avian Group field and admin teams.
+
+      </p>
+    </div>
+  </header>
+
+ <div class="main-inner">
+  <!-- QUICKBOOKS CARD (top of the main content) -->
+  <section class="card qb-card">
+    <div class="card-header">
+      <div>
+        <h2>QuickBooks Connection</h2>
+        <p id="qb-status" class="card-sub">
+          Checking QuickBooks status…
+        </p>
+      </div>
+
+      <div class="qb-actions">
+        <!-- CONNECT BUTTON -->
+        <button id="connect" class="btn primary">Connect</button>
+
+        <!-- EMPLOYEES SYNC BUTTON -->
+        <button
+          id="sync-employees"
+          class="btn secondary"
+          style="display: none;"
+        >
+          Sync Employees
+        </button>
+
+        <!-- VENDORS SYNC BUTTON -->
+        <button
+          id="sync-vendors"
+          class="btn secondary"
+          style="display: none;"
+        >
+          Sync Vendors
+        </button>
+
+        <!-- PROJECTS SYNC BUTTON -->
+          <button
+            id="sync-projects"
+            class="btn secondary"
+            style="display: none;"
+          >
+            Sync Projects
+          </button>
+
+          <!-- PAYROLL ACCOUNTS SYNC BUTTON -->
+          <button
+            id="sync-accounts"
+            class="btn secondary"
+            style="display: none;"
+          >
+            Sync Payroll Accounts
+          </button>
+
+          <!-- SPINNER / STATUS -->
+          <span
+            id="qb-sync-indicator"
+            class="sync-indicator"
+          aria-live="polite"
+          style="display: none;"
+        >
+          <span class="sync-indicator-dot" aria-hidden="true"></span>
+          <span>Syncing with QuickBooks…</span>
+        </span>
+      </div>
+    </div>
+  </section>
+
+  <!-- EMPLOYEES SECTION -->
+  <section id="section-employees" class="section active">
+    <!-- New Employee card (hidden by default, now ABOVE the list) -->
+    <div id="employee-create-card" class="card hidden" style="margin-bottom: 1.5rem;">
+      <div class="card-header">
+        <h3>New Employee</h3>
+        <button id="employee-hide-create" class="btn secondary">
+          Hide manual add
+        </button>
+      </div>
+
+      <div class="employee-form-panel">
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="employee-name">Employee Name</label>
+            <input id="employee-name" type="text" />
+          </div>
+
+          <div class="form-field">
+            <label for="employee-nickname">Nickname (optional)</label>
+            <input id="employee-nickname" type="text" />
+          </div>
+
+          <div class="form-field">
+            <label for="employee-name-on-checks">Name on checks (optional)</label>
+            <input id="employee-name-on-checks" type="text" />
+          </div>
+
+          <div class="form-field">
+            <label for="employee-rate">Hourly Rate</label>
+            <input id="employee-rate" type="number" min="0" step="0.01" />
+          </div>
+
+          <div class="form-field checkbox-field">
+            <label>
+              <input type="checkbox" id="employee-uses-timekeeping" checked />
+              Use this person for timekeeping / kiosk
+            </label>
+          </div>
+
+          <div class="form-field checkbox-field">
+            <label>
+              <input id="employee-is-admin" type="checkbox" />
+              Admin access (can unlock kiosk admin mode)
+            </label>
+          </div>
+
+          <div class="form-field form-field-button">
+            <button id="save-employee" class="btn primary">Add Employee</button>
+          </div>
+        </div>
+
+        <p id="employee-message" class="message"></p>
+      </div>
+    </div>
+
+    <!-- Employees list card (now BELOW the New Employee card) -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2>Employees &amp; Rates</h2>
+          <p class="card-sub">
+            These employees are imported from QuickBooks when you click “Sync Employees”.
           </p>
         </div>
-      </header>
 
-      <div class="main-inner">
-        <!-- QUICKBOOKS CARD (always visible) -->
-        <section class="card qb-card">
-          <div class="card-header">
-            <div>
-              <h2>QuickBooks Connection</h2>
-              <p class="card-sub">
-                Connect once, then sync vendors and projects as needed.
-              </p>
-              <p id="qb-status">Checking status...</p>
-            </div>
-            <div class="qb-actions">
-              <button id="connect" class="btn primary">Connect</button>
-              <button id="sync-vendors" class="btn secondary">Sync Vendors</button>
-              <button id="sync-projects" class="btn secondary">Sync Projects</button>
-            </div>
-          </div>
-        </section>
+        <div class="employee-header-actions">
+          <input
+            id="employees-search"
+            type="text"
+            class="search-input"
+            placeholder="Search employees…"
+            autocomplete="off"
+            inputmode="search"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+            name="employees-search-no-autofill"
+          />
+          <button id="employee-toggle-inactive" class="btn secondary btn-sm">
+            Show Inactive
+          </button>
+        </div>
+      </div>
 
-        <!-- EMPLOYEES SECTION -->
-        <section id="section-employees" class="section active">
-          <div class="card">
-            <div class="card-header">
-              <h2>Employees &amp; Rates</h2>
-              <p class="card-sub">
-                Use the form below to add new employees. To view or edit an existing employee,
-                click their row in the table.
-              </p>
-            </div>
+      <div class="table-wrapper">
+        <table class="clickable-rows">
+          <thead>
+            <tr>
+              <th>Timekeeping</th>
+              <th>Name</th>
+              <th>Nickname</th>
+              <th>Name on checks</th>
+              <th>Rate</th>
+            </tr>
+          </thead>
+          <tbody id="employees-table-body">
+            <tr>
+              <td colspan="5">(no employees yet)</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="message">
+          Click a row to open full employee details and edit settings.
+        </p>
+      </div>
+    </div>
+  </section>
 
-            <!-- NEW EMPLOYEE FORM (CREATE ONLY) -->
-            <div class="employee-form-panel">
-              <div class="employee-form-header">
-                <h3>New Employee</h3>
-              </div>
+ <!-- VENDORS SECTION -->
+<section id="section-vendors" class="section">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2>QuickBooks Vendors</h2>
+        <p class="card-sub">
+          These vendors are imported from QuickBooks when you click “Sync Vendors”.
+        </p>
+      </div>
 
-              <div class="form-grid">
-                <div class="form-field">
-                  <label for="employee-name">Employee Name</label>
-                  <input id="employee-name" type="text" />
-                </div>
+      <div class="vendor-header-actions">
+        <input
+          id="vendors-search"
+          type="text"
+          class="search-input"
+          placeholder="Search vendors…"
+          autocomplete="off"
+          inputmode="search"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          name="vendors-search-no-autofill"
+        />
+        <button id="vendor-toggle-inactive" class="btn secondary btn-sm">
+          Show Inactive
+        </button>
+      </div>
+    </div>
 
-                <div class="form-field">
-                  <label for="employee-nickname">Nickname (optional)</label>
-                  <input id="employee-nickname" type="text" />
-                </div>
+    <div class="table-wrapper">
+      <table class="clickable-rows vendors-table">
+        <thead>
+          <tr>
+            <th class="table-checkbox-col">Timekeeping</th>
+            <th>Vendor Name</th>
+          </tr>
+        </thead>
+        <tbody id="vendors-table-body">
+          <tr>
+            <td colspan="2">(no vendors synced yet)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
 
-                <div class="form-field">
-                  <label for="employee-name-on-checks">Name on checks (optional)</label>
-                  <input id="employee-name-on-checks" type="text" />
-                </div>
-
-                <div class="form-field">
-                  <label for="employee-rate">Hourly Rate</label>
-                  <input id="employee-rate" type="number" min="0" step="0.01" />
-                </div>
-
-                <div class="form-field form-field-button">
-                  <button id="save-employee" class="btn primary">Add Employee</button>
-                </div>
-
-                <div class="form-field form-field-button">
-                  <button id="employee-clear-edit" class="btn secondary">
-                    Clear Form
-                  </button>
-                </div>
-              </div>
-
-              <p id="employee-message" class="message"></p>
-            </div>
-
-            <div class="employee-list-header-row">
-              <h3>Current Employees</h3>
-              <button id="employee-toggle-inactive" class="btn secondary btn-sm">
-                Show Inactive
-              </button>
-            </div>
-
-            <div class="table-wrapper">
-              <table class="clickable-rows">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Nickname</th>
-                    <th>Name on checks</th>
-                    <th>Rate</th>
-                  </tr>
-                </thead>
-                <tbody id="employees-table-body">
-                  <tr>
-                    <td colspan="4">(no employees yet)</td>
-                  </tr>
-                </tbody>
-              </table>
-              <p class="message">
-                Click a row to open full employee details, edit, or make inactive.
-              </p>
-            </div>
-          </div>
-        </section>
 
         <!-- PROJECTS SECTION -->
         <section id="section-projects" class="section">
           <div class="card">
             <div class="card-header">
-              <h2>Projects</h2>
-              <p class="card-sub">
-                Projects are synced from QuickBooks and used when creating time entries.
-              </p>
+              <div>
+                <h2>Projects</h2>
+                <p class="card-sub">
+                  Projects are synced from QuickBooks and used when creating time entries.
+                </p>
+              </div>
+<div class="projects-header-actions">
+  <input
+    id="projects-search"
+    type="text"
+    class="search-input"
+    placeholder="Search projects…"
+    autocomplete="off"
+    inputmode="search"
+    autocorrect="off"
+    autocapitalize="off"
+    spellcheck="false"
+    name="projects-search-no-autofill"
+  />
+  <button id="projects-toggle-inactive" class="btn secondary btn-sm">
+    Show Inactive
+  </button>
+</div>
             </div>
 
-            <p class="message">
-              Right now projects come in from QuickBooks via the Sync Projects button above.
-              (We can add editing here later if you want.)
-            </p>
-
             <div class="table-wrapper">
-              <table>
+              <table class="clickable-rows">
                 <thead>
                   <tr>
                     <th>Project</th>
@@ -186,70 +389,554 @@
           </div>
         </section>
 
-        <!-- TIME ENTRIES SECTION -->
-        <section id="section-time-entries" class="section">
+        <!-- SHIPMENTS SECTION -->
+        <section id="section-shipments" class="section">
           <div class="card">
             <div class="card-header">
-              <h2>Time Entries</h2>
+              <div>
+                <h2>Shipments</h2>
+                <p class="card-sub">
+                  Track shipments from pre-order through pickup. Drag cards between status
+                  columns, view timelines, payments, documents, and comments.
+                </p>
+              </div>
+              <div>
+                <button id="shipment-add-btn" class="btn primary">+ Add shipment</button>
+              </div>
+            </div>
+
+            <!-- Tabs: Board / Analytics / Templates -->
+            <div class="shipments-tabs" style="display:flex; gap:8px; margin-bottom:14px;">
+            <!--  <button class="btn secondary btn-sm shipments-tab active" data-view="board">Board</button>-->
+             <!-- <button class="btn secondary btn-sm shipments-tab" data-view="templates">Templates</button>-->
+            </div>
+
+            <!-- BOARD VIEW -->
+            <div id="shipments-view-board">
+              <div class="shipments-filters">
+<input
+  id="shipments-search"
+  class="search-input"
+  type="text"
+  inputmode="search"
+  placeholder="Search by title, PO, tracking…"
+  autocomplete="off"
+  autocorrect="off"
+  autocapitalize="off"
+  spellcheck="false"
+  name="shipments-search-no-autofill"
+/>
+                <div id="shipments-status-dropdown" class="status-dropdown">
+                  <button id="status-dropdown-btn" class="dropdown-btn">
+                    <img id="status-dropdown-icon" class="dropdown-icon" src="" />
+                    <span id="status-dropdown-label">All statuses</span>
+                  </button>
+
+                  <div id="status-dropdown-menu" class="dropdown-menu hidden"></div>
+                </div>
+                <select id="shipments-filter-project">
+                  <option value="">All projects</option>
+                </select>
+                <select id="shipments-filter-vendor">
+                  <option value="">All vendors</option>
+                </select>
+              </div>
+
+              <div id="shipments-notify-panel" class="shipments-notify-panel">
+                <div class="shipments-notify-header">
+                  <div>
+                    <div class="notify-pill">Admin notifications</div>
+                    <h3>Stay on top of shipments</h3>
+                    <p class="small-muted">
+                      Choose which statuses matter and when you want a heads-up.
+                      Saved per admin on this device.
+                    </p>
+                  </div>
+                  <label class="notify-toggle">
+                    <input type="checkbox" id="shipment-notify-enabled" />
+                    <span>Enable</span>
+                  </label>
+                </div>
+
+                <div class="shipments-notify-grid">
+                  <div class="notify-group">
+                    <label>Status filters</label>
+                    <div id="shipment-notify-statuses" class="notify-statuses"></div>
+                  </div>
+                  <div class="notify-group">
+                    <label for="shipment-notify-time">Daily reminder time</label>
+                    <input type="time" id="shipment-notify-time" />
+                    <p class="small-muted">Uses your browser timezone; leave blank to turn off the daily ping.</p>
+                  </div>
+                  <div class="notify-group">
+                    <label for="shipment-notify-shipments">Shipments to watch (optional)</label>
+                    <select id="shipment-notify-shipments" multiple size="5"></select>
+                    <p class="small-muted">Select specific shipments or leave empty to watch everything with the chosen statuses.</p>
+                  </div>
+                </div>
+
+                <div class="shipments-notify-actions">
+                  <button class="btn secondary btn-sm" id="shipment-notify-test" type="button">Test notification</button>
+                  <button class="btn primary btn-sm" id="shipment-notify-save" type="button">Save preferences</button>
+                  <span id="shipment-notify-message" class="message"></span>
+                </div>
+              </div>
+
+              <div id="shipments-board" class="shipments-board">
+                <!-- columns injected by JS -->
+              </div>
+              <p id="shipments-board-message" class="message"></p>
+            </div>
+
+            <!-- ANALYTICS VIEW -->
+            <div id="shipments-view-analytics" class="hidden">
               <p class="card-sub">
-                Select an employee and project, enter the date range and hours worked.
-                The total pay will be calculated automatically using the employee's rate.
+                Analytics coming from /api/shipments/analytics (total shipments, in transit,
+                delivered, average transit time, on-time rate, etc.).
               </p>
-            </div>
-
-            <div class="form-grid">
-              <div class="form-field">
-                <label for="te-employee">Employee</label>
-                <select id="te-employee">
-                  <option value="">(select employee)</option>
-                </select>
-              </div>
-
-              <div class="form-field">
-                <label for="te-project">Project</label>
-                <select id="te-project">
-                  <option value="">(select project)</option>
-                </select>
-              </div>
-
-              <div class="form-field">
-                <label for="te-start">Start Date</label>
-                <input id="te-start" type="date" />
-              </div>
-
-              <div class="form-field">
-                <label for="te-end">End Date</label>
-                <input id="te-end" type="date" />
-              </div>
-
-              <div class="form-field">
-                <label for="te-hours">Hours</label>
-                <input id="te-hours" type="number" min="0" step="0.01" />
-              </div>
-
-              <div class="form-field form-field-button">
-                <button id="save-time-entry" class="btn primary">Save Time Entry</button>
+              <div id="shipments-analytics-content">
+                <!-- metrics and charts via JS -->
               </div>
             </div>
 
-            <p id="time-message" class="message"></p>
+            <!-- TEMPLATES VIEW -->
+            <div id="shipments-view-templates" class="hidden">
+              <div class="form-grid" style="margin-bottom:1rem;">
+                <div class="form-field">
+                  <label for="shipment-template-name">Template name</label>
+                  <input id="shipment-template-name" type="text" />
+                </div>
+                <div class="form-field form-field-button">
+                  <button id="shipment-template-save" class="btn secondary">Save current as template</button>
+                </div>
+              </div>
 
-            <h3>Recent Time Entries</h3>
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Template</th>
+                      <th>Vendor</th>
+                      <th>Project</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="shipment-templates-body">
+                    <tr><td colspan="4">(no templates yet)</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- TIME EXCEPTIONS REPORT -->
+        <section id="section-time-exceptions" class="section">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h1 class="report-title">Time Exceptions</h1>
+              </div>
+            </div>
+
+            <div class="card-body">
+              <!-- FILTER BAR -->
+              <div class="time-report-form">
+                <div class="form-row time-report-row">
+                  <label>
+                    Employee
+                    <select id="te-ex-filter-employee">
+                      <option value="">All employees</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Project
+                    <select id="te-ex-filter-project">
+                      <option value="">All projects</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Category
+                    <select id="te-ex-filter-category">
+                      <option value="">All categories</option>
+                      <option value="time">Time discrepancies</option>
+                      <option value="geo">Geofence discrepancies</option>
+                      <option value="auto">Auto clock-outs</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Start date
+                    <input type="date" id="te-ex-filter-start" />
+                  </label>
+
+                  <label>
+                    End date
+                    <input type="date" id="te-ex-filter-end" />
+                  </label>
+
+                  <label class="checkbox-inline">
+                    Hide resolved
+                    <input type="checkbox" id="te-ex-hide-resolved" checked />
+                  </label>
+                </div>
+
+                <div class="form-actions time-report-actions">
+                  <button id="te-ex-apply" class="btn">
+                    Run Report
+                  </button>
+                </div>
+              </div>
+
+              <!-- TABLE -->
+              <div class="table-wrapper">
+                <table class="table clickable-rows">
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>Project</th>
+                      <th>Clock in</th>
+                      <th>Clock out</th>
+                      <th>Duration</th>
+                      <th>Category</th>
+                      <th>Flags</th>
+                      <th>Resolve</th>
+                    </tr>
+                  </thead>
+
+                  <tbody id="time-exceptions-body">
+                    <tr>
+                      <td colspan="8">(no data – pick a date range)</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <p id="time-exceptions-message" class="message"></p>
+            </div>
+          </div>
+        </section>
+
+        <!-- SETTINGS -->
+        <section id="section-settings" class="section">
+          <div class="card">
+            <div class="card-header">
+              <h1 class="report-title">Settings</h1>
+              <div class="card-header-actions settings-actions">
+                <button id="settings-save" class="btn primary">Save Settings</button>
+                <span id="settings-status" class="message"></span>
+              </div>
+            </div>
+
+            <div class="card-body settings-grid">
+              <div class="card settings-card">
+                <div class="card-header">
+                  <h2>Company Info</h2>
+                </div>
+                <div class="card-body">
+                  <label>
+                    Company Name
+                    <input type="text" id="settings-company-name" />
+                  </label>
+                  <label>
+                    Contact Email
+                    <input type="email" id="settings-company-email" />
+                  </label>
+                </div>
+              </div>
+
+              <div class="card settings-card">
+                <div class="card-header">
+                  <h2>Change Password</h2>
+                </div>
+                <div class="card-body">
+                  <label>
+                    Current Password
+                    <input type="password" id="settings-password-current" />
+                  </label>
+                  <label>
+                    New Password
+                    <input type="password" id="settings-password-new" />
+                  </label>
+                  <label>
+                    Confirm New Password
+                    <input type="password" id="settings-password-confirm" />
+                  </label>
+                  <p class="card-sub">Note: this is a placeholder; hook into your auth backend.</p>
+                </div>
+              </div>
+
+              <div class="card settings-card">
+                <div class="card-header">
+                  <h2>Shipment Settings</h2>
+                </div>
+                <div class="card-body">
+                  <label>
+                    Daily late fee (past pickup due date)
+                    <input type="number" id="settings-daily-fee" min="0" step="0.01" placeholder="0.00" />
+                  </label>
+                  <label>
+                    Default pickup due date offset (days from arrival)
+                    <input type="number" id="settings-due-offset" min="0" step="1" placeholder="0" />
+                  </label>
+                  <p class="card-sub">These values will be used to auto-calc estimated fees past the due date.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Access control -->
+            <div class="card settings-card access-card">
+              <div class="card-header">
+                <h2>Access Control</h2>
+              </div>
+              <div class="card-body">
+                <p class="card-sub">Toggle what each admin can see/do.</p>
+                <div class="table-wrapper">
+                  <table class="access-table">
+                    <thead>
+                      <tr>
+                        <th>Admin</th>
+                        <th>See shipments</th>
+                        <th>Modify/approve/reject time</th>
+                        <th>View time reports</th>
+                        <th>View payroll info</th>
+                        <th>Modify pay rates</th>
+                      </tr>
+                    </thead>
+                    <tbody id="settings-access-body">
+                      <tr><td colspan="6">(loading admins…)</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- TIME ENTRIES SECTION -->
+        <section id="section-time-entries" class="section">
+          <!-- ───── MANUAL TIME ENTRY CARD (SEPARATE CONTAINER) ───── -->
+          <div id="time-entry-create-card" class="card hidden" style="margin-bottom: 1.5rem;">
+            <div class="card-header">
+              <div>
+                <h2>Manual Time Entry</h2>
+                <p class="card-sub">
+                  Create or edit a single time entry. When you're done, click Save or Cancel to close this panel.
+                </p>
+              </div>
+
+              <!-- 🔁 Toggle button lives here while the manual card is open -->
+              <div class="card-header-actions" id="time-entry-toggle-container-form"></div>
+            </div>
+
+            <div class="card-body">
+              <div id="time-entry-form-wrapper">
+                <div class="form-grid">
+                  <input type="hidden" id="te-id" />
+
+                  <div id="te-original" class="ka-time-action-original hidden">
+                    <div><strong>Original date:</strong> <span id="te-original-date">—</span></div>
+                    <div><strong>Original project:</strong> <span id="te-original-project">—</span></div>
+                    <div><strong>Original clock-in/out:</strong> <span id="te-original-times">—</span></div>
+                  </div>
+
+                  <div class="form-field">
+                    <label for="te-employee">Employee</label>
+                    <select id="te-employee" class="input"></select>
+                  </div>
+
+                  <div class="form-field">
+                    <label for="te-project">Project</label>
+                    <select id="te-project" class="input"></select>
+                  </div>
+
+                  <div class="form-field">
+                    <label for="te-start">Date</label>
+                    <input type="date" id="te-start" class="input" />
+                  </div>
+
+                  <div class="form-field">
+                    <label for="te-start-time">Start time</label>
+                    <input type="time" id="te-start-time" class="input" />
+                  </div>
+
+                  <div class="form-field">
+                    <label for="te-end-time">End time</label>
+                    <input type="time" id="te-end-time" class="input" />
+                  </div>
+
+                  <div class="form-field">
+                    <label for="te-hours">Total time (hours)</label>
+                    <input
+                      type="number"
+                      id="te-hours"
+                      step="0.01"
+                      min="0"
+                      class="input"
+                      readonly
+                    />
+                  </div>
+
+                  <div class="form-field" style="grid-column: 1 / -1;">
+                    <label for="te-note">Change note (required for edits)</label>
+                    <textarea id="te-note" rows="2" class="input"></textarea>
+                  </div>
+                </div>
+
+                <!-- message area used by saveTimeEntry -->
+                <p id="time-entry-message" class="message"></p>
+
+                <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem;">
+                  <button id="time-entry-save-btn" class="btn primary">Save Time Entry</button>
+                  <button id="time-entry-cancel-btn" type="button" class="btn secondary">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ───── REPORT CARD (FILTERS + TABLE ONLY) ───── -->
+          <div class="card">
+            <!-- CARD HEADER -->
+            <div class="card-header">
+              <div>
+                <h1 class="report-title">Time Entry Report</h1>
+              </div>
+
+              <div class="card-header-actions" id="time-entry-toggle-container-report">
+                <button
+                  type="button"
+                  id="time-entry-toggle-form"
+                  class="btn secondary btn-sm"
+                >
+                  + Add manual time entry
+                </button>
+              </div>
+            </div>
+
+            <!-- CARD BODY -->
+            <div class="card-body">
+              <!-- FILTER BAR -->
+              <div class="time-report-form">
+                <div class="form-row time-report-row">
+                  <label>
+                    Employee
+                    <select id="te-filter-employee"></select>
+                  </label>
+
+                  <label>
+                    Project
+                    <select id="te-filter-project"></select>
+                  </label>
+
+                  <label>
+                    Start date
+                    <input type="date" id="te-filter-start" />
+                  </label>
+
+                  <label>
+                    End date
+                    <input type="date" id="te-filter-end" />
+                  </label>
+                </div>
+
+                <div class="form-actions time-report-actions">
+                  <button type="button" id="time-filter-apply" class="btn">
+                    Run Report
+                  </button>
+                </div>
+              </div>
+
+              <!-- TABLE WRAPPER -->
+              <div class="export-bar">
+                <div class="export-dropdown">
+                  <button type="button" class="icon-button export-toggle" id="te-export-toggle" aria-label="Export time entries">⤓</button>
+                  <div class="export-menu hidden" id="te-export-menu">
+                    <button type="button" class="export-menu-item" id="te-export-csv">Export CSV</button>
+                    <button type="button" class="export-menu-item" id="te-export-pdf">Export PDF</button>
+                  </div>
+                </div>
+              </div>
+              <div class="table-wrapper">
+                <table class="clickable-rows">
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>Project</th>
+                      <th>Date</th>
+                      <th>Hours</th>
+                      <th>Pay</th>
+                      <th>Paid?</th>
+                      <th>Date Paid</th>
+                    </tr>
+                  </thead>
+                  <tbody id="time-table-body">
+                    <tr>
+                      <td colspan="7">(no time entries for this selection)</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div> <!-- /card-body -->
+          </div> <!-- /card -->
+        </section>
+
+        <!-- SESSIONS SECTION -->
+        <section id="section-kiosks" class="section">
+          <!-- Session list -->
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h2>Sessions (Today)</h2>
+                <p class="card-sub">
+                  See every project session on all kiosks and who is currently clocked in.
+                </p>
+              </div>
+              <div>
+                <button id="session-refresh-btn" class="btn secondary btn-sm">Refresh</button>
+              </div>
+            </div>
+
+            <div class="table-wrapper">
+              <table class="clickable-rows">
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>Admin</th>
+                    <th class="right">Workers clocked in</th>
+                    <th>Started</th>
+                    <th>Ended</th>
+                  </tr>
+                </thead>
+                <tbody id="session-table-body">
+                  <tr>
+                    <td colspan="5">(loading sessions…)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Session details -->
+          <div id="session-detail-card" class="card hidden">
+            <div class="card-header">
+              <div>
+                <h2 id="session-detail-title">Current Workers</h2>
+              </div>
+            </div>
+
             <div class="table-wrapper">
               <table>
                 <thead>
                   <tr>
                     <th>Employee</th>
-                    <th>Project</th>
-                    <th>Dates</th>
-                    <th>Hours</th>
-                    <th>Total Pay</th>
+                    <th>Clock In</th>
+                    <th>Time on Clock</th>
                   </tr>
                 </thead>
-                <tbody id="time-table-body">
-                  <tr>
-                    <td colspan="5">(no time entries yet)</td>
-                  </tr>
+                <tbody id="session-workers-body">
+                  <tr><td colspan="3">(select a session)</td></tr>
                 </tbody>
               </table>
             </div>
@@ -258,191 +945,391 @@
 
         <!-- PAYROLL SECTION -->
         <section id="section-payroll" class="section">
-          <div class="card">
-            <div class="card-header">
-              <h2>Payroll / Checks</h2>
-              <p class="card-sub">
-                Choose a pay period to see total hours and pay per employee.
-                Then create checks in QuickBooks.
-              </p>
+          <!-- CARD 1: PAYROLL SETTINGS (collapsed by default) -->
+          <div class="card payroll-settings-card">
+            <div class="card-header clickable" id="payroll-settings-toggle">
+              <div>
+                <h2>Payroll Settings</h2>
+                <p class="card-sub">
+                  Choose your QuickBooks bank / expense accounts and default memo templates.
+                </p>
+              </div>
             </div>
 
-            <div class="form-grid">
+            <!-- Collapsible body - HIDDEN ON LOAD -->
+            <div id="payroll-settings-body" class="card-body hidden">
+              <!-- Bank account dropdown -->
               <div class="form-field">
-                <label for="pay-start">Pay Period Start</label>
-                <input id="pay-start" type="date" />
+                <label for="payroll-bank-account">Bank account (QuickBooks)</label>
+                <select id="payroll-bank-account">
+                  <option value="">(select bank account)</option>
+                  <!-- options injected from /api/payroll/account-options -->
+                </select>
               </div>
 
+              <!-- Expense account dropdown -->
               <div class="form-field">
-                <label for="pay-end">Pay Period End</label>
-                <input id="pay-end" type="date" />
+                <label for="payroll-expense-account">Expense / COGS account (QuickBooks)</label>
+                <select id="payroll-expense-account">
+                  <option value="">(select expense account)</option>
+                </select>
               </div>
 
-              <div class="form-field form-field-button">
-                <button id="load-payroll" class="btn secondary">Load Payroll Summary</button>
+              <!-- Memo template -->
+              <div class="form-field">
+                <label for="payroll-memo-template">Default memo template</label>
+                <input
+                  id="payroll-memo-template"
+                  type="text"
+                  placeholder="Payroll {start} – {end}"
+                />
+                <div class="tag-palette" data-target="payroll-memo-template">
+                  <span class="tag-chip" draggable="true" data-tag="{start}">{start}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{end}">{end}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{dateRange}">{dateRange}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{employee}">{employee}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{project}">{project}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{hours}">{hours}</span>
+                </div>
               </div>
 
-              <div class="form-field form-field-button">
-                <button id="create-checks" class="btn primary">Create Checks in QuickBooks</button>
+              <!-- Line description template -->
+              <div class="form-field">
+                <label for="payroll-line-desc-template">Line description template</label>
+                <input
+                  id="payroll-line-desc-template"
+                  type="text"
+                  placeholder="Labor {hours} hrs – {project}"
+                />
+                <div class="tag-palette" data-target="payroll-line-desc-template">
+                  <span class="tag-chip" draggable="true" data-tag="{start}">{start}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{end}">{end}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{dateRange}">{dateRange}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{employee}">{employee}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{project}">{project}</span>
+                  <span class="tag-chip" draggable="true" data-tag="{hours}">{hours}</span>
+                </div>
               </div>
-            </div>
 
-            <p id="payroll-message" class="message"></p>
-
-            <h3>Summary by Employee</h3>
-            <div class="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Employee</th>
-                    <th>By Project</th>
-                    <th>Total Hours</th>
-                    <th>Total Pay</th>
-                  </tr>
-                </thead>
-                <tbody id="payroll-table-body">
-                  <tr>
-                    <td colspan="4">(no data yet)</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <!-- REPORTS SECTION -->
-        <section id="section-reports" class="section">
-          <div class="card">
-            <div class="card-header">
-              <h2>Reports</h2>
-              <p class="card-sub">
-                View past payroll runs that have been sent to QuickBooks, see
-                check details, and download check information.
-              </p>
-            </div>
-
-            <p class="message" id="reports-message"></p>
-
-            <h3>Payroll Runs</h3>
-            <div class="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Pay Period</th>
-                    <th>Created</th>
-                    <th>Total Hours</th>
-                    <th>Total Pay</th>
-                    <th>Checks (Paid / Total)</th>
-                  </tr>
-                </thead>
-                <tbody id="reports-runs-body">
-                  <tr>
-                    <td colspan="5">(no payroll runs yet)</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <h3>Run Details</h3>
-            <div class="reports-actions">
-              <button id="reports-download" class="btn secondary" disabled>
-                Download CSV (checks in this run)
+              <button id="payroll-settings-save" class="btn secondary">
+                Save Payroll Settings
               </button>
             </div>
+          </div>
 
-            <div class="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Employee</th>
-                    <th>Hours</th>
-                    <th>Total Pay</th>
-                    <th>Check #</th>
-                    <th>Paid?</th>
-                  </tr>
-                </thead>
-                <tbody id="reports-details-body">
-                  <tr>
-                    <td colspan="5">(select a payroll run above)</td>
-                  </tr>
-                </tbody>
-              </table>
+          <!-- CARD 2: PAYROLL DATE RANGE + SUMMARY -->
+          <div class="card payroll-summary-card">
+            <div class="card-header">
+              <div>
+                <h2>Payroll</h2>
+                <p class="card-sub">
+                  Select a date range, review totals, expand any employee to see full check details,
+                  and then create checks in QuickBooks.
+                </p>
+              </div>
+            </div>
+
+            <div class="card-body">
+              <!-- DATE FILTERS + ACTIONS -->
+              <div class="form-grid">
+                <div class="form-field">
+                  <label for="payroll-start">Start date</label>
+                  <input id="payroll-start" type="date">
+                </div>
+
+                <div class="form-field">
+                  <label for="payroll-end">End date</label>
+                  <input id="payroll-end" type="date">
+                </div>
+
+                <div class="form-field form-field-button">
+                  <button id="payroll-create-checks" class="btn primary" type="button">
+                    Create Checks in QuickBooks
+                  </button>
+                  <button id="payroll-retry-failed" class="btn secondary" type="button" disabled>
+                    Retry failed employees only
+                  </button>
+                </div>
+
+                <div class="form-field form-field-button">
+                  <button id="payroll-refresh" class="btn secondary" type="button">
+                    Load Payroll Summary
+                  </button>
+                </div>
+              </div>
+
+              <!-- PAYROLL SUMMARY TABLE -->
+              <h3 class="mt-4">Payroll Summary</h3>
+              <div class="table-wrapper">
+                <table id="payroll-summary-table">
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>Project</th>
+                      <th>Total Hours</th>
+                      <th>Total Pay</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="payroll-summary-body">
+                    <tr><td colspan="5">(no data yet)</td></tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </section>
 
-      </div> <!-- /.main-inner -->
-    </main>
-  </div> <!-- /.app-shell -->
+<!-- REPORTS SECTION (PAYROLL) -->
+<section id="section-reports" class="section">
+  <div class="card">
+    <div class="card-header">
+      <h2>Payroll Reports</h2>
+      <p class="card-sub">
+        View past payroll runs that have been sent to QuickBooks, see
+        check details, and download check information.
+      </p>
+    </div>
 
-  <!-- EMPLOYEE DETAILS / EDIT MODAL -->
-  <div id="employee-edit-backdrop" class="modal-backdrop hidden"></div>
+    <p class="message" id="reports-message"></p>
 
-  <div id="employee-edit-modal" class="modal hidden" role="dialog" aria-modal="true">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3 id="employee-edit-title">Employee Details</h3>
-        <button
-          id="employee-edit-close"
-          class="icon-button"
-          type="button"
-          aria-label="Close employee dialog"
-        >
-          ×
-        </button>
+    <!-- ───────── PAYROLL REPORTS ───────── -->
+
+    <h3>Payroll Runs</h3>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Pay Period</th>
+            <th>Created</th>
+            <th>Total Hours</th>
+            <th>Total Pay</th>
+            <th>Checks (Paid / Total)</th>
+          </tr>
+        </thead>
+        <tbody id="reports-runs-body">
+          <tr>
+            <td colspan="5">(no payroll runs yet)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Run Details</h3>
+    <div class="reports-actions">
+      <button id="reports-download" class="btn secondary" disabled>
+        Download CSV (checks in this run)
+      </button>
+    </div>
+
+    <!-- Run Details table -->
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Employee</th>
+            <th>Hours</th>
+            <th>Total Pay</th>
+            <th>Check #</th>
+            <th>Paid</th>
+          </tr>
+        </thead>
+        <tbody id="reports-details-body">
+          <tr>
+            <td colspan="5">(select a payroll run above)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Payroll Audit Log -->
+    <h3>Payroll Audit Log (last 50 events)</h3>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Event</th>
+            <th>Message</th>
+            <th>Run ID</th>
+          </tr>
+        </thead>
+        <tbody id="reports-audit-body">
+          <tr>
+            <td colspan="4">(no audit events yet)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+
+ <!-- SHIPMENTS VERIFICATION REPORT SECTION -->
+<section id="section-shipments-report" class="section">
+  <div class="card">
+    <div class="card-header">
+      <h1 class="report-title">Shipment Verification Report</h1>
+      <p class="card-sub">
+        Find shipments that are verified, ready for pickup, or drill into a single
+        shipment’s item-level verification history.
+      </p>
+    </div>
+
+    <form id="shipments-report-form" class="reports-filter-form shipments-report-form">
+      <div class="form-row">
+        <label>
+          Start date
+          <input type="date" id="shipments-report-start" />
+        </label>
+
+        <label>
+          End date
+          <input type="date" id="shipments-report-end" />
+        </label>
+
+        <label>
+          Status
+          <select id="shipments-report-status">
+            <option value="">All statuses</option>
+            <option>Pre-Order</option>
+            <option>Ordered</option>
+            <option>In Transit to Forwarder</option>
+            <option>Arrived at Forwarder</option>
+            <option>Sailed</option>
+            <option>Arrived at Port</option>
+            <option>Awaiting Clearance</option>
+            <option>Cleared - Ready for Release</option>
+            <option>Picked Up</option>
+            <option>Archived</option>
+          </select>
+        </label>
+
+        <label>
+          Project
+          <select id="shipments-report-project">
+            <option value="">All projects</option>
+            <!-- Options will be populated from /api/projects -->
+          </select>
+        </label>
+
+        <div class="columns-multiselect">
+          <span class="columns-label">Columns</span>
+          <div class="columns-select">
+            <div class="columns-select-control" id="report-columns-toggle">
+              <span id="report-columns-label">Default columns</span>
+              <span class="columns-caret">▾</span>
+            </div>
+            <div id="report-columns-menu" class="columns-menu hidden">
+              <label><input type="checkbox" data-report-col="bol" checked /> BOL</label>
+              <label><input type="checkbox" data-report-col="sku" checked /> Internal Ref #</label>
+              <label><input type="checkbox" data-report-col="project" checked /> Project</label>
+              <label><input type="checkbox" data-report-col="title" checked /> Title</label>
+              <label><input type="checkbox" data-report-col="status" checked /> Status</label>
+              <label><input type="checkbox" data-report-col="verified" checked /> Items Verified?</label>
+              <label><input type="checkbox" data-report-col="eta" checked /> Freight Forwarder Paid</label>
+              <label><input type="checkbox" data-report-col="ready" checked /> Customs Paid</label>
+              <label><input type="checkbox" data-report-col="tracking" /> Tracking #</label>
+              <label><input type="checkbox" data-report-col="forwarder" /> Freight Forwarder</label>
+              <label><input type="checkbox" data-report-col="vendor" /> Vendor</label>
+              <label><input type="checkbox" data-report-col="vendor_paid" /> Vendor Paid</label>
+              <label><input type="checkbox" data-report-col="vendor_paid_amt" /> Vendor Paid Amount</label>
+              <label><input type="checkbox" data-report-col="ff_paid" checked /> Freight Forwarder Paid</label>
+              <label><input type="checkbox" data-report-col="ff_paid_amt" /> Freight Forwarder Paid Amount</label>
+              <label><input type="checkbox" data-report-col="customs_paid" checked /> Customs Paid</label>
+              <label><input type="checkbox" data-report-col="customs_paid_amt" /> Customs Paid Amount</label>
+              <label><input type="checkbox" data-report-col="total_paid" /> Total Paid</label>
+              <label><input type="checkbox" data-report-col="picked_by" /> Picked Up By</label>
+              <label><input type="checkbox" data-report-col="picked_date" /> Pickup Date</label>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="form-grid">
-        <div class="form-field">
-          <label for="edit-employee-name">Employee Name</label>
-          <input id="edit-employee-name" type="text" />
-        </div>
-
-        <div class="form-field">
-          <label for="edit-employee-nickname">Nickname (optional)</label>
-          <input id="edit-employee-nickname" type="text" />
-        </div>
-
-        <div class="form-field">
-          <label for="edit-employee-name-on-checks">Name on checks (optional)</label>
-          <input id="edit-employee-name-on-checks" type="text" />
-        </div>
-
-        <div class="form-field">
-          <label for="edit-employee-rate">Hourly Rate</label>
-          <input id="edit-employee-rate" type="number" min="0" step="0.01" />
-        </div>
-      </div>
-
-      <p id="employee-edit-message" class="message"></p>
-
-      <div class="modal-footer">
-        <button id="employee-edit-toggle-active" type="button" class="btn tertiary">
-          Make Inactive
-        </button>
-        <button id="employee-edit-cancel" type="button" class="btn secondary">
-          Close
-        </button>
-        <button id="employee-edit-edit" type="button" class="btn secondary">
-          Edit
-        </button>
-        <button id="employee-edit-save" type="button" class="btn primary hidden">
-          Save Changes
+      <div class="form-row form-row-actions">
+        <button type="submit" class="btn">
+          Run report
         </button>
       </div>
-    </div> <!-- /.modal-card -->
-  </div> <!-- /#employee-edit-modal -->
+    </form>
 
-  <script src="app.js"></script>
+    <p class="message" id="shipments-report-message"></p>
+
+
+    <div class="table-wrapper">
+      <table id="shipments-report-table">
+        <thead>
+          <tr>
+            <th>BOL</th>
+            <th>Internal Ref #</th>
+            <th>Project</th>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Items Verified?</th>
+            <th>Freight Forwarder Paid</th>
+            <th>Customs Paid</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody id="shipments-report-table-body">
+          <tr>
+            <td colspan="8">(run the report to view shipments)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Detail panel for a single shipment's verification history -->
+    <div id="shipment-verification-detail" class="card subtle hidden">
+      <div class="card-header">
+        <h4>Shipment Verification Detail</h4>
+        <p class="card-sub" id="shipment-verification-detail-header">
+          <!-- Filled in by JS when a shipment is selected -->
+        </p>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>SKU</th>
+              <th>Qty</th>
+              <th>Status</th>
+              <th>Last Verified By</th>
+              <th>Last Verified At</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody id="shipment-verification-detail-body">
+            <tr>
+              <td colspan="7">(select a shipment in the table above)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+
+  <!-- 🔹 All modals will be injected here at runtime -->
+  <div id="modals-root"></div>
+
+  <!-- helper & feature scripts -->
+  <script src="/js/utils.js"></script>
+  <script src="/js/employees.js"></script>
+  <script src="/js/vendors.js"></script>
+  <script src="/js/projects.js"></script>
+  <script src="/js/shipments.js"></script>
+  <script src="/js/kiosks.js"></script>
+  <script src="/js/payroll.js"></script>
+  <script src="/js/app.js"></script>
   <script>
-    // Optional: also register service worker from the admin app
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker
-          .register('/service-worker.js')
-          .catch(err => {
-            console.warn('Service worker registration failed:', err);
-          });
+        navigator.serviceWorker.register('/service-worker.js');
       });
     }
   </script>

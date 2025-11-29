@@ -3,8 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <title>Avian Time – Kiosk</title>
-  <link rel="stylesheet" href="styles.css" />
+
+  <!-- Fixed: make these root-relative so they load at /kiosk -->
+  <link rel="stylesheet" href="/styles.css" />
   <link rel="manifest" href="/manifest.json" />
+
   <meta name="theme-color" content="#10b981" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -167,7 +170,7 @@ body {
 
 .kiosk-select {
   width: 100%;
-  padding: 14px 20px;
+  padding: 18px 20px;
   border-radius: 14px;
   border: none;
   background: var(--slate-100);
@@ -243,7 +246,6 @@ body {
 
 /* MODAL BACKDROP */
 
-/* MODAL BACKDROP – stays centered on screen */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -254,11 +256,14 @@ body {
   z-index: 80;
 }
 
-/* MODAL – centered content, stacked vertically */
+/* MODAL */
+
 .modal {
+  position: relative;        /* override global fixed fullscreen */
   width: 100%;
   max-width: 480px;
   max-height: 90vh;
+  height: auto;              /* don’t stretch to full height */
   background: #ffffff;
   border-radius: 24px;
   padding: 32px 28px 24px;
@@ -272,9 +277,13 @@ body {
   justify-content: center;
   text-align: center;
   gap: 16px;
+
+  pointer-events: auto;      /* 👈 this is the key line */
 }
 
-/* HEADER – title centered, X in top-right */
+
+/* HEADER */
+
 .modal-header {
   width: 100%;
   position: relative;
@@ -303,12 +312,14 @@ body {
 }
 
 /* EMPLOYEE NAME */
+
 #pin-employee-name {
   font-size: 0.9rem;
   color: var(--slate-500);
 }
 
-/* PIN INPUT – centered, nice breathing room */
+/* PIN INPUT */
+
 .pin-input {
   width: 100%;
   max-width: 260px;
@@ -331,14 +342,22 @@ body {
     0 8px 18px rgba(16, 185, 129, 0.25);
 }
 
+/* Make PIN fields show dots even though type="tel" */
+.pin-input,
+#admin-login-pin {
+  -webkit-text-security: disc; /* Works on iOS & Android browsers */
+}
+
 /* STATUS TEXT UNDER PIN */
+
 .modal-status {
   min-height: 18px;
   font-size: 0.78rem;
   color: var(--slate-500);
 }
 
-/* CAMERA SECTION – full width, but still under everything, stacked */
+/* CAMERA SECTION */
+
 .camera-area {
   width: 100%;
   margin-top: 8px;
@@ -367,6 +386,7 @@ body {
 }
 
 /* BUTTON ROWS – centered under content */
+
 .camera-buttons {
   margin-top: 16px;
   display: flex;
@@ -376,6 +396,7 @@ body {
 }
 
 /* SMALL BUTTONS */
+
 .btn-small {
   padding: 10px 20px;
   border-radius: 999px;
@@ -408,25 +429,343 @@ body {
   background: var(--slate-100);
 }
 
+.kiosk-logo img {
+  width: 36px;
+  height: auto;
+  display: block;
+  -webkit-touch-callout: none; /* 🚫 iOS long-press menu */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ============================
+   ADMIN LOGIN MODAL CLEANUP
+   ============================ */
+
+/* Only the admin login modal card */
+#admin-login-backdrop .modal {
+  padding: 40px 36px 32px !important;  /* slightly tighter but still roomy */
+  gap: 20px !important;                /* clean vertical rhythm */
+  align-items: stretch;                /* let contents use full width */
+  text-align: left;                    /* form fields feel more natural */
+}
+
+/* Header: make "Admin Access" feel like a title */
+#admin-login-backdrop .modal-header {
+  margin-bottom: 16px !important;
+  justify-content: center;             /* center the title */
+}
+
+#admin-login-backdrop .modal-title {
+  font-size: 0.95rem;
+  font-weight: 700;                    /* bolder title */
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--slate-800);
+}
+
+/* Keep the close "×" in the corner */
+#admin-login-backdrop .close-btn {
+  position: absolute;
+  right: 4px;
+  top: -4px;
+}
+
+/* Labels: stacked, clear, with good spacing between fields */
+#admin-login-backdrop .modal-label {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--slate-600);
+  margin-bottom: 18px;        /* space between Admin Name and PIN blocks */
+}
+
+/* Inputs/selects: comfortable and consistent */
+/* Inputs/selects: comfortable and consistent */
+#admin-login-backdrop .modal-input {
+  width: 100%;
+  margin-top: 6px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 0.98rem;
+  background: var(--slate-100);
+  border: none;
+  box-shadow: inset 0 0 0 1px var(--slate-300);
+  color: var(--slate-800);
+
+  /* Make the select look more like a custom field */
+  -webkit-appearance: none;
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--slate-400) 50%),
+    linear-gradient(135deg, var(--slate-400) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 12px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+
+/* Status text under PIN */
+#admin-login-backdrop #admin-login-status {
+  margin-top: 4px;
+  min-height: 18px;
+  font-size: 0.78rem;
+}
+
+/* Footer: bring buttons closer but still separated */
+#admin-login-backdrop .modal-footer {
+  margin-top: 14px !important;    /* was 28px / 12px, now a nice middle */
+  padding-top: 14px !important;
+  border-top: 1px solid var(--slate-200);  /* subtle divider line */
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* Buttons: small horizontal spacing */
+#admin-login-backdrop .modal-footer .btn {
+  margin: 0;
+}
+
+.kiosk-select {
+  width: 100%;
+  padding: 14px 20px;
+  border-radius: 14px;
+  border: none;
+  background: var(--slate-100);
+  font-size: 1rem;
+  color: var(--slate-800);
+  box-shadow: inset 0 0 0 1px var(--slate-300);
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--slate-400) 50%),
+    linear-gradient(135deg, var(--slate-400) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 12px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.kiosk-select:focus {
+  background: #ffffff;
+  outline: none;
+  box-shadow:
+    inset 0 0 0 2px var(--emerald-500),
+    0 8px 18px rgba(16, 185, 129, 0.25);
+}
+
+/* 🔒 Locked project style */
+.kiosk-select-locked {
+  background: var(--slate-200) !important;
+  color: var(--slate-500) !important;
+  box-shadow: inset 0 0 0 1px var(--slate-300);
+  cursor: not-allowed;
+  opacity: 0.9;
+  background-image: none !important; /* removes the dropdown arrow */
+}
+
+.pin-section {
+  width: 100%;
+  max-width: 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.pin-mode-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--slate-600);
+  margin-bottom: 4px;
+  text-align: center;
+}
+
+.pin-toggle {
+  margin-top: 4px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  background: none;
+  border: none;
+  color: var(--emerald-600);
+  cursor: pointer;
+}
+
+.pin-toggle:hover {
+  text-decoration: underline;
+}
+
+/* SUCCESS OVERLAY */
+
+.success-modal {
+  max-width: 420px;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.success-message {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--slate-800);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.kiosk-btn-danger {
+  background: #dc2626 !important;     /* red */
+  color: white !important;
+  border-color: #b91c1c !important;
+}
+
+.kiosk-btn-danger:active {
+  background: #b91c1c !important;
+}
+.kiosk-btn-danger {
+  box-shadow: 0 0 0 0 !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+/* =======================================================
+   RESPONSIVE TWEAKS – TABLET & PHONE
+   ======================================================= */
+
+/* General tablet-sized screens (sideways tablet, small laptops) */
+@media (max-width: 900px) {
+  .kiosk-card {
+    padding: 24px 20px 24px;
+  }
+
+  .kiosk-body {
+    padding-top: 8px;
+  }
+
+  .kiosk-label {
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+  }
+
+  .kiosk-select {
+    font-size: 1rem;
+  }
+
+  .kiosk-status {
+    font-size: 0.85rem;
+  }
+}
+
+/* Phones and very small tablets in portrait */
+/* Phones and very small tablets in portrait */
+@media (max-width: 600px) {
+  /* Let content scroll instead of being hard-locked to the viewport height */
+  .kiosk-shell {
+    height: auto;
+    min-height: 100vh;
+    align-items: flex-start;
+  }
+
+  .kiosk-card {
+    padding: 24px 16px 24px;  /* a bit more top/bottom padding */
+    border-radius: 0;
+  }
+
+  .kiosk-header {
+    margin-bottom: 24px;      /* give the bar some breathing room */
+    align-items: center;
+  }
+
+  .kiosk-brand {
+    gap: 12px;
+  }
+
+  .kiosk-logo {
+    width: 44px;
+    height: 44px;
+  }
+
+  .kiosk-logo img {
+    width: 32px;
+    height: auto;
+  }
+
+  .kiosk-title {
+    font-size: 0.95rem;
+    letter-spacing: 0.18em;   /* keep the “fancy” spacing */
+  }
+
+  .kiosk-sub {
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+  }
+
+  .kiosk-field {
+    margin-top: 20px;
+  }
+
+  .kiosk-select {
+    padding: 10px 12px;
+    font-size: 1rem;
+  }
+
+  /* Make the big round button fit better on narrow screens */
+  .kiosk-btn {
+    width: 68vw;          /* scale with screen width */
+    max-width: 220px;
+    height: 68vw;
+    max-height: 220px;
+    margin-top: 32px;
+  }
+
+  #kiosk-status {
+    text-align: center;
+    padding: 0 8px;
+    font-size: 0.85rem;
+  }
+
+  /* Pin modal tweaks for small screens */
+  #pin-employee-name {
+    font-size: 0.9rem;
+    text-align: center;
+  }
+
+  .pin-section {
+    gap: 10px;
+  }
+
+  .pin-input {
+    font-size: 1.05rem;
+  }
+}
+
+
+
+
+
   </style>
 </head>
+
 <body>
   <div class="kiosk-shell">
     <div class="kiosk-card">
       <div class="kiosk-header">
         <div class="kiosk-brand">
-          <div class="kiosk-logo">
-            <!-- make sure this points to your logo file -->
-            <img src="/logo.png" alt="Avian Group logo" />
+          <div class="kiosk-logo" id="kiosk-logo">
+            <img src="/images/logo.png" alt="Avian Group logo" />
           </div>
           <div>
             <div class="kiosk-title">Avian Time</div>
             <div class="kiosk-sub">Jobsite Kiosk</div>
           </div>
-        </div>
-        <div class="kiosk-header-right">
-          <span>Clock&nbsp;In&nbsp;/&nbsp;Out</span>
-          <span>Secure&nbsp;PIN</span>
         </div>
       </div>
 
@@ -436,9 +775,11 @@ body {
             Project
             <span class="kiosk-label-note">(selected by foreman)</span>
           </label>
-          <select id="kiosk-project" class="kiosk-select">
-            <option value="">Select project</option>
-          </select>
+            <select id="kiosk-project" class="kiosk-select kiosk-select-locked" disabled>
+              <option value="">Project will be set by foreman</option>
+            </select>
+
+
         </div>
 
         <div class="kiosk-field">
@@ -458,50 +799,177 @@ body {
   </div>
 
   <!-- PIN + PHOTO MODAL -->
-  <div id="pin-backdrop" class="modal-backdrop hidden">
-    <div class="modal">
+<div id="pin-backdrop" class="modal-backdrop hidden">
+  <div class="modal">
 
-      <div class="modal-header">
-        <div class="modal-title">Employee PIN</div>
-        <button class="close-btn" id="pin-close-btn">×</button>
+    <div class="modal-header">
+      <div class="modal-title" id="pin-modal-title">Employee PIN</div>
+      <button class="close-btn" id="pin-close-btn">×</button>
+    </div>
+
+    <div id="pin-employee-name"></div>
+
+    <div class="pin-section">
+      <!-- This text will change depending on whether they already have a PIN -->
+      <div id="pin-mode-label" class="pin-mode-label">
+        Enter your PIN to clock in or out.
       </div>
 
-      <div id="pin-employee-name"></div>
-
+      <!-- Primary PIN field -->
       <input
         id="pin-input"
         class="pin-input"
-        type="password"
+        type="tel"
         inputmode="numeric"
-        maxlength="8"
-        autocomplete="off"
-        placeholder="Enter PIN"
+        maxlength="4"
+        autocomplete="new-password"
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
+        name="pin-input-no-autofill"
+        placeholder="PIN"
       />
 
-      <div id="pin-modal-status" class="modal-status"></div>
+      <input
+        id="pin-confirm-input"
+        class="pin-input hidden"
+        type="tel"
+        inputmode="numeric"
+        maxlength="4"
+        autocomplete="new-password"
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
+        name="pin-confirm-no-autofill"
+        placeholder="Confirm PIN"
+      />
 
-      <!-- PHOTO SECTION -->
-      <div id="camera-section" class="camera-area hidden">
-        <div>Photo Required</div>
-        <video id="cam-video" class="hidden" autoplay muted playsinline></video>
-        <img id="cam-preview" class="hidden" />
-        <canvas id="cam-canvas" class="hidden"></canvas>
 
-        <div class="camera-buttons">
-          <button id="start-camera" class="btn-small btn-outline">Start Camera</button>
-          <button id="take-photo" class="btn-small hidden">Take Photo</button>
-          <button id="retake-photo" class="btn-small hidden btn-outline">Retake</button>
-        </div>
+      <!-- Show / Hide toggle -->
+      <button type="button" id="pin-toggle-visibility" class="pin-toggle">
+        Show PIN
+      </button>
+    </div>
+
+    <div id="pin-modal-status" class="modal-status"></div>
+
+    <!-- PHOTO SECTION -->
+    <div id="camera-section" class="camera-area hidden">
+      <div>Photo Required</div>
+      <video id="cam-video" class="hidden" autoplay muted playsinline></video>
+      <img id="cam-preview" class="hidden" />
+      <canvas id="cam-canvas" class="hidden"></canvas>
+
+      <div class="camera-buttons">
+        <button id="start-camera" class="btn-small btn-outline">Start Camera</button>
+        <button id="take-photo" class="btn-small hidden">Take Photo</button>
+        <button id="retake-photo" class="btn-small hidden btn-outline">Retake</button>
+      </div>
+    </div>
+
+    <div class="camera-buttons" style="margin-top:16px;">
+      <button id="pin-cancel" class="btn-small btn-outline">Cancel</button>
+      <button id="pin-continue" class="btn-small">Continue</button>
+    </div>
+
+  </div>
+</div>
+
+  <!-- ADMIN LOGIN MODAL -->
+  <div id="admin-login-backdrop" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">Admin Access</div>
+        <button class="close-btn" id="admin-login-close">×</button>
       </div>
 
-      <div class="camera-buttons" style="margin-top:16px;">
-        <button id="pin-cancel" class="btn-small btn-outline">Cancel</button>
-        <button id="pin-continue" class="btn-small">Continue</button>
+      <div class="modal-body">
+        <label class="modal-label">
+          Admin name
+          <select id="admin-login-employee" class="modal-input">
+            <!-- filled from employeesCache -->
+          </select>
+        </label>
+
+        <label class="modal-label">
+          PIN
+          <input
+            id="admin-login-pin"
+            class="modal-input"
+            type="tel"
+            inputmode="numeric"
+            autocomplete="new-password"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            name="admin-pin-no-autofill"
+            placeholder="Enter PIN"
+          />
+        </label>
+
+        <div id="admin-login-status" class="modal-status"></div>
       </div>
 
+      <div class="modal-footer">
+        <button class="btn secondary" id="admin-login-cancel">Cancel</button>
+        <button class="btn primary" id="admin-login-continue">Continue</button>
+      </div>
     </div>
   </div>
 
-  <script src="kiosk.js"></script>
+  <!-- ADD WORKER MODAL (ADMIN ONLY) -->
+  <div id="add-worker-backdrop" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">Add New Employee</div>
+        <button class="close-btn" id="add-worker-close-btn">×</button>
+      </div>
+
+      <div class="modal-body">
+        <label class="modal-label">
+          Full name
+          <input
+            id="add-worker-name"
+            class="modal-input"
+            type="text"
+            autocomplete="off"
+          />
+        </label>
+
+        <label class="modal-label">
+          Hourly rate
+          <input
+            id="add-worker-rate"
+            class="modal-input"
+            type="number"
+            step="0.01"
+            min="0"
+          />
+        </label>
+
+        <div id="add-worker-status" class="modal-status"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn secondary" id="add-worker-cancel">Cancel</button>
+        <button class="btn primary" id="add-worker-save">Save Employee</button>
+      </div>
+    </div>
+  </div>
+
+<!-- SUCCESS OVERLAY (CLOCK-IN / CLOCK-OUT) -->
+<div id="success-backdrop" class="modal-backdrop hidden">
+  <div class="modal success-modal">
+    <div id="success-message" class="success-message"></div>
+
+    <button id="success-close-btn" class="btn btn-small" style="margin-top:16px;">
+      Back to Clock-In
+    </button>
+  </div>
+</div>
+
+
+  <!-- (keep this as the last thing) -->
+  <script src="/kiosk.js"></script>
 </body>
 </html>
