@@ -690,11 +690,10 @@ function renderPayrollSummaryTable() {
                         }).join('');
                         return `
                           <tr class="custom-line-row" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">
-                            <td><select class="line-project-select with-arrow ${hasProject ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select customer / project)</option>${projectOptions}</select></td>
                             <td><select class="line-expense-select with-arrow ${hasExpense ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select expense account)</option>${expenseOptions}</select></td>
                             <td><input type="text" class="line-desc-input ${hasDesc ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${line.description || ''}" placeholder="(custom description)" /></td>
                             <td><input type="number" step="0.01" min="0" class="line-amount-input ${hasAmount ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${hasAmount ? amountVal.toFixed(2) : ''}" placeholder="0.00" /></td>
-                            <td>(Custom)</td>
+                            <td><select class="line-project-select with-arrow ${hasProject ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select customer / project)</option>${projectOptions}</select></td>
                             <td><select class="line-class-select with-arrow ${hasClass ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select class)</option>${classOptions}</select></td>
                             <td><button type="button" class="btn tertiary btn-compact btn-remove-line" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">Remove</button></td>
                           </tr>
