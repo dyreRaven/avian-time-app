@@ -92,14 +92,6 @@
 
       </nav>
 
-<!-- 🔹 Logout button pinned above the footer -->
-<div class="sidebar-logout-container">
-  <button id="logout-btn" class="nav-item nav-item-logout" type="button">
-    <img src="/icons/logout.svg" class="nav-icon" alt="" aria-hidden="true" />
-    <span>Logout</span>
-  </button>
-</div>
-
 <div class="sidebar-footer">
   Avian Group LLC<br />
   Time &amp; Payroll
@@ -626,6 +618,7 @@
               <h1 class="report-title">Settings</h1>
               <div class="card-header-actions settings-actions">
                 <button id="settings-save" class="btn primary">Save Settings</button>
+                <button type="button" class="btn secondary logout-btn">Logout</button>
                 <span id="settings-status" class="message"></span>
               </div>
             </div>
@@ -664,7 +657,11 @@
                     Confirm New Password
                     <input type="password" id="settings-password-confirm" />
                   </label>
-                  <p class="card-sub">Note: this is a placeholder; hook into your auth backend.</p>
+                  <p class="card-sub">Update your login password. Leave fields blank to keep the current one.</p>
+                  <div class="settings-actions">
+                    <button type="button" id="settings-password-save" class="btn secondary">Update Password</button>
+                    <span id="settings-password-status" class="message"></span>
+                  </div>
                 </div>
               </div>
 
@@ -1031,29 +1028,27 @@
 
             <div class="card-body">
               <!-- DATE FILTERS + ACTIONS -->
-              <div class="form-grid">
+              <div class="form-grid payroll-actions-grid">
                 <div class="form-field">
                   <label for="payroll-start">Start date</label>
                   <input id="payroll-start" type="date">
+                  <button id="payroll-refresh" class="btn secondary btn-sm" type="button">
+                    Load Payroll Summary
+                  </button>
                 </div>
 
                 <div class="form-field">
                   <label for="payroll-end">End date</label>
                   <input id="payroll-end" type="date">
+                  <label class="checkbox-inline" style="margin-top: 8px;">
+                    <input id="payroll-include-paid" type="checkbox" />
+                    Show paid entries in summary
+                  </label>
                 </div>
 
-                <div class="form-field form-field-button">
+                <div class="form-field form-field-button payroll-create-action">
                   <button id="payroll-create-checks" class="btn primary" type="button">
-                    Create Checks in QuickBooks
-                  </button>
-                  <button id="payroll-retry-failed" class="btn secondary" type="button" disabled>
-                    Retry failed employees only
-                  </button>
-                </div>
-
-                <div class="form-field form-field-button">
-                  <button id="payroll-refresh" class="btn secondary" type="button">
-                    Load Payroll Summary
+                    Create Checks
                   </button>
                 </div>
               </div>
@@ -1325,7 +1320,8 @@
   <script src="/js/shipments.js"></script>
   <script src="/js/kiosks.js"></script>
   <script src="/js/payroll.js"></script>
-  <script src="/js/app.js"></script>
+  <!-- cache-bust for app.js to ensure latest Review wiring loads -->
+  <script src="/js/app.js?v=reviewfix16"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {

@@ -2,7 +2,10 @@
 /* ───────── 1. SIDEBAR NAVIGATION ───────── */
 
 // Run Payroll tab wiring & data loads only once
+console.log('[App] app.js loaded');
 let payrollTabInitialized = false;
+let timeExceptionsInitialized = false;
+let timeExceptionProjects = [];
 window.CURRENT_ACCESS_PERMS = window.CURRENT_ACCESS_PERMS || {};
 
 function setupSidebarNavigation() {
@@ -51,6 +54,11 @@ function setupSidebarNavigation() {
       if (sectionKey === 'payroll') {
         console.log('[NAV] Initializing payroll tab (if not already).');
         initPayrollTabIfNeeded();
+      }
+
+      // Initialize Time Exceptions when that tab is opened directly
+      if (sectionKey === 'time-exceptions') {
+        initTimeExceptionsIfNeeded();
       }
 
       // Layout debug for the active section
@@ -805,6 +813,46 @@ if (clearBtn) {
     });
   }
 
+  // Delegate review button clicks so wiring survives table reloads
+  const tbody = document.getElementById('time-exceptions-body');
+  if (tbody) {
+    tbody.addEventListener('click', evt => {
+      const btn = evt.target.closest('.te-review-btn');
+      if (!btn) return;
+      console.log('[Time Exceptions] Delegated handler fired');
+
+      const id = btn.getAttribute('data-id');
+      const source = btn.getAttribute('data-source');
+      if (!id) return;
+
+      const row = btn.closest('tr');
+      const recFromRow = row && row.__timeException;
+      const recFromList = currentTimeExceptions.find(
+        r => String(r.id) === String(id) && (!source || r.source === source)
+      );
+
+      const rec = recFromRow || recFromList || null;
+      if (!rec) {
+        console.warn('[Time Exceptions] Review click but record not found', {
+          id,
+          source,
+          listCount: currentTimeExceptions.length
+        });
+        return;
+      }
+
+      openTimeExceptionReviewModal(rec);
+    });
+  }
+
+  // Global fallback listener in case tbody listener is removed/replaced
+  document.addEventListener('click', evt => {
+    const btn = evt.target.closest && evt.target.closest('.te-review-btn');
+    if (!btn) return;
+    console.log('[Time Exceptions] Document-level fallback handler fired');
+    handleTimeExceptionReviewClick(evt);
+  });
+
   if (reviewClose) reviewClose.addEventListener('click', closeTimeExceptionReviewModal);
   if (reviewCancel) reviewCancel.addEventListener('click', closeTimeExceptionReviewModal);
   if (reviewBackdrop) {
@@ -817,9 +865,23 @@ if (clearBtn) {
     reviewAction.addEventListener('change', () => {
       const note = document.getElementById('te-review-note');
       const noteHelp = document.getElementById('te-review-note-help');
+      const newBlock = document.getElementById('te-review-new-block');
       const needNote = reviewAction.value === 'modify';
       if (note) note.required = needNote;
       if (noteHelp) noteHelp.classList.toggle('hidden', !needNote);
+      if (newBlock) newBlock.classList.toggle('hidden', reviewAction.value !== 'modify');
+      if (reviewAction.value !== 'modify') {
+        const startInput = document.getElementById('te-review-start');
+        const endInput = document.getElementById('te-review-end');
+        const projectSelect = document.getElementById('te-review-project');
+        const hoursInput = document.getElementById('te-review-hours');
+        if (startInput) startInput.value = '';
+        if (endInput) endInput.value = '';
+        if (projectSelect) projectSelect.value = '';
+        if (hoursInput) hoursInput.value = '';
+      } else {
+        fillReviewNewFieldsFromOriginal();
+      }
     });
   }
 
@@ -841,6 +903,7 @@ async function loadTimeExceptionsFilters() {
 
     const employees = employeesRes || [];
     const projects  = projectsRes || [];
+    timeExceptionProjects = projects;
 
     const empSelect = document.getElementById('te-ex-filter-employee');
     const projSelect = document.getElementById('te-ex-filter-project');
@@ -925,6 +988,53 @@ function classifyTimeException(row) {
   return { keys, label };
 }
 
+function fillReviewNewFieldsFromOriginal(rec = currentTimeExceptionRecord || {}) {
+  const startInput = document.getElementById('te-review-start');
+  const endInput = document.getElementById('te-review-end');
+  const projectSelect = document.getElementById('te-review-project');
+
+  const startStr = rec.clock_in_ts
+    ? formatLocalTimeHHMM(rec.clock_in_ts)
+    : rec.start_time || '';
+  const endStr = rec.clock_out_ts
+    ? formatLocalTimeHHMM(rec.clock_out_ts)
+    : rec.end_time || '';
+
+  if (startInput) startInput.value = startStr;
+  if (endInput) endInput.value = endStr;
+
+  if (projectSelect) {
+    projectSelect.value = rec.project_id ? String(rec.project_id) : '';
+  }
+}
+
+async function ensureTimeExceptionProjectsLoaded() {
+  if (timeExceptionProjects && timeExceptionProjects.length) return timeExceptionProjects;
+  try {
+    const projects = await fetchJSON('/api/projects?status=active');
+    timeExceptionProjects = projects || [];
+  } catch (err) {
+    console.error('[Time Exceptions] Failed to load projects for review modal', err);
+    timeExceptionProjects = [];
+  }
+  return timeExceptionProjects;
+}
+
+function populateTimeExceptionProjectSelect(selectedId) {
+  const sel = document.getElementById('te-review-project');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Select project</option>';
+  (timeExceptionProjects || []).forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name || '(Unnamed project)';
+    sel.appendChild(opt);
+  });
+  if (selectedId != null) {
+    sel.value = selectedId;
+  }
+}
+
 function formatDateTimeLocal(isoString) {
   if (!isoString) return '';
   const d = new Date(isoString);
@@ -943,32 +1053,125 @@ function formatDateTimeLocal(isoString) {
   ].join('');
 }
 
+function formatLocalTimeHHMM(isoString) {
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  if (Number.isNaN(d)) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 let currentTimeExceptionRecord = null;
+let currentTimeExceptions = [];
+
+// Global helper for inline handlers (more reliable than late-bound listeners)
+window.handleTimeExceptionReviewClick = function handleTimeExceptionReviewClick(evt) {
+  console.log('[Time Exceptions] Review clicked (inline/global handler)');
+  const btn = evt?.currentTarget || evt?.target;
+  if (!btn) return;
+
+   if (evt && typeof evt.stopPropagation === 'function') {
+    evt.stopPropagation();
+  }
+
+  const idx = btn.getAttribute('data-index');
+  const id = btn.getAttribute('data-id');
+  const source = btn.getAttribute('data-source');
+  if (idx == null && !id) return;
+
+  // Try to resolve record from multiple sources
+  let rec = null;
+
+  // 1) From row property (most reliable if table rebuilt)
+  const row = btn.closest('tr');
+  if (row && row.__timeException) {
+    rec = row.__timeException;
+  }
+
+  // 2) From index in cached array
+  if (!rec && idx != null && currentTimeExceptions[Number(idx)]) {
+    rec = currentTimeExceptions[Number(idx)];
+  }
+
+  // 3) Fallback by id search
+  if (!rec && id) {
+    rec = currentTimeExceptions.find(r => String(r.id) === String(id));
+  }
+
+  if (!rec) return;
+  if (source && rec.source && rec.source !== source) return;
+
+  openTimeExceptionReviewModal(rec);
+};
 
 function closeTimeExceptionReviewModal() {
   const backdrop = document.getElementById('time-exception-review-backdrop');
   const modal = document.getElementById('time-exception-review-modal');
-  if (backdrop) backdrop.classList.add('hidden');
-  if (modal) modal.classList.add('hidden');
+  if (backdrop) {
+    backdrop.classList.add('hidden');
+    backdrop.style.display = 'none';
+  }
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+  }
   currentTimeExceptionRecord = null;
 }
 
-function openTimeExceptionReviewModal(rec) {
+async function openTimeExceptionReviewModal(rec) {
   currentTimeExceptionRecord = rec;
-  const backdrop = document.getElementById('time-exception-review-backdrop');
-  const modal = document.getElementById('time-exception-review-modal');
-  if (!modal || !backdrop || !rec) return;
+  const { backdrop, modal } = await ensureTimeExceptionModalReady();
+  await ensureTimeExceptionProjectsLoaded();
+  if (!modal || !backdrop || !rec) {
+    console.warn('[Time Exceptions] Missing modal/backdrop or record for review click.', {
+      hasModal: !!modal,
+      hasBackdrop: !!backdrop,
+      rec
+    });
+    return;
+  }
+
+  // Ensure elements are attached to document and above everything
+  if (!modal.isConnected) document.body.appendChild(modal);
+  if (!backdrop.isConnected) document.body.appendChild(backdrop);
+
+  // Show modal
+  backdrop.classList.remove('hidden');
+  modal.classList.remove('hidden');
+  // Force inline display/z-index/size in case CSS collisions kept it hidden
+  Object.assign(backdrop.style, {
+    display: 'block',
+    position: 'fixed',
+    inset: '0',
+    zIndex: '9998',
+    opacity: '1'
+  });
+  Object.assign(modal.style, {
+    display: 'flex',
+    position: 'fixed',
+    inset: '0',
+    width: '100vw',
+    height: '100vh',
+    zIndex: '9999',
+    opacity: '1',
+    pointerEvents: 'auto',
+    alignItems: 'center',
+    justifyContent: 'center'
+  });
+  console.log('[Time Exceptions] Showing review modal');
 
   const title = document.getElementById('te-review-title');
   const meta = document.getElementById('te-review-meta');
   const flagsEl = document.getElementById('te-review-flags');
   const startInput = document.getElementById('te-review-start');
   const endInput = document.getElementById('te-review-end');
-  const hoursWrap = document.getElementById('te-review-hours-wrap');
-  const hoursInput = document.getElementById('te-review-hours');
+  const projectSelect = document.getElementById('te-review-project');
   const actorInput = document.getElementById('te-review-actor');
   const actionSelect = document.getElementById('te-review-action');
   const noteInput = document.getElementById('te-review-note');
+  const origStart = document.getElementById('te-review-orig-start');
+  const origEnd = document.getElementById('te-review-orig-end');
+  const origProject = document.getElementById('te-review-orig-project');
 
   if (title) {
     title.textContent = `Review: ${rec.employee_name || 'Employee'} (${rec.source})`;
@@ -983,29 +1186,24 @@ function openTimeExceptionReviewModal(rec) {
     flagsEl.textContent = flagsStr || 'No flags';
   }
 
+  // Original values display
+  const originalStartIso = rec.clock_in_ts || (rec.start_date ? `${rec.start_date}T${rec.start_time || '00:00'}` : null);
+  const originalEndIso = rec.clock_out_ts || (rec.end_date ? `${rec.end_date}T${rec.end_time || '00:00'}` : null);
+  if (origStart) origStart.textContent = originalStartIso ? new Date(originalStartIso).toLocaleString() : '—';
+  if (origEnd) origEnd.textContent = originalEndIso ? new Date(originalEndIso).toLocaleString() : '—';
+  if (origProject) origProject.textContent = rec.project_name || '(No project)';
+
+  // New fields start blank; only entered values will be applied
   if (startInput) {
-    const startVal =
-      rec.clock_in_ts ||
-      (rec.start_date ? `${rec.start_date}T${rec.start_time || '00:00'}` : '');
-    startInput.value = formatDateTimeLocal(startVal);
+    startInput.value = '';
   }
 
   if (endInput) {
-    const endVal =
-      rec.clock_out_ts ||
-      (rec.end_date ? `${rec.end_date}T${rec.end_time || '00:00'}` : '');
-    endInput.value = formatDateTimeLocal(endVal);
+    endInput.value = '';
   }
 
-  if (hoursWrap) {
-    hoursWrap.classList.toggle('hidden', rec.source !== 'time_entry');
-  }
-  if (hoursInput) {
-    hoursInput.value =
-      rec.source === 'time_entry' && typeof rec.duration_hours === 'number'
-        ? rec.duration_hours
-        : '';
-  }
+  // Project dropdown (blank by default)
+  populateTimeExceptionProjectSelect('');
 
   if (actorInput) {
     const empCtx =
@@ -1027,11 +1225,56 @@ function openTimeExceptionReviewModal(rec) {
     noteInput.value = '';
   }
 
+  const newBlock = document.getElementById('te-review-new-block');
+  if (newBlock) newBlock.classList.add('hidden');
+
   modal.dataset.source = rec.source || '';
   modal.dataset.id = rec.id ? String(rec.id) : '';
 
-  backdrop.classList.remove('hidden');
-  modal.classList.remove('hidden');
+  // Debug visibility: log bounding box and, if tiny/hidden, force emergency inline style
+  const rect = modal.getBoundingClientRect();
+  const cs = window.getComputedStyle(modal);
+  console.log('[Time Exceptions] Modal rect/visible', {
+    width: rect.width,
+    height: rect.height,
+    display: cs.display,
+    visibility: cs.visibility,
+    opacity: cs.opacity,
+    zIndex: cs.zIndex
+  });
+
+  // Dump first child tag to verify structure
+  if (modal && modal.firstElementChild) {
+    console.log('[Time Exceptions] Modal first child tag', modal.firstElementChild.tagName, 'class', modal.firstElementChild.className);
+  }
+
+  const looksHidden =
+    rect.width < 10 ||
+    rect.height < 10 ||
+    cs.display === 'none' ||
+    cs.visibility === 'hidden' ||
+    Number(cs.opacity) === 0;
+
+  if (looksHidden) {
+    console.warn('[Time Exceptions] Modal looked hidden; applying emergency inline styles');
+    Object.assign(modal.style, {
+      display: 'flex',
+      position: 'fixed',
+      inset: '0',
+      zIndex: '99999',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'rgba(15,23,42,0.75)',
+      pointerEvents: 'auto'
+    });
+
+    const card = modal.querySelector('.modal-card');
+    if (card) {
+      card.style.maxWidth = '520px';
+      card.style.width = '90%';
+      card.style.pointerEvents = 'auto';
+    }
+  }
 }
 
 async function submitTimeExceptionReview() {
@@ -1044,7 +1287,7 @@ async function submitTimeExceptionReview() {
 
   const startInput = document.getElementById('te-review-start');
   const endInput = document.getElementById('te-review-end');
-  const hoursInput = document.getElementById('te-review-hours');
+  const projectSelect = document.getElementById('te-review-project');
   const actorInput = document.getElementById('te-review-actor');
   const actionSelect = document.getElementById('te-review-action');
   const noteInput = document.getElementById('te-review-note');
@@ -1058,6 +1301,14 @@ async function submitTimeExceptionReview() {
   const action = actionSelect ? actionSelect.value : 'approve';
   const note = noteInput ? noteInput.value.trim() : '';
   const actorName = actorInput ? actorInput.value.trim() : '';
+  const rec = currentTimeExceptionRecord || {};
+
+  if (action === 'approve') {
+    const confirmed = window.confirm(
+      'Are you sure you want to approve this exception? It will no longer appear in the Time Exceptions report.'
+    );
+    if (!confirmed) return;
+  }
 
   if (action === 'modify' && !note) {
     if (msgEl) {
@@ -1069,12 +1320,30 @@ async function submitTimeExceptionReview() {
 
   const updates = {};
   if (action === 'modify') {
-    const startVal = startInput?.value ? new Date(startInput.value).toISOString() : null;
-    const endVal = endInput?.value ? new Date(endInput.value).toISOString() : null;
+    const dayStr =
+      (rec.clock_in_ts && rec.clock_in_ts.slice(0, 10)) ||
+      rec.start_date ||
+      rec.end_date ||
+      null;
+
+    const startVal =
+      startInput && startInput.value && dayStr
+        ? `${dayStr}T${startInput.value}:00`
+        : null;
+    const endVal =
+      endInput && endInput.value && dayStr
+        ? `${dayStr}T${endInput.value}:00`
+        : null;
+    const projectVal = projectSelect?.value || '';
+    const projectId = projectVal ? Number(projectVal) : null;
 
     if (source === 'punch') {
-      updates.clock_in_ts = startVal;
-      updates.clock_out_ts = endVal;
+      if (startVal) updates.clock_in_ts = startVal;
+      if (endVal) updates.clock_out_ts = endVal;
+      if (projectVal) {
+        updates.project_id = projectId;
+        updates.clock_out_project_id = projectId;
+      }
     } else if (source === 'time_entry') {
       if (startVal) {
         updates.start_date = startVal.slice(0, 10);
@@ -1084,8 +1353,14 @@ async function submitTimeExceptionReview() {
         updates.end_date = endVal.slice(0, 10);
         updates.end_time = endVal.slice(11, 16);
       }
-      if (hoursInput && hoursInput.value) {
-        updates.hours = Number(hoursInput.value);
+      if (startVal && endVal) {
+        const durationHours = (new Date(endVal) - new Date(startVal)) / 3600000;
+        if (!Number.isNaN(durationHours) && durationHours >= 0) {
+          updates.hours = durationHours;
+        }
+      }
+      if (projectVal) {
+        updates.project_id = projectId;
       }
     }
   }
@@ -1113,7 +1388,7 @@ async function submitTimeExceptionReview() {
   } catch (err) {
     console.error('Error saving review:', err);
     if (msgEl) {
-      msgEl.textContent = 'Failed to save review.';
+      msgEl.textContent = err?.message || 'Failed to save review.';
       msgEl.style.color = 'red';
     }
   }
@@ -1154,6 +1429,10 @@ async function loadTimeExceptionsTable() {
     </tr>
   `;
 
+  // Remove any stale cached rows
+  currentTimeExceptions = [];
+  console.log('[Time Exceptions] Loading table…');
+
   try {
     // 🔹 Use the new filter IDs
     const start = document.getElementById('te-ex-filter-start')?.value;
@@ -1174,6 +1453,8 @@ async function loadTimeExceptionsTable() {
     }
 
     const data = await fetchJSON(`/api/time-exceptions?${params.toString()}`);
+    console.log('[Time Exceptions] Data loaded', Array.isArray(data) ? data.length : 'non-array');
+    currentTimeExceptions = Array.isArray(data) ? data : [];
 
     if (!Array.isArray(data) || !data.length) {
       tbody.innerHTML = `
@@ -1183,13 +1464,16 @@ async function loadTimeExceptionsTable() {
           </td>
         </tr>
       `;
+      currentTimeExceptions = [];
       return;
     }
 
     tbody.innerHTML = '';
 
-    data.forEach(r => {
+    data.forEach((r, idx) => {
       const tr = document.createElement('tr');
+      tr.dataset.idx = idx;
+      tr.__timeException = r; // store record on row for robust click lookup
 
       const startStr = r.clock_in_ts
         ? new Date(r.clock_in_ts).toLocaleString()
@@ -1222,9 +1506,11 @@ async function loadTimeExceptionsTable() {
         <td>${flagsStr}</td>
         <td>
           <button
-            class="btn-secondary btn-xs te-review-btn"
+            class="btn primary btn-xs te-review-btn"
             data-id="${r.id}"
             data-source="${r.source || ''}"
+            data-index="${idx}"
+            onclick="handleTimeExceptionReviewClick(event)"
           >
             Review
           </button>
@@ -1235,18 +1521,6 @@ async function loadTimeExceptionsTable() {
       `;
 
       tbody.appendChild(tr);
-    });
-
-    // Wire up review click handlers
-    tbody.querySelectorAll('.te-review-btn').forEach(btn => {
-      btn.addEventListener('click', evt => {
-        const id = evt.currentTarget.getAttribute('data-id');
-        if (!id) return;
-        const rec = (data || []).find(r => String(r.id) === String(id));
-        if (rec) {
-          openTimeExceptionReviewModal(rec);
-        }
-      });
     });
 
     // 🔹 Apply category filter (if user picked one)
@@ -1302,6 +1576,151 @@ async function loadModalsIntoDom() {
   }
 }
 
+// Ensure time exception modal elements exist (fallback if modals.html fails/cached)
+async function ensureTimeExceptionModalReady() {
+  // Always rebuild fresh to avoid stale/hijacked DOM/CSS
+  let backdrop = document.getElementById('time-exception-review-backdrop');
+  let modal = document.getElementById('time-exception-review-modal');
+
+  if (backdrop) backdrop.remove();
+  if (modal) modal.remove();
+
+  // Build a minimal fallback overlay entirely with inline styles (ignore external CSS)
+  backdrop = document.createElement('div');
+  backdrop.id = 'time-exception-review-backdrop';
+  Object.assign(backdrop.style, {
+    position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
+    background: 'rgba(0,0,0,0.45)', zIndex: '99990'
+  });
+
+  modal = document.createElement('div');
+  modal.id = 'time-exception-review-modal';
+  Object.assign(modal.style, {
+    position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    zIndex: '99999', background: 'rgba(0,0,0,0.6)',
+    pointerEvents: 'auto'
+  });
+
+  const card = document.createElement('div');
+  card.className = 'modal-card modal-card-wide te-review-card';
+
+  card.innerHTML = `
+    <div class="te-review-header">
+      <h3 id="te-review-title">Review Time Exception</h3>
+      <button id="te-review-close" class="icon-button" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="te-review-meta">
+      <p id="te-review-meta" class="text-sm text-gray-700"></p>
+      <p><strong>Flags:</strong> <span id="te-review-flags"></span></p>
+    </div>
+    <div class="te-review-original">
+      <h4>Original</h4>
+      <div class="te-review-row"><span class="label">Start</span><span id="te-review-orig-start"></span></div>
+      <div class="te-review-row"><span class="label">End</span><span id="te-review-orig-end"></span></div>
+      <div class="te-review-row"><span class="label">Project</span><span id="te-review-orig-project"></span></div>
+    </div>
+    <div class="te-review-grid-two form-grid">
+      <div class="form-field">
+        <label for="te-review-actor">Reviewer</label>
+        <input type="text" id="te-review-actor" placeholder="Your name" />
+      </div>
+      <div class="form-field">
+        <label for="te-review-action">Action</label>
+        <select id="te-review-action">
+          <option value="approve">Approve</option>
+          <option value="modify">Modify</option>
+          <option value="reject">Reject</option>
+        </select>
+      </div>
+    </div>
+    <div id="te-review-new-block" class="te-review-new-block hidden">
+      <div class="te-review-grid-three form-grid">
+        <div class="form-field">
+          <label for="te-review-start">Start time (new)</label>
+          <input type="time" id="te-review-start" />
+        </div>
+        <div class="form-field">
+          <label for="te-review-end">End time (new)</label>
+          <input type="time" id="te-review-end" />
+        </div>
+        <div class="form-field">
+          <label for="te-review-project">Project (new)</label>
+          <select id="te-review-project"></select>
+        </div>
+      </div>
+    </div>
+    <div class="form-field te-review-notes">
+      <label for="te-review-note">Notes</label>
+      <textarea id="te-review-note" rows="3" placeholder="Required when modifying"></textarea>
+      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when modifying an exception.</p>
+    </div>
+    <p id="te-review-message" class="message"></p>
+    <div class="te-review-actions">
+      <button id="te-review-cancel" type="button" class="btn secondary">Cancel</button>
+      <button id="te-review-save" type="button" class="btn primary">Save</button>
+    </div>
+  `;
+
+  modal.appendChild(card);
+  document.body.appendChild(backdrop);
+  document.body.appendChild(modal);
+
+  bindTimeExceptionModalListeners();
+
+  return { backdrop, modal };
+}
+
+function bindTimeExceptionModalListeners() {
+  const reviewClose = document.getElementById('te-review-close');
+  const reviewCancel = document.getElementById('te-review-cancel');
+  const reviewSave = document.getElementById('te-review-save');
+  const reviewBackdrop = document.getElementById('time-exception-review-backdrop');
+  const reviewAction = document.getElementById('te-review-action');
+
+  if (reviewClose && !reviewClose.dataset.bound) {
+    reviewClose.dataset.bound = '1';
+    reviewClose.addEventListener('click', closeTimeExceptionReviewModal);
+  }
+  if (reviewCancel && !reviewCancel.dataset.bound) {
+    reviewCancel.dataset.bound = '1';
+    reviewCancel.addEventListener('click', closeTimeExceptionReviewModal);
+  }
+  if (reviewBackdrop && !reviewBackdrop.dataset.bound) {
+    reviewBackdrop.dataset.bound = '1';
+    reviewBackdrop.addEventListener('click', closeTimeExceptionReviewModal);
+  }
+  if (reviewSave && !reviewSave.dataset.bound) {
+    reviewSave.dataset.bound = '1';
+    reviewSave.addEventListener('click', submitTimeExceptionReview);
+  }
+  if (reviewAction && !reviewAction.dataset.bound) {
+    reviewAction.dataset.bound = '1';
+    reviewAction.addEventListener('change', () => {
+      const note = document.getElementById('te-review-note');
+      const noteHelp = document.getElementById('te-review-note-help');
+      const newBlock = document.getElementById('te-review-new-block');
+      const needNote = reviewAction.value === 'modify';
+      if (note) note.required = needNote;
+      if (noteHelp) noteHelp.classList.toggle('hidden', !needNote);
+      if (newBlock) newBlock.classList.toggle('hidden', reviewAction.value !== 'modify');
+      if (reviewAction.value !== 'modify') {
+        // Clear new-entry fields when not modifying
+        const startInput = document.getElementById('te-review-start');
+        const endInput = document.getElementById('te-review-end');
+        const projectSelect = document.getElementById('te-review-project');
+        const hoursInput = document.getElementById('te-review-hours');
+        if (startInput) startInput.value = '';
+        if (endInput) endInput.value = '';
+        if (projectSelect) projectSelect.value = '';
+        if (hoursInput) hoursInput.value = '';
+      } else {
+        fillReviewNewFieldsFromOriginal();
+      }
+    });
+  }
+}
+
 /* ───────── 7. DOMContentLoaded INIT ───────── */
 
 // ───────── PAYROLL TAB LAZY INIT ─────────
@@ -1323,13 +1742,20 @@ function initPayrollTabIfNeeded() {
   }
 
   // 3) Time Exceptions
-  if (typeof setupTimeExceptionsSection === 'function') {
-    setupTimeExceptionsSection();
-  }
+  initTimeExceptionsIfNeeded();
 
   // Also initialize the dedicated payroll UI (settings/summary) if present.
   if (typeof window.initPayrollUiTab === 'function') {
     window.initPayrollUiTab();
+  }
+}
+
+function initTimeExceptionsIfNeeded() {
+  if (timeExceptionsInitialized) return;
+  timeExceptionsInitialized = true;
+
+  if (typeof setupTimeExceptionsSection === 'function') {
+    setupTimeExceptionsSection();
   }
 }
 
@@ -1347,6 +1773,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (typeof setupSidebarNavigation === 'function') {
     setupSidebarNavigation();
   }
+
+  // Ensure Time Exceptions wiring is ready even if user opens that tab first
+  initTimeExceptionsIfNeeded();
 
   // 4) Shipments verification report wiring
   if (typeof initShipmentsReportUI === 'function') {
@@ -1441,6 +1870,25 @@ if (connectBtn) {
     daily_fee: document.getElementById('settings-daily-fee'),
     due_offset: document.getElementById('settings-due-offset')
   };
+  const passwordFields = {
+    current: document.getElementById('settings-password-current'),
+    next: document.getElementById('settings-password-new'),
+    confirm: document.getElementById('settings-password-confirm')
+  };
+  const passwordSaveBtn = document.getElementById('settings-password-save');
+  const passwordStatus = document.getElementById('settings-password-status');
+
+  function setPasswordStatus(text, color) {
+    if (!passwordStatus) return;
+    passwordStatus.textContent = text || '';
+    passwordStatus.style.color = color || '';
+  }
+
+  function clearPasswordInputs() {
+    if (passwordFields.current) passwordFields.current.value = '';
+    if (passwordFields.next) passwordFields.next.value = '';
+    if (passwordFields.confirm) passwordFields.confirm.value = '';
+  }
 
   function deriveCurrentAdminAccess(accessMap = {}) {
     const defaults = { modify_pay_rates: false };
@@ -1580,6 +2028,54 @@ if (connectBtn) {
 
   if (settingsSaveBtn) {
     settingsSaveBtn.addEventListener('click', saveSettings);
+  }
+
+  async function changePassword() {
+    if (!passwordSaveBtn) return;
+    const current = passwordFields.current?.value || '';
+    const next = passwordFields.next?.value || '';
+    const confirm = passwordFields.confirm?.value || '';
+
+    if (!current || !next || !confirm) {
+      setPasswordStatus('Fill out all password fields to update your password.', '#b45309');
+      return;
+    }
+    if (next !== confirm) {
+      setPasswordStatus('New password and confirmation do not match.', 'crimson');
+      return;
+    }
+    if (next.length < 8) {
+      setPasswordStatus('New password must be at least 8 characters.', '#b45309');
+      return;
+    }
+
+    const originalText = passwordSaveBtn.textContent || 'Update Password';
+    passwordSaveBtn.disabled = true;
+    passwordSaveBtn.textContent = 'Updating…';
+    setPasswordStatus('Updating password…', '');
+
+    try {
+      await fetchJSON('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_password: current,
+          new_password: next
+        })
+      });
+      setPasswordStatus('Password updated.', 'green');
+      clearPasswordInputs();
+    } catch (err) {
+      console.error('Password update error:', err);
+      setPasswordStatus(err.message || 'Failed to update password.', 'crimson');
+    } finally {
+      passwordSaveBtn.disabled = false;
+      passwordSaveBtn.textContent = originalText;
+    }
+  }
+
+  if (passwordSaveBtn) {
+    passwordSaveBtn.addEventListener('click', changePassword);
   }
 
 
@@ -1893,30 +2389,36 @@ function debugVisibleBackdrops() {
 
 window.debugVisibleBackdrops = debugVisibleBackdrops;
 
-document.getElementById('logout-btn')?.addEventListener('click', async () => {
-  try {
-    await fetch('/api/auth/logout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (err) {
-    console.error('Logout error:', err);
-  }
+const logoutButtons = document.querySelectorAll('.logout-btn');
 
-  // Clear cached assets/service workers so the auth page renders cleanly
-  try {
-    if (window.caches) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map(k => caches.delete(k)));
+if (logoutButtons.length) {
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (err) {
+      console.error('Logout error:', err);
     }
-    if (navigator.serviceWorker) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map(reg => reg.unregister()));
-    }
-  } catch (err) {
-    console.warn('Logout cache cleanup failed:', err);
-  }
 
-  // 🔹 After destroying session, go directly to real sign-in
-  window.location.replace('/');
-});
+    // Clear cached assets/service workers so the auth page renders cleanly
+    try {
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      if (navigator.serviceWorker) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(reg => reg.unregister()));
+      }
+    } catch (err) {
+      console.warn('Logout cache cleanup failed:', err);
+    }
+
+    // 🔹 After destroying session, go directly to real sign-in
+    window.location.replace('/');
+  };
+
+  logoutButtons.forEach(btn => btn.addEventListener('click', handleLogout));
+}

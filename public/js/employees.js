@@ -15,6 +15,12 @@ function canCurrentAdminModifyPayRates() {
   return perms.modify_pay_rates === true || perms.modify_pay_rates === 'true';
 }
 
+const SUPPORTED_EMP_LANGS = ['en', 'es', 'ht'];
+function normalizeEmployeeLanguage(value) {
+  const code = (value || '').toString().trim().toLowerCase();
+  return SUPPORTED_EMP_LANGS.includes(code) ? code : 'en';
+}
+
 // Allow app.js to push updated access info once settings are fetched
 function applyRateAccessToEmployees(perms = {}) {
   window.CURRENT_ACCESS_PERMS = {
@@ -304,6 +310,7 @@ function setEmployeeInputsReadOnly(isReadOnly) {
   const rateInput = document.getElementById('edit-employee-rate');
   const adminCheckbox = document.getElementById('edit-employee-is-admin');
   const timekeepingCheckbox = document.getElementById('edit-employee-uses-timekeeping');
+  const languageSelect = document.getElementById('edit-employee-language');
   const viewShipmentsCheckbox = document.getElementById('edit-employee-can-view-shipments'); // 👈 NEW
   const pinInput = document.getElementById('edit-employee-pin');
   const pinConfirmInput = document.getElementById('edit-employee-pin-confirm');
@@ -332,6 +339,10 @@ function setEmployeeInputsReadOnly(isReadOnly) {
   if (adminCheckbox) adminCheckbox.disabled = isReadOnly;
   if (timekeepingCheckbox) timekeepingCheckbox.disabled = isReadOnly;
   if (viewShipmentsCheckbox) viewShipmentsCheckbox.disabled = isReadOnly; // 👈 NEW
+  if (languageSelect) languageSelect.disabled = isReadOnly;
+  if (languageSelect) {
+    languageSelect.style.backgroundColor = isReadOnly ? '#f9fafb' : '#ffffff';
+  }
 
   // PIN fields follow the same pattern as rate
   [pinInput, pinConfirmInput].forEach(input => {
@@ -435,6 +446,7 @@ function openEmployeeModal(emp) {
   const rateInput = document.getElementById('edit-employee-rate');
   const adminCheckbox = document.getElementById('edit-employee-is-admin');
   const timekeepingCheckbox = document.getElementById('edit-employee-uses-timekeeping');
+  const languageSelect = document.getElementById('edit-employee-language');
 
   // PIN-related fields
   const pinInput = document.getElementById('edit-employee-pin');
@@ -476,6 +488,10 @@ if (viewShipmentsCheckbox) {
   viewShipmentsCheckbox.checked = !!emp.kiosk_can_view_shipments;
 }
 
+  if (languageSelect) {
+    languageSelect.value = normalizeEmployeeLanguage(emp.language);
+  }
+
   // Clear PIN inputs every time modal opens
   if (pinInput) pinInput.value = '';
   if (pinConfirmInput) pinConfirmInput.value = '';
@@ -503,6 +519,7 @@ async function saveEmployeeFromModal() {
   const rateInput = document.getElementById('edit-employee-rate');
   const adminCheckbox = document.getElementById('edit-employee-is-admin');
   const timekeepingCheckbox = document.getElementById('edit-employee-uses-timekeeping');
+  const languageSelect = document.getElementById('edit-employee-language');
 
   // PIN fields
   const pinInput = document.getElementById('edit-employee-pin');
@@ -528,6 +545,9 @@ async function saveEmployeeFromModal() {
   const uses_timekeeping = timekeepingCheckbox
     ? (timekeepingCheckbox.checked ? 1 : 0)
     : 1; // default ON if checkbox not found
+  const language = languageSelect
+    ? normalizeEmployeeLanguage(languageSelect.value)
+    : 'en';
 
     const view_shipments = (() => {
   const cb = document.getElementById('edit-employee-can-view-shipments');
@@ -577,7 +597,8 @@ async function saveEmployeeFromModal() {
     name_on_checks: name_on_checks || null,
     is_admin,
     uses_timekeeping,
-     kiosk_can_view_shipments: view_shipments
+    kiosk_can_view_shipments: view_shipments,
+    language
   };
 
   try {

@@ -9,9 +9,12 @@ let kaStartMode = false;
 let kaStartEmployeeId = null;
 let kaCurrentView = 'live';
 let kaCurrentAdmin = null;  // whoever opened kiosk-admin (via employee_id)
+let kaAdminValidated = false;
+let kaSelectedAdminId = null;
 let kaSessions = [];
 let kaActiveSessionId = null;
 let kaShipmentItemsDirty = new Map(); // shipment_item_id -> verification payload
+let kaShipmentDetail = null;
 let kaItemsModalShipmentId = null;
 let kaTimeRangeMode = 'today';
 let kaTimeActionEntry = null;
@@ -29,6 +32,7 @@ let kaShowApprovalsUI = true;
 let kaShowHideResolved = true;
 let kaRatesUnlockedAll = false;
 const kaUnlockedRates = new Set();
+const KA_DEVICE_SECRET_KEY = 'avian_kiosk_device_secret_v1';
 
 const KA_VIEWS = ['live', 'shipments', 'time', 'settings'];
 const KA_PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
@@ -95,6 +99,8 @@ function kaAddPendingPinUpdate(update) {
   list.push({
     employee_id: update.employee_id,
     pin: update.pin,
+    device_id: update.device_id || kaDeviceId || null,
+    device_secret: update.device_secret || kaGetDeviceSecret(),
     queued_at: new Date().toISOString()
   });
   kaWritePendingPins(list);
@@ -112,7 +118,12 @@ async function kaSyncPendingPins() {
       await fetchJSON(`/api/employees/${item.employee_id}/pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: item.pin, allowOverride: true })
+        body: JSON.stringify({
+          pin: item.pin,
+          allowOverride: true,
+          device_id: item.device_id || kaDeviceId || null,
+          device_secret: item.device_secret || kaGetDeviceSecret()
+        })
       });
       const emp = (kaEmployees || []).find(e => Number(e.id) === Number(item.employee_id));
       if (emp) emp.pin = item.pin;
@@ -127,6 +138,59 @@ async function kaSyncPendingPins() {
   }
 
   kaWritePendingPins(remaining);
+}
+
+// Require a PIN check when opening kiosk-admin directly (prevents URL spoofing)
+async function kaRequireAdminUnlock() {
+  if (!kaCurrentAdmin || !kaCurrentAdmin.is_admin) return false;
+
+  // Remember successful unlock for this admin in this tab so refreshes don’t prompt again
+  const unlockKey = `ka_admin_unlocked_${kaCurrentAdmin.id || 'unknown'}`;
+  try {
+    if (sessionStorage.getItem(unlockKey) === '1') {
+      kaAdminValidated = true;
+      return true;
+    }
+  } catch (e) {
+    // sessionStorage may be blocked; ignore and fall back to prompt
+  }
+
+  if (kaAdminValidated) return true;
+
+  // If kiosk passed skip_pin=1 (we already validated PIN on kiosk), honor it
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('skip_pin') === '1') {
+    kaAdminValidated = true;
+    try {
+      sessionStorage.setItem(unlockKey, '1');
+    } catch (e) {}
+    return true;
+  }
+
+  const pin = (kaCurrentAdmin.pin || '').trim();
+  if (!pin) {
+    alert('This admin does not have a PIN set. Please unlock from the kiosk.');
+    return false;
+  }
+
+  for (let i = 0; i < 3; i++) {
+    const entered = window.prompt('Enter your admin PIN to unlock kiosk admin:');
+    if (entered === null) break; // cancel
+    if (entered.trim() === pin) {
+      kaAdminValidated = true;
+      try {
+        sessionStorage.setItem(unlockKey, '1');
+      } catch (e) {
+        // ignore storage failures
+      }
+      return true;
+    }
+    alert('Incorrect PIN. Try again.');
+  }
+
+  alert('Admin PIN is required to use kiosk admin. Returning to kiosk.');
+  window.location.href = '/kiosk';
+  return false;
 }
 
 function kaToggleShipmentCard(card, shipmentId) {
@@ -144,6 +208,11 @@ function kaToggleShipmentCard(card, shipmentId) {
     detailEl.style.maxHeight = '0px';
     detailEl.style.opacity = '0';
     card.classList.remove('open');
+    const btn = card.querySelector('.ka-ship-expand');
+    if (btn) {
+      btn.textContent = '▾';
+      btn.setAttribute('aria-expanded', 'false');
+    }
     return;
   }
 
@@ -154,6 +223,11 @@ function kaToggleShipmentCard(card, shipmentId) {
     if (d) {
       d.style.maxHeight = '0px';
       d.style.opacity = '0';
+    }
+    const btn = c.querySelector('.ka-ship-expand');
+    if (btn) {
+      btn.textContent = '▾';
+      btn.setAttribute('aria-expanded', 'false');
     }
   });
 
@@ -170,6 +244,12 @@ function kaToggleShipmentCard(card, shipmentId) {
     detailEl.style.maxHeight = '1000px';
     detailEl.style.opacity = '1';
   }
+
+  const expandBtn = card.querySelector('.ka-ship-expand');
+  if (expandBtn) {
+    expandBtn.textContent = '▴';
+    expandBtn.setAttribute('aria-expanded', 'true');
+  }
 }
 
 function kaInitials(name) {
@@ -183,6 +263,22 @@ function kaInitials(name) {
     .slice(0, 2);
 }
 
+// Normalize docs responses (API returns { documents: [...] } but kiosk expects an array)
+function kaNormalizeDocs(resp) {
+  const list = Array.isArray(resp)
+    ? resp
+    : (resp && Array.isArray(resp.documents) ? resp.documents : []);
+
+  return list
+    .filter(Boolean)
+    .map(doc => ({
+      ...doc,
+      url: doc.url || doc.file_path || null,
+      label: doc.label || doc.doc_label || null,
+      filename: doc.filename || doc.original_name || doc.title || null
+    }));
+}
+
 function kaFindDocByType(docs, typeMatch) {
   if (!Array.isArray(docs)) return null;
   const lower = typeMatch.toLowerCase();
@@ -191,6 +287,110 @@ function kaFindDocByType(docs, typeMatch) {
     const lbl = (d.doc_label || '').toLowerCase();
     return t === lower || lbl === lower || t.includes(lower) || lbl.includes(lower);
   }) || null;
+}
+
+function kaPaymentBadge(paid, amount, label, doc) {
+  const isPaid = !!paid;
+  const fmt = (val) => `$${Number(val).toFixed(2)}`;
+  const hasAmount = amount !== null && amount !== undefined && amount !== '';
+  const amt = hasAmount ? fmt(amount) : (isPaid ? '—' : fmt(0));
+  const docLink = doc
+    ? `<a class="ka-pay-doc-link" href="${doc.url || doc.file_path || '#'}" target="_blank" rel="noopener noreferrer" aria-label="${label} document">View doc</a>`
+    : '<span class="ka-pay-doc-missing">No doc</span>';
+
+  return `
+    <div class="ka-pay-chip ${isPaid ? 'paid' : 'unpaid'}" data-pay-chip="${label.toLowerCase()}">
+      <button class="ka-pay-pill" type="button">
+        <span class="ka-pay-chip-label">${label}</span>
+        <span class="ka-pay-pill-sep">—</span>
+        <span class="ka-pay-status-icon top-right">${isPaid ? '✓' : '✕'}</span>
+      </button>
+      <div class="ka-pay-detail" data-pay-detail="${label.toLowerCase()}">
+        <div class="ka-pay-detail-row">Amount: ${amt}</div>
+        <div class="ka-pay-detail-doc">${docLink}</div>
+      </div>
+    </div>
+  `;
+}
+
+function kaRenderPaymentBar(shipmentId, docs) {
+  const bar = document.querySelector(
+    `.ka-ship-payments[data-payments-bar-for="${shipmentId}"]`
+  );
+  if (!bar) return;
+
+  const row = (kaShipments || []).find(
+    r => Number(r.id) === Number(shipmentId)
+  );
+  if (!row) return;
+
+  const ffDoc = docs ? kaFindDocByType(docs, 'Freight Forwarder Proof of Payment') : null;
+  const customsDoc = docs ? kaFindDocByType(docs, 'Customs & Clearing Proof of Payment') : null;
+
+  bar.innerHTML = `
+    ${kaPaymentBadge(row.shipper_paid, row.shipper_paid_amount, 'Forwarder', row.shipper_paid ? ffDoc : null)}
+    ${kaPaymentBadge(row.customs_paid, row.customs_paid_amount, 'Customs', row.customs_paid ? customsDoc : null)}
+  `;
+
+  bar.querySelectorAll('.ka-pay-chip').forEach(chip => {
+    chip.addEventListener('click', (e) => {
+      // Ignore clicks on the link/detail so content stays visible after opening docs
+      if (e.target.closest('.ka-pay-detail')) return;
+      e.stopPropagation();
+      const key = chip.dataset.payChip;
+      const detail = bar.querySelector(`[data-pay-detail="${key}"]`);
+      if (!detail) return;
+      const isOpen = !detail.classList.contains('hidden');
+      bar.querySelectorAll('.ka-pay-detail').forEach(d => d.classList.add('hidden'));
+      if (!isOpen) {
+        detail.classList.remove('hidden');
+      }
+    });
+  });
+}
+
+async function kaHydrateShipmentCard(shipmentId, adminId) {
+  try {
+    const resp = await fetchJSON(
+      `/api/shipments/${shipmentId}/documents${
+        adminId ? `?employee_id=${adminId}` : ''
+      }`
+    );
+    const docs = kaNormalizeDocs(resp);
+    kaRenderPaymentBar(shipmentId, docs);
+    const bolDoc = kaFindDocByType(docs, 'bol');
+    kaSetBolLink(shipmentId, bolDoc);
+  } catch (err) {
+    // Quietly ignore; card will hydrate when expanded
+    console.warn('Prefetch docs failed for shipment', shipmentId, err);
+  }
+}
+
+function kaSetBolLink(shipmentId, doc) {
+  const el = document.querySelector(`.ka-ship-bol[data-bol-for="${shipmentId}"]`);
+  if (!el) return;
+  if (!doc) {
+    el.removeAttribute('href');
+    el.removeAttribute('target');
+    el.removeAttribute('rel');
+    delete el.dataset.bolUrl;
+    el.classList.add('disabled');
+    return;
+  }
+  const href = doc.url || doc.file_path || '#';
+  el.dataset.bolUrl = href;
+  el.href = href;
+  el.target = '_blank';
+  el.rel = 'noopener noreferrer';
+  el.classList.remove('disabled');
+}
+
+function kaUpdateBolDetail(shipmentId, doc) {
+  const detail = document.querySelector(`.ka-bol-detail[data-bol-detail-for="${shipmentId}"]`);
+  if (!detail) return;
+  // Keep detail hidden; BOL pill itself opens the link now
+  detail.classList.remove('open');
+  detail.innerHTML = '';
 }
 
 // --- Shipment notification helpers (per kiosk device/admin) ---
@@ -849,6 +1049,254 @@ function kaPaymentChip(label, paid, amount, proofDoc) {
   </span>`;
 }
 
+function kaUpdateShipmentCardDue(card, shipment) {
+  if (!card || !shipment) return;
+  const dueBox = card.querySelector('.ka-ship-due-inline');
+  if (!dueBox) return;
+
+  const valueEl = dueBox.querySelector('.value');
+  const { daysLate, estimate } = kaCalcStorageLateFees(
+    shipment.storage_due_date,
+    shipment.storage_daily_late_fee
+  );
+  const dueLabel = shipment.storage_due_date
+    ? kaFormatDateIso(shipment.storage_due_date)
+    : 'No due date set';
+  if (valueEl) valueEl.textContent = dueLabel;
+
+  dueBox.classList.toggle('late', daysLate > 0 && estimate > 0);
+  dueBox.querySelectorAll('.late-text').forEach(el => el.remove());
+  if (daysLate > 0 && estimate > 0) {
+    const lt = document.createElement('span');
+    lt.className = 'late-text';
+    lt.textContent = `${daysLate} day${daysLate === 1 ? '' : 's'} late · Est. ${kaFmtMoney(estimate) || '$0.00'}`;
+    dueBox.appendChild(lt);
+  }
+}
+
+function kaRenderStorageSection(storageGrid, shipment, card) {
+  if (!storageGrid || !shipment) return;
+  const sid = shipment.id;
+  const adminId = kaAdminAuthId();
+  const canEdit = !!adminId && kaCanViewShipments();
+
+  const late = kaCalcStorageLateFees(
+    shipment.storage_due_date,
+    shipment.storage_daily_late_fee
+  );
+  const lateLabel =
+    late.daysLate > 0
+      ? `${late.daysLate} day${late.daysLate === 1 ? '' : 's'} late`
+      : 'Not late yet';
+
+  storageGrid.innerHTML = `
+    <div class="ka-ship-info-row">
+      <div class="ka-ship-info-label">Storage Due Date</div>
+      <div class="ka-ship-info-value">
+        <input type="date" data-ka-storage-field="due" ${canEdit ? '' : 'disabled'} />
+      </div>
+    </div>
+    <div class="ka-ship-info-row">
+      <div class="ka-ship-info-label">Daily Late Fee</div>
+      <div class="ka-ship-info-value ka-storage-fee-row">
+        <span class="ka-storage-prefix">$</span>
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          inputmode="decimal"
+          data-ka-storage-field="fee"
+          ${canEdit ? '' : 'disabled'}
+        />
+      </div>
+    </div>
+    <div class="ka-ship-info-row">
+      <div class="ka-ship-info-label">Estimated Late Fees</div>
+      <div class="ka-ship-info-value">
+        <div class="ka-storage-estimate" data-ka-storage-estimate="${sid}">${kaFmtMoney(late.estimate) || '$0.00'}</div>
+        <div class="ka-storage-helper" data-ka-storage-helper="${sid}">${lateLabel}</div>
+      </div>
+    </div>
+    <div class="ka-ship-info-row">
+      <div class="ka-ship-info-label">Expected Arrival</div>
+      <div class="ka-ship-info-value">
+        <input type="date" data-ka-storage-field="arrival" ${canEdit ? '' : 'disabled'} />
+      </div>
+    </div>
+    <div class="ka-ship-info-row">
+      <div class="ka-ship-info-label">Storage Room</div>
+      <div class="ka-ship-info-value">
+        <input type="text" data-ka-storage-field="room" placeholder="Where is it stored?" ${canEdit ? '' : 'disabled'} />
+      </div>
+    </div>
+    <div class="ka-ship-info-row">
+      <div class="ka-ship-info-label">Storage Details</div>
+      <div class="ka-ship-info-value">
+        <textarea rows="2" data-ka-storage-field="details" placeholder="Notes for warehouse" ${canEdit ? '' : 'disabled'}></textarea>
+      </div>
+    </div>
+    <div class="ka-ship-info-row">
+      <div class="ka-ship-info-label">Picked Up By</div>
+      <div class="ka-ship-info-value">
+        <input type="text" data-ka-storage-field="picked_by" placeholder="Name of pickup contact" ${canEdit ? '' : 'disabled'} />
+      </div>
+    </div>
+    <div class="ka-ship-info-row">
+      <div class="ka-ship-info-label">Picked Up Date</div>
+      <div class="ka-ship-info-value">
+        <input type="date" data-ka-storage-field="picked_date" ${canEdit ? '' : 'disabled'} />
+      </div>
+    </div>
+    <div class="ka-ship-info-row wide">
+      <div class="ka-ship-info-label">Actions</div>
+      <div class="ka-ship-info-value ka-storage-actions">
+        <button class="btn primary btn-sm" data-ka-storage-save="${sid}" ${canEdit ? '' : 'disabled'}>Save storage & pickup</button>
+        <span class="ka-status" data-ka-storage-status="${sid}">${canEdit ? '' : 'Log in as an admin to edit.'}</span>
+      </div>
+    </div>
+  `;
+
+  const getField = (name) =>
+    storageGrid.querySelector(`[data-ka-storage-field="${name}"]`);
+  const dueInput = getField('due');
+  const feeInput = getField('fee');
+  const arrivalInput = getField('arrival');
+  const roomInput = getField('room');
+  const detailsInput = getField('details');
+  const pickedByInput = getField('picked_by');
+  const pickedDateInput = getField('picked_date');
+  const estimateEl = storageGrid.querySelector(
+    `[data-ka-storage-estimate="${sid}"]`
+  );
+  const helperEl = storageGrid.querySelector(
+    `[data-ka-storage-helper="${sid}"]`
+  );
+  const statusEl = storageGrid.querySelector(
+    `[data-ka-storage-status="${sid}"]`
+  );
+  const saveBtn = storageGrid.querySelector(
+    `[data-ka-storage-save="${sid}"]`
+  );
+
+  const setStatus = (msg, type) => {
+    if (!statusEl) return;
+    statusEl.textContent = msg || '';
+    statusEl.className = 'ka-status';
+    if (type === 'ok') statusEl.classList.add('ka-status-ok');
+    if (type === 'error') statusEl.classList.add('ka-status-error');
+  };
+
+  const applyValues = (src) => {
+    if (!src) return;
+    if (dueInput) dueInput.value = src.storage_due_date || '';
+    if (feeInput) {
+      const feeNum = Number(src.storage_daily_late_fee);
+      feeInput.value =
+        src.storage_daily_late_fee !== null &&
+        src.storage_daily_late_fee !== undefined &&
+        src.storage_daily_late_fee !== '' &&
+        Number.isFinite(feeNum)
+          ? feeNum.toFixed(2)
+          : '';
+    }
+    if (arrivalInput) arrivalInput.value = src.expected_arrival_date || '';
+    if (roomInput) roomInput.value = src.storage_room || '';
+    if (detailsInput) detailsInput.value = src.storage_details || '';
+    if (pickedByInput) pickedByInput.value = src.picked_up_by || '';
+    if (pickedDateInput) pickedDateInput.value = src.picked_up_date || '';
+    kaUpdateShipmentCardDue(card, src);
+    updateLateDisplays();
+  };
+
+  const updateLateDisplays = () => {
+    const dueVal = dueInput ? dueInput.value : '';
+    const feeVal = feeInput ? feeInput.value : '';
+    const lateCalc = kaCalcStorageLateFees(dueVal, feeVal);
+    if (estimateEl) {
+      const est = kaFmtMoney(lateCalc.estimate) || '$0.00';
+      estimateEl.textContent = est;
+    }
+    if (helperEl) {
+      const label =
+        lateCalc.daysLate > 0
+          ? `${lateCalc.daysLate} day${lateCalc.daysLate === 1 ? '' : 's'} late`
+          : dueVal
+          ? 'Not late yet'
+          : 'No due date set';
+      helperEl.textContent = label;
+    }
+  };
+
+  if (dueInput) dueInput.addEventListener('change', updateLateDisplays);
+  if (feeInput) feeInput.addEventListener('input', updateLateDisplays);
+
+  const adminMissingMsg = !adminId
+    ? 'Identify yourself on this device to edit.'
+    : 'You do not have shipments access.';
+  if (!canEdit && statusEl) {
+    setStatus(adminMissingMsg, 'error');
+  }
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      if (!canEdit) {
+        setStatus(adminMissingMsg, 'error');
+        return;
+      }
+      const payload = {
+        storage_due_date: dueInput?.value || null,
+        storage_daily_late_fee:
+          feeInput && feeInput.value !== '' ? Number(feeInput.value) : null,
+        expected_arrival_date: arrivalInput?.value || null,
+        storage_room: roomInput?.value ? roomInput.value.trim() : '',
+        storage_details: detailsInput?.value ? detailsInput.value.trim() : '',
+        picked_up_by: pickedByInput?.value ? pickedByInput.value.trim() : '',
+        picked_up_date: pickedDateInput?.value || null,
+        employee_id: adminId
+      };
+
+      setStatus('Saving storage & pickup…');
+      saveBtn.disabled = true;
+      try {
+        const resp = await fetchJSON(
+          `/api/shipments/${sid}/storage`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          }
+        );
+        const updated = resp.shipment || {};
+        Object.assign(shipment, updated);
+        // keep global cache in sync
+        const idx = kaShipments.findIndex(
+          (s) => Number(s.id) === Number(sid)
+        );
+        if (idx >= 0) {
+          kaShipments[idx] = { ...kaShipments[idx], ...updated };
+        }
+        if (kaShipmentDetail && kaShipmentDetail.shipment) {
+          if (Number(kaShipmentDetail.shipment.id) === Number(sid)) {
+            kaShipmentDetail.shipment = {
+              ...kaShipmentDetail.shipment,
+              ...updated
+            };
+          }
+        }
+        applyValues(updated);
+        setStatus('Storage & pickup updated.', 'ok');
+      } catch (err) {
+        console.error('Error saving storage from kiosk:', err);
+        setStatus('Error saving storage: ' + (err.message || err), 'error');
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+  }
+
+  applyValues(shipment);
+}
+
 
 async function kaLoadShipmentDetailIntoCard(shipmentId, card, detailEl) {
   // 🔹 Clear any previous dirty items when we focus this shipment
@@ -882,13 +1330,12 @@ async function kaLoadShipmentDetailIntoCard(shipmentId, card, detailEl) {
 
   try {
     let docsForShipment = [];
+    const adminId = kaAdminAuthId();
     // 1) verification/details
     const report = await fetchJSON(
       '/api/reports/shipment-verification?shipment_id=' +
         shipmentId +
-        (kaCurrentAdmin && kaCurrentAdmin.id
-          ? `&employee_id=${kaCurrentAdmin.id}`
-          : '')
+        (adminId ? `&employee_id=${adminId}` : '')
     );
     const shipment = report.shipment || {};
     const items = Array.isArray(report.items) ? report.items : [];
@@ -898,21 +1345,28 @@ async function kaLoadShipmentDetailIntoCard(shipmentId, card, detailEl) {
     // 2) documents (unchanged)
     if (docsEl) {
       try {
-        const docs = await fetchJSON(
+        const docResp = await fetchJSON(
           `/api/shipments/${shipmentId}/documents${
-            kaCurrentAdmin && kaCurrentAdmin.id
-              ? `?employee_id=${kaCurrentAdmin.id}`
+            adminId
+              ? `?employee_id=${adminId}`
               : ''
           }`
         );
-        docsForShipment = docs;
+        const normalizedDocs = kaNormalizeDocs(docResp);
+        const visibleDocs = normalizedDocs.filter(
+          d => (d.doc_type || '').toLowerCase() !== 'bol' && (d.doc_label || '').toLowerCase() !== 'bol'
+        );
+        docsForShipment = visibleDocs;
         docsEl.innerHTML = '';
+        kaRenderPaymentBar(shipmentId, normalizedDocs);
+        const bolDoc = kaFindDocByType(normalizedDocs, 'bol');
+        kaSetBolLink(shipmentId, bolDoc);
 
-        if (!docs || !docs.length) {
+        if (!visibleDocs.length) {
           docsEl.innerHTML =
             '<li class="ka-ship-muted">(No documents uploaded)</li>';
         } else {
-         docs.forEach((doc) => {
+         visibleDocs.forEach((doc) => {
   const li = document.createElement('li');
   const a = document.createElement('a');
 
@@ -921,11 +1375,6 @@ async function kaLoadShipmentDetailIntoCard(shipmentId, card, detailEl) {
   a.target = '_blank';
   a.rel = 'noopener noreferrer';
   a.textContent = doc.title || doc.label || doc.filename || doc.original_name || 'Document';
-
-  // ✅ Hint to browser "this is a download"
-  if (doc.filename || doc.original_name) {
-    a.setAttribute('download', doc.filename || doc.original_name);
-  }
 
   li.appendChild(a);
 
@@ -942,7 +1391,7 @@ async function kaLoadShipmentDetailIntoCard(shipmentId, card, detailEl) {
 
   const hint = document.createElement('span');
   hint.className = 'ka-ship-doc-download-hint';
-  hint.textContent = ' ⟶ Download';
+  hint.textContent = ' ⟶ Open in new tab';
   li.appendChild(hint);
 
   docsEl.appendChild(li);
@@ -955,11 +1404,6 @@ async function kaLoadShipmentDetailIntoCard(shipmentId, card, detailEl) {
           '<li class="ka-ship-muted">(Error loading docs)</li>';
       }
     }
-
-    const fmtMoney = (n) =>
-      n === null || n === undefined || n === ''
-        ? ''
-        : `$${Number(n).toFixed(2)}`;
 
     const renderGrid = (gridEl, fields) => {
       if (!gridEl) return;
@@ -988,11 +1432,6 @@ async function kaLoadShipmentDetailIntoCard(shipmentId, card, detailEl) {
 
     const canShowDefaultVendor =
       itemsVendors.size === 1 && itemsVendors.values().next().value;
-
-    const storageLate = kaCalcStorageLateFees(
-      shipment.storage_due_date,
-      shipment.storage_daily_late_fee
-    );
 
     // Basic (per user-requested order)
     renderGrid(basicGrid, [
@@ -1031,7 +1470,7 @@ async function kaLoadShipmentDetailIntoCard(shipmentId, card, detailEl) {
         <div class="ka-pay-box ${paid ? 'paid' : 'unpaid'}">
           <div class="ka-pay-label">${label}</div>
           <div class="ka-pay-status">${paid ? '✔ Paid' : '✕ Not paid'}</div>
-          <div class="ka-pay-amount">${fmtMoney(amt) || '—'}${doc ? ` <a class="ka-pay-doc-link" href="${doc.url || doc.file_path || '#'}" target="_blank" rel="noopener noreferrer">Doc</a>` : ''}</div>
+          <div class="ka-pay-amount">${kaFmtMoney(amt) || '—'}${doc ? ` <a class="ka-pay-doc-link" href="${doc.url || doc.file_path || '#'}" target="_blank" rel="noopener noreferrer">Doc</a>` : ''}</div>
         </div>
       `;
 
@@ -1062,17 +1501,7 @@ async function kaLoadShipmentDetailIntoCard(shipmentId, card, detailEl) {
     }
 
     // Storage & pickup
-    renderGrid(storageGrid, [
-      ['Storage Due Date', orDash(shipment.storage_due_date)],
-      ['Daily Late Fee', fmtMoney(shipment.storage_daily_late_fee)],
-      ['Estimated Late Fees', fmtMoney(storageLate.estimate)],
-      ['Days Late', storageLate.daysLate > 0 ? storageLate.daysLate : '0'],
-      ['Expected Arrival', orDash(shipment.expected_arrival_date)],
-      ['Storage Room', shipment.storage_room],
-      ['Storage Details', shipment.storage_details],
-      ['Picked Up By', shipment.picked_up_by],
-      ['Picked Up Date', shipment.picked_up_date]
-    ]);
+    kaRenderStorageSection(storageGrid, shipment, card);
 
     // 3) items + verification controls (unchanged)
     if (itemsEl) {
@@ -1484,19 +1913,24 @@ async function kaLoadShipments() {
   const listEl = document.getElementById('ka-shipments-list');
   const filterEl = document.getElementById('ka-shipments-filter');
   const projEl = document.getElementById('ka-shipments-project');
+  const adminId = kaAdminAuthId();
 
   const mode =
     filterEl?.value || 'status:Cleared - Ready for Release';
   if (!listEl) return;
+
+  if (!adminId) {
+    listEl.innerHTML =
+      '<div class="ka-ship-muted">(Log in as a kiosk admin with shipments access to view this tab.)</div>';
+    return;
+  }
 
   listEl.innerHTML = '<div class="ka-ship-muted">(loading shipments…)</div>';
 
   try {
     const params = new URLSearchParams();
 
-    if (kaCurrentAdmin && kaCurrentAdmin.id) {
-      params.set('employee_id', kaCurrentAdmin.id);
-    }
+    params.set('employee_id', adminId);
 
     if (mode === 'ready') {
       params.set('status', 'Cleared - Ready for Release');
@@ -1544,8 +1978,9 @@ async function kaLoadShipments() {
     listEl.innerHTML = '';
 
     rows.forEach(row => {
-      const card = document.createElement('button');
-      card.type = 'button';
+      const card = document.createElement('div');
+      card.setAttribute('role', 'button');
+      card.tabIndex = 0;
       card.className = 'ka-ship-card';
       card.dataset.shipmentId = row.id;
 
@@ -1566,6 +2001,9 @@ async function kaLoadShipments() {
         row.storage_daily_late_fee != null
           ? Number(row.storage_daily_late_fee)
           : null;
+      const totalItems = Number(row.items_total || 0);
+      const verifiedCount = Number(row.items_verified_count || 0);
+      const pendingCount = Math.max(0, totalItems - verifiedCount);
       const { daysLate, estimate } = kaCalcStorageLateFees(
         dueDate,
         dailyLateFee
@@ -1579,52 +2017,47 @@ async function kaLoadShipments() {
       const statusLabel = row.items_verified
         ? '<span class="ka-tag green">✓ All verified</span>'
         : '<span class="ka-tag orange">Needs verification</span>';
-
-      const paymentBadge = (paid, amount, label) => {
-        const isPaid = !!paid;
-        const amt =
-          amount !== null && amount !== undefined
-            ? `$${Number(amount).toFixed(2)}`
-            : '—';
-        return `<span class="ka-pay-chip ${isPaid ? 'paid' : 'unpaid'}">
-          <div class="ka-pay-chip-left">
-            <div class="ka-pay-chip-label">${label}</div>
-            <div class="ka-pay-chip-meta">${amt}</div>
-          </div>
-          <div class="ka-pay-chip-right ${isPaid ? 'paid' : 'unpaid'}">
-            <div class="ka-pay-status-icon">${isPaid ? '✓' : '✕'}</div>
-            <div class="ka-pay-status-text">${isPaid ? 'Paid' : 'Unpaid'}</div>
-          </div>
-        </span>`;
-      };
+      const pendingNumber = pendingCount || totalItems || 0;
+      const verifyCard = row.items_verified
+        ? ''
+        : `
+            <div class="ka-verify-card" data-verify-for="${row.id}">
+              <div class="ka-verify-title">Needs verification <span class="ka-verify-count-inline">(${pendingNumber})</span></div>
+              <div class="ka-verify-hint">Tap to review items</div>
+            </div>
+          `;
 
       card.innerHTML = `
   <div class="ka-ship-card-main">
-    <div>
-      <div class="ka-ship-title">
-        ${row.title || row.reference || 'Shipment #'+row.id}${row.bol_number ? ` - ${row.bol_number}` : ''}
+    <div class="ka-ship-top">
+      <div class="ka-ship-title-row">
+        <div class="ka-ship-title">${row.title || row.reference || 'Shipment #'+row.id}</div>
+        ${row.bol_number ? `<a class="ka-ship-bol disabled" data-bol-for="${row.id}">BOL ${row.bol_number}</a>` : ''}
       </div>
-      <div class="ka-ship-line-sub">
-        <span>${vendor}</span>
-        ${project ? `<span>• ${project}</span>` : ''}
-        ${when ? `<span>• ${(when || '').slice(0, 10)}</span>` : ''}
-      </div>
-      <div class="ka-ship-due-row">
-        <span class="ka-ship-due-date">Due: ${dueLabel}</span>
-        ${
-          lateFeeLabel
-            ? `<span class="ka-ship-late-fee">${lateFeeLabel}</span>`
-            : ''
-        }
-      </div>
-      <div class="ka-ship-payments" data-payments-bar-for="${row.id}">
-        ${paymentBadge(row.shipper_paid, row.shipper_paid_amount, 'Freight Forwarder')}
-        ${paymentBadge(row.customs_paid, row.customs_paid_amount, 'Customs & Clearing')}
+      <div class="ka-ship-top-right">
+        <div class="ka-ship-due-inline ${lateFeeLabel ? 'late' : ''}">
+          <span class="label">Due</span>
+          <span class="value">${dueLabel}</span>
+          ${lateFeeLabel ? `<span class="late-text">${lateFeeLabel}</span>` : ''}
+        </div>
+        <button class="ka-ship-expand" type="button" aria-label="Expand shipment" aria-expanded="false">▾</button>
       </div>
     </div>
-    <div class="ka-ship-status">
+    <div class="ka-ship-line-sub">
+      <span>${vendor}</span>
+      ${project ? `<span>• ${project}</span>` : ''}
+      ${when ? `<span>• ${(when || '').slice(0, 10)}</span>` : ''}
+    </div>
+
+    <div class="ka-ship-inline">
+      <div class="ka-ship-payments" data-payments-bar-for="${row.id}">
+        ${kaPaymentBadge(row.shipper_paid, row.shipper_paid_amount, 'Forwarder')}
+        ${kaPaymentBadge(row.customs_paid, row.customs_paid_amount, 'Customs')}
+      </div>
+      ${verifyCard}
+    </div>
+    <div class="ka-ship-status bottom">
       <div class="ka-ship-status-tags">
-        ${statusLabel}
         ${
           (mode === 'all' || mode.startsWith('status:')) && statusText
             ? `<span class="ka-tag gray">${statusText}</span>`
@@ -1751,13 +2184,6 @@ async function kaLoadShipments() {
 `;
 
 
-      card.addEventListener('click', (e) => {
-        // avoid double-trigger from inner buttons
-        const isSaveButton = e.target.closest('button[data-save-for]');
-        if (isSaveButton) return;
-        kaToggleShipmentCard(card, row.id);
-      });
-
             // Items toggle inside card – just expands/collapses the items list
       // Items toggle inside card – just expands/collapses the items list
 const itemsToggle = card.querySelector('button[data-items-open-for]');
@@ -1789,6 +2215,41 @@ if (docsToggle) {
   });
 }
 
+// Expand/collapse arrow
+const expandBtn = card.querySelector('.ka-ship-expand');
+if (expandBtn) {
+  expandBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    kaToggleShipmentCard(card, row.id);
+  });
+}
+
+// BOL pill toggles BOL detail
+const bolBtn = card.querySelector('.ka-ship-bol');
+if (bolBtn) {
+  bolBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const href = bolBtn.dataset.bolUrl || bolBtn.href;
+    if (href && !bolBtn.classList.contains('disabled')) {
+      window.open(href, '_blank', 'noopener,noreferrer');
+      return;
+    }
+  });
+}
+
+// Needs verification card opens items modal
+const verifyCardEl = card.querySelector('.ka-verify-card');
+if (verifyCardEl) {
+  verifyCardEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    kaOpenItemsModal(row.id);
+  });
+}
+
+// Prefetch docs/payments/bol for this card so header controls work pre-expand
+kaHydrateShipmentCard(row.id, adminId);
+
 // Section toggles (basic / dates / payments / storage)
 card.querySelectorAll('.ka-ship-toggle').forEach(btn => {
   btn.addEventListener('click', (e) => {
@@ -1808,7 +2269,11 @@ card.querySelectorAll('.ka-ship-toggle').forEach(btn => {
 });
 
 
+      kaRenderPaymentBar(row.id, null);
       listEl.appendChild(card);
+
+      // Default BOL detail state
+      kaUpdateBolDetail(row.id, null);
     });
   } catch (err) {
     console.error('Error loading shipments for kiosk admin:', err);
@@ -1834,7 +2299,12 @@ async function kaOpenShipmentDetail(shipmentId) {
 
   try {
     // 1) Verification detail (metadata + items)
-    const report = await fetchJSON('/api/reports/shipment-verification?shipment_id=' + shipmentId);
+    const adminId = kaAdminAuthId();
+    const report = await fetchJSON(
+      '/api/reports/shipment-verification?shipment_id=' +
+        shipmentId +
+        (adminId ? `&employee_id=${adminId}` : '')
+    );
     const shipment = report.shipment || {};
     const items = Array.isArray(report.items) ? report.items : [];
     kaShipmentDetail = { shipment, items };
@@ -1855,9 +2325,13 @@ async function kaOpenShipmentDetail(shipmentId) {
 
     // 2) Documents (download on tablet/phone)
     try {
-      const docs = await fetchJSON(`/api/shipments/${shipmentId}/documents`);
+      const docResp = await fetchJSON(
+        `/api/shipments/${shipmentId}/documents${adminId ? `?employee_id=${adminId}` : ''}`
+      );
+      const docs = kaNormalizeDocs(docResp);
       docsEl.innerHTML = '';
-
+      const bolDoc = kaFindDocByType(docs, 'bol');
+      kaSetBolLink(shipmentId, bolDoc);
       if (!docs || !docs.length) {
         docsEl.innerHTML = '<li class="ka-muted">(No documents uploaded)</li>';
       } else {
@@ -2345,6 +2819,10 @@ async function fetchJSON(url, options = {}) {
   return data;
 }
 
+function kaAdminAuthId() {
+  return (kaCurrentAdmin && kaCurrentAdmin.id) || kaStartEmployeeId || null;
+}
+
 function kaCalcStorageLateFees(dueDateStr, dailyFeeRaw) {
   const dailyFee = Number(dailyFeeRaw);
   if (!dueDateStr || Number.isNaN(dailyFee) || dailyFee < 0) {
@@ -2365,6 +2843,13 @@ function kaCalcStorageLateFees(dueDateStr, dailyFeeRaw) {
     daysLate,
     estimate: daysLate > 0 ? dailyFee * daysLate : 0
   };
+}
+
+function kaFmtMoney(n) {
+  if (n === null || n === undefined || n === '' || Number.isNaN(Number(n))) {
+    return '';
+  }
+  return `$${Number(n).toFixed(2)}`;
 }
 
 function kaFormatDateIso(dateStr) {
@@ -2520,16 +3005,6 @@ async function kaEndSessionAndClockOutAll() {
 
   // Clock out each worker by sending a kiosk punch for each employee
   for (const p of openPunches) {
-    if (targetProjectId && Number(p.project_id) !== Number(targetProjectId)) {
-      continue; // only end the active session's project
-    }
-    if (targetSessionStart && p.clock_in_ts) {
-      const punchTs = new Date(p.clock_in_ts).getTime();
-      const sessionTs = new Date(targetSessionStart).getTime();
-      if (!Number.isNaN(punchTs) && !Number.isNaN(sessionTs) && punchTs < sessionTs) {
-        continue; // skip punches from before this session started
-      }
-    }
     const clientId = `end-${Date.now().toString(36)}-${p.employee_id}`;
     try {
       await fetchJSON('/api/kiosk/punch', {
@@ -2582,6 +3057,20 @@ function kaAdminDisplayName() {
     return kaCurrentAdmin.nickname || kaCurrentAdmin.name || 'kiosk admin';
   }
   return 'kiosk admin';
+}
+
+function kaGetDeviceSecret() {
+  try {
+    let secret = localStorage.getItem(KA_DEVICE_SECRET_KEY);
+    if (!secret) {
+      // Note: kiosk-admin should usually be opened from the kiosk tab, so secret should already exist
+      secret = Math.random().toString(36).slice(2);
+      localStorage.setItem(KA_DEVICE_SECRET_KEY, secret);
+    }
+    return secret;
+  } catch {
+    return null;
+  }
 }
 
 function kaTodayIso() {
@@ -2789,6 +3278,12 @@ async function kaInit() {
     return;
   }
 
+  if (!kaStartEmployeeId) {
+    alert('Open kiosk admin from the kiosk login screen so your admin PIN is verified.');
+    window.location.href = '/kiosk';
+    return;
+  }
+
   // Back to kiosk button
   const backBtn = document.getElementById('ka-back-to-kiosk');
   if (backBtn) {
@@ -2815,6 +3310,9 @@ async function kaInit() {
   document
     .getElementById('ka-lang-employee')
     ?.addEventListener('change', kaSyncLanguageChoice);
+  document
+    .getElementById('ka-admin-select')
+    ?.addEventListener('change', kaHandleAdminChange);
   document
     .getElementById('ka-lang-search')
     ?.addEventListener('input', () => kaRenderSettingsForm());
@@ -3050,6 +3548,20 @@ async function kaInit() {
       kaApplyNotifyPrefToUI(kaLoadNotifyPrefFromStorage(), kaNotifyStatusesSource());
     }
 
+    if (!kaCurrentAdmin || !kaCurrentAdmin.is_admin) {
+      alert('Admin access required. Launch kiosk admin from the kiosk login.');
+      window.location.href = '/kiosk';
+      return;
+    }
+
+    const unlocked = await kaRequireAdminUnlock();
+    if (!unlocked) return;
+
+    // Treat the logged-in admin as the active admin for settings by default
+    if (kaCurrentAdmin && kaCurrentAdmin.id) {
+      kaSelectedAdminId = String(kaCurrentAdmin.id);
+    }
+
     await kaLoadAccessPerms();
     // find kiosk by device id
     kaKiosk = (kiosks || []).find(
@@ -3074,6 +3586,7 @@ async function kaInit() {
     kaRenderKioskHeader();
     kaRenderProjectsSelect();
     kaRenderPinStatus();
+    kaRenderAdminSelect();
     kaRenderSettingsForm();
     kaSetupStartOfDayUI();
     await kaLoadSessions();
@@ -3541,11 +4054,49 @@ function kaRenderProjectsSelect() {
 
 }
 
+function kaToggleAdminSettingsVisibility(adminId) {
+  const block = document.getElementById('ka-admin-settings-block');
+  const hasAdmin = true; // kiosk admin is already validated
+  if (block) block.classList.toggle('hidden', !hasAdmin);
+
+  const toggleEls = [
+    document.getElementById('ka-lang-search'),
+    document.getElementById('ka-pin-search'),
+    document.getElementById('ka-lang-employee'),
+    document.getElementById('ka-pin-employee'),
+    document.getElementById('ka-lang-choice'),
+    document.getElementById('ka-pin-new'),
+    document.getElementById('ka-pin-confirm'),
+    document.getElementById('ka-pin-save'),
+    document.getElementById('ka-lang-save')
+  ];
+  toggleEls.forEach(el => {
+    if (el) el.disabled = !hasAdmin;
+  });
+}
+
+function kaRenderAdminSelect() {
+  // Selection no longer needed; admin is already authenticated to access this page.
+  kaSelectedAdminId =
+    (kaCurrentAdmin && kaCurrentAdmin.id) ? String(kaCurrentAdmin.id) : null;
+  kaToggleAdminSettingsVisibility(kaSelectedAdminId);
+}
+
+function kaHandleAdminChange() {
+  // No-op: admin context is fixed to the logged-in admin.
+}
+
 function kaRenderSettingsForm() {
   const pinSelect = document.getElementById('ka-pin-employee');
   const pinSearch = document.getElementById('ka-pin-search');
   const langSelect = document.getElementById('ka-lang-employee');
   const langSearch = document.getElementById('ka-lang-search');
+  // Always show settings; do not gate on admin selection
+  kaToggleAdminSettingsVisibility(true);
+
+  // Force dropdowns to start at the placeholder
+  if (pinSelect) pinSelect.value = '';
+  if (langSelect) langSelect.value = '';
 
   const filterText = (input) => (input && input.value ? input.value.toLowerCase() : '');
 
@@ -3553,7 +4104,7 @@ function kaRenderSettingsForm() {
     if (!selectEl) return;
     const prev = selectEl.value || '';
     const f = filterVal || '';
-    selectEl.innerHTML = '<option value="">Select an employee or admin</option>';
+    selectEl.innerHTML = '<option value="">Select an employee</option>';
     (kaEmployees || []).forEach(emp => {
       const label = `${emp.nickname || emp.name || 'Unnamed'} (${emp.is_admin ? 'Admin' : 'Employee'})`;
       if (f && !label.toLowerCase().includes(f)) return;
@@ -3567,6 +4118,7 @@ function kaRenderSettingsForm() {
 
   fillSelect(pinSelect, filterText(pinSearch));
   fillSelect(langSelect, filterText(langSearch));
+
   kaSyncLanguageChoice();
 }
 
@@ -3694,6 +4246,7 @@ async function kaHandlePinChange() {
   const pin1 = document.getElementById('ka-pin-new');
   const pin2 = document.getElementById('ka-pin-confirm');
   const status = document.getElementById('ka-pin-status');
+  const deviceSecret = kaGetDeviceSecret();
 
   if (!sel || !pin1 || !pin2 || !status) return;
 
@@ -3727,7 +4280,12 @@ async function kaHandlePinChange() {
     await fetchJSON(`/api/employees/${id}/pin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: p1, allowOverride: true })
+      body: JSON.stringify({
+        pin: p1,
+        allowOverride: true,
+        device_id: kaDeviceId || null,
+        device_secret: deviceSecret
+      })
     });
 
     const emp = (kaEmployees || []).find(e => Number(e.id) === Number(id));
@@ -3744,7 +4302,11 @@ async function kaHandlePinChange() {
       await fetchJSON(`/api/employees/${id}/pin?allowOverride=1`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: p1 })
+        body: JSON.stringify({
+          pin: p1,
+          device_id: kaDeviceId || null,
+          device_secret: deviceSecret
+        })
       });
       const emp = (kaEmployees || []).find(e => Number(e.id) === Number(id));
       if (emp) emp.pin = p1;

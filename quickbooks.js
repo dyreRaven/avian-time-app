@@ -365,9 +365,10 @@ async function syncEmployeesFromQuickBooks() {
           require_photo,
           is_admin,
           uses_timekeeping,
-          email
+          email,
+          language
         )
-        VALUES (?, ?, NULL, ?, 0, ?, NULL, 0, 0, 1, ?)
+        VALUES (?, ?, NULL, ?, 0, ?, NULL, 0, 0, 1, ?, 'en')
       `;
 
       let processed = 0;
@@ -566,8 +567,11 @@ function buildCheckDrafts(start, end, options = {}) {
         e.id AS employee_id,
         e.name AS employee_name,
         e.vendor_qbo_id,
+        e.employee_qbo_id,
         p.id AS project_id,
         COALESCE(p.name, '(No project)') AS project_name,
+        p.qbo_id AS project_qbo_id,
+        p.customer_name AS project_customer_name,
         SUM(t.hours)     AS project_hours,
         SUM(t.total_pay) AS project_pay
       FROM time_entries t
@@ -575,6 +579,10 @@ function buildCheckDrafts(start, end, options = {}) {
       LEFT JOIN projects p ON t.project_id = p.id
       WHERE t.start_date >= ? AND t.end_date <= ?
         AND (t.paid IS NULL OR t.paid = 0)
+        AND (
+          t.resolved_status IS NULL
+          OR t.resolved_status IN ('approved', 'modified')
+        )
     `;
 
     const params = [start, end];
@@ -607,6 +615,7 @@ function buildCheckDrafts(start, end, options = {}) {
             employee_id: r.employee_id,
             employee_name: r.employee_name,
             vendor_qbo_id: r.vendor_qbo_id,
+            employee_qbo_id: r.employee_qbo_id,
             total_hours: 0,
             total_pay: 0,
             lines: []
@@ -623,6 +632,8 @@ function buildCheckDrafts(start, end, options = {}) {
         draft.lines.push({
           project_id: r.project_id,
           project_name: r.project_name,
+          project_qbo_id: r.project_qbo_id,
+          project_customer_name: r.project_customer_name,
           project_hours: projectHours,
           project_pay: projectPay
           // later we can add project_qbo_customer_id, class_qbo_id, etc.
@@ -899,7 +910,12 @@ async function createChecksForPeriod(start, end, options = {}) {
       const lineOv = overrideByLine.get(lineKey);
       const expenseNameForLine = lineOv?.expenseAccountName || effectiveExpenseName;
       const expenseIdForLine = await getExpenseAccountIdForName(expenseNameForLine);
-      const classNameForLine = lineOv?.className || line.class_name || null;
+      const classNameForLine =
+        lineOv?.className ||
+        line.class_name ||
+        line.project_name_raw ||
+        line.project_name ||
+        null;
       const classId = classNameForLine ? await getClassIdForName(classNameForLine) : null;
       const description =
         lineOv?.description ||
@@ -918,6 +934,9 @@ async function createChecksForPeriod(start, end, options = {}) {
       const detail = {
         AccountRef: { value: expenseIdForLine }
       };
+      if (line.project_qbo_id) {
+        detail.CustomerRef = { value: line.project_qbo_id };
+      }
       if (classId) {
         detail.ClassRef = { value: classId };
       }
@@ -936,10 +955,14 @@ async function createChecksForPeriod(start, end, options = {}) {
       .replace('{end}', endUS)
       .replace('{dateRange}', `${startUS} – ${endUS}`);
 
+    const payeeRef = draft.vendor_qbo_id
+      ? { value: draft.vendor_qbo_id, type: 'Vendor' }
+      : (draft.employee_qbo_id ? { value: draft.employee_qbo_id, type: 'Employee' } : null);
+
     const payload = {
       PaymentType: 'Check',
       AccountRef: { value: bankAccountId },
-      EntityRef: { value: draft.vendor_qbo_id, type: 'Vendor' },
+      EntityRef: payeeRef,
       TxnDate: end,
       PrivateNote: memoText,
       PrintStatus: 'NeedToPrint',
@@ -949,6 +972,22 @@ async function createChecksForPeriod(start, end, options = {}) {
     const url = `${API_BASE}/${realmId}/purchase`;
 
     try {
+      if (!payeeRef || !payeeRef.value) {
+        results.push({
+          employeeId: draft.employee_id,
+          employeeName: draft.employee_name,
+          totalHours: Number(draft.total_hours || 0),
+          totalPay: Number(draft.total_pay || 0),
+          ok: false,
+          error: 'No QuickBooks payee linked (vendor/employee ID missing).'
+        });
+        console.warn('[PAYROLL/QBO] Missing payeeRef for employee', draft.employee_name, {
+          vendor_qbo_id: draft.vendor_qbo_id,
+          employee_qbo_id: draft.employee_qbo_id
+        });
+        continue;
+      }
+
       const res = await axios.post(url, payload, {
         params: { minorversion: 62 },
         headers: {

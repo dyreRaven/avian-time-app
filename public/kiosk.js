@@ -87,21 +87,267 @@ function makeClientId() {
       Math.random().toString(36).slice(2);
 }
 
-const CLOCK_IN_MESSAGES = [
-  'Clocked IN — have a safe shift!',
-  'Clocked IN — have a great day!',
-  'Clocked IN — stay safe out there!',
-  'Clocked IN — let’s build something awesome today!',
-  'Clocked IN — thanks for being on time!',
-  'Clocked IN — you’re all set, have a good shift!'
-];
+const SUPPORTED_LANG_CODES = ['en', 'es', 'ht'];
 
-function getRandomClockInMessage() {
-  if (!Array.isArray(CLOCK_IN_MESSAGES) || !CLOCK_IN_MESSAGES.length) {
-    return 'Clocked IN — have a safe shift!';
+const LANGUAGE_STRINGS = {
+  en: {
+    tapToClockIn: 'Tap to Clock In',
+    tapToClockOut: 'Tap to Clock Out',
+    readyToClockIn: 'Ready to clock in.',
+    selectYourName: 'Select your name.',
+    selectYourNamePlaceholder: 'Select your name / Seleccione su nombre / Chwazi non ou',
+    selectProject: 'Select project',
+    employeeNotFound: 'Employee not found.',
+    projectNotSet:
+      'Project not set for this tablet. Ask your foreman to unlock the admin screen and choose today’s project before clocking in.',
+    loading: 'Loading…',
+    offlineLoaded: 'Offline lists loaded.',
+    noDataCached: 'Error: No data cached.',
+    adminNotConfigured: 'No admin users configured yet in the Admin Console.',
+    adminSelectAdmin: 'Select an admin.',
+    adminEnterPin: 'Enter PIN.',
+    adminEmployeeNotFound: 'Employee not found.',
+    adminNoPin: 'This person does not have a PIN set yet.',
+    adminIncorrectPin: 'Incorrect PIN.',
+    showPin: 'Show PIN',
+    hidePin: 'Hide PIN',
+    pinCancel: 'Cancel',
+    pinContinue: 'Continue',
+    startCamera: 'Start Camera',
+    takePhoto: 'Take Photo',
+    retakePhoto: 'Retake',
+    backToClock: 'Back to clock in',
+    clockedInMinutes: 'Currently CLOCKED IN — {minutes} minutes so far.',
+    clockedInHours: 'Currently CLOCKED IN — {hours} hours so far.',
+    statusUnknown: 'Could not check current status. You can still punch.',
+    savedOffline: 'Saved offline — will sync.',
+    couldNotSync: 'Could not sync — saved offline.',
+    pinEnter: 'Enter your PIN.',
+    pinIncorrect: 'Incorrect PIN — could not clock in. Please try again.',
+    pinOkPhoto: 'PIN OK. Take required photo.',
+    pinEnterConfirm: 'Enter and confirm a 4-digit PIN.',
+    pinDigits: 'PIN must be exactly 4 digits.',
+    pinMismatch: 'PINs do not match. Please try again.',
+    pinCreatedClockedIn: 'PIN successfully created. You are now clocked in.',
+    pinCreatedPhoto: 'PIN created. Take required photo.',
+    pinSaveFailed: 'Could not save PIN. Check connection and try again.',
+    punchSaved: 'Punch recorded.',
+    pinTitleExisting: 'Employee PIN',
+    pinTitleNew: 'Create Your PIN',
+    pinModeExisting: 'Enter your PIN to clock in or out.',
+    pinModeNew:
+      'First time clocking in — create a 4-digit PIN you’ll use on any Avian kiosk.',
+    cameraReady: 'Camera ready.',
+    cameraUnavailable: 'Camera unavailable.',
+    photoCaptured: 'Photo captured.',
+    punchRecorded: 'Punch recorded.',
+    greetingMorning: 'Good Morning',
+    greetingAfternoon: 'Good Afternoon',
+    greetingEvening: 'Good Evening',
+    crewLabel: 'Crew',
+    employeeLabel: 'Employee',
+    projectLabel: 'Project',
+    projectSelectorMissing: 'Project selector not found.',
+    projectSelectedByForeman: 'selected by foreman',
+    projectWillBeSet: 'Project will be set by foreman',
+    subtitle: 'Jobsite Kiosk'
+  },
+  es: {
+    tapToClockIn: 'Toque para marcar entrada',
+    tapToClockOut: 'Toque para marcar salida',
+    readyToClockIn: 'Listo para marcar entrada.',
+    selectYourName: 'Seleccione su nombre.',
+    selectYourNamePlaceholder: 'Select your name / Seleccione su nombre / Chwazi non ou',
+    selectProject: 'Seleccione proyecto',
+    employeeNotFound: 'Empleado no encontrado.',
+    projectNotSet:
+      'Proyecto no configurado para esta tableta. Pida a su encargado que desbloquee la pantalla de administrador y elija el proyecto de hoy antes de marcar.',
+    loading: 'Cargando…',
+    offlineLoaded: 'Listas sin conexion cargadas.',
+    noDataCached: 'Error: no hay datos en cache.',
+    adminNotConfigured: 'No hay administradores configurados en la consola.',
+    adminSelectAdmin: 'Seleccione un administrador.',
+    adminEnterPin: 'Ingrese PIN.',
+    adminEmployeeNotFound: 'Empleado no encontrado.',
+    adminNoPin: 'Esta persona no tiene PIN.',
+    adminIncorrectPin: 'PIN incorrecto.',
+    showPin: 'Mostrar PIN',
+    hidePin: 'Ocultar PIN',
+    pinCancel: 'Cancelar',
+    pinContinue: 'Continuar',
+    startCamera: 'Iniciar camara',
+    takePhoto: 'Tomar foto',
+    retakePhoto: 'Repetir',
+    backToClock: 'Volver a marcar',
+    clockedInMinutes: 'Actualmente MARCADO — {minutes} minutos hasta ahora.',
+    clockedInHours: 'Actualmente MARCADO — {hours} horas hasta ahora.',
+    statusUnknown: 'No se pudo verificar el estado. Aun asi puede marcar.',
+    savedOffline: 'Guardado sin conexion — se sincronizara.',
+    couldNotSync: 'No se pudo sincronizar — guardado sin conexion.',
+    pinEnter: 'Ingrese su PIN.',
+    pinIncorrect: 'PIN incorrecto — no se pudo marcar. Intente de nuevo.',
+    pinOkPhoto: 'PIN correcto. Tome la foto requerida.',
+    pinEnterConfirm: 'Ingrese y confirme un PIN de 4 digitos.',
+    pinDigits: 'El PIN debe tener exactamente 4 digitos.',
+    pinMismatch: 'Los PIN no coinciden. Intente de nuevo.',
+    pinCreatedClockedIn: 'PIN creado correctamente. Ya marco su entrada.',
+    pinCreatedPhoto: 'PIN creado. Tome la foto requerida.',
+    pinSaveFailed: 'No se pudo guardar el PIN. Revise la conexion e intente de nuevo.',
+    punchSaved: 'Marcacion registrada.',
+    pinTitleExisting: 'PIN del empleado',
+    pinTitleNew: 'Cree su PIN',
+    pinModeExisting: 'Ingrese su PIN para marcar entrada o salida.',
+    pinModeNew:
+      'Primera vez marcando — cree un PIN de 4 digitos que usara en cualquier kiosco de Avian.',
+    cameraReady: 'Camara lista.',
+    cameraUnavailable: 'Camara no disponible.',
+    photoCaptured: 'Foto tomada.',
+    punchRecorded: 'Marcacion registrada.',
+    greetingMorning: 'Buenos dias',
+    greetingAfternoon: 'Buenas tardes',
+    greetingEvening: 'Buenas noches',
+    crewLabel: 'Equipo',
+    employeeLabel: 'Empleado',
+    projectLabel: 'Proyecto',
+    projectSelectorMissing: 'Selector de proyecto no encontrado.',
+    projectSelectedByForeman: 'seleccionado por el encargado',
+    projectWillBeSet: 'El proyecto sera elegido por el encargado',
+    subtitle: 'Kiosco de obra'
+  },
+  ht: {
+    tapToClockIn: 'Peze pou anrejistre antre',
+    tapToClockOut: 'Peze pou anrejistre soti',
+    readyToClockIn: 'Pare pou anrejistre antre.',
+    selectYourName: 'Chwazi non ou.',
+    selectYourNamePlaceholder: 'Select your name / Seleccione su nombre / Chwazi non ou',
+    selectProject: 'Chwazi pwoje',
+    employeeNotFound: 'Anplwaye pa jwenn.',
+    projectNotSet:
+      'Pwoje pa chwazi sou tablet sa a. Mande sipervize a pou l debloke ekran admin nan epi chwazi pwoje jodi a anvan ou anrejistre.',
+    loading: 'Chaje…',
+    offlineLoaded: 'Lis offline yo chaje.',
+    noDataCached: 'Erè: pa gen done anrejistre.',
+    adminNotConfigured: 'Pa gen itilizatè admin nan konsole a.',
+    adminSelectAdmin: 'Chwazi yon admin.',
+    adminEnterPin: 'Antre PIN.',
+    adminEmployeeNotFound: 'Anplwaye pa jwenn.',
+    adminNoPin: 'Moun sa pa gen PIN.',
+    adminIncorrectPin: 'PIN pa bon.',
+    showPin: 'Montre PIN',
+    hidePin: 'Kache PIN',
+    pinCancel: 'Anile',
+    pinContinue: 'Kontinye',
+    startCamera: 'Komanse kamera',
+    takePhoto: 'Pran foto',
+    retakePhoto: 'Repran',
+    backToClock: 'Tounen pou anrejistre',
+    clockedInMinutes: 'KOUNYE A ANREJISTRE — {minutes} minit jouk koulye a.',
+    clockedInHours: 'KOUNYE A ANREJISTRE — {hours} edtan jouk koulye a.',
+    statusUnknown: 'Pa t kapab tcheke estati a. Ou ka toujou anrejistre.',
+    savedOffline: 'Sove san rezo — ap senkronize pita.',
+    couldNotSync: 'Pa t kapab senkronize — sove san rezo.',
+    pinEnter: 'Antre PIN ou.',
+    pinIncorrect: 'PIN pa bon — pa t ka anrejistre. Tanpri eseye anko.',
+    pinOkPhoto: 'PIN bon. Pran foto obligatwa a.',
+    pinEnterConfirm: 'Antre epi konfime yon PIN 4 chif.',
+    pinDigits: 'PIN dwe gen 4 chif egzakteman.',
+    pinMismatch: 'PIN yo pa menm. Tanpri eseye anko.',
+    pinCreatedClockedIn: 'PIN kreye avek sikses. Ou anrejistre antre kounye a.',
+    pinCreatedPhoto: 'PIN kreye. Pran foto obligatwa a.',
+    pinSaveFailed: 'Pa t kapab sove PIN lan. Tcheke koneksyon an epi eseye anko.',
+    punchSaved: 'Anrejistreman fet.',
+    pinTitleExisting: 'PIN Anplwaye',
+    pinTitleNew: 'Kreye PIN ou',
+    pinModeExisting: 'Antre PIN ou pou antre oswa soti.',
+    pinModeNew:
+      'Premye fwa w ap anrejistre — kreye yon PIN 4 chif ou pral itilize sou nenpot kiosk Avian.',
+    cameraReady: 'Kamera pare.',
+    cameraUnavailable: 'Kamera pa disponib.',
+    photoCaptured: 'Foto pran.',
+    punchRecorded: 'Anrejistreman fet.',
+    greetingMorning: 'Bonjou',
+    greetingAfternoon: 'Bon apremidi',
+    greetingEvening: 'Bonswa',
+    crewLabel: 'Ekip',
+    employeeLabel: 'Anplwaye',
+    projectLabel: 'Pwoje',
+    projectSelectorMissing: 'Lis pwoje pa jwenn.',
+    projectSelectedByForeman: 'chwazi pa sipervize a',
+    projectWillBeSet: 'Pwoje a ap chwazi pa sipervize a',
+    subtitle: 'Kios konstriksyon'
   }
-  const idx = Math.floor(Math.random() * CLOCK_IN_MESSAGES.length);
-  return CLOCK_IN_MESSAGES[idx];
+};
+
+const CLOCK_IN_MESSAGES = {
+  en: [
+    'Clocked IN — have a safe shift!',
+    'Clocked IN — have a great day!',
+    'Clocked IN — stay safe out there!',
+    'Clocked IN — let’s build something awesome today!',
+    'Clocked IN — thanks for being on time!',
+    'Clocked IN — you’re all set, have a good shift!'
+  ],
+  es: [
+    'Marcado ENTRADA — que tengas un buen turno!',
+    'Marcado ENTRADA — que tengas un gran dia!',
+    'Marcado ENTRADA — mantente seguro hoy!',
+    'Marcado ENTRADA — construyamos algo bueno hoy!',
+    'Marcado ENTRADA — gracias por llegar a tiempo!',
+    'Marcado ENTRADA — listo, buen turno!'
+  ],
+  ht: [
+    'Ou anrejistre — bon travay!',
+    'Ou anrejistre — pase yon bon jounen!',
+    'Ou anrejistre — rete an sekirite jodi a!',
+    'Ou anrejistre — ann bati yon bagay solid jodi a!',
+    'Ou anrejistre — mesi paske ou rive a le!',
+    'Ou anrejistre — tout bagay anfom, bon shift!'
+  ]
+};
+
+let currentLanguage = 'en';
+
+function normalizeLanguage(lang) {
+  const code = (lang || '').toString().trim().toLowerCase();
+  return SUPPORTED_LANG_CODES.includes(code) ? code : 'en';
+}
+
+function setCurrentLanguage(lang) {
+  currentLanguage = normalizeLanguage(lang);
+}
+
+function getLocaleForLanguage(lang) {
+  const code = normalizeLanguage(lang || currentLanguage);
+  const preferences = {
+    es: ['es', 'es-US'],
+    ht: ['ht', 'ht-HT', 'fr-HT'],
+    en: ['en', 'en-US']
+  };
+
+  const candidates = preferences[code] || preferences.en;
+  const supported = Intl.DateTimeFormat.supportedLocalesOf(candidates);
+  return supported[0] || candidates[0] || 'en-US';
+}
+
+function t(key, vars = {}, langOverride) {
+  const lang = normalizeLanguage(langOverride || currentLanguage);
+  const dict = LANGUAGE_STRINGS[lang] || LANGUAGE_STRINGS.en;
+  const template = dict[key] || LANGUAGE_STRINGS.en[key] || key;
+
+  return template.replace(/\{(\w+)\}/g, (_, k) => {
+    const val = vars[k];
+    return val === undefined || val === null ? '' : String(val);
+  });
+}
+
+function getRandomClockInMessage(langOverride) {
+  const lang = normalizeLanguage(langOverride || currentLanguage);
+  const list = CLOCK_IN_MESSAGES[lang] || CLOCK_IN_MESSAGES.en;
+  if (!Array.isArray(list) || !list.length) {
+    return CLOCK_IN_MESSAGES.en[0];
+  }
+  const idx = Math.floor(Math.random() * list.length);
+  return list[idx];
 }
 
 function loadPendingPins() {
@@ -117,11 +363,12 @@ function savePendingPins(list) {
 }
 
 function addPendingPinUpdate(update) {
-  // update = { employee_id, pin }
+  // update = { employee_id, pin, device_id }
   const list = loadPendingPins();
   list.push({
     employee_id: update.employee_id,
     pin: update.pin,
+    device_id: update.device_id || null,
     created_at: new Date().toISOString()
   });
   savePendingPins(list);
@@ -142,7 +389,10 @@ function saveQueue(q) {
 }
 function addToQueue(punch) {
   const q = loadQueue();
-  q.push(punch);
+  q.push({
+    ...punch,
+    retry_count: punch.retry_count || 0
+  });
   saveQueue(q);
 }
 function removeFromQueue(id) {
@@ -160,6 +410,15 @@ function loadCache(key) {
   }
 }
 
+function mapEmployeeRecord(raw) {
+  const obj = raw || {};
+  return {
+    ...obj,
+    id: obj.id !== undefined ? Number(obj.id) : obj.id,
+    language: normalizeLanguage(obj.language)
+  };
+}
+
 function getPosition() {
   return new Promise(resolve => {
     if (!navigator.geolocation) return resolve(null);
@@ -173,15 +432,21 @@ function getPosition() {
 
 function getGreetingPrefix() {
   const hour = new Date().getHours();
-  if (hour < 12) return 'Good Morning';
-  if (hour < 17) return 'Good Afternoon';
-  return 'Good Evening';
+  if (hour < 12) return t('greetingMorning');
+  if (hour < 17) return t('greetingAfternoon');
+  return t('greetingEvening');
 }
 
 function updateGreetingUI() {
   const greetingEl = document.getElementById('kiosk-greeting');
   const subEl = document.getElementById('kiosk-greeting-sub');
   const empSel = document.getElementById('kiosk-employee');
+  const projectLabelEl = document.getElementById('kiosk-project-label');
+  const projectNoteEl = document.getElementById('kiosk-project-note');
+  const projectPlaceholderEl = document.getElementById('kiosk-project-placeholder');
+  const employeeLabelEl = document.getElementById('kiosk-employee-label');
+  const employeePlaceholderEl = document.getElementById('kiosk-employee-placeholder');
+  const subtitleEl = document.getElementById('kiosk-subtitle');
 
   const selectedName =
     empSel && empSel.value && empSel.selectedOptions.length
@@ -191,13 +456,22 @@ function updateGreetingUI() {
   const prefix = getGreetingPrefix();
 
   if (greetingEl) {
-    const label = selectedName || 'Crew';
+    const label = selectedName || t('crewLabel');
     greetingEl.textContent = `${prefix}, ${label}!`;
   }
 
   if (subEl) {
     subEl.textContent = '';
   }
+
+  if (projectLabelEl) projectLabelEl.textContent = t('projectLabel');
+  if (projectNoteEl) projectNoteEl.textContent = `(${t('projectSelectedByForeman')})`;
+  if (projectPlaceholderEl) projectPlaceholderEl.textContent = t('projectWillBeSet');
+  if (employeeLabelEl) employeeLabelEl.textContent = t('employeeLabel');
+  if (employeePlaceholderEl) employeePlaceholderEl.textContent = t('selectYourNamePlaceholder');
+  if (subtitleEl) subtitleEl.textContent = t('subtitle');
+
+  applyStaticTranslations();
 }
 
 function updateProjectChip() {
@@ -227,10 +501,11 @@ function updateClockDisplay() {
   const dateEl = document.getElementById('kiosk-date-label');
   const timeEl = document.getElementById('kiosk-time-label');
 
+  const locale = getLocaleForLanguage(currentLanguage);
   const now = new Date();
-  const day = now.toLocaleDateString(undefined, { weekday: 'long' });
-  const date = now.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
-  const time = now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const day = now.toLocaleDateString(locale, { weekday: 'long' });
+  const date = now.toLocaleDateString(locale, { month: 'long', day: 'numeric', year: 'numeric' });
+  const time = now.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
 
   if (dayEl) dayEl.textContent = day;
   if (dateEl) dateEl.textContent = date;
@@ -249,7 +524,7 @@ function setDefaultPunchButton(button) {
   if (!button) return;
   button.classList.remove('kiosk-btn-danger');
   button.classList.add('btn-primary');
-  button.textContent = 'Tap to Clock In';
+  button.textContent = t('tapToClockIn');
 }
 
 function animateButtonPress(btn) {
@@ -295,6 +570,16 @@ function getOrCreateDeviceId() {
   return id;
 }
 
+function getOrCreateDeviceSecret() {
+  const key = 'avian_kiosk_device_secret_v1';
+  let secret = localStorage.getItem(key);
+  if (!secret) {
+    secret = makeClientId();
+    localStorage.setItem(key, secret);
+  }
+  return secret;
+}
+
 function showDeviceIdInUI() {
   const el = document.getElementById('kiosk-device-id');
   if (el && kioskDeviceId) {
@@ -325,13 +610,14 @@ function applyKioskProjectDefault() {
 
 async function initKioskConfig() {
   kioskDeviceId = getOrCreateDeviceId();
+  const deviceSecret = getOrCreateDeviceSecret();
   showDeviceIdInUI();
 
   try {
     const data = await fetchJSON('/api/kiosks/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_id: kioskDeviceId })
+      body: JSON.stringify({ device_id: kioskDeviceId, device_secret: deviceSecret })
     });
 
     if (data && data.kiosk) {
@@ -346,11 +632,15 @@ async function initKioskConfig() {
 }
 
 async function refreshKioskProjectFromServer() {
+  const deviceSecret = getOrCreateDeviceSecret();
   try {
     const data = await fetchJSON('/api/kiosks/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_id: kioskDeviceId || getOrCreateDeviceId() })
+      body: JSON.stringify({
+        device_id: kioskDeviceId || getOrCreateDeviceId(),
+        device_secret: deviceSecret
+      })
     });
 
     if (data && data.kiosk) {
@@ -389,7 +679,7 @@ async function loadEmployeesAndProjects() {
   const projSel = document.getElementById('kiosk-project');
   const status = document.getElementById('kiosk-status');
 
-  status.textContent = 'Loading…';
+  status.textContent = t('loading');
 
   try {
     const [emps, projs] = await Promise.all([
@@ -398,10 +688,7 @@ async function loadEmployeesAndProjects() {
     ]);
 
     // normalize ids
-    employeesCache = (emps || []).map(e => ({
-      ...e,
-      id: Number(e.id)
-    }));
+    employeesCache = (emps || []).map(mapEmployeeRecord);
     // Only keep active project jobs (exclude top-level customers)
     projectsCache = (projs || []).filter(p => p.customer_name);
 
@@ -419,7 +706,7 @@ async function loadEmployeesAndProjects() {
     updateProjectChip();
     status.textContent = '';
   } catch {
-    const emps = loadCache(CACHE_EMP_KEY) || [];
+    const emps = (loadCache(CACHE_EMP_KEY) || []).map(mapEmployeeRecord);
     const projs = loadCache(CACHE_PROJ_KEY) || [];
 
     employeesCache = emps;
@@ -435,16 +722,15 @@ async function loadEmployeesAndProjects() {
 
     updateProjectChip();
     if (emps.length || projs.length) {
-      status.textContent = 'Offline lists loaded.';
+      status.textContent = t('offlineLoaded');
     } else {
-      status.textContent = 'Error: No data cached.';
+      status.textContent = t('noDataCached');
     }
   }
 }
 
 function fillEmployeeSelect(sel, list) {
-  sel.innerHTML =
-    '<option value="">Select your name / Seleccione su nombre / Chwazi non ou</option>';
+  sel.innerHTML = `<option value="">${t('selectYourNamePlaceholder')}</option>`;
 
   const rows = (list || []).filter(e => {
     // 🔹 Always show admins, even if uses_timekeeping is off
@@ -463,13 +749,14 @@ function fillEmployeeSelect(sel, list) {
     const opt = document.createElement('option');
     opt.value = e.id;
     opt.textContent = e.nickname || e.name;
+    opt.dataset.lang = e.language || 'en';
     sel.appendChild(opt);
   }
 }
 
 
 function fillProjectSelect(sel, list) {
-  sel.innerHTML = '<option value="">Select project</option>';
+  sel.innerHTML = `<option value="">${t('selectProject')}</option>`;
   const activeProjects = (list || []).filter(
     p =>
       (p.active === undefined || p.active === null || Number(p.active) === 1) &&
@@ -508,7 +795,7 @@ function showAdminLoginModal() {
   });
 
   if (!admins.length) {
-    status.textContent = 'No admin users configured yet in the Admin Console.';
+    status.textContent = t('adminNotConfigured');
   } else {
     status.textContent = '';
   }
@@ -539,28 +826,28 @@ function submitAdminLogin() {
   const entered = (pinInput.value || '').trim();
 
   if (!id) {
-    status.textContent = 'Select an admin.';
+    status.textContent = t('adminSelectAdmin');
     return;
   }
   if (!entered) {
-    status.textContent = 'Enter PIN.';
+    status.textContent = t('adminEnterPin');
     return;
   }
 
   const emp = (employeesCache || []).find(e => String(e.id) === String(id));
   if (!emp) {
-    status.textContent = 'Employee not found.';
+    status.textContent = t('adminEmployeeNotFound');
     return;
   }
 
   const storedPin = (emp.pin || '').trim();
   if (!storedPin) {
-    status.textContent = 'This person does not have a PIN set yet.';
+    status.textContent = t('adminNoPin');
     return;
   }
 
   if (storedPin !== entered) {
-    status.textContent = 'Incorrect PIN.';
+    status.textContent = t('adminIncorrectPin');
     return;
   }
 
@@ -574,6 +861,8 @@ function submitAdminLogin() {
 
     params.set('device_id', deviceId);
     params.set('employee_id', id);          // 👈 NEW – pass the admin id
+    // Skip PIN prompts in kiosk-admin; they've already provided it here
+    params.set('skip_pin', '1');
 
     // First time today → open in "start-of-day" mode
     if (!isKioskDayStarted()) {
@@ -626,6 +915,9 @@ function setupAdminLongPress() {
   logo.addEventListener('contextmenu', (e) => {
     e.preventDefault();
   });
+
+  // Enable pointer-events in case CSS or a parent overlay blocked clicks
+  logo.style.pointerEvents = 'auto';
 }
 
 
@@ -685,22 +977,23 @@ function showPinModal(employee) {
       }
     }
 
+    const projectWord = t('projectLabel');
     // Show “Name – Project: XYZ” if we know the project,
     // otherwise just the name
     nameEl.textContent = projectLabel
-      ? `${baseName} – Project: ${projectLabel}`
+      ? `${baseName} – ${projectWord}: ${projectLabel}`
       : baseName;
   }
 
   // Title + explanatory label
   if (titleEl) {
-    titleEl.textContent = hasPin ? 'Employee PIN' : 'Create Your PIN';
+    titleEl.textContent = hasPin ? t('pinTitleExisting') : t('pinTitleNew');
   }
 
 if (modeLabelEl) {
   modeLabelEl.textContent = hasPin
-    ? 'Enter your PIN to clock in or out.'
-    : 'First time clocking in — create a 4-digit PIN you’ll use on any Avian kiosk.';
+    ? t('pinModeExisting')
+    : t('pinModeNew');
 }
 
 
@@ -708,6 +1001,7 @@ if (modeLabelEl) {
   if (pinInput) {
     pinInput.value = '';
     pinInput.type = 'password';
+    pinInput.readOnly = false;
   }
   if (pinConfirmInput) {
     pinConfirmInput.value = '';
@@ -717,7 +1011,7 @@ if (modeLabelEl) {
   }
 
   if (toggleBtn) {
-    toggleBtn.textContent = 'Show PIN';
+    toggleBtn.textContent = t('showPin');
   }
 
   if (status) {
@@ -734,7 +1028,10 @@ if (modeLabelEl) {
   if (mustPhoto) camSec.classList.remove('hidden');
 
   document.getElementById('pin-backdrop').classList.remove('hidden');
-  if (pinInput) pinInput.focus();
+  if (pinInput) {
+    pinInput.focus();
+    setTimeout(() => pinInput.focus(), 50);
+  }
 }
 
 
@@ -756,6 +1053,29 @@ function setPinOk(msg) {
   el.style.color = '#bbf7d0';
 }
 
+function applyStaticTranslations() {
+  const cancelBtn = document.getElementById('pin-cancel');
+  const continueBtn = document.getElementById('pin-continue');
+  const startCam = document.getElementById('start-camera');
+  const takePhotoBtn = document.getElementById('take-photo');
+  const retakePhotoBtn = document.getElementById('retake-photo');
+  const pinToggle = document.getElementById('pin-toggle-visibility');
+  const successCloseLabel = document.getElementById('success-close-label');
+
+  if (cancelBtn) cancelBtn.textContent = t('pinCancel');
+  if (continueBtn) continueBtn.textContent = t('pinContinue');
+  if (startCam) startCam.textContent = t('startCamera');
+  if (takePhotoBtn) takePhotoBtn.textContent = t('takePhoto');
+  if (retakePhotoBtn) retakePhotoBtn.textContent = t('retakePhoto');
+  if (pinToggle) {
+    pinToggle.textContent =
+      pinToggle.textContent.trim().toLowerCase().includes('hide')
+        ? t('hidePin')
+        : t('showPin');
+  }
+  if (successCloseLabel) successCloseLabel.textContent = t('backToClock');
+}
+
 // ====== CAMERA ======
 
 async function startCamera() {
@@ -768,9 +1088,9 @@ async function startCamera() {
     document.getElementById('start-camera').classList.add('hidden');
     document.getElementById('take-photo').classList.remove('hidden');
 
-    setPinOk('Camera ready.');
+    setPinOk(t('cameraReady'));
   } catch {
-    setPinError('Camera unavailable.');
+    setPinError(t('cameraUnavailable'));
   }
 }
 
@@ -802,7 +1122,7 @@ function takePhoto() {
   document.getElementById('take-photo').classList.add('hidden');
   document.getElementById('retake-photo').classList.remove('hidden');
 
-  setPinOk('Photo captured.');
+  setPinOk(t('photoCaptured'));
 }
 
 function retakePhoto() {
@@ -824,18 +1144,20 @@ async function submitPin() {
 
   const entered = pinInput.value.trim();
   const storedPin = (employee.pin || '').trim();
+  const mustPhoto =
+    !!employee.require_photo || !!(kioskConfig && kioskConfig.require_photo);
 
   // ===== EXISTING PIN =====
   if (storedPin) {
     // 1. PIN VALIDATION
     if (!pinValidated) {
       if (!entered) {
-        setPinError('Enter your PIN.');
+        setPinError(t('pinEnter'));
         return;
       }
 
       if (entered !== storedPin) {
-        setPinError('Incorrect PIN — could not clock in. Please try again.');
+        setPinError(t('pinIncorrect'));
         pinInput.value = '';
 
         // Brief pause so they can see the error, then back to main screen
@@ -849,10 +1171,15 @@ async function submitPin() {
       pinValidated = true;
       pinInput.value = '';
 
-      if (employee.require_photo && !currentPhotoBase64) {
-        setPinOk('PIN OK. Take required photo.');
+      if (mustPhoto && !currentPhotoBase64) {
+        setPinOk(t('pinOkPhoto'));
         return;
       }
+    }
+
+    if (mustPhoto && !currentPhotoBase64) {
+      setPinError(t('pinOkPhoto'));
+      return;
     }
 
     // 2. NORMAL PUNCH
@@ -866,32 +1193,40 @@ async function submitPin() {
   const pin2 = pinConfirmInput ? pinConfirmInput.value.trim() : '';
 
   if (!pin1 || !pin2) {
-    setPinError('Enter and confirm a 4-digit PIN.');
+    setPinError(t('pinEnterConfirm'));
     return;
   }
 
   if (!/^\d{4}$/.test(pin1) || !/^\d{4}$/.test(pin2)) {
-    setPinError('PIN must be exactly 4 digits.');
+    setPinError(t('pinDigits'));
     return;
   }
 
   if (pin1 !== pin2) {
-    setPinError('PINs do not match. Please try again.');
+    setPinError(t('pinMismatch'));
     pinInput.value = '';
     if (pinConfirmInput) pinConfirmInput.value = '';
     return;
   }
+
+  const deviceId = kioskDeviceId || getOrCreateDeviceId();
+  const deviceSecret = getOrCreateDeviceSecret();
 
   try {
     // Attempt to save PIN online first
     await fetchJSON(`/api/employees/${employee.id}/pin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: pin1 })
+      body: JSON.stringify({
+        pin: pin1,
+        device_id: deviceId,
+        device_secret: deviceSecret
+      })
     });
 
     // Success online
     employee.pin = pin1;
+    saveCache(CACHE_EMP_KEY, employeesCache);
     justCreatedPin = true;
 
   } catch (err) {
@@ -902,14 +1237,19 @@ async function submitPin() {
     // Offline, auth, or network failure → save locally and queue for sync
     const authLike = /auth|login|credential|session/i.test(msg);
     if (!navigator.onLine || /NetworkError|Failed to fetch/i.test(msg) || authLike) {
-      addPendingPinUpdate({ employee_id: employee.id, pin: pin1 });
+      addPendingPinUpdate({
+        employee_id: employee.id,
+        pin: pin1,
+        device_id: deviceId
+      });
 
       employee.pin = pin1;           // treat as saved locally
+      saveCache(CACHE_EMP_KEY, employeesCache);
       justCreatedPin = true;
 
     } else {
       // Real server error → do NOT continue
-      setPinError(msg || 'Could not save PIN. Check connection and try again.');
+      setPinError(msg || t('pinSaveFailed'));
       return;
     }
   }
@@ -921,8 +1261,8 @@ async function submitPin() {
   pinInput.value = '';
   if (pinConfirmInput) pinConfirmInput.value = '';
 
-  if (employee.require_photo && !currentPhotoBase64) {
-    setPinOk('PIN created. Take required photo.');
+  if (mustPhoto && !currentPhotoBase64) {
+    setPinOk(t('pinCreatedPhoto'));
     return;
   }
 
@@ -937,8 +1277,20 @@ async function performPunch(employee_id) {
   const projectSel = document.getElementById('kiosk-project');
   const status = document.getElementById('kiosk-status');
 
+  const empSel = document.getElementById('kiosk-employee');
+  const selectedOption =
+    empSel && empSel.selectedOptions && empSel.selectedOptions.length
+      ? empSel.selectedOptions[0]
+      : null;
+  const empLang =
+    (selectedOption && selectedOption.dataset && selectedOption.dataset.lang) ||
+    ((employeesCache.find(e => Number(e.id) === Number(employee_id)) || {}).language);
+  if (empLang) {
+    setCurrentLanguage(empLang);
+  }
+
   if (!projectSel) {
-    status.textContent = 'Project selector not found.';
+    status.textContent = t('projectSelectorMissing');
     status.className = 'kiosk-status kiosk-status-error';
     return;
   }
@@ -946,8 +1298,7 @@ async function performPunch(employee_id) {
     ? parseInt(kioskConfig.project_id, 10)
     : parseInt(projectSel.value, 10);
   if (!project_id) {
-    status.textContent =
-      'Project not set for this tablet. Ask your foreman to unlock the admin screen and choose today’s project before clocking in.';
+    status.textContent = t('projectNotSet');
     status.className = 'kiosk-status kiosk-status-error';
     return;
   }
@@ -970,12 +1321,13 @@ async function performPunch(employee_id) {
   addToQueue(punch);
 
   if (!navigator.onLine) {
-    status.textContent = 'Saved offline — will sync.';
+    status.textContent = t('savedOffline');
     status.className = 'kiosk-status kiosk-status-ok';
 
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
+    setCurrentLanguage('en');
     setDefaultPunchButton(btn);
     updateGreetingUI();
 
@@ -996,7 +1348,7 @@ async function performPunch(employee_id) {
 
   if (justCreatedPin) {
     // First-time PIN message – no extra random text
-    msg = 'PIN successfully created. You are now clocked in.';
+    msg = t('pinCreatedClockedIn');
     justCreatedPin = false; // reset flag
   } else {
     // Normal clock-in – keep the fun random messages
@@ -1009,7 +1361,7 @@ async function performPunch(employee_id) {
 
 
     } else {
-      showSuccessOverlay('Punch recorded.');
+      showSuccessOverlay(t('punchSaved'));
       status.textContent = '';
     }
 
@@ -1019,16 +1371,18 @@ async function performPunch(employee_id) {
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
+    setCurrentLanguage('en');
     setDefaultPunchButton(btn);
     updateGreetingUI();
   } catch (err) {
     console.error('Error syncing punch', err);
-    status.textContent = 'Could not sync — saved offline.';
+    status.textContent = t('couldNotSync');
     status.className = 'kiosk-status kiosk-status-error';
 
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
+    setCurrentLanguage('en');
     setDefaultPunchButton(btn);
     updateGreetingUI();
   }
@@ -1045,6 +1399,8 @@ async function syncPendingEmployees() {
   if (!pending.length) return;
 
   const remaining = [];
+  const fallbackDeviceId = kioskDeviceId || getOrCreateDeviceId();
+  const fallbackSecret = getOrCreateDeviceSecret();
 
   for (const item of pending) {
     try {
@@ -1053,7 +1409,9 @@ async function syncPendingEmployees() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pin: item.pin,
-          allowOverride: true
+          allowOverride: true,
+          device_id: item.device_id || fallbackDeviceId,
+          device_secret: fallbackSecret
         })
       });
       // If this succeeds, the server now knows the pin — nothing else to do
@@ -1095,7 +1453,7 @@ async function updatePunchButtonForEmployee(employeeId) {
 
     if (data.open) {
       // EMPLOYEE IS CLOCKED IN → CLOCK OUT MODE (RED)
-      button.textContent = 'Tap to Clock Out';
+      button.textContent = t('tapToClockOut');
 
       button.classList.add('kiosk-btn-danger');   // 🔴 make it red
       button.classList.remove('btn-primary');     // remove green
@@ -1111,29 +1469,28 @@ async function updatePunchButtonForEmployee(employeeId) {
         status.className = 'kiosk-status kiosk-status-ok';
         status.textContent =
           diffMin < 60
-            ? `Currently CLOCKED IN — ${diffMin} minutes so far.`
-            : `Currently CLOCKED IN — ${diffHours.toFixed(2)} hours so far.`;
+            ? t('clockedInMinutes', { minutes: diffMin })
+            : t('clockedInHours', { hours: diffHours.toFixed(2) });
       }
 
     } else {
       // EMPLOYEE IS NOT CLOCKED IN → CLOCK IN MODE (GREEN)
-      button.textContent = 'Tap to Clock In';
+      button.textContent = t('tapToClockIn');
 
       button.classList.remove('kiosk-btn-danger'); // remove red
       button.classList.add('btn-primary');         // make green again
 
       status.className = 'kiosk-status kiosk-status-ok';
-      status.textContent = 'Ready to clock in.';
+      status.textContent = t('readyToClockIn');
     }
   } catch (err) {
     console.error('Error checking open punch', err);
 
     status.className = 'kiosk-status kiosk-status-error';
-    status.textContent =
-      'Could not check current status. You can still punch.';
+    status.textContent = t('statusUnknown');
 
     // Fallback appearance → Clock In (green)
-    button.textContent = 'Tap to Clock In';
+    button.textContent = t('tapToClockIn');
     button.classList.remove('kiosk-btn-danger');
     button.classList.add('btn-primary');
   }
@@ -1146,11 +1503,24 @@ async function onEmployeeChange() {
   const empId = empSel.value;
 
   if (!empId) {
+    setCurrentLanguage('en');
     await updatePunchButtonForEmployee(null);
     updateGreetingUI();
     return;
   }
 
+  const selectedOption =
+    empSel.selectedOptions && empSel.selectedOptions.length
+      ? empSel.selectedOptions[0]
+      : null;
+  const optionLang =
+    selectedOption && selectedOption.dataset && selectedOption.dataset.lang
+      ? selectedOption.dataset.lang
+      : null;
+
+  const selectedEmp = employeesCache.find(e => String(e.id) === empId);
+  setCurrentLanguage(optionLang || (selectedEmp ? selectedEmp.language : 'en'));
+  updateClockDisplay();
   await updatePunchButtonForEmployee(empId);
   updateGreetingUI();
 }
@@ -1163,7 +1533,7 @@ function onPunchClick() {
   const status = document.getElementById('kiosk-status');
 
   if (!empSel.value) {
-    status.textContent = 'Select your name.';
+    status.textContent = t('selectYourName');
     status.className = 'kiosk-status kiosk-status-error';
     return;
   }
@@ -1171,7 +1541,7 @@ function onPunchClick() {
   const empId = empSel.value;
   const emp = employeesCache.find(e => String(e.id) === empId);
   if (!emp) {
-    status.textContent = 'Employee not found.';
+    status.textContent = t('employeeNotFound');
     status.className = 'kiosk-status kiosk-status-error';
     return;
   }
@@ -1181,13 +1551,7 @@ function onPunchClick() {
     : !!projSel.value;
 
   if (!hasProject) {
-    if (emp.is_admin) {
-      showPinModal(emp);
-      return;
-    }
-
-    status.textContent =
-      'Project not set for this tablet. Ask your foreman to unlock the admin screen and choose today’s project before clocking in.';
+    status.textContent = t('projectNotSet');
     status.className = 'kiosk-status kiosk-status-error';
     return;
   }
@@ -1206,6 +1570,9 @@ async function syncQueueToServer() {
   const queue = loadQueue();
   if (!queue.length) return;
 
+  const remaining = [];
+  let changed = false;
+
   for (const punch of queue) {
     try {
       await fetchJSON('/api/kiosk/punch', {
@@ -1214,13 +1581,37 @@ async function syncQueueToServer() {
         body: JSON.stringify(punch),
       });
 
-      // If successful, remove from local queue
-      removeFromQueue(punch.client_id);
+      changed = true; // success → drop from queue
     } catch (err) {
       console.error('Error syncing queued punch, will retry later:', err);
-      // Stop on first failure to avoid hammering the server / bad network
-      break;
+      const msg = (err && err.message) ? String(err.message) : '';
+      const netLike =
+        !navigator.onLine ||
+        /NetworkError|Failed to fetch|offline|timed out/i.test(msg);
+
+      // Network/auth → keep the punch and try again later
+      if (netLike) {
+        remaining.push(punch);
+        continue;
+      }
+
+      // Validation/other errors: cap retries so one bad record doesn't block others
+      const attempts = (punch.retry_count || 0) + 1;
+      if (attempts >= 3) {
+        changed = true; // drop it after 3 failed tries
+        continue;
+      }
+
+      changed = true;
+      remaining.push({ ...punch, retry_count: attempts });
     }
+  }
+
+  saveQueue(remaining);
+
+  // If we dropped some and still have items, try again soon so backlog drains
+  if (changed && remaining.length && navigator.onLine) {
+    setTimeout(syncQueueToServer, 3000);
   }
 }
 
@@ -1328,12 +1719,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       pinInput.type = newType;
       if (pinConfirmInput) pinConfirmInput.type = newType;
 
-      pinToggle.textContent = newType === 'password' ? 'Show PIN' : 'Hide PIN';
+      pinToggle.textContent = newType === 'password' ? t('showPin') : t('hidePin');
     });
   }
 
+  // Apply static translations on first load
+  applyStaticTranslations();
 
-}); 
+});
 
 // When we regain internet, try syncing again
 window.addEventListener('online', () => {
