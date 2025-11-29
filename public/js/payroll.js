@@ -91,19 +91,24 @@ async function loadPayrollSettings() {
   const expenseSelect = document.getElementById('payroll-expense-account');
   const memoInput = document.getElementById('payroll-memo-template');
   const lineDescInput = document.getElementById('payroll-line-desc-template');
+  const statusEl = getPayrollSettingsStatusEl();
   try {
-    const [settingsRes, optsRes] = await Promise.all([
+    const [settingsRes, optsRes, classesRes] = await Promise.all([
       fetch('/api/payroll/settings'),
-      fetch('/api/payroll/account-options')
+      fetch('/api/payroll/account-options'),
+      fetch('/api/payroll/classes')
     ]);
     const settings = settingsRes.ok ? await settingsRes.json() : {};
     const opts = optsRes.ok ? await optsRes.json() : { bankAccounts: [], expenseAccounts: [] };
+    const classesPayload = classesRes.ok ? await classesRes.json() : { classes: [] };
     payrollExpenseAccounts = opts.expenseAccounts || [];
+    payrollClasses = classesPayload.classes || [];
+    // Do not preload defaults; force admin to select each visit
     currentPayrollSettings = {
-      bank_account_name: settings.bank_account_name || null,
-      expense_account_name: settings.expense_account_name || null,
-      default_memo: settings.default_memo || 'Payroll {start} – {end}',
-      line_description_template: settings.line_description_template || 'Labor {hours} hrs – {project}'
+      bank_account_name: null,
+      expense_account_name: null,
+      default_memo: '',
+      line_description_template: ''
     };
     if (bankSelect) {
       bankSelect.innerHTML = '<option value="">(select bank account)</option>';
@@ -113,7 +118,6 @@ async function loadPayrollSettings() {
         const opt = document.createElement('option');
         opt.value = fullName;
         opt.textContent = fullName;
-        if (fullName === currentPayrollSettings.bank_account_name) opt.selected = true;
         bankSelect.appendChild(opt);
       });
     }
@@ -125,12 +129,12 @@ async function loadPayrollSettings() {
         const opt = document.createElement('option');
         opt.value = fullName;
         opt.textContent = fullName;
-        if (fullName === currentPayrollSettings.expense_account_name) opt.selected = true;
         expenseSelect.appendChild(opt);
       });
     }
-    if (memoInput) memoInput.value = currentPayrollSettings.default_memo;
-    if (lineDescInput) lineDescInput.value = currentPayrollSettings.line_description_template;
+    if (memoInput) memoInput.value = '';
+    if (lineDescInput) lineDescInput.value = '';
+    if (statusEl) statusEl.textContent = '';
   } catch (err) {
     console.error('Error loading payroll settings/options:', err);
   }
@@ -141,6 +145,7 @@ async function savePayrollSettings() {
   const expenseSelect = document.getElementById('payroll-expense-account');
   const memoInput = document.getElementById('payroll-memo-template');
   const lineDescInput = document.getElementById('payroll-line-desc-template');
+  const statusEl = getPayrollSettingsStatusEl();
   const payload = {
     bank_account_name: bankSelect ? bankSelect.value || null : null,
     expense_account_name: expenseSelect ? expenseSelect.value || null : null,
@@ -154,7 +159,12 @@ async function savePayrollSettings() {
   });
   const data = await res.json();
   if (!data.ok && data.error) {
-    alert('Failed to save payroll settings: ' + data.error);
+    if (statusEl) {
+      statusEl.textContent = 'Failed to save payroll settings: ' + data.error;
+      statusEl.style.color = '#b91c1c';
+    } else {
+      alert('Failed to save payroll settings: ' + data.error);
+    }
     return;
   }
   currentPayrollSettings = payload;
@@ -170,6 +180,10 @@ async function savePayrollSettings() {
       settingsSaveBtn.disabled = false;
     }, 1200);
   }
+  if (statusEl) {
+    statusEl.textContent = 'Payroll settings saved.';
+    statusEl.style.color = '#0f5132';
+  }
 }
 
 function setupPayrollSettingsCollapse() {
@@ -183,6 +197,24 @@ function setupPayrollSettingsCollapse() {
     const hidden = body.classList.toggle('hidden');
     if (chev) chev.textContent = hidden ? '▸' : '▾';
   });
+}
+
+function getPayrollSettingsStatusEl() {
+  let el = document.getElementById('payroll-settings-status');
+  if (el) return el;
+  const container = document.getElementById('payroll-settings-body') || document.getElementById('payroll-settings-card');
+  if (!container) return null;
+  el = document.createElement('div');
+  el.id = 'payroll-settings-status';
+  el.style.marginTop = '6px';
+  el.style.fontSize = '0.85rem';
+  el.style.color = '#0f5132';
+  container.appendChild(el);
+  return el;
+}
+
+function promptReuseSavedSettingsIfNeeded() {
+  // No-op: defaults disabled per request.
 }
 
 function normalizeTimeValue(val) {
@@ -532,7 +564,6 @@ function renderPayrollSummaryTable() {
           <input type="checkbox" class="payroll-send-checkbox" data-employee-id="${agg.employee_id}" checked />
           Send to QB
         </label>
-        <button type="button" class="btn secondary btn-compact btn-view-time-entries" data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}">View Time Entries</button>
       </td>
     `;
     const memoText = memoTemplate
@@ -547,78 +578,90 @@ function renderPayrollSummaryTable() {
     detailsTr.innerHTML = `
       <td colspan="${colCount}">
         <div class="payroll-details">
-          <div class="details-columns">
-            <div class="details-column">
-              <h4>QuickBooks Check Preview</h4>
-              <div class="summary-grid">
-                <div class="summary-item"><div class="label">Employee</div><div class="value">${agg.employee_name || ''}</div></div>
-                <div class="summary-item"><div class="label">Check Date</div><div class="value">${formatDateUS(currentPayrollRange.end)}</div></div>
-                <div class="summary-item"><div class="label">Total Amount</div><div class="value">$${displayTotalPay.toFixed(2)}</div></div>
-                <div class="summary-item"><div class="label">Bank Account</div><div class="value">${currentPayrollSettings.bank_account_name || '(not set)'}</div></div>
-              </div>
-              <div class="form-field" style="margin-top: 0.75rem;">
-                <label><strong>Default Memo</strong></label>
-                <input type="text" class="payroll-memo-input" data-employee-id="${agg.employee_id}" value="${memoText}" />
-              </div>
+          <div class="details-column">
+            <h4>QuickBooks Check Preview</h4>
+            <div class="summary-grid">
+              <div class="summary-item"><div class="label">Employee</div><div class="value">${agg.employee_name || ''}</div></div>
+              <div class="summary-item"><div class="label">Check Date</div><div class="value">${formatDateUS(currentPayrollRange.end)}</div></div>
+              <div class="summary-item"><div class="label">Total Amount</div><div class="value">$${displayTotalPay.toFixed(2)}</div></div>
+              <div class="summary-item"><div class="label">Bank Account</div><div class="value">${currentPayrollSettings.bank_account_name || '(not set)'}</div></div>
             </div>
-            <div class="details-column payroll-line-items">
-              <h4>Line Items</h4>
-              <div class="line-items-box">
-                ${agg.projects && agg.projects.length ? `
-                    <table class="table nested-table">
-                      <thead>
-                        <tr>
-                          <th>Expense Account</th><th>Description</th><th>Amount</th><th>Customer / Project</th><th>Class</th><th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${agg.projects.map(p => {
-                          const hours = Number(p.hours || 0);
-                          const amount = Number(p.total_pay || 0);
-                          const lineDesc = buildLineDescription(currentPayrollSettings.line_description_template, { employee_name: agg.employee_name, project_name: p.project_name, project_hours: hours }, currentPayrollRange.start, currentPayrollRange.end);
-                          const defaultExpenseName = currentPayrollSettings.expense_account_name || '';
-                          const expenseOptions = (payrollExpenseAccounts || []).map(acc => {
-                            const fullName = acc.fullName || acc.name || '';
-                            if (!fullName) return '';
-                            const selected = fullName === defaultExpenseName ? ' selected' : '';
-                            return `<option value="${fullName}"${selected}>${fullName}</option>`;
-                          }).join('');
-                          const defaultClassName = p.class_name || '';
-                          return `
-                            <tr>
-                              <td><select class="line-expense-select" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">(Use default${defaultExpenseName ? ': ' + defaultExpenseName : ''})</option>${expenseOptions}</select></td>
-                              <td><input type="text" class="line-desc-input" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}" value="${lineDesc}" /></td>
-                              <td>$${amount.toFixed(2)}</td>
-                              <td>${p.project_name || ''}</td>
-                              <td><input type="text" class="line-class-input" list="${classDatalistId}" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}" value="${defaultClassName}" placeholder="(none)" /></td>
-                              <td><button type="button" class="btn secondary btn-compact btn-view-time-entries" data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}" data-project-id="${p.project_id || ''}" data-project-name="${p.project_name || ''}">View Time Entries</button></td>
-                            </tr>
-                          `;
-                        }).join('')}
-                        ${customLines.map(line => {
-                          const expenseOptions = (payrollExpenseAccounts || []).map(acc => {
-                            const fullName = acc.fullName || acc.name || '';
-                            if (!fullName) return '';
-                            const selected = fullName === line.expenseAccountName ? ' selected' : '';
-                            return `<option value="${fullName}"${selected}>${fullName}</option>`;
-                          }).join('');
-                          return `
-                            <tr class="custom-line-row" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">
-                              <td><select class="line-expense-select" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(Use default${currentPayrollSettings.expense_account_name ? ': ' + currentPayrollSettings.expense_account_name : ''})</option>${expenseOptions}</select></td>
-                              <td><input type="text" class="line-desc-input" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${line.description || ''}" placeholder="(custom description)" /></td>
-                              <td><input type="number" step="0.01" min="0" class="line-amount-input" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${Number(line.amount || 0).toFixed(2)}" /></td>
-                              <td>(Custom)</td>
-                              <td><input type="text" class="line-class-input" list="${classDatalistId}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${line.className || ''}" placeholder="(none)" /></td>
-                              <td><button type="button" class="btn tertiary btn-compact btn-remove-line" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">Remove</button></td>
-                            </tr>
-                          `;
-                        }).join('')}
-                      </tbody>
-                    </table>
-                    <div class="mt-2"><button type="button" class="btn tertiary btn-add-line" data-employee-id="${agg.employee_id}">+ Add line item</button></div>
-                    ${payrollClasses && payrollClasses.length ? `<datalist id="${classDatalistId}">${(payrollClasses || []).map(c => (c.fullName || c.name ? `<option value="${c.fullName || c.name}"></option>` : '')).join('')}</datalist>` : ''}
-                  ` : '<p>No line items available.</p>'}
-              </div>
+            <div class="form-field" style="margin-top: 0.75rem;">
+              <label><strong>Default Memo</strong></label>
+              <input type="text" class="payroll-memo-input" data-employee-id="${agg.employee_id}" value="${memoText}" />
+            </div>
+          </div>
+          <div class="details-column payroll-line-items" style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #e5e7eb;">
+            <h4>Line Items</h4>
+            <div class="line-items-box">
+              ${agg.projects && agg.projects.length ? `
+                  <table class="table nested-table">
+                    <thead>
+                      <tr>
+                        <th>Expense Account</th><th>Description</th><th>Amount</th><th>Customer / Project</th><th>Class</th><th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${agg.projects.map(p => {
+                        const hours = Number(p.hours || 0);
+                        const amount = Number(p.total_pay || 0);
+                        const lineDesc = buildLineDescription(currentPayrollSettings.line_description_template, { employee_name: agg.employee_name, project_name: p.project_name, project_hours: hours }, currentPayrollRange.start, currentPayrollRange.end);
+                        const defaultExpenseName = currentPayrollSettings.expense_account_name || '';
+                        const expenseOptions = (payrollExpenseAccounts || []).map(acc => {
+                          const fullName = acc.fullName || acc.name || '';
+                          if (!fullName) return '';
+                          const selected = fullName === defaultExpenseName ? ' selected' : '';
+                          return `<option value="${fullName}"${selected}>${fullName}</option>`;
+                        }).join('');
+                        const defaultClassName = p.class_name || p.project_name || '';
+                        let classOptions = (payrollClasses || []).map(c => {
+                          const name = c.fullName || c.name || '';
+                          if (!name) return '';
+                          const selected = name === defaultClassName ? ' selected' : '';
+                          return `<option value="${name}"${selected}>${name}</option>`;
+                        }).join('');
+                        if (defaultClassName && !(payrollClasses || []).some(c => (c.fullName || c.name) === defaultClassName)) {
+                          classOptions = `<option value="${defaultClassName}" selected>${defaultClassName}</option>` + classOptions;
+                        }
+                        return `
+                          <tr>
+                            <td><select class="line-expense-select" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">(Use default${defaultExpenseName ? ': ' + defaultExpenseName : ''})</option>${expenseOptions}</select></td>
+                            <td><input type="text" class="line-desc-input" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}" value="${lineDesc}" /></td>
+                            <td>$${amount.toFixed(2)}</td>
+                            <td>${p.project_name || ''}</td>
+                            <td><select class="line-class-select" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">(none)</option>${classOptions}</select></td>
+                            <td><button type="button" class="btn secondary btn-compact btn-view-time-entries" data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}" data-project-id="${p.project_id || ''}" data-project-name="${p.project_name || ''}">View Time Entries</button></td>
+                          </tr>
+                        `;
+                      }).join('')}
+                      ${customLines.map(line => {
+                        const expenseOptions = (payrollExpenseAccounts || []).map(acc => {
+                          const fullName = acc.fullName || acc.name || '';
+                          if (!fullName) return '';
+                          const selected = fullName === line.expenseAccountName ? ' selected' : '';
+                          return `<option value="${fullName}"${selected}>${fullName}</option>`;
+                        }).join('');
+                        const classOptions = (payrollClasses || []).map(c => {
+                          const name = c.fullName || c.name || '';
+                          if (!name) return '';
+                          const selected = name === (line.className || '') ? ' selected' : '';
+                          return `<option value="${name}"${selected}>${name}</option>`;
+                        }).join('');
+                        return `
+                          <tr class="custom-line-row" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">
+                            <td><select class="line-expense-select" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(Use default${currentPayrollSettings.expense_account_name ? ': ' + currentPayrollSettings.expense_account_name : ''})</option>${expenseOptions}</select></td>
+                            <td><input type="text" class="line-desc-input" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${line.description || ''}" placeholder="(custom description)" /></td>
+                            <td><input type="number" step="0.01" min="0" class="line-amount-input" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${Number(line.amount || 0).toFixed(2)}" /></td>
+                            <td>(Custom)</td>
+                            <td><select class="line-class-select" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(none)</option>${classOptions}</select></td>
+                            <td><button type="button" class="btn tertiary btn-compact btn-remove-line" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">Remove</button></td>
+                          </tr>
+                        `;
+                      }).join('')}
+                    </tbody>
+                  </table>
+                  <div class="mt-2"><button type="button" class="btn tertiary btn-add-line" data-employee-id="${agg.employee_id}">+ Add line item</button></div>
+                ` : '<p>No line items available.</p>'}
             </div>
           </div>
         </div>
@@ -655,7 +698,7 @@ function setupPayrollOverrideInputs() {
     input.addEventListener('input', updateMemo);
     input.addEventListener('change', updateMemo);
   });
-  document.querySelectorAll('.line-expense-select, .line-desc-input, .line-class-input, .line-amount-input').forEach(el => {
+  document.querySelectorAll('.line-expense-select, .line-desc-input, .line-class-select, .line-amount-input').forEach(el => {
     const empId = el.dataset.employeeId;
     const projectId = el.dataset.projectId;
     const isCustom = el.dataset.customLine === 'true';
@@ -670,7 +713,7 @@ function setupPayrollOverrideInputs() {
           const descInput = row?.querySelector('.line-desc-input');
           const amountInput = row?.querySelector('.line-amount-input');
           const expenseSel = row?.querySelector('.line-expense-select');
-          const classInput = row?.querySelector('.line-class-input');
+          const classInput = row?.querySelector('.line-class-select');
           lines[idx] = {
             ...lines[idx],
             description: descInput?.value || '',
@@ -685,7 +728,7 @@ function setupPayrollOverrideInputs() {
         if (!row) return;
         const expenseSel = row.querySelector('.line-expense-select');
         const descInput = row.querySelector('.line-desc-input');
-        const classInput = row.querySelector('.line-class-input');
+        const classInput = row.querySelector('.line-class-select');
         payrollOverrides[key] = {
           employeeId: Number(empId),
           projectId: Number(projectId),
@@ -766,6 +809,15 @@ function setupCustomLineButtons() {
 async function createChecksForCurrentRange() {
   const { start, end } = currentPayrollRange || {};
   if (!validatePayrollDates(start, end)) return;
+  // refresh in-memory settings from inputs
+  const bankSelect = document.getElementById('payroll-bank-account');
+  const expenseSelect = document.getElementById('payroll-expense-account');
+  const memoInput = document.getElementById('payroll-memo-template');
+  const lineDescInput = document.getElementById('payroll-line-desc-template');
+  currentPayrollSettings.bank_account_name = bankSelect ? bankSelect.value || null : null;
+  currentPayrollSettings.expense_account_name = expenseSelect ? expenseSelect.value || null : null;
+  currentPayrollSettings.default_memo = memoInput ? memoInput.value || null : null;
+  currentPayrollSettings.line_description_template = lineDescInput ? lineDescInput.value || null : null;
   const overridesArray = [];
   const lineOverrides = [];
   Object.entries(payrollOverrides || {}).forEach(([key, ov]) => {
@@ -809,6 +861,35 @@ async function createChecksForCurrentRange() {
     .filter(cb => !cb.checked)
     .map(cb => Number(cb.dataset.employeeId))
     .filter(n => Number.isFinite(n));
+  // Basic pre-flight validation
+  const errors = [];
+  if (!currentPayrollSettings.bank_account_name) {
+    errors.push('Bank account is not selected in payroll settings.');
+  }
+  if (!currentPayrollSettings.expense_account_name) {
+    errors.push('Expense account is not selected in payroll settings.');
+  }
+  const missingLines = [];
+  document.querySelectorAll('#payroll-summary-body .line-items-box tr').forEach(row => {
+    const empId = row.closest('tr')?.dataset.employeeId || row.dataset.employeeId || '';
+    const expense = row.querySelector('.line-expense-select')?.value || '';
+    const desc = row.querySelector('.line-desc-input')?.value || '';
+    const cls = row.querySelector('.line-class-select')?.value || '';
+    if (!expense || !desc || !cls) {
+      const projLabel = row.querySelector('td:nth-child(4)')?.textContent || '(project)';
+      missingLines.push(`Employee ${empId} / ${projLabel} missing ${[
+        !expense ? 'expense' : '',
+        !desc ? 'description' : '',
+        !cls ? 'class' : ''
+      ].filter(Boolean).join(', ')}`);
+    }
+  });
+  if (missingLines.length) errors.push('Line items incomplete:\n' + missingLines.join('\n'));
+  if (errors.length) {
+    alert('Please fix the following before creating checks:\n\n' + errors.join('\n'));
+    return;
+  }
+
   const payload = {
     start,
     end,

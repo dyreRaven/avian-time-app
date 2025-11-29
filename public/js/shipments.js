@@ -697,8 +697,8 @@ function setupItemVerificationModal() {
       const historyList = document.getElementById('item-verification-history');
       const { name: currentEmpName } = getCurrentVerifierInfo();
 
-      if (statusSel.value === 'verified') {
-        if (dateInput && !dateInput.value) {
+      if (statusSel.value) {
+        if (dateInput) {
           dateInput.value = new Date().toISOString().slice(0, 10);
         }
         if (byInput) {
@@ -714,15 +714,9 @@ function setupItemVerificationModal() {
   }
 
   if (inlineSave) {
-    inlineSave.addEventListener('click', () => {
-      if (!itemVerificationEditMode) {
-        setVerificationInputsDisabled(false);
-        itemVerificationEditMode = true;
-        inlineSave.textContent = 'Save verification info';
-        return;
-      }
-      const saveButton = document.getElementById('item-verification-save');
-      if (saveButton) saveButton.click();
+    inlineSave.addEventListener('click', (e) => {
+      e.preventDefault();
+      // Inline button no longer triggers save; main Save handles persistence.
     });
   }
 
@@ -814,7 +808,7 @@ v.history.push({
       updateVerifierTagForRow(currentVerificationRow);
 
       // After save, re-lock fields and reset edit button
-      setVerificationInputsDisabled(true);
+      setVerificationInputsDisabled(false);
       const inlineSaveBtn = document.getElementById('item-verification-edit-status');
       if (inlineSaveBtn) inlineSaveBtn.textContent = 'Edit verification info';
       itemVerificationEditMode = false;
@@ -946,11 +940,13 @@ function openItemVerificationModal(row) {
   }
 
   if (editStatusBtn) {
-    editStatusBtn.classList.remove('hidden');
-    editStatusBtn.textContent = 'Edit verification info';
+    const locked = !!(v.status && v.status.trim());
+    editStatusBtn.classList.toggle('hidden', locked);
+    editStatusBtn.textContent = 'Save verification info';
   }
-  itemVerificationEditMode = false;
-  setVerificationInputsDisabled(true);
+  // Lock editing if already verified; allow when empty.
+  const locked = !!(v.status && v.status.trim());
+  setVerificationInputsDisabled(locked);
 
   modal.classList.remove('hidden');
 }
@@ -1081,7 +1077,9 @@ function setVerificationInputsDisabled(disabled) {
   controls.forEach(el => {
     if (!el) return;
     el.disabled = disabled;
-    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+    if (el.id === 'item-verification-verified-by' || el.id === 'item-verification-date') {
+      el.readOnly = true;
+    } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       el.readOnly = disabled;
     }
   });

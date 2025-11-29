@@ -4238,22 +4238,22 @@ async function kaLoadTimeEntries() {
   if (!tbody || !startInput || !endInput) return;
 
   document.querySelectorAll('.ka-pay-col').forEach(el => {
-    el.classList.toggle('hidden', !payEnabled);
+    el.classList.toggle('ka-col-hidden', !payEnabled);
   });
   document.querySelectorAll('.ka-paystatus-col').forEach(el => {
-    el.classList.toggle('hidden', !payEnabled);
+    el.classList.toggle('ka-col-hidden', !payEnabled);
   });
   document.querySelectorAll('.ka-rate-col').forEach(el => {
-    el.classList.toggle('hidden', !payEnabled);
+    el.classList.toggle('ka-col-hidden', !payEnabled);
   });
   document.querySelectorAll('.ka-approve-col').forEach(el => {
-    el.classList.toggle('hidden', !actionsEnabled);
+    el.classList.toggle('ka-col-hidden', !actionsEnabled);
   });
   document.querySelectorAll('.ka-actions-col').forEach(el => {
-    el.classList.toggle('hidden', !actionsEnabled);
+    el.classList.toggle('ka-col-hidden', !actionsEnabled);
   });
   document.querySelectorAll('.ka-status-col').forEach(el => {
-    el.classList.toggle('hidden', !actionsEnabled);
+    el.classList.toggle('ka-col-hidden', !actionsEnabled);
   });
 
   if (!kaCanViewTimeReports()) {
@@ -4398,22 +4398,16 @@ async function kaLoadTimeEntries() {
       <td>${t.end_time || '—'}</td>
       <td class="ka-right">${hours}</td>
     `;
-    if (payEnabled) {
-      rowHtml += `
-        <td class="ka-right ka-pay-col ka-rate-col" data-rate-entry="${t.id}">${rateDisplay}</td>
-        <td class="ka-right ka-pay-col">$${pay}</td>
-        <td class="ka-right ka-pay-col ka-paystatus-col">
-          <span class="ka-tag ${payTagClass}">${paid}</span>
-        </td>
-      `;
-    }
-    if (actionsEnabled) {
-      rowHtml += `
-        <td class="ka-actions-cell">${statusLabel}</td>
-        <td class="ka-approve-col">${approvedBy}</td>
-        <td class="ka-actions-cell ka-actions-col">${actionsCell}</td>
-      `;
-    }
+    rowHtml += `
+      <td class="ka-right ka-pay-col ka-rate-col ${payEnabled ? '' : 'ka-col-hidden'}" data-rate-entry="${t.id}">${payEnabled ? rateDisplay : ''}</td>
+      <td class="ka-right ka-pay-col ${payEnabled ? '' : 'ka-col-hidden'}">${payEnabled ? `$${pay}` : ''}</td>
+      <td class="ka-right ka-pay-col ka-paystatus-col ${payEnabled ? '' : 'ka-col-hidden'}">
+        ${payEnabled ? `<span class="ka-tag ${payTagClass}">${paid}</span>` : ''}
+      </td>
+      <td class="ka-actions-cell ${actionsEnabled ? '' : 'ka-col-hidden'}">${actionsEnabled ? statusLabel : ''}</td>
+      <td class="ka-approve-col ${actionsEnabled ? '' : 'ka-col-hidden'}">${actionsEnabled ? approvedBy : ''}</td>
+      <td class="ka-actions-cell ka-actions-col ${actionsEnabled ? '' : 'ka-col-hidden'}">${actionsEnabled ? actionsCell : ''}</td>
+    `;
 
     tr.innerHTML = rowHtml;
 
