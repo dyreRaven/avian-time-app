@@ -39,10 +39,10 @@
   <div class="card" id="ka-sessions-card">
     <div class="card-header">
       <div>
-        <h2>Today's Sessions</h2>
+        <h2 id="ka-timesheet-heading">Today's Timesheets</h2>
         <p class="card-sub">
-          Pick a project to start a session, then set it active for this tablet.
-          The active session is the project workers will be clocked into on this device.
+          Pick a project to start a timesheet, then set it active for this tablet.
+          The active timesheet is the project workers will be clocked into on this device.
         </p>
       </div>
     </div>
@@ -50,9 +50,12 @@
       <div class="ka-session-inline">
         <label class="ka-session-label" for="ka-project-select">Project</label>
         <select id="ka-project-select"></select>
-        <button id="ka-add-session-btn" class="btn primary btn-sm">Start New Session</button>
+        <button id="ka-add-session-btn" class="btn primary btn-sm">Start New Timesheet</button>
       </div>
-      <div id="ka-session-status" class="ka-status"></div>
+      <div class="ka-session-inline" style="justify-content: space-between; align-items: center;">
+        <div id="ka-session-status" class="ka-status"></div>
+        <button id="ka-toggle-timesheets" class="btn ghost btn-sm" type="button">View inactive timesheets</button>
+      </div>
       <div id="ka-session-list" class="ka-muted">(loading…)</div>
     </div>
   </div>
@@ -81,11 +84,6 @@
           <tr><td colspan="3" class="ka-muted">(loading…)</td></tr>
         </tbody>
       </table>
-    </div>
-    <div class="ka-live-actions">
-      <button id="ka-end-session-live" class="btn danger btn-sm" style="display:none;">
-        End Session & Clock Out All
-      </button>
     </div>
   </div>
 </section>
@@ -261,6 +259,20 @@
               Run Report
             </button>
           </div>
+          <div class="ka-time-filter-row">
+            <label class="ka-shipments-filter-label">
+              Employee:
+              <select id="ka-time-employee" class="ka-select-arrow">
+                <option value="">All employees</option>
+              </select>
+            </label>
+            <label class="ka-shipments-filter-label">
+              Project:
+              <select id="ka-time-project" class="ka-select-arrow">
+                <option value="">All projects</option>
+              </select>
+            </label>
+          </div>
           <div class="ka-time-date-row hidden" id="ka-time-custom">
             <div class="ka-small">
               From:
@@ -316,15 +328,19 @@
   <div class="card-header"><h2>Settings</h2></div>
   <div class="card-body">
 
-    <div id="ka-admin-settings-block">
-      <div class="form-divider"></div>
+    <p class="ka-settings-intro">Quick actions to keep this kiosk ready for crews. Choose a person, update their language or PIN, unlock rates if you have access, or sign out when you’re done.</p>
 
-      <div class="form-field">
-        <label for="ka-lang-search" class="ka-settings-section-label">Language preferences</label>
+    <div id="ka-admin-settings-block" class="ka-settings-grid">
+      <div class="ka-settings-tile">
+        <div class="ka-settings-head">
+          <div>
+            <div class="ka-settings-title">Language preferences</div>
+            <p class="ka-settings-sub">Pick a worker or admin, then set the language they see on this kiosk.</p>
+          </div>
+        </div>
         <div class="ka-dual-row">
           <div class="ka-dual-left">
             <select id="ka-lang-employee" class="ka-select-arrow"></select>
-            <input id="ka-lang-search" type="text" placeholder="Search employees/admins" />
           </div>
           <div class="ka-dual-right">
             <select id="ka-lang-choice" class="ka-select-arrow">
@@ -335,18 +351,19 @@
             <button type="button" id="ka-lang-save" class="btn secondary btn-sm">Update Language</button>
           </div>
         </div>
-        <p class="ka-label-note">Pick a person, then set their preferred language.</p>
         <p id="ka-lang-status" class="ka-status"></p>
       </div>
 
-      <div class="form-divider"></div>
-
-      <div class="form-field">
-        <label for="ka-pin-search" class="ka-settings-section-label">Change PIN (employees & admins)</label>
+      <div class="ka-settings-tile">
+        <div class="ka-settings-head">
+          <div>
+            <div class="ka-settings-title">Change PIN (employees &amp; admins)</div>
+            <p class="ka-settings-sub">Choose a person, enter a new 4-digit PIN, and confirm it.</p>
+          </div>
+        </div>
         <div class="ka-dual-row">
           <div class="ka-dual-left">
             <select id="ka-pin-employee" class="ka-select-arrow"></select>
-            <input id="ka-pin-search" type="text" placeholder="Search employees/admins" />
           </div>
           <div class="ka-dual-right">
             <div class="ka-pin-row">
@@ -361,45 +378,62 @@
         <p id="ka-pin-status" class="ka-status"></p>
       </div>
 
-      <div class="form-divider"></div>
-    </div>
+      <div class="ka-settings-tile">
+        <div class="ka-settings-head">
+          <div>
+            <div class="ka-settings-title">Rates (restricted)</div>
+            <p class="ka-settings-sub">Toggle rates on, then enter your PIN to view or change pay rates.</p>
+          </div>
+        </div>
+        <div class="form-field" id="ka-rates-block">
+          <label class="ka-shipments-filter-label ka-settings-section-label">
+            <input type="checkbox" id="ka-rates-toggle" />
+            View and edit rates
+          </label>
+          <div id="ka-rates-pin-row" class="ka-rates-pin hidden">
+            <input
+              type="password"
+              id="ka-rates-pin"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              maxlength="4"
+              placeholder="Re-enter your PIN"
+            />
+            <button type="button" id="ka-rates-pin-submit" class="btn secondary btn-sm">Unlock</button>
+            <button type="button" id="ka-rates-pin-cancel" class="btn tertiary btn-sm">Cancel</button>
+          </div>
+          <p class="ka-label-note">Requires pay-rate access. Unlocking expires after a short time.</p>
+          <p id="ka-rates-status" class="ka-status"></p>
+        </div>
 
-    <div class="form-field" id="ka-rates-block">
-      <label class="ka-shipments-filter-label ka-settings-section-label">
-        <input type="checkbox" id="ka-rates-toggle" />
-        View and edit rates
-      </label>
-      <div id="ka-rates-pin-row" class="ka-rates-pin hidden">
-        <input
-          type="password"
-          id="ka-rates-pin"
-          inputmode="numeric"
-          pattern="[0-9]*"
-          maxlength="4"
-          placeholder="Re-enter your PIN"
-        />
-        <button type="button" id="ka-rates-pin-submit" class="btn secondary btn-sm">Unlock</button>
-        <button type="button" id="ka-rates-pin-cancel" class="btn tertiary btn-sm">Cancel</button>
+        <div id="ka-rates-editor" class="ka-rates-editor hidden">
+          <div class="table-wrapper">
+            <table class="ka-table">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th class="ka-right">Current rate</th>
+                  <th class="ka-right">New rate</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="ka-rates-body">
+                <tr><td colspan="4" class="ka-muted">(locked)</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
-      <p class="ka-label-note">Requires pay-rate access. Unlocking expires after a short time.</p>
-      <p id="ka-rates-status" class="ka-status"></p>
-    </div>
 
-    <div id="ka-rates-editor" class="ka-rates-editor hidden">
-      <div class="table-wrapper">
-        <table class="ka-table">
-          <thead>
-            <tr>
-              <th>Employee</th>
-              <th class="ka-right">Current rate</th>
-              <th class="ka-right">New rate</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="ka-rates-body">
-            <tr><td colspan="4" class="ka-muted">(locked)</td></tr>
-          </tbody>
-        </table>
+      <div class="ka-settings-tile">
+        <div class="ka-settings-head">
+          <div>
+            <div class="ka-settings-title">Sign out</div>
+            <p class="ka-settings-sub">Return to the worker clock-in screen and end this admin session.</p>
+          </div>
+        </div>
+        <button type="button" id="ka-logout-btn" class="btn danger btn-sm">Sign out &amp; return</button>
+        <p id="ka-logout-status" class="ka-status"></p>
       </div>
     </div>
   </div>
@@ -415,7 +449,7 @@
      NEW BOTTOM NAVIGATION
      ============================ -->
 <nav class="ka-bottom-nav">
-  <button type="button" data-ka-view="live">Sessions</button>
+  <button type="button" data-ka-view="live">Timesheets</button>
     <button type="button" data-ka-view="time">Time Entries</button>
     <button type="button" data-ka-view="shipments">
     <span class="label">Shipments</span>
@@ -507,27 +541,6 @@
       <button class="btn secondary btn-sm" id="ka-rate-cancel">Cancel</button>
       <button class="btn secondary btn-sm" id="ka-rate-unlock-one">Unlock this rate</button>
       <button class="btn primary btn-sm" id="ka-rate-unlock-all">Unlock all rates</button>
-    </div>
-  </div>
-</div>
-
-<!-- End session modal -->
-<div id="ka-end-session-backdrop" class="ka-modal-backdrop hidden">
-  <div class="ka-modal">
-    <h3>End session and clock out everyone?</h3>
-    <p>Enter your PIN twice to confirm ending the active session and clocking out all workers on this kiosk.</p>
-    <div class="form-field">
-      <label for="ka-end-pin-1">Enter PIN</label>
-      <input id="ka-end-pin-1" type="password" inputmode="numeric" pattern="[0-9]*" />
-    </div>
-    <div class="form-field">
-      <label for="ka-end-pin-2">Confirm PIN</label>
-      <input id="ka-end-pin-2" type="password" inputmode="numeric" pattern="[0-9]*" />
-    </div>
-    <p id="ka-end-session-status" class="ka-status"></p>
-    <div class="ka-modal-actions">
-      <button class="btn secondary btn-sm" id="ka-end-session-cancel">Cancel</button>
-      <button class="btn danger btn-sm" id="ka-end-session-confirm">End Session & Clock Out All</button>
     </div>
   </div>
 </div>

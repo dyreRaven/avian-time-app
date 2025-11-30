@@ -151,14 +151,14 @@ body {
 .kiosk-hero {
   position: relative;
   border-radius: 22px;
-  background: linear-gradient(135deg, #0f766e, #10b981);
+  background: linear-gradient(135deg, #0f766e, #0ea5a0);
   color: #ecfdf5;
-  padding: 22px 26px;
+  padding: 14px 18px;
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
-  gap: 18px;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
   overflow: hidden;
-  box-shadow: 0 20px 50px rgba(16, 185, 129, 0.25);
+  box-shadow: 0 16px 36px rgba(16, 185, 129, 0.18);
 }
 
 .kiosk-hero::after {
@@ -195,8 +195,20 @@ body {
   color: #fef9c3;
 }
 
+.kiosk-chip-light {
+  background: var(--emerald-50);
+  color: var(--emerald-600);
+  box-shadow: 0 8px 16px rgba(16, 185, 129, 0.12), inset 0 0 0 1px rgba(5, 150, 105, 0.16);
+}
+
+.kiosk-chip-light.chip-warning {
+  background: #fef3c7;
+  color: #92400e;
+  box-shadow: 0 6px 14px rgba(217, 119, 6, 0.18), inset 0 0 0 1px rgba(217, 119, 6, 0.22);
+}
+
 .kiosk-greeting {
-  font-size: clamp(1.6rem, 2vw, 1.9rem);
+  font-size: clamp(1.3rem, 2vw, 1.6rem);
   font-weight: 700;
   letter-spacing: 0.01em;
   margin-top: 6px;
@@ -205,7 +217,7 @@ body {
 .kiosk-greeting-sub {
   margin-top: 8px;
   color: rgba(236, 253, 245, 0.8);
-  font-size: 1rem;
+  font-size: 0.95rem;
 }
 
 .kiosk-hero-right {
@@ -224,14 +236,14 @@ body {
 }
 
 .kiosk-date-big {
-  font-size: clamp(1.05rem, 2vw, 1.35rem);
+  font-size: clamp(1rem, 2vw, 1.25rem);
   font-weight: 600;
   margin: 2px 0 4px;
   color: rgba(236, 253, 245, 0.86);
 }
 
 .kiosk-time {
-  font-size: clamp(2.4rem, 5vw, 3.1rem);
+  font-size: clamp(2.1rem, 5vw, 2.8rem);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -241,23 +253,147 @@ body {
 .kiosk-form-panel {
   background: #ffffff;
   border-radius: 18px;
-  padding: 18px 18px 24px;
+  padding: 22px 22px 26px;
   min-height: auto;
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   box-shadow:
     0 20px 40px rgba(15, 118, 110, 0.08),
     0 0 0 1px var(--slate-200);
 }
 
+.kiosk-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kiosk-meta-note {
+  font-size: 0.9rem;
+  color: var(--slate-500);
+}
+
+.kiosk-steps-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.kiosk-steps-eyebrow {
+  font-size: 0.78rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--emerald-600);
+}
+
+.kiosk-steps-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-top: 6px;
+  color: var(--slate-800);
+}
+
+.kiosk-steps-subtitle {
+  margin-top: 4px;
+  color: var(--slate-600);
+}
+
+.kiosk-steps-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.kiosk-step-card {
+  background: linear-gradient(180deg, #f8fafc, #fff);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow:
+    0 10px 28px rgba(15, 118, 110, 0.06),
+    inset 0 0 0 1px var(--slate-200);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kiosk-step-card.kiosk-step-action {
+  background: linear-gradient(150deg, #0ea5a0, #10b981);
+  color: #ecfdf5;
+  box-shadow:
+    0 16px 40px rgba(16, 185, 129, 0.3),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.kiosk-step-card.kiosk-step-action .kiosk-step-sub {
+  color: rgba(236, 253, 245, 0.92);
+}
+
+.kiosk-step-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.kiosk-step-badge {
+  width: 72px;
+  height: 72px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: var(--emerald-600);
+  color: #ecfdf5;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  font-size: 1.4rem;
+  box-shadow: 0 16px 30px rgba(16, 185, 129, 0.28), inset 0 0 0 3px rgba(255, 255, 255, 0.22);
+}
+
+.kiosk-step-card.kiosk-step-action .kiosk-step-badge {
+  background: #ecfdf5;
+  color: #047857;
+  box-shadow: 0 16px 30px rgba(236, 253, 245, 0.18), inset 0 0 0 3px rgba(5, 150, 105, 0.2);
+}
+
+.kiosk-step-overline {
+  font-size: 0.78rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--slate-500);
+}
+
+.kiosk-step-card.kiosk-step-action .kiosk-step-overline {
+  color: rgba(236, 253, 245, 0.76);
+}
+
+.kiosk-step-title {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--slate-800);
+}
+
+.kiosk-step-card.kiosk-step-action .kiosk-step-title {
+  color: #ecfdf5;
+}
+
+.kiosk-step-sub {
+  margin-top: 4px;
+  color: var(--slate-600);
+}
+
 .kiosk-actions {
   display: flex;
-  justify-content: center;
-  margin-top: 36px;
-  padding-top: 10px;
-  padding-bottom: 4px;
+  justify-content: flex-start;
+  align-items: center;
+  width: 100%;
+  margin-top: 10px;
+  padding-top: 4px;
+  padding-bottom: 0;
 }
 
 /* FORM BODY CENTERING */
@@ -276,6 +412,10 @@ body {
 
 .kiosk-field {
   margin-top: 24px;
+}
+
+.kiosk-field.step-field {
+  margin-top: 8px;
 }
 
 .kiosk-label {
@@ -326,20 +466,20 @@ body {
 /* BIG ACTION BUTTON */
 
 .kiosk-btn {
-  margin: 24px auto 0;
-  width: 220px;
-  height: 220px;
-  border-radius: 999px;
+  margin: 8px 0 0;
+  width: 100%;
+  height: 120px;
+  border-radius: 18px;
   border: none;
-  background: radial-gradient(circle at 30% 20%, var(--emerald-500), var(--emerald-600));
+  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-600));
   box-shadow:
-    0 28px 60px rgba(16, 185, 129, 0.35),
-    0 0 0 12px rgba(16, 185, 129, 0.08);
+    0 20px 46px rgba(16, 185, 129, 0.32),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.2);
   color: #ecfdf5;
   text-transform: uppercase;
-  letter-spacing: 0.22em;
-  font-size: 0.78rem;
-  font-weight: 600;
+  letter-spacing: 0.16em;
+  font-size: 1rem;
+  font-weight: 700;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.25s ease;
 }
@@ -354,8 +494,8 @@ body {
 .kiosk-btn:hover {
   transform: translateY(-4px);
   box-shadow:
-    0 40px 80px rgba(16, 185, 129, 0.45),
-    0 0 0 14px rgba(16, 185, 129, 0.1);
+    0 32px 64px rgba(16, 185, 129, 0.4),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.32);
 }
 
 .kiosk-btn:active {
@@ -365,10 +505,14 @@ body {
 /* STATUS TEXT */
 
 .kiosk-status {
-  margin-top: 20px;
-  text-align: center;
-  font-size: 0.9rem;
-  color: var(--slate-500);
+  margin-top: 10px;
+  text-align: left;
+  font-size: 0.95rem;
+  color: var(--slate-700);
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-word;
+  max-width: 100%;
 }
 
 .kiosk-status-error {
@@ -377,6 +521,40 @@ body {
 .kiosk-status-ok {
   color: #15803d;
 }
+
+.kiosk-step-card.kiosk-step-action .kiosk-status {
+  color: #ecfdf5;
+}
+
+.kiosk-step-card.kiosk-step-action .kiosk-status-error {
+  color: #fee2e2;
+}
+
+.kiosk-step-card.kiosk-step-action .kiosk-status-ok {
+  color: #d1fae5;
+}
+
+.kiosk-project-display {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--slate-100);
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--slate-200);
+}
+
+.kiosk-project-name-text {
+  font-weight: 600;
+  color: var(--slate-800);
+  letter-spacing: 0.01em;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 
 /* MODAL BACKDROP */
 
@@ -810,6 +988,17 @@ body {
   }
 }
 
+@media (max-width: 720px) {
+  .kiosk-steps-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .kiosk-steps-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Phones and very small tablets in portrait */
 /* Phones and very small tablets in portrait */
 @media (max-width: 600px) {
@@ -858,6 +1047,12 @@ body {
     height: auto;
   }
 
+  .kiosk-meta-row {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
   .kiosk-title {
     font-size: 0.95rem;
     letter-spacing: 0.18em;   /* keep the “fancy” spacing */
@@ -866,6 +1061,18 @@ body {
   .kiosk-sub {
     font-size: 0.72rem;
     letter-spacing: 0.14em;
+  }
+
+  .kiosk-steps-grid {
+    gap: 12px;
+  }
+
+  .kiosk-step-card {
+    padding: 14px;
+  }
+
+  .kiosk-step-title {
+    font-size: 1.15rem;
   }
 
   .kiosk-field {
@@ -877,19 +1084,17 @@ body {
     font-size: 1rem;
   }
 
-  /* Make the big round button fit better on narrow screens */
   .kiosk-btn {
-    width: 68vw;          /* scale with screen width */
-    max-width: 220px;
-    height: 68vw;
-    max-height: 220px;
-    margin-top: 32px;
+    width: 100%;
+    height: 96px;
+    max-width: none;
+    margin-top: 16px;
   }
 
   #kiosk-status {
-    text-align: center;
-    padding: 0 8px;
-    font-size: 0.85rem;
+    text-align: left;
+    padding: 0;
+    font-size: 0.9rem;
   }
 
   /* Pin modal tweaks for small screens */
@@ -943,31 +1148,69 @@ body {
         </div>
 
         <div class="kiosk-form-panel">
-          <div class="kiosk-field">
-            <label class="kiosk-label">
-              <span id="kiosk-project-label">Project</span>
-              <span class="kiosk-label-note" id="kiosk-project-note">(selected by foreman)</span>
-            </label>
-            <select id="kiosk-project" class="kiosk-select kiosk-select-locked" disabled>
-              <option value="" id="kiosk-project-placeholder">Project will be set by foreman</option>
-            </select>
+          <div class="kiosk-steps-header">
+            <div>
+              <div class="kiosk-steps-eyebrow">Clock</div>
+              <div class="kiosk-steps-title">Two quick steps</div>
+              <div class="kiosk-steps-subtitle">Pick your name, then tap the clock button.</div>
+            </div>
+            <div class="kiosk-meta-row">
+              <div class="kiosk-chip kiosk-chip-light" id="kiosk-project-pill"></div>
+            </div>
           </div>
 
-          <div class="kiosk-field">
-            <label class="kiosk-label" id="kiosk-employee-label">Employee</label>
-            <select id="kiosk-employee" class="kiosk-select">
-              <option value="" id="kiosk-employee-placeholder">Select your name / Seleccione su nombre / Chwazi non ou</option>
-            </select>
-          </div>
+          <div class="kiosk-steps-grid">
+            <div class="kiosk-step-card">
+              <div class="kiosk-step-header">
+                <span class="kiosk-step-badge">1</span>
+                <div>
+                  <div class="kiosk-step-overline">Step 1</div>
+                  <div class="kiosk-step-title" id="kiosk-step-1-title">Select your name.</div>
+                  <div class="kiosk-step-sub" id="kiosk-step-1-sub">Make sure the right crew is selected.</div>
+                </div>
+              </div>
 
-          <div class="kiosk-actions">
-            <button id="kiosk-punch" class="kiosk-btn">
-              Tap to Clock In
-            </button>
+              <div class="kiosk-field step-field">
+                <label class="kiosk-label">
+                  <span id="kiosk-employee-label">Employee</span>
+                </label>
+                <select id="kiosk-employee" class="kiosk-select">
+                  <option value="" id="kiosk-employee-placeholder">Select your name / Seleccione su nombre / Chwazi non ou</option>
+                </select>
+              </div>
+
+              <div class="kiosk-field step-field">
+                <label class="kiosk-label">
+                  <span id="kiosk-project-label">Project</span>
+                  <span class="kiosk-label-note" id="kiosk-project-note">(selected by foreman)</span>
+                </label>
+                <div class="kiosk-project-display">
+                  <div class="kiosk-chip kiosk-chip-light" id="kiosk-project-pill"></div>
+                  <div class="kiosk-project-name-text" id="kiosk-project-name"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="kiosk-step-card kiosk-step-action">
+              <div class="kiosk-step-header">
+                <span class="kiosk-step-badge">2</span>
+                <div>
+                  <div class="kiosk-step-overline">Step 2</div>
+                  <div class="kiosk-step-title" id="kiosk-step-2-title">Tap to Clock In</div>
+                  <div class="kiosk-step-sub" id="kiosk-step-2-sub">We'll guide you through PIN or photo if needed.</div>
+                </div>
+              </div>
+
+              <div class="kiosk-actions">
+                <button id="kiosk-punch" class="kiosk-btn">
+                  Tap to Clock In
+                </button>
+              </div>
+
+              <div id="kiosk-status" class="kiosk-status"></div>
+            </div>
           </div>
         </div>
-
-        <div id="kiosk-status" class="kiosk-status"></div>
       </div>
     </div>
   </div>
@@ -996,10 +1239,13 @@ body {
         type="tel"
         inputmode="numeric"
         maxlength="4"
-        autocomplete="new-password"
+        autocomplete="off"
         autocapitalize="off"
         autocorrect="off"
         spellcheck="false"
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-form-type="other"
         name="pin-input-no-autofill"
         placeholder="PIN"
       />
@@ -1010,10 +1256,13 @@ body {
         type="tel"
         inputmode="numeric"
         maxlength="4"
-        autocomplete="new-password"
+        autocomplete="off"
         autocapitalize="off"
         autocorrect="off"
         spellcheck="false"
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-form-type="other"
         name="pin-confirm-no-autofill"
         placeholder="Confirm PIN"
       />
@@ -1072,10 +1321,13 @@ body {
             class="modal-input"
             type="tel"
             inputmode="numeric"
-            autocomplete="new-password"
+            autocomplete="off"
             autocapitalize="off"
             autocorrect="off"
             spellcheck="false"
+            data-lpignore="true"
+            data-1p-ignore="true"
+            data-form-type="other"
             name="admin-pin-no-autofill"
             placeholder="Enter PIN"
           />

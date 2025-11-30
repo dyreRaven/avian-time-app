@@ -310,6 +310,7 @@ function openInlineTimeEntryEditor(row) {
   const hours = row.dataset.hours || '';
   const empId = row.dataset.employeeId || '';
   const projectId = row.dataset.projectId || '';
+  const note = row.dataset.note || '';
   panel.dataset.entryId = entryId || '';
   panel.dataset.employeeId = empId || '';
   panel.dataset.projectId = projectId || '';
@@ -325,6 +326,7 @@ function openInlineTimeEntryEditor(row) {
   setVal('edit-entry-start-time', startTime);
   setVal('edit-entry-end-time', endTime);
   setVal('edit-entry-hours', hours);
+  setVal('edit-entry-note', note);
   const startTimeInput = document.getElementById('edit-entry-start-time');
   const endTimeInput = document.getElementById('edit-entry-end-time');
   const hoursInput = document.getElementById('edit-entry-hours');
@@ -375,6 +377,7 @@ function bindInlineTimeEntryEditor() {
       const start_time = (document.getElementById('edit-entry-start-time')?.value || '').trim();
       const end_time = (document.getElementById('edit-entry-end-time')?.value || '').trim();
       const hoursVal = (document.getElementById('edit-entry-hours')?.value || '').trim();
+      const note = (document.getElementById('edit-entry-note')?.value || '').trim();
       if (!start_date || !end_date || !start_time || !end_time) {
         if (errEl) errEl.textContent = 'Start/end date and time are required.';
         return;
@@ -383,6 +386,10 @@ function bindInlineTimeEntryEditor() {
       const hours = Number(computedHours ?? hoursVal);
       if (!Number.isFinite(hours) || hours <= 0) {
         if (errEl) errEl.textContent = 'Hours are invalid. Check start/end times.';
+        return;
+      }
+      if (!note) {
+        if (errEl) errEl.textContent = 'A note is required when saving changes.';
         return;
       }
       try {
@@ -396,7 +403,8 @@ function bindInlineTimeEntryEditor() {
             end_date,
             start_time,
             end_time,
-            hours
+            hours,
+            note
           })
         });
         const data = await res.json();
@@ -467,11 +475,12 @@ async function openTimeEntriesModal(employeeId, employeeName, projectId = null, 
   <table class="table nested-table">
     <thead>
       <tr>
+        <th>Entry ID</th>
         <th>Date</th>
         <th>Start</th>
         <th>End</th>
         <th>Hours</th>
-        <th>Rate</h>
+        <th>Rate</th>
         <th>Pay</th>
       </tr>
     </thead>
@@ -486,6 +495,12 @@ async function openTimeEntriesModal(employeeId, employeeName, projectId = null, 
           const dateLabel = e.start_date === e.end_date ? startDateUS : `${startDateUS} – ${endDateUS}`;
           const startTimeVal = normalizeTimeValue(e.start_time);
           const endTimeVal = normalizeTimeValue(e.end_time);
+          const noteAttr = (e.resolved_note || '')
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\n/g, ' ');
           return `
   <tr
     class="time-entry-row"
@@ -497,7 +512,9 @@ async function openTimeEntriesModal(employeeId, employeeName, projectId = null, 
     data-start-time="${startTimeVal}"
     data-end-time="${endTimeVal}"
     data-hours="${hours.toFixed(2)}"
+    data-note="${noteAttr}"
   >
+    <td>${e.id != null ? e.id : ''}</td>
     <td>${dateLabel}</td>
     <td>${startTimeVal || '<span class="missing-time">Missing</span>'}</td>
     <td>${endTimeVal || '<span class="missing-time">Missing</span>'}</td>
@@ -509,7 +526,7 @@ async function openTimeEntriesModal(employeeId, employeeName, projectId = null, 
         })
         .join('')}
       <tr class="project-total-row">
-        <td colspan="3"><strong>Project Total</strong></td>
+        <td colspan="4"><strong>Project Total</strong></td>
         <td><strong>${totalHours.toFixed(2)}</strong></td>
         <td></td>
         <td><strong>$${totalPay.toFixed(2)}</strong></td>

@@ -3,13 +3,13 @@
 const QUEUE_KEY = 'avian_kiosk_offline_punches_v1';
 const CACHE_EMP_KEY = 'avian_kiosk_employees_v1';
 const CACHE_PROJ_KEY = 'avian_kiosk_projects_v1';
-const CURRENT_PROJECT_KEY = 'avian_kiosk_current_project_v1';
 const DEVICE_ID_KEY = 'avian_kiosk_device_id_v1';
 const PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
 
 
 let employeesCache = [];
 let projectsCache = [];
+let currentProjectName = '';
 let currentEmployee = null;
 let pinValidated = false;
 let currentPhotoBase64 = null;
@@ -26,6 +26,8 @@ let kioskConfig = {
 let kioskSessions = [];
 let activeSessionId = null;
 let justCreatedPin = false;
+let kioskRequirePhoto = false;
+let currentPunchMode = 'clock_in';
 
 // ====== BASIC HELPERS ======
 
@@ -35,10 +37,21 @@ function showSuccessOverlay(message, durationMs = 5000) {  // ⬅️ 5 seconds d
   const backdrop = document.getElementById('success-backdrop');
   const msgEl = document.getElementById('success-message');
   const closeBtn = document.getElementById('success-close-btn');
+  const closeLabel = document.getElementById('success-close-label');
 
   if (!backdrop || !msgEl) return;
 
   msgEl.textContent = message;
+  if (closeLabel) closeLabel.textContent = t('backToClock');
+
+  const hideOverlay = () => {
+    backdrop.classList.add('hidden');
+    if (successTimeout) {
+      clearTimeout(successTimeout);
+      successTimeout = null;
+    }
+    resetLanguageToDefault();
+  };
 
   // Show overlay
   backdrop.classList.remove('hidden');
@@ -51,18 +64,13 @@ function showSuccessOverlay(message, durationMs = 5000) {  // ⬅️ 5 seconds d
 
   // Auto-close after durationMs
   successTimeout = setTimeout(() => {
-    backdrop.classList.add('hidden');
-    successTimeout = null;
+    hideOverlay();
   }, durationMs);
 
   // Manual close button
   if (closeBtn) {
     closeBtn.onclick = () => {
-      backdrop.classList.add('hidden');
-      if (successTimeout) {
-        clearTimeout(successTimeout);
-        successTimeout = null;
-      }
+      hideOverlay();
     };
   }
 }
@@ -76,6 +84,24 @@ async function fetchJSON(url, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || data.message || 'Request failed');
   return data;
+}
+
+function asBool(val, fallback = false) {
+  if (val === undefined || val === null) return fallback;
+  return val === true || val === 'true' || val === 1 || val === '1';
+}
+
+// Simple haversine distance in meters
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const R = 6371000; // Earth radius in meters
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
 function makeClientId() {
@@ -98,6 +124,8 @@ const LANGUAGE_STRINGS = {
     selectYourNamePlaceholder: 'Select your name / Seleccione su nombre / Chwazi non ou',
     selectProject: 'Select project',
     employeeNotFound: 'Employee not found.',
+    adminMustStartDay:
+      'Foreman must start the day and set today\'s project in the admin screen before anyone can clock in.',
     projectNotSet:
       'Project not set for this tablet. Ask your foreman to unlock the admin screen and choose today’s project before clocking in.',
     loading: 'Loading…',
@@ -116,7 +144,7 @@ const LANGUAGE_STRINGS = {
     startCamera: 'Start Camera',
     takePhoto: 'Take Photo',
     retakePhoto: 'Retake',
-    backToClock: 'Back to clock in',
+    backToClock: 'Back to clock-in screen',
     clockedInMinutes: 'Currently CLOCKED IN — {minutes} minutes so far.',
     clockedInHours: 'Currently CLOCKED IN — {hours} hours so far.',
     statusUnknown: 'Could not check current status. You can still punch.',
@@ -160,6 +188,8 @@ const LANGUAGE_STRINGS = {
     selectYourNamePlaceholder: 'Select your name / Seleccione su nombre / Chwazi non ou',
     selectProject: 'Seleccione proyecto',
     employeeNotFound: 'Empleado no encontrado.',
+    adminMustStartDay:
+      'El encargado debe iniciar el dia y establecer el proyecto en la pantalla de administrador antes de que alguien marque entrada.',
     projectNotSet:
       'Proyecto no configurado para esta tableta. Pida a su encargado que desbloquee la pantalla de administrador y elija el proyecto de hoy antes de marcar.',
     loading: 'Cargando…',
@@ -222,6 +252,8 @@ const LANGUAGE_STRINGS = {
     selectYourNamePlaceholder: 'Select your name / Seleccione su nombre / Chwazi non ou',
     selectProject: 'Chwazi pwoje',
     employeeNotFound: 'Anplwaye pa jwenn.',
+    adminMustStartDay:
+      'Sipervize a dwe komanse jounen an epi chwazi pwoje a nan ekran admin nan anvan nenpot moun ka anrejistre.',
     projectNotSet:
       'Pwoje pa chwazi sou tablet sa a. Mande sipervize a pou l debloke ekran admin nan epi chwazi pwoje jodi a anvan ou anrejistre.',
     loading: 'Chaje…',
@@ -314,6 +346,13 @@ function normalizeLanguage(lang) {
 
 function setCurrentLanguage(lang) {
   currentLanguage = normalizeLanguage(lang);
+}
+
+function resetLanguageToDefault() {
+  setCurrentLanguage('en');
+  applyStaticTranslations();
+  updateGreetingUI();
+  updateClockDisplay();
 }
 
 function getLocaleForLanguage(lang) {
@@ -443,10 +482,11 @@ function updateGreetingUI() {
   const empSel = document.getElementById('kiosk-employee');
   const projectLabelEl = document.getElementById('kiosk-project-label');
   const projectNoteEl = document.getElementById('kiosk-project-note');
-  const projectPlaceholderEl = document.getElementById('kiosk-project-placeholder');
   const employeeLabelEl = document.getElementById('kiosk-employee-label');
   const employeePlaceholderEl = document.getElementById('kiosk-employee-placeholder');
   const subtitleEl = document.getElementById('kiosk-subtitle');
+  const step1TitleEl = document.getElementById('kiosk-step-1-title');
+  const step2TitleEl = document.getElementById('kiosk-step-2-title');
 
   const selectedName =
     empSel && empSel.value && empSel.selectedOptions.length
@@ -466,34 +506,52 @@ function updateGreetingUI() {
 
   if (projectLabelEl) projectLabelEl.textContent = t('projectLabel');
   if (projectNoteEl) projectNoteEl.textContent = `(${t('projectSelectedByForeman')})`;
-  if (projectPlaceholderEl) projectPlaceholderEl.textContent = t('projectWillBeSet');
   if (employeeLabelEl) employeeLabelEl.textContent = t('employeeLabel');
   if (employeePlaceholderEl) employeePlaceholderEl.textContent = t('selectYourNamePlaceholder');
+  if (step1TitleEl) step1TitleEl.textContent = t('selectYourName');
+  if (step2TitleEl) {
+    step2TitleEl.textContent =
+      currentPunchMode === 'clock_out' ? t('tapToClockOut') : t('tapToClockIn');
+  }
   if (subtitleEl) subtitleEl.textContent = t('subtitle');
 
   applyStaticTranslations();
 }
 
+function getProjectNameById(id) {
+  if (!id) return '';
+  const match = projectsCache.find(p => Number(p.id) === Number(id));
+  return match ? match.name || '' : '';
+}
+
+function setCurrentProject(projectId) {
+  kioskConfig.project_id = projectId || null;
+  currentProjectName = projectId ? getProjectNameById(projectId) || '' : '';
+  updateProjectChip();
+}
+
 function updateProjectChip() {
   const chip = document.getElementById('kiosk-project-pill');
-  const projSel = document.getElementById('kiosk-project');
-  if (!chip || !projSel) return;
+  const projectNameEl = document.getElementById('kiosk-project-name');
+  if (!chip) return;
 
-  const label =
-    projSel.value && projSel.selectedOptions.length
-      ? (projSel.selectedOptions[0].textContent || '').trim()
-      : '';
+  const hasProject = !!(kioskConfig && kioskConfig.project_id);
+  const label = hasProject
+    ? currentProjectName || getProjectNameById(kioskConfig.project_id) || t('projectLabel')
+    : t('projectLabel');
 
-  if (!projSel.value) {
-    chip.textContent = '';
-    chip.classList.add('hidden');
-    chip.classList.remove('chip-warning');
+  chip.classList.remove('hidden');
+
+  if (!hasProject) {
+    chip.textContent = t('projectLabel');
+    chip.classList.add('chip-warning');
+    if (projectNameEl) projectNameEl.textContent = t('projectSelectedByForeman');
     return;
   }
 
-  chip.classList.remove('hidden');
   chip.classList.remove('chip-warning');
-  chip.textContent = label || 'Project';
+  chip.textContent = label;
+  if (projectNameEl) projectNameEl.textContent = label;
 }
 
 function updateClockDisplay() {
@@ -520,11 +578,20 @@ function startClockLoop() {
   setInterval(updateClockDisplay, 1000);
 }
 
+function syncActionHeadline(button) {
+  const step2TitleEl = document.getElementById('kiosk-step-2-title');
+  if (step2TitleEl && button) {
+    step2TitleEl.textContent = button.textContent || '';
+  }
+}
+
 function setDefaultPunchButton(button) {
   if (!button) return;
+  currentPunchMode = 'clock_in';
   button.classList.remove('kiosk-btn-danger');
   button.classList.add('btn-primary');
   button.textContent = t('tapToClockIn');
+  syncActionHeadline(button);
 }
 
 function animateButtonPress(btn) {
@@ -587,24 +654,92 @@ function showDeviceIdInUI() {
   }
 }
 
-function applyKioskProjectDefault() {
-  const projSel = document.getElementById('kiosk-project');
-  if (!projSel) return;
+async function loadKioskSettings() {
+  try {
+    const res = await fetchJSON('/api/kiosk/settings');
+    const settings = (res && res.settings) || {};
+    // Temporarily ignore stored kiosk photo requirement
+    kioskRequirePhoto = false;
+  } catch (err) {
+    console.warn('Could not load kiosk settings', err);
+    kioskRequirePhoto = false;
+  }
+}
 
-  // If the kiosk has a project id from the server, select it
-  if (kioskConfig && kioskConfig.project_id) {
-    const pid = String(kioskConfig.project_id);
-    const opt = projSel.querySelector(`option[value="${pid}"]`);
-    if (opt) {
-      projSel.value = pid;
-      localStorage.setItem(CURRENT_PROJECT_KEY, pid);
+function applyKioskProjectDefault() {
+  // Pick the active session’s project if one exists; otherwise leave blank
+  let projectId = null;
+  if (activeSessionId && kioskSessions && kioskSessions.length) {
+    const active = kioskSessions.find(s => Number(s.id) === Number(activeSessionId));
+    if (active && active.project_id) {
+      projectId = active.project_id;
     }
+  } else if (kioskConfig && kioskConfig.project_id) {
+    projectId = kioskConfig.project_id;
   }
 
-  // 🔒 Lock the dropdown so crew cannot change it
-  projSel.disabled = true;
-  projSel.classList.add('kiosk-select-locked');
-  updateProjectChip();
+  setCurrentProject(projectId);
+}
+
+async function updateKioskProjectOnServer(projectId) {
+  if (!projectId || !kioskConfig || !kioskConfig.id) return;
+  if (!navigator.onLine) return;
+
+  try {
+    await fetchJSON('/api/kiosks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: kioskConfig.id,
+        name: kioskConfig.name || 'Kiosk',
+        location: kioskConfig.location || null,
+        device_id: kioskConfig.device_id || kioskDeviceId || getOrCreateDeviceId(),
+        project_id: projectId,
+        require_photo: kioskConfig.require_photo || 0
+      })
+    });
+  } catch (err) {
+    console.warn('Could not persist geofence-selected project to server', err);
+  }
+}
+
+// Try to set the project based on the current geofence (if no project already set)
+async function detectGeofenceProjectDefault() {
+  // Respect an already-set kiosk project (foreman/admin selection)
+  if (kioskConfig && kioskConfig.project_id) return;
+
+  if (!projectsCache || !projectsCache.length) return;
+
+  const pos = await getPosition();
+  if (!pos) return;
+
+  const candidates = projectsCache
+    .filter(p =>
+      p.geo_lat != null &&
+      p.geo_lng != null &&
+      p.geo_radius != null &&
+      !Number.isNaN(Number(p.geo_lat)) &&
+      !Number.isNaN(Number(p.geo_lng)) &&
+      !Number.isNaN(Number(p.geo_radius))
+    )
+    .map(p => ({
+      project: p,
+      distance: distanceMeters(pos.lat, pos.lng, Number(p.geo_lat), Number(p.geo_lng))
+    }))
+    .filter(item => item.distance <= Number(item.project.geo_radius));
+
+  if (!candidates.length) return;
+
+  candidates.sort((a, b) => a.distance - b.distance);
+  const best = candidates[0].project;
+  const pid = String(best.id);
+
+  // Apply selection locally (geofence-based convenience)
+  setCurrentProject(best.id);
+  if (kioskConfig) kioskConfig.project_id = best.id;
+
+  // Persist to server so kiosk-admin sees the same default
+  await updateKioskProjectOnServer(best.id);
 }
 
 
@@ -672,11 +807,24 @@ function isKioskDayStarted() {
   }
 }
 
+function hasActiveAdminSession() {
+  if (isKioskDayStarted()) return true;
+  if (activeSessionId) return true;
+
+  if (kioskConfig && kioskConfig.project_id && kioskSessions && kioskSessions.length) {
+    const match = kioskSessions.find(
+      s => Number(s.project_id) === Number(kioskConfig.project_id)
+    );
+    if (match) return true;
+  }
+
+  return false;
+}
+
 // ====== LOAD EMPLOYEES & PROJECTS ======
 
 async function loadEmployeesAndProjects() {
   const empSel = document.getElementById('kiosk-employee');
-  const projSel = document.getElementById('kiosk-project');
   const status = document.getElementById('kiosk-status');
 
   status.textContent = t('loading');
@@ -693,15 +841,9 @@ async function loadEmployeesAndProjects() {
     projectsCache = (projs || []).filter(p => p.customer_name);
 
     fillEmployeeSelect(empSel, employeesCache);
-    fillProjectSelect(projSel, projectsCache);
 
     saveCache(CACHE_EMP_KEY, employeesCache);
     saveCache(CACHE_PROJ_KEY, projectsCache);
-
-    const saved = localStorage.getItem(CURRENT_PROJECT_KEY);
-    if (saved && projSel.querySelector(`option[value="${saved}"]`)) {
-      projSel.value = saved;
-    }
 
     updateProjectChip();
     status.textContent = '';
@@ -713,12 +855,6 @@ async function loadEmployeesAndProjects() {
     projectsCache = projs;
 
     fillEmployeeSelect(empSel, emps);
-    fillProjectSelect(projSel, projs);
-
-    const saved = localStorage.getItem(CURRENT_PROJECT_KEY);
-    if (saved && projSel.querySelector(`option[value="${saved}"]`)) {
-      projSel.value = saved;
-    }
 
     updateProjectChip();
     if (emps.length || projs.length) {
@@ -755,27 +891,11 @@ function fillEmployeeSelect(sel, list) {
 }
 
 
-function fillProjectSelect(sel, list) {
-  sel.innerHTML = `<option value="">${t('selectProject')}</option>`;
-  const activeProjects = (list || []).filter(
-    p =>
-      (p.active === undefined || p.active === null || Number(p.active) === 1) &&
-      p.customer_name // hide top-level customers; only show job projects
-  );
-
-  for (const p of activeProjects) {
-    const opt = document.createElement('option');
-    opt.value = p.id;
-    opt.textContent = p.name || '(Unnamed project)';
-    sel.appendChild(opt);
-  }
-}
-
 // ====== ADMIN LOGIN (HIDDEN MODE) ======
 
 let adminLongPressTimer = null;
 
-function showAdminLoginModal() {
+function showAdminLoginModal(preselectAdminId = null, message = '') {
   const backdrop = document.getElementById('admin-login-backdrop');
   const empSelect = document.getElementById('admin-login-employee');
   const pinInput = document.getElementById('admin-login-pin');
@@ -797,7 +917,11 @@ function showAdminLoginModal() {
   if (!admins.length) {
     status.textContent = t('adminNotConfigured');
   } else {
-    status.textContent = '';
+    status.textContent = message || '';
+  }
+
+  if (preselectAdminId && empSelect.querySelector(`option[value="${preselectAdminId}"]`)) {
+    empSelect.value = String(preselectAdminId);
   }
 
   pinInput.value = '';
@@ -806,6 +930,23 @@ function showAdminLoginModal() {
   setTimeout(() => {
     pinInput.focus();
   }, 100);
+}
+
+function openAdminDashboard(employeeId, { skipPin = false, startMode = false } = {}) {
+  try {
+    const params = new URLSearchParams();
+    const deviceId = kioskDeviceId || getOrCreateDeviceId();
+
+    params.set('device_id', deviceId);
+    if (employeeId) params.set('employee_id', employeeId);
+    if (skipPin) params.set('skip_pin', '1');
+    if (startMode) params.set('start', '1');
+
+    const adminUrl = '/kiosk-admin.html?' + params.toString();
+    window.location.href = adminUrl;
+  } catch (err) {
+    console.error('Error opening kiosk admin dashboard', err);
+  }
 }
 
 function hideAdminLoginModal() {
@@ -855,25 +996,8 @@ function submitAdminLogin() {
   status.textContent = '';
   hideAdminLoginModal();
 
-  try {
-    const params = new URLSearchParams();
-    const deviceId = kioskDeviceId || getOrCreateDeviceId();
-
-    params.set('device_id', deviceId);
-    params.set('employee_id', id);          // 👈 NEW – pass the admin id
-    // Skip PIN prompts in kiosk-admin; they've already provided it here
-    params.set('skip_pin', '1');
-
-    // First time today → open in "start-of-day" mode
-    if (!isKioskDayStarted()) {
-      params.set('start', '1');
-    }
-
-    const adminUrl = '/kiosk-admin.html?' + params.toString();
-    window.location.href = adminUrl;
-  } catch (err) {
-    console.error('Error opening kiosk admin dashboard', err);
-  }
+  // First time today → open in "start-of-day" mode
+  openAdminDashboard(id, { skipPin: true, startMode: !isKioskDayStarted() });
 }
 
 
@@ -967,15 +1091,11 @@ function showPinModal(employee) {
   if (nameEl) {
     const baseName = employee.nickname || employee.name;
 
-    // Try to read the currently selected project’s label
-    const projSel = document.getElementById('kiosk-project');
-    let projectLabel = '';
-    if (projSel && projSel.value) {
-      const opt = projSel.selectedOptions && projSel.selectedOptions[0];
-      if (opt && opt.textContent) {
-        projectLabel = opt.textContent.trim();
-      }
-    }
+    // Try to read the currently active project label
+    const projectLabel =
+      kioskConfig && kioskConfig.project_id
+        ? currentProjectName || getProjectNameById(kioskConfig.project_id) || ''
+        : '';
 
     const projectWord = t('projectLabel');
     // Show “Name – Project: XYZ” if we know the project,
@@ -1023,7 +1143,9 @@ if (modeLabelEl) {
   stopCamera();
 
   const mustPhoto =
-    !!employee.require_photo || !!(kioskConfig && kioskConfig.require_photo);
+    kioskRequirePhoto ||
+    !!employee.require_photo ||
+    !!(kioskConfig && kioskConfig.require_photo);
 
   if (mustPhoto) camSec.classList.remove('hidden');
 
@@ -1135,6 +1257,16 @@ function retakePhoto() {
 
 
 // ====== SUBMIT PIN ======
+function maybeOpenAdminAfterPin(employee) {
+  if (!employee || !employee.is_admin) return false;
+  if (isKioskDayStarted()) return false;
+
+  // Skip straight to kiosk admin with skip_pin=1 since we just validated
+  hidePinModal();
+  openAdminDashboard(employee.id, { skipPin: true, startMode: true });
+  return true;
+}
+
 async function submitPin() {
   const pinInput = document.getElementById('pin-input');
   const pinConfirmInput = document.getElementById('pin-confirm-input');
@@ -1145,7 +1277,9 @@ async function submitPin() {
   const entered = pinInput.value.trim();
   const storedPin = (employee.pin || '').trim();
   const mustPhoto =
-    !!employee.require_photo || !!(kioskConfig && kioskConfig.require_photo);
+    kioskRequirePhoto ||
+    !!employee.require_photo ||
+    !!(kioskConfig && kioskConfig.require_photo);
 
   // ===== EXISTING PIN =====
   if (storedPin) {
@@ -1182,7 +1316,12 @@ async function submitPin() {
       return;
     }
 
-    // 2. NORMAL PUNCH
+    // 2. If this is an admin's first pin entry of the day, jump to kiosk admin
+    if (maybeOpenAdminAfterPin(employee)) {
+      return;
+    }
+
+    // 3. NORMAL PUNCH
     await performPunch(employee.id);
     hidePinModal();
     return;
@@ -1274,7 +1413,6 @@ async function submitPin() {
 // ====== PERFORM PUNCH ======
 
 async function performPunch(employee_id) {
-  const projectSel = document.getElementById('kiosk-project');
   const status = document.getElementById('kiosk-status');
 
   const empSel = document.getElementById('kiosk-employee');
@@ -1287,18 +1425,22 @@ async function performPunch(employee_id) {
     ((employeesCache.find(e => Number(e.id) === Number(employee_id)) || {}).language);
   if (empLang) {
     setCurrentLanguage(empLang);
+    applyStaticTranslations();
+    updateClockDisplay();
   }
 
-  if (!projectSel) {
-    status.textContent = t('projectSelectorMissing');
+  const project_id = kioskConfig && kioskConfig.project_id
+    ? parseInt(kioskConfig.project_id, 10)
+    : null;
+  if (!project_id) {
+    status.textContent = t('projectNotSet');
     status.className = 'kiosk-status kiosk-status-error';
     return;
   }
-  const project_id = kioskConfig && kioskConfig.project_id
-    ? parseInt(kioskConfig.project_id, 10)
-    : parseInt(projectSel.value, 10);
-  if (!project_id) {
-    status.textContent = t('projectNotSet');
+
+  const punchMode = currentPunchMode || 'clock_in';
+  if (punchMode === 'clock_in' && !hasActiveAdminSession()) {
+    status.textContent = t('adminMustStartDay');
     status.className = 'kiosk-status kiosk-status-error';
     return;
   }
@@ -1327,9 +1469,8 @@ async function performPunch(employee_id) {
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
-    setCurrentLanguage('en');
     setDefaultPunchButton(btn);
-    updateGreetingUI();
+    resetLanguageToDefault();
 
     return;
   }
@@ -1371,9 +1512,8 @@ async function performPunch(employee_id) {
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
-    setCurrentLanguage('en');
     setDefaultPunchButton(btn);
-    updateGreetingUI();
+    // Will reset to default when overlay closes
   } catch (err) {
     console.error('Error syncing punch', err);
     status.textContent = t('couldNotSync');
@@ -1382,9 +1522,8 @@ async function performPunch(employee_id) {
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
-    setCurrentLanguage('en');
     setDefaultPunchButton(btn);
-    updateGreetingUI();
+    resetLanguageToDefault();
   }
 }
 
@@ -1435,12 +1574,18 @@ async function updatePunchButtonForEmployee(employeeId) {
 
   // No employee selected → reset to Clock In (green)
   if (!employeeId) {
+    currentPunchMode = 'clock_in';
     setDefaultPunchButton(button);
     return;
   }
 
   // Offline → still show as "Clock In"
   if (!navigator.onLine) {
+    currentPunchMode = 'clock_in';
+    if (!hasActiveAdminSession() && status) {
+      status.className = 'kiosk-status kiosk-status-error';
+      status.textContent = t('adminMustStartDay');
+    }
     setDefaultPunchButton(button);
     return;
   }
@@ -1451,15 +1596,19 @@ async function updatePunchButtonForEmployee(employeeId) {
       `/api/kiosk/open-punch?employee_id=${numericId}`
     );
 
-    if (data.open) {
+    const isClockedIn = !!data.open;
+    currentPunchMode = isClockedIn ? 'clock_out' : 'clock_in';
+
+    if (isClockedIn) {
       // EMPLOYEE IS CLOCKED IN → CLOCK OUT MODE (RED)
       button.textContent = t('tapToClockOut');
+      syncActionHeadline(button);
 
       button.classList.add('kiosk-btn-danger');   // 🔴 make it red
       button.classList.remove('btn-primary');     // remove green
 
       // Show "clocked in for X time"
-      if (data.clock_in_ts) {
+      if (data.clock_in_ts && status) {
         const start = new Date(data.clock_in_ts);
         const now = new Date();
         const diffMs = now - start;
@@ -1474,23 +1623,40 @@ async function updatePunchButtonForEmployee(employeeId) {
       }
 
     } else {
+      // Require admin start-of-day before allowing any new clock-ins
+      if (!hasActiveAdminSession()) {
+        if (status) {
+          status.className = 'kiosk-status kiosk-status-error';
+          status.textContent = t('adminMustStartDay');
+        }
+        setDefaultPunchButton(button);
+        return;
+      }
+
       // EMPLOYEE IS NOT CLOCKED IN → CLOCK IN MODE (GREEN)
       button.textContent = t('tapToClockIn');
+      syncActionHeadline(button);
 
       button.classList.remove('kiosk-btn-danger'); // remove red
       button.classList.add('btn-primary');         // make green again
 
-      status.className = 'kiosk-status kiosk-status-ok';
-      status.textContent = t('readyToClockIn');
+      if (status) {
+        status.className = 'kiosk-status kiosk-status-ok';
+        status.textContent = t('readyToClockIn');
+      }
     }
   } catch (err) {
     console.error('Error checking open punch', err);
 
-    status.className = 'kiosk-status kiosk-status-error';
-    status.textContent = t('statusUnknown');
+    currentPunchMode = 'clock_in';
+    if (status) {
+      status.className = 'kiosk-status kiosk-status-error';
+      status.textContent = t('statusUnknown');
+    }
 
     // Fallback appearance → Clock In (green)
     button.textContent = t('tapToClockIn');
+    syncActionHeadline(button);
     button.classList.remove('kiosk-btn-danger');
     button.classList.add('btn-primary');
   }
@@ -1529,7 +1695,6 @@ async function onEmployeeChange() {
 
 function onPunchClick() {
   const empSel = document.getElementById('kiosk-employee');
-  const projSel = document.getElementById('kiosk-project');
   const status = document.getElementById('kiosk-status');
 
   if (!empSel.value) {
@@ -1546,11 +1711,26 @@ function onPunchClick() {
     return;
   }
 
-  const hasProject = kioskConfig && kioskConfig.project_id
-    ? true
-    : !!projSel.value;
+  const isAdmin = !!emp.is_admin;
+
+  const punchMode = currentPunchMode || 'clock_in';
+  if (punchMode === 'clock_in' && !hasActiveAdminSession()) {
+    if (isAdmin) {
+      showAdminLoginModal(emp.id, t('adminMustStartDay'));
+      return;
+    }
+    status.textContent = t('adminMustStartDay');
+    status.className = 'kiosk-status kiosk-status-error';
+    return;
+  }
+
+  const hasProject = kioskConfig && kioskConfig.project_id;
 
   if (!hasProject) {
+    if (isAdmin) {
+      showAdminLoginModal(emp.id, t('projectNotSet'));
+      return;
+    }
     status.textContent = t('projectNotSet');
     status.className = 'kiosk-status kiosk-status-error';
     return;
@@ -1623,6 +1803,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   kioskDeviceId = getOrCreateDeviceId();
   showDeviceIdInUI();
 
+  await loadKioskSettings();
   // Load data, then fetch kiosk config so default project can be applied
   await loadEmployeesAndProjects();
   await initKioskConfig();
@@ -1651,11 +1832,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const empSel = document.getElementById('kiosk-employee');
   if (empSel) {
     empSel.addEventListener('change', onEmployeeChange);
-  }
-
-  const projSel = document.getElementById('kiosk-project');
-  if (projSel) {
-    projSel.addEventListener('change', updateProjectChip);
   }
 
   // PIN modal buttons

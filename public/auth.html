@@ -38,18 +38,38 @@
 
   <label>
     <span class="field-label">Password</span>
-    <input
-      id="login-password"
-      type="password"
-      required
-      autocomplete="current-password"
-    />
+    <div class="auth-password-wrap">
+      <input
+        id="login-password"
+        type="password"
+        required
+        autocomplete="current-password"
+      />
+      <button
+        type="button"
+        id="password-toggle"
+        class="auth-password-toggle"
+        aria-pressed="false"
+        aria-label="Show password"
+      >
+        <svg
+          id="password-toggle-icon"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            d="M12 5c-5 0-9 5-9 7s4 7 9 7 9-5 9-7-4-7-9-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"
+            fill="currentColor"
+          />
+        </svg>
+      </button>
+    </div>
   </label>
 
-  <!-- NEW: Remember me -->
-  <label class="checkbox-inline" style="margin-top: 4px;">
+  <label class="checkbox-inline auth-remember">
     <input type="checkbox" id="login-remember" />
-    <span>Keep me signed in on this device</span>
+    <span>Stay Signed In</span>
   </label>
 
   <button type="submit" class="btn primary w-full">

@@ -1203,6 +1203,16 @@ table.vendors-table th:first-child {
   margin-top: 8px;
 }
 
+#time-entries-modal .time-entries-card {
+  max-width: 1100px;
+  width: 95vw;
+}
+
+#time-entries-body {
+  max-height: 70vh;
+  overflow: auto;
+}
+
 #time-exception-review-modal .te-review-original {
   background: #f8fafc;
   border: 1px solid #e5e7eb;
@@ -3103,8 +3113,11 @@ select:focus {
 
 /* override the sidebar styles just on the auth page */
 .auth-logo .sidebar-logo-mark {
-  width: auto;
+  width: 150px;
   height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -3222,17 +3235,91 @@ select:focus {
   margin-top: 6px;      /* adjust this value to taste (4–10px works great) */
 }
 
+.auth-password-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.auth-password-wrap input {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 46px; /* room for eye button */
+}
+
+.auth-password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: transparent;
+  color: var(--slate-500);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: 0.15s ease;
+}
+
+.auth-password-toggle:hover {
+  color: var(--slate-800);
+  background: #e2e8f0;
+}
+
+.auth-password-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.25);
+}
+
+.auth-password-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+.auth-remember {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-top: -2px;
+  color: var(--slate-700);
+  align-self: flex-start;
+}
+
+.auth-remember input[type="checkbox"] {
+  border-color: #0c816d;
+}
+
+/* ensure auth checkbox row overrides the column layout on auth labels */
+.auth-card label.auth-remember {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
 /* ───────── AUTH LOGO & BRANDING REFINEMENTS ───────── */
 
 /* Bigger logo */
 .auth-logo .sidebar-logo-mark img {
   display: block;
-  max-width: 100px;
-  max-height: 100px;
+  width: 150px;
+  max-width: 100%;
+  max-height: 180px;
+  height: auto;
 }
 
 /* More space around the logo area */
 .auth-logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   gap: 24px;          
   margin-bottom: 22px;
 }
@@ -3244,6 +3331,7 @@ select:focus {
   letter-spacing: 0.015em;
   margin-bottom: 4px;
   color: var(--slate-900);
+  text-align: center;
 }
 
 /* Larger subtitle */
@@ -3674,6 +3762,17 @@ select:focus {
   background: #f3f4f6;
 }
 
+.exception-rules-table th:nth-child(3),
+.exception-rules-table td:nth-child(3) {
+  width: 90px;
+  text-align: center;
+}
+
+.exception-rules-table td:first-child {
+  font-weight: 600;
+  color: #111827;
+}
+
 .access-table td.center {
   text-align: center;
 }
@@ -3687,6 +3786,35 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.settings-checkbox-list {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-checkbox-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.settings-checkbox-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin-top: 4px;
+}
+
+.settings-checkbox-row .label-title {
+  font-weight: 600;
+  color: #111827;
+}
+
+.settings-checkbox-row .label-note {
+  color: #4b5563;
+  font-size: 0.9rem;
+  margin: 4px 0 0;
 }
 /* =========================================
    GLOBAL RESET + SAFETY
@@ -4561,6 +4689,48 @@ body {
   max-width: none;
 }
 
+.ka-settings-intro {
+  margin: 0 0 14px;
+  color: #4b5563;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.ka-settings-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ka-settings-tile {
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+}
+
+.ka-settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.ka-settings-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.ka-settings-sub {
+  margin: 4px 0 0;
+  color: #6b7280;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
 .ka-startday-warning {
   font-size: 0.9rem;
   color: #b91c1c;
@@ -4710,6 +4880,18 @@ body {
     max-width: 100%;
     padding: 18px 12px 20px;
     border-radius: 16px;
+  }
+
+  .ka-settings-tile {
+    padding: 14px;
+  }
+
+  .ka-settings-title {
+    font-size: 1rem;
+  }
+
+  .ka-settings-sub {
+    font-size: 0.86rem;
   }
 
   .card-header h2 {
@@ -4924,12 +5106,12 @@ body {
   text-align: left;
   border: 1px solid #e5e7eb;
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: #ffffff;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   cursor: pointer;
   transition: box-shadow 0.12s ease, transform 0.08s ease, border-color 0.12s ease;
 }
@@ -5268,16 +5450,93 @@ body {
 }
 
 .ka-session-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid #e5e7eb;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  margin-bottom: 10px;
+  background: #ffffff;
 }
 
 .ka-session-row:last-child {
-  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.ka-session-swipe {
+  display: flex;
+  align-items: stretch;
+  transition: transform 180ms ease;
+}
+
+.ka-session-main {
+  flex: 1;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ka-session-delete {
+  flex: 0 0 110px;
+  border: none;
+  color: #fff;
+  background: #ef4444;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.ka-session-row.show-delete .ka-session-swipe {
+  transform: translateX(-110px);
+}
+
+.ka-session-row.show-delete .ka-session-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ka-session-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: #475569;
+  font-size: 0.85rem;
+}
+
+.ka-session-tag {
+  background: #f1f5f9;
+  border-radius: 999px;
+  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ka-session-hint {
+  color: #64748b;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.ka-session-actions-inline {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.ka-session-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 #ka-kiosk-status {
@@ -5287,17 +5546,6 @@ body {
 
 .ka-session-body .form-field {
   margin-bottom: 10px;
-}
-
-.ka-session-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 12px 0 6px;
-}
-
-.ka-session-actions .btn {
-  width: 100%;
 }
 
 .ka-session-list-header {
@@ -5412,8 +5660,8 @@ body {
 .ka-ship-card {
   width: 100%;
   text-align: left;
-  padding: 14px 16px 12px;
-  border-radius: 20px;
+  padding: 10px 12px 10px;
+  border-radius: 16px;
   background: #ffffff;
   box-shadow:
     0 24px 60px rgba(15, 23, 42, 0.14),
@@ -5421,7 +5669,7 @@ body {
   border: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   cursor: pointer;
   transition:
     box-shadow 0.14s ease,
@@ -5772,37 +6020,16 @@ body {
   background: #ede9fe;
 }
 
-.ka-ship-payments {
-  display: contents;
-}
-
+.ka-ship-payments,
 .ka-pay-chip {
-  border-radius: 10px;
-  padding: 8px 10px;
-  font-size: 0.82rem;
-  font-weight: 700;
-  font-family: inherit;
-  border: 1px solid #e5e7eb;
-  background: #f8fafc;
-  color: #374151;
+  display: none !important;
+}
+
+.ka-verify-wrap {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  box-sizing: border-box;
-  height: 100%;
-}
-
-.ka-pay-chip.paid {
-  border-color: #16a34a;
-  background: #ecfdf3;
-  color: #065f46;
-}
-
-.ka-pay-chip.unpaid {
-  border-color: #f87171;
-  background: #fef2f2;
-  color: #b91c1c;
 }
 
 .ka-verify-card {
@@ -5810,13 +6037,14 @@ body {
   background: #fff7ed;
   color: #9a3412;
   border-radius: 10px;
-  padding: 12px;
+  padding: 10px;
   font-weight: 700;
-  display: flex;
+  display: inline-flex;
   flex-direction: column;
   gap: 6px;
-  height: 100%;
   box-shadow: inset 0 0 0 1px #fed7aa;
+  flex: 0 0 76%;
+  max-width: 76%;
 }
 
 .ka-verify-title {
@@ -5832,6 +6060,33 @@ body {
 .ka-verify-hint {
   font-size: 0.8rem;
   color: #c2410c;
+}
+
+.ka-verify-expand {
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  font-size: 1.6rem;
+  width: 140px;
+  height: 30px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: none;
+  margin-left: auto;
+  transform: scaleX(2.2);
+  transform-origin: center;
+}
+
+.ka-verify-expand:active {
+  transform: scale(0.98);
+}
+
+/* Hide legacy expand arrow on card header */
+.ka-ship-expand {
+  display: none !important;
 }
 
 .ka-verify-btn {
@@ -6432,6 +6687,29 @@ body {
   border-radius: 10px;
   padding: 10px 12px;
   box-shadow: 0 1px 2px rgba(15,23,42,0.06);
+  transition: transform 0.22s ease, opacity 0.22s ease;
+  touch-action: auto;
+}
+
+.ka-ship-item-row.ka-item-saved {
+  border-color: #22c55e;
+  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.18);
+  cursor: grab;
+}
+
+.ka-ship-item-row.ka-item-swipe-out {
+  animation: kaItemSwipeOut 0.28s ease forwards;
+}
+
+@keyframes kaItemSwipeOut {
+  to {
+    transform: translateX(120%);
+    opacity: 0;
+    max-height: 0;
+    margin: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
 }
 
 .ka-ship-item-main {
@@ -6452,6 +6730,27 @@ body {
   background: #ffffff;
   border-radius: 8px;
   padding: 6px 8px;
+}
+
+.ka-ship-item-footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.ka-ship-item-last {
+  flex: 1;
+}
+
+.ka-ship-item-actions {
+  margin-top: 0;
+  margin-left: auto;
+}
+
+.ka-ship-item-actions .btn {
+  white-space: nowrap;
 }
 
 /* Footer button alignment */

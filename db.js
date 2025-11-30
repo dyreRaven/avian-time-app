@@ -382,6 +382,25 @@ CREATE TABLE IF NOT EXISTS time_entries (
 
   `);
 
+  // Enforce that every time_entry carries both dates (defense-in-depth)
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_time_entries_require_dates_insert
+    BEFORE INSERT ON time_entries
+    WHEN NEW.start_date IS NULL OR NEW.start_date = '' OR NEW.end_date IS NULL OR NEW.end_date = ''
+    BEGIN
+      SELECT RAISE(ABORT, 'time_entries requires start_date and end_date');
+    END;
+  `);
+
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_time_entries_require_dates_update
+    BEFORE UPDATE ON time_entries
+    WHEN NEW.start_date IS NULL OR NEW.start_date = '' OR NEW.end_date IS NULL OR NEW.end_date = ''
+    BEGIN
+      SELECT RAISE(ABORT, 'time_entries requires start_date and end_date');
+    END;
+  `);
+
   // Backfill newer resolution columns for time_entries
   db.run(
     `ALTER TABLE time_entries ADD COLUMN resolved_status TEXT DEFAULT 'open'`,
