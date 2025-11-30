@@ -20,6 +20,7 @@ const multer = require('multer');
 const session = require('express-session');
 const bcrypt  = require('bcrypt');
 const createSQLiteStore = require('./session-store');
+const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/Puerto_Rico';
 
 // Global in-memory lock to prevent concurrent payroll runs
 let isPayrollRunInProgress = false;
@@ -178,6 +179,35 @@ async function getAdminAccessPerms(adminId) {
   };
 }
 
+// Load toggleable time exception rules from app_settings
+async function loadExceptionRulesMap() {
+  try {
+    const row = await dbGet(
+      'SELECT value FROM app_settings WHERE key = ?',
+      ['time_exception_rules']
+    );
+    if (!row || !row.value) return null;
+    const parsed = JSON.parse(row.value);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (err) {
+    console.warn('Failed to load exception rules map:', err.message);
+    return null;
+  }
+}
+
+function makeRuleChecker(rulesMap) {
+  return key => {
+    if (!rulesMap || typeof rulesMap !== 'object') return true;
+    const val = rulesMap[key];
+    return !(
+      val === false ||
+      val === 'false' ||
+      val === 0 ||
+      val === '0'
+    );
+  };
+}
+
 
 /* ───────── UTIL HELPERS (CANDIDATE: ./util.js) ───────── */
 
@@ -205,6 +235,21 @@ function toDateOnly(dateStr) {
 
 // Today's date in 'YYYY-MM-DD'
 function getTodayIsoDate() {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: APP_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    const parts = fmt.formatToParts(new Date());
+    const y = parts.find(p => p.type === 'year')?.value;
+    const m = parts.find(p => p.type === 'month')?.value;
+    const d = parts.find(p => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch (err) {
+    console.warn('Falling back to UTC date in getTodayIsoDate:', err.message || err);
+  }
   return new Date().toISOString().slice(0, 10);
 }
 
@@ -1000,7 +1045,7 @@ app.post('/api/payroll/settings', requireAuth, (req, res) => {
 });
 
 // PAYROLL SUMMARY ENDPOINT (UNPAID ONLY)
-app.get('/api/payroll-summary', requireAuth, (req, res) => {
+app.get('/api/payroll-summary', requireAuth, async (req, res) => {
   const { start, end, includePaid } = req.query;
   const includePaidBool =
     includePaid === '1' ||
@@ -1020,47 +1065,185 @@ app.get('/api/payroll-summary', requireAuth, (req, res) => {
       .json({ error: 'end must be on or after start.' });
   }
 
-  let sql = `
-  SELECT
-    e.id AS employee_id,
-    e.name AS employee_name,
-    e.vendor_qbo_id AS employee_vendor_qbo_id,
-    e.employee_qbo_id AS employee_employee_qbo_id,
-    p.id AS project_id,
-    COALESCE(p.name, '(No project)') AS project_name,
-    p.qbo_id AS project_qbo_id,
-    p.customer_name AS project_customer_name,
-    p.name AS project_name_raw,
-    MAX(COALESCE(t.paid, 0)) AS any_paid,
-    MAX(t.paid_date) AS last_paid_date,
-    MAX(COALESCE(t.paid, 0)) AS line_paid,
-    MAX(t.paid_date) AS line_paid_date,
-    SUM(t.hours)     AS project_hours,
-    SUM(t.total_pay) AS project_pay
-  FROM time_entries t
-  JOIN employees e ON t.employee_id = e.id
-  LEFT JOIN projects p ON t.project_id = p.id
-  WHERE t.start_date >= ? AND t.end_date <= ?
-`;
-  const params = [start, end];
-  if (!includePaidBool) {
-    sql += ` AND (t.paid IS NULL OR t.paid = 0)`;
-  }
-  sql += `
-  GROUP BY
-    e.id, e.name,
-    p.id, p.name
-  ORDER BY
-    e.name,
-    project_name
-`;
+  try {
+    const rulesMap = await loadExceptionRulesMap();
+    const isRuleEnabled = makeRuleChecker(rulesMap);
 
-  db.all(sql, params, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    const ruleMissingClockOut = isRuleEnabled('missing_clock_out');
+    const ruleLongShift = isRuleEnabled('long_shift');
+    const ruleMultiDay = isRuleEnabled('multi_day');
+    const ruleCrossesMidnight = isRuleEnabled('crosses_midnight');
+    const ruleNoProject = isRuleEnabled('no_project');
+    const ruleProjectMismatch = isRuleEnabled('project_mismatch');
+    const ruleTinyPunch = isRuleEnabled('tiny_punch');
+    const ruleGeoIn = isRuleEnabled('geofence_clock_in');
+    const ruleGeoOut = isRuleEnabled('geofence_clock_out');
+    const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
+    const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
+    const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
+    const ruleWeeklyHours = isRuleEnabled('weekly_hours');
+
+    const punchExceptionConditions = [];
+    if (ruleMissingClockOut) punchExceptionConditions.push('tp.clock_out_ts IS NULL');
+    if (ruleNoProject) punchExceptionConditions.push('tp.project_id IS NULL');
+    if (ruleProjectMismatch) {
+      punchExceptionConditions.push(
+        `tp.clock_out_project_id IS NOT NULL
+         AND tp.project_id IS NOT NULL
+         AND tp.clock_out_project_id != tp.project_id`
+      );
+    }
+    if (ruleAutoClockOut) punchExceptionConditions.push('tp.auto_clock_out IS NOT NULL AND tp.auto_clock_out != 0');
+    if (ruleGeoIn || ruleGeoOut) {
+      punchExceptionConditions.push('tp.geo_violation IS NOT NULL AND tp.geo_violation != 0');
+    }
+    if (ruleLongShift) {
+      punchExceptionConditions.push(
+        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0) > 12)`
+      );
+    }
+    if (ruleMultiDay) {
+      punchExceptionConditions.push(
+        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0) >= 24)`
+      );
+    }
+    if (ruleCrossesMidnight) {
+      punchExceptionConditions.push(
+        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          AND date(tp.clock_in_ts) != date(tp.clock_out_ts))`
+      );
+    }
+    if (ruleTinyPunch) {
+      punchExceptionConditions.push(
+        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0 * 60) < 5)`
+      );
+    }
+    if (ruleWeeklyHours) {
+      punchExceptionConditions.push(
+        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          AND (
+            SELECT SUM((julianday(tp2.clock_out_ts) - julianday(tp2.clock_in_ts)) * 24.0)
+            FROM time_punches tp2
+            WHERE tp2.employee_id = tp.employee_id
+              AND tp2.clock_in_ts IS NOT NULL
+              AND tp2.clock_out_ts IS NOT NULL
+              AND strftime('%Y-%W', tp2.clock_in_ts) = strftime('%Y-%W', tp.clock_in_ts)
+          ) > 50)`
+      );
+    }
+
+    const punchExceptionCase = punchExceptionConditions.length
+      ? `CASE ${punchExceptionConditions.map(c => `WHEN ${c} THEN 1`).join(' ')} ELSE 0 END`
+      : '0';
+    const punchExceptionUnapprovedCase = punchExceptionConditions.length
+      ? `CASE ${punchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
+      : '0';
+
+    const HOURS_EPSILON = 0.1; // keep in sync with payroll filtering
+    const paidClause = includePaidBool ? '' : 'AND (t.paid IS NULL OR t.paid = 0)';
+
+    const entryExceptionConditions = [];
+    if (ruleManualNoPunches) entryExceptionConditions.push('f.punch_count = 0');
+    if (ruleManualHoursMismatch) {
+      entryExceptionConditions.push(
+        `(f.hours IS NULL OR ABS(IFNULL(f.punch_hours, 0) - f.hours) >= ${HOURS_EPSILON})`
+      );
+    }
+    const entryExceptionExpr = entryExceptionConditions.length
+      ? `(${entryExceptionConditions.join(' OR ')})`
+      : '0';
+
+    const sql = `
+    WITH entry_flags AS (
+      SELECT
+        t.id,
+        t.employee_id,
+        t.project_id,
+        t.start_date,
+        t.end_date,
+        t.hours,
+        t.total_pay,
+        t.paid,
+        t.paid_date,
+        t.resolved_status,
+        COUNT(tp.id) AS punch_count,
+        SUM(${punchExceptionCase}) AS punch_exception_count,
+        SUM(${punchExceptionUnapprovedCase}) AS punch_exception_unapproved_count,
+        SUM(
+          CASE
+            WHEN tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+            THEN (julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0
+            ELSE 0
+          END
+        ) AS punch_hours
+      FROM time_entries t
+      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
+      WHERE t.start_date >= ? AND t.end_date <= ?
+        ${paidClause}
+      GROUP BY
+        t.id,
+        t.employee_id,
+        t.project_id,
+        t.start_date,
+        t.end_date,
+        t.hours,
+        t.total_pay,
+        t.paid,
+        t.paid_date,
+        t.resolved_status
+    ),
+    eligible_entries AS (
+      SELECT *
+      FROM entry_flags f
+      WHERE
+        (
+          ${entryExceptionExpr} = 0
+          OR LOWER(COALESCE(f.resolved_status, 'open')) IN ('approved', 'modified')
+        )
+        AND (
+          IFNULL(f.punch_exception_count, 0) = 0
+          OR IFNULL(f.punch_exception_unapproved_count, 0) = 0
+        )
+    )
+    SELECT
+      e.id AS employee_id,
+      e.name AS employee_name,
+      e.vendor_qbo_id AS employee_vendor_qbo_id,
+      e.employee_qbo_id AS employee_employee_qbo_id,
+      p.id AS project_id,
+      COALESCE(p.name, '(No project)') AS project_name,
+      p.qbo_id AS project_qbo_id,
+      p.customer_name AS project_customer_name,
+      p.name AS project_name_raw,
+      MAX(COALESCE(t.paid, 0)) AS any_paid,
+      MAX(t.paid_date) AS last_paid_date,
+      MAX(COALESCE(t.paid, 0)) AS line_paid,
+      MAX(t.paid_date) AS line_paid_date,
+      SUM(t.hours)     AS project_hours,
+      SUM(t.total_pay) AS project_pay
+    FROM eligible_entries t
+    JOIN employees e ON t.employee_id = e.id
+    LEFT JOIN projects p ON t.project_id = p.id
+    GROUP BY
+      e.id, e.name,
+      p.id, p.name
+    ORDER BY
+      e.name,
+      project_name
+  `;
+
+    const params = [start, end];
+
+    const rows = await dbAll(sql, params);
     res.json(rows);
-  });
+  } catch (err) {
+    console.error('Error loading payroll summary:', err);
+    return res.status(500).json({ error: err.message || 'Failed to load payroll summary.' });
+  }
 });
-
 // Mark checks/time entries as unpaid for an employee in a period (to allow resend)
 app.post('/api/payroll/unpay', requireAuth, async (req, res) => {
   const {
@@ -1162,7 +1345,7 @@ app.post('/api/payroll/unpay', requireAuth, async (req, res) => {
 });
 
 // Get raw time entries for an employee in a date range (for payroll UI)
-app.get('/api/payroll/time-entries', requireAuth, (req, res) => {
+app.get('/api/payroll/time-entries', requireAuth, async (req, res) => {
   const employeeId = parseInt(req.query.employeeId, 10);
   const { start, end } = req.query || {};
 
@@ -1172,33 +1355,150 @@ app.get('/api/payroll/time-entries', requireAuth, (req, res) => {
       .json({ error: 'employeeId, start, and end are required.' });
   }
 
-  const sql = `
-    SELECT
-      t.id,
-      t.employee_id,
-      t.project_id,
-      COALESCE(p.name, '(No project)') AS project_name,
-      t.start_date,
-      t.end_date,
-      t.start_time,
-      t.end_time,
-      t.hours,
-      t.total_pay
-    FROM time_entries t
-    LEFT JOIN projects p ON t.project_id = p.id
-    WHERE t.employee_id = ?
-      AND t.start_date >= ?
-      AND t.end_date <= ?
-    ORDER BY project_name, t.start_date, t.id
-  `;
+  try {
+    const rulesMap = await loadExceptionRulesMap();
+    const isRuleEnabled = makeRuleChecker(rulesMap);
 
-  db.all(sql, [employeeId, start, end], (err, rows) => {
-    if (err) {
-      console.error('Error loading time entries for payroll view:', err);
-      return res.status(500).json({ error: 'Failed to load time entries.' });
+    const ruleMissingClockOut = isRuleEnabled('missing_clock_out');
+    const ruleLongShift = isRuleEnabled('long_shift');
+    const ruleMultiDay = isRuleEnabled('multi_day');
+    const ruleCrossesMidnight = isRuleEnabled('crosses_midnight');
+    const ruleNoProject = isRuleEnabled('no_project');
+    const ruleProjectMismatch = isRuleEnabled('project_mismatch');
+    const ruleTinyPunch = isRuleEnabled('tiny_punch');
+    const ruleWeeklyHours = isRuleEnabled('weekly_hours');
+    const ruleGeoIn = isRuleEnabled('geofence_clock_in');
+    const ruleGeoOut = isRuleEnabled('geofence_clock_out');
+    const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
+    const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
+    const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
+
+    const punchExceptionConditions = [];
+    if (ruleMissingClockOut) punchExceptionConditions.push('tp.clock_out_ts IS NULL');
+    if (ruleNoProject) punchExceptionConditions.push('tp.project_id IS NULL');
+    if (ruleProjectMismatch) {
+      punchExceptionConditions.push(
+        `tp.clock_out_project_id IS NOT NULL
+         AND tp.project_id IS NOT NULL
+         AND tp.clock_out_project_id != tp.project_id`
+      );
     }
+    if (ruleAutoClockOut) punchExceptionConditions.push('tp.auto_clock_out IS NOT NULL AND tp.auto_clock_out != 0');
+    if (ruleGeoIn) punchExceptionConditions.push('tp.geo_violation IS NOT NULL AND tp.geo_violation != 0'); // geo violation already computed at punch time
+    if (ruleLongShift) {
+      punchExceptionConditions.push(
+        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0) > 12)`
+      );
+    }
+    if (ruleMultiDay) {
+      punchExceptionConditions.push(
+        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0) >= 24)`
+      );
+    }
+    if (ruleCrossesMidnight) {
+      punchExceptionConditions.push(
+        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          AND date(tp.clock_in_ts) != date(tp.clock_out_ts))`
+      );
+    }
+    if (ruleTinyPunch) {
+      punchExceptionConditions.push(
+        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0 * 60) < 5)`
+      );
+    }
+    // Weekly overtime is handled in the time exception report only; not enforced per punch here
 
-    const withRate = rows.map(r => {
+    const punchExceptionCase = punchExceptionConditions.length
+      ? `CASE ${punchExceptionConditions.map(c => `WHEN ${c} THEN 1`).join(' ')} ELSE 0 END`
+      : '0';
+    const punchExceptionUnapprovedCase = punchExceptionConditions.length
+      ? `CASE ${punchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
+      : '0';
+
+    const sql = `
+      SELECT
+        t.id,
+        t.employee_id,
+        t.project_id,
+        COALESCE(p.name, '(No project)') AS project_name,
+        t.start_date,
+        t.end_date,
+        t.start_time,
+        t.end_time,
+        t.hours,
+        t.total_pay,
+        t.resolved_status,
+        t.resolved_note,
+        COUNT(tp.id) AS punch_count,
+        SUM(${punchExceptionCase}) AS punch_exception_count,
+        SUM(${punchExceptionUnapprovedCase}) AS punch_exception_unapproved_count,
+        SUM(
+          CASE
+            WHEN tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+            THEN (julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0
+            ELSE 0
+          END
+        ) AS punch_hours
+      FROM time_entries t
+      LEFT JOIN projects p ON t.project_id = p.id
+      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
+      WHERE t.employee_id = ?
+        AND t.start_date >= ?
+        AND t.end_date <= ?
+      GROUP BY
+        t.id,
+        t.employee_id,
+        t.project_id,
+        project_name,
+        t.start_date,
+        t.end_date,
+        t.start_time,
+        t.end_time,
+        t.hours,
+        t.total_pay,
+        t.resolved_status,
+        t.resolved_note
+      ORDER BY project_name, t.start_date, t.id
+    `;
+
+    const rows = await dbAll(sql, [employeeId, start, end]);
+
+    const HOURS_EPSILON = 0.1; // ~6 minutes
+
+    const eligible = rows.filter(r => {
+      const punchCount = Number(r.punch_count || 0);
+      const entryHours =
+        r.hours != null && !Number.isNaN(Number(r.hours))
+          ? Number(r.hours)
+          : null;
+      const punchHours =
+        r.punch_hours != null && !Number.isNaN(Number(r.punch_hours))
+          ? Number(r.punch_hours)
+          : 0;
+
+      const entryException =
+        (ruleManualNoPunches && (!punchCount)) ||
+        (ruleManualHoursMismatch &&
+          (entryHours == null ||
+            Math.abs(punchHours - entryHours) >= HOURS_EPSILON));
+
+      const status = (r.resolved_status || '').toLowerCase();
+      const isApproved = status === 'approved' || status === 'modified';
+
+      const hasPunchException =
+        Number(r.punch_exception_count || 0) > 0;
+      const punchExceptionsApproved =
+        Number(r.punch_exception_unapproved_count || 0) === 0;
+
+      const entryOk = !entryException || isApproved;
+      const punchesOk = !hasPunchException || punchExceptionsApproved;
+      return entryOk && punchesOk;
+    });
+
+    const withRate = eligible.map(r => {
       const rawHours = Number(r.hours || 0);
       const rawTotalPay = Number(r.total_pay || 0);
 
@@ -1226,7 +1526,10 @@ app.get('/api/payroll/time-entries', requireAuth, (req, res) => {
     });
 
     res.json(withRate);
-  });
+  } catch (err) {
+    console.error('Error loading time entries for payroll view:', err);
+    return res.status(500).json({ error: 'Failed to load time entries.' });
+  }
 });
 
 // Preview payroll checks (no DB writes)
@@ -2597,37 +2900,108 @@ app.get('/api/time-exceptions', async (req, res) => {
       params
     );
 
-    const flagged = [];
+    // Load app-wide settings so we can honor disabled rules
+    const settingsRows = await dbAll('SELECT key, value FROM app_settings', []);
+    const settingsMap = {};
+    (settingsRows || []).forEach(r => {
+      settingsMap[r.key] = r.value;
+    });
 
-    for (const r of rows) {
-      const flags = [];
+    let exceptionRules = null;
+    try {
+      if (settingsMap.time_exception_rules) {
+        const parsed = JSON.parse(settingsMap.time_exception_rules);
+        if (parsed && typeof parsed === 'object') {
+          exceptionRules = parsed;
+        }
+      }
+    } catch {
+      exceptionRules = null;
+    }
 
-      // Parse timestamps safely
+    const isRuleEnabled = key => {
+      if (!exceptionRules || typeof exceptionRules !== 'object') return true;
+      const val = exceptionRules[key];
+      return !(
+        val === false ||
+        val === 'false' ||
+        val === 0 ||
+        val === '0'
+      );
+    };
+
+    // Helper to normalize a timestamp to the Monday that starts its ISO week
+    const getWeekStart = dateObj => {
+      const d = new Date(
+        Date.UTC(
+          dateObj.getUTCFullYear(),
+          dateObj.getUTCMonth(),
+          dateObj.getUTCDate()
+        )
+      );
+      const day = d.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+      const diff = day === 0 ? -6 : 1 - day;
+      d.setUTCDate(d.getUTCDate() + diff);
+      return d.toISOString().slice(0, 10);
+    };
+
+    const WEEKLY_HOURS_THRESHOLD = 50;
+    const punchWeekTotals = new Map();
+
+    // First pass: compute durations and weekly totals per employee
+    const punchRows = rows.map(r => {
       const startTs = r.clock_in_ts ? new Date(r.clock_in_ts) : null;
       const endTs = r.clock_out_ts ? new Date(r.clock_out_ts) : null;
 
+      const startValid = startTs && !Number.isNaN(startTs.getTime());
+      const endValid = endTs && !Number.isNaN(endTs.getTime());
+
       let durationHours = null;
-      if (startTs && endTs && !Number.isNaN(startTs) && !Number.isNaN(endTs)) {
+      if (startValid && endValid) {
         durationHours = (endTs - startTs) / (1000 * 60 * 60);
       }
 
+      const weekKey = startValid ? getWeekStart(startTs) : null;
+      if (weekKey && durationHours !== null) {
+        const mapKey = `${r.employee_id}|${weekKey}`;
+        punchWeekTotals.set(
+          mapKey,
+          (punchWeekTotals.get(mapKey) || 0) + durationHours
+        );
+      }
+
+      return { row: r, startTs, endTs, durationHours, weekKey };
+    });
+
+    const weeksOverThreshold = new Map();
+    for (const [key, hours] of punchWeekTotals.entries()) {
+      if (hours > WEEKLY_HOURS_THRESHOLD) {
+        weeksOverThreshold.set(key, hours);
+      }
+    }
+
+    const flagged = [];
+
+    for (const { row: r, startTs, endTs, durationHours, weekKey } of punchRows) {
+      const flags = [];
+
       // 1) Missing clock-out
-      if (!r.clock_out_ts) {
+      if (isRuleEnabled('missing_clock_out') && !r.clock_out_ts) {
         flags.push('Missing clock-out');
       }
 
       // 2) Long shift (> 12h)
-      if (durationHours !== null && durationHours > 12) {
+      if (isRuleEnabled('long_shift') && durationHours !== null && durationHours > 12) {
         flags.push('Long shift (>12h)');
       }
 
       // 3) Multi-day (>= 24h)
-      if (durationHours !== null && durationHours >= 24) {
+      if (isRuleEnabled('multi_day') && durationHours !== null && durationHours >= 24) {
         flags.push('Multi-day shift');
       }
 
       // 4) Crosses midnight
-      if (startTs && endTs) {
+      if (isRuleEnabled('crosses_midnight') && startTs && endTs) {
         const startDateStr = startTs.toISOString().slice(0, 10);
         const endDateStr = endTs.toISOString().slice(0, 10);
         if (startDateStr !== endDateStr) {
@@ -2636,12 +3010,13 @@ app.get('/api/time-exceptions', async (req, res) => {
       }
 
       // 5) No project
-      if (r.project_id == null) {
+      if (isRuleEnabled('no_project') && r.project_id == null) {
         flags.push('No project selected');
       }
 
       // 5b) Clock-out project differs from clock-in
       if (
+        isRuleEnabled('project_mismatch') &&
         r.clock_out_project_id != null &&
         r.project_id != null &&
         Number(r.clock_out_project_id) !== Number(r.project_id)
@@ -2650,10 +3025,20 @@ app.get('/api/time-exceptions', async (req, res) => {
       }
 
       // 6) Tiny punch (< 5 minutes)
-      if (durationHours !== null && durationHours > 0) {
+      if (isRuleEnabled('tiny_punch') && durationHours !== null && durationHours > 0) {
         const minutes = durationHours * 60;
         if (minutes < 5) {
           flags.push('Tiny punch (<5 min)');
+        }
+      }
+
+      // 6b) Weekly overtime threshold
+      if (weekKey) {
+        const weeklyHours = weeksOverThreshold.get(`${r.employee_id}|${weekKey}`);
+        if (weeklyHours && isRuleEnabled('weekly_hours')) {
+          flags.push(
+            `Week of ${weekKey} exceeds ${WEEKLY_HOURS_THRESHOLD}h (${weeklyHours.toFixed(2)}h)`
+          );
         }
       }
 
@@ -2668,7 +3053,11 @@ app.get('/api/time-exceptions', async (req, res) => {
 
       if (hasProjectGeofence) {
         // Clock-in geofence
-        if (r.clock_in_lat != null && r.clock_in_lng != null) {
+        if (
+          isRuleEnabled('geofence_clock_in') &&
+          r.clock_in_lat != null &&
+          r.clock_in_lng != null
+        ) {
           const dIn = distanceMeters(
             Number(r.clock_in_lat),
             Number(r.clock_in_lng),
@@ -2681,7 +3070,11 @@ app.get('/api/time-exceptions', async (req, res) => {
         }
 
         // Clock-out geofence
-        if (r.clock_out_lat != null && r.clock_out_lng != null) {
+        if (
+          isRuleEnabled('geofence_clock_out') &&
+          r.clock_out_lat != null &&
+          r.clock_out_lng != null
+        ) {
           const dOut = distanceMeters(
             Number(r.clock_out_lat),
             Number(r.clock_out_lng),
@@ -2695,7 +3088,7 @@ app.get('/api/time-exceptions', async (req, res) => {
       }
 
       // 8) Auto clock-out (midnight job or any auto close)
-      if (r.auto_clock_out) {
+      if (isRuleEnabled('auto_clock_out') && r.auto_clock_out) {
         const reason = r.auto_clock_out_reason || '';
         if (reason === 'midnight_auto') {
           flags.push('Auto clock-out (midnight job)');
@@ -2862,10 +3255,10 @@ app.get('/api/time-exceptions', async (req, res) => {
 
       const punchCount = te.punch_count || 0;
 
-      if (!punchCount) {
+      if (isRuleEnabled('manual_no_punches') && !punchCount) {
         // Case A: manual timesheet entry, but no punches linked at all
         entryFlags.push('Manual time entry with no punches');
-      } else if (entryHours != null) {
+      } else if (isRuleEnabled('manual_hours_mismatch') && entryHours != null) {
         // Case B: both exist, but hours do not match
         const diff = punchHoursRaw - entryHours;
         if (Math.abs(diff) >= HOURS_EPSILON) {
@@ -2978,8 +3371,10 @@ app.post('/api/time-exceptions/:id/review', async (req, res) => {
   if (!allowedActions.includes(action)) {
     return res.status(400).json({ ok: false, error: 'Invalid action.' });
   }
-  if (action === 'modify' && (!note || !note.trim())) {
-    return res.status(400).json({ ok: false, error: 'Modification note is required.' });
+  if ((action === 'modify' || action === 'reject') && (!note || !note.trim())) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'A note is required when rejecting or modifying.' });
   }
 
   try {
@@ -3559,13 +3954,18 @@ app.get('/api/time-entries', (req, res) => {
 app.post('/api/time-entries', (req, res) => {
   const { employee_id, project_id, start_date, end_date, start_time, end_time, hours } = req.body;
 
+  // Trim string inputs to block empty/whitespace-only dates/times
+  const startDate = (start_date || '').trim();
+  const endDate = (end_date || '').trim();
+  const startTime = (start_time || '').trim();
+  const endTime = (end_time || '').trim();
 
-if (!employee_id || !project_id || !start_date || !end_date || !start_time || !end_time || hours == null) {
-  return res.status(400).json({
-    error:
-      'employee_id, project_id, start_date, end_date, start_time, end_time, and hours are required.'
-  });
-}
+  if (!employee_id || !project_id || !startDate || !endDate || !startTime || !endTime || hours == null) {
+    return res.status(400).json({
+      error:
+        'employee_id, project_id, start_date, end_date, start_time, end_time, and hours are required.'
+    });
+  }
 
 
   const parsedHours = parseFloat(hours);
@@ -3592,7 +3992,7 @@ db.run(
     (employee_id, project_id, start_date, end_date, start_time, end_time, hours, total_pay)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `,
-  [employee_id, project_id, start_date, end_date, start_time, end_time, parsedHours, total_pay],
+  [employee_id, project_id, startDate, endDate, startTime, endTime, parsedHours, total_pay],
   function (err2) {
           if (err2) return res.status(500).json({ error: err2.message });
           res.json({ ok: true, id: this.lastID, total_pay });
@@ -3615,6 +4015,11 @@ app.post('/api/time-entries/:id', (req, res) => {
     note
   } = req.body || {};
 
+  const startDate = (start_date || '').trim();
+  const endDate = (end_date || '').trim();
+  const startTime = (start_time || '').trim();
+  const endTime = (end_time || '').trim();
+
   const empIdNum = Number(employee_id);
   const projIdNum = Number(project_id);
   const hoursNum = Number(hours);
@@ -3623,8 +4028,8 @@ app.post('/api/time-entries/:id', (req, res) => {
     !id ||
     !empIdNum ||
     !projIdNum ||
-    !start_date ||
-    !end_date ||
+    !startDate ||
+    !endDate ||
     Number.isNaN(hoursNum)
   ) {
     return res.status(400).json({
@@ -3670,6 +4075,7 @@ app.post('/api/time-entries/:id', (req, res) => {
 
           const rate = Number(row.rate) || 0;
           const totalPay = rate * hoursNum;
+          const noteVal = typeof note === 'string' ? note.trim() : '';
 
           const sql = `
             UPDATE time_entries
@@ -3681,24 +4087,25 @@ app.post('/api/time-entries/:id', (req, res) => {
               start_time = ?,
               end_time = ?,
               hours = ?,
-              total_pay = ?
+              total_pay = ?,
+              resolved_note = ?
             WHERE id = ?
           `;
 
-          const params = [
-            empIdNum,
-            projIdNum,
-            start_date,
-            end_date,
-            start_time,
-            end_time,
-            hoursNum,
-            totalPay,
-            id
-          ];
-
           try {
             const beforeRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+            const params = [
+              empIdNum,
+              projIdNum,
+              startDate,
+              endDate,
+              startTime,
+              endTime,
+              hoursNum,
+              totalPay,
+              noteVal || (beforeRow ? beforeRow.resolved_note : null) || null,
+              id
+            ];
             db.run(sql, params, async function (err2) {
               if (err2) {
                 console.error('Error updating time entry:', err2.message);
@@ -4068,7 +4475,8 @@ app.post('/api/kiosk/punch', (req, res) => {
               return res.status(500).json({ error: err3.message });
             }
 
-            const start = new Date(open.clock_in_ts);
+            const startIso = open.clock_in_ts || punchTime;
+            const start = new Date(startIso);
             const end = new Date(punchTime);
             const diffMs = end - start;
 
@@ -4076,8 +4484,8 @@ app.post('/api/kiosk/punch', (req, res) => {
             if (!Number.isFinite(minutes) || minutes < 0) minutes = 0;
 
             const hours = minutes / 60;
-            const startDate = open.clock_in_ts.slice(0, 10);
-            const endDate = punchTime.slice(0, 10);
+            const startDate = (startIso || punchTime).slice(0, 10);
+            const endDate = (punchTime || startIso).slice(0, 10);
 
             db.get(
               'SELECT rate FROM employees WHERE id = ?',
@@ -4290,10 +4698,42 @@ app.post('/api/kiosks/register', (req, res) => {
       return db.all(sessionsSql, [device_id, today], (err2, sessions) => {
         if (err2) return res.status(500).json({ error: err2.message });
 
-        const activeSession = (sessions || [])
-          .filter(s => s.project_id && row.project_id && Number(s.project_id) === Number(row.project_id))
+        // Prefer a session that matches the kiosk's saved project_id
+        let activeSession = (sessions || [])
+          .filter(
+            s =>
+              s.project_id &&
+              row.project_id &&
+              Number(s.project_id) === Number(row.project_id)
+          )
           .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
           .pop() || null;
+
+        // If the kiosk is missing a project but has sessions today, fall back to
+        // the most recent session and backfill the kiosk project_id so workers
+        // can clock in without being blocked.
+        if (!activeSession && (!row.project_id || Number(row.project_id) === 0)) {
+          const latestSession = (sessions || [])
+            .filter(s => s.project_id)
+            .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+            .pop();
+
+          if (latestSession) {
+            activeSession = latestSession;
+            row.project_id = latestSession.project_id;
+
+            // Persist the project on the kiosk record for future fetches
+            db.run(
+              `UPDATE kiosks SET project_id = ? WHERE id = ?`,
+              [latestSession.project_id, row.id],
+              errUpdate => {
+                if (errUpdate) {
+                  console.error('Failed to backfill kiosk project_id from session:', errUpdate);
+                }
+              }
+            );
+          }
+        }
 
         return res.json({
           ok: true,
@@ -4393,8 +4833,21 @@ app.get('/api/kiosks/:id/sessions', (req, res) => {
         COALESCE((
           SELECT COUNT(*)
           FROM time_punches tp
+          WHERE tp.project_id = ks.project_id
+            AND substr(tp.clock_in_ts, 1, 10) = ks.date
+            AND (
+              (ks.device_id IS NULL AND tp.device_id IS NULL)
+              OR tp.device_id = ks.device_id
+            )
+        ), 0) AS entry_count,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM time_punches tp
           WHERE tp.clock_out_ts IS NULL
-            AND tp.device_id = ks.device_id
+            AND (
+              (ks.device_id IS NULL AND tp.device_id IS NULL)
+              OR tp.device_id = ks.device_id
+            )
             AND tp.project_id = ks.project_id
         ), 0) AS open_count
       FROM kiosk_sessions ks
@@ -4473,6 +4926,126 @@ app.post('/api/kiosks/:id/sessions', (req, res) => {
       }
     });
   });
+});
+
+// Delete a kiosk session (timesheet) with safety checks
+app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
+  try {
+    const kioskId = parseInt(req.params.id, 10);
+    const sessionId = parseInt(req.params.sessionId, 10);
+    if (!kioskId || !sessionId) {
+      return res.status(400).json({ error: 'Invalid kiosk or session id.' });
+    }
+
+    const adminId = req.body && req.body.admin_id ? Number(req.body.admin_id) : null;
+    const pin = (req.body && req.body.pin ? String(req.body.pin) : '').trim();
+    if (!adminId) {
+      return res.status(400).json({ error: 'Admin id is required.' });
+    }
+
+    const admin = await dbGet(
+      `
+        SELECT id, name, pin, is_admin
+        FROM employees
+        WHERE id = ? AND IFNULL(is_admin, 0) = 1
+        LIMIT 1
+      `,
+      [adminId]
+    );
+    if (!admin) {
+      return res.status(403).json({ error: 'Admin not authorized.' });
+    }
+
+    const sessionRow = await dbGet(
+      `
+        SELECT id, kiosk_id, device_id, project_id, date
+        FROM kiosk_sessions
+        WHERE id = ? AND kiosk_id = ?
+        LIMIT 1
+      `,
+      [sessionId, kioskId]
+    );
+    if (!sessionRow) {
+      return res.status(404).json({ error: 'Timesheet not found for this kiosk.' });
+    }
+
+    const counts = await dbGet(
+      `
+        SELECT
+          COUNT(*) AS entry_count,
+          SUM(CASE WHEN tp.clock_out_ts IS NULL THEN 1 ELSE 0 END) AS open_count
+        FROM time_punches tp
+        WHERE tp.project_id = ?
+          AND substr(tp.clock_in_ts, 1, 10) = ?
+          AND (
+            (? IS NULL AND tp.device_id IS NULL)
+            OR tp.device_id = ?
+          )
+      `,
+      [
+        sessionRow.project_id,
+        sessionRow.date,
+        sessionRow.device_id || null,
+        sessionRow.device_id || null
+      ]
+    );
+
+    const entryCount = counts && counts.entry_count ? Number(counts.entry_count) : 0;
+    const perms = await getAdminAccessPerms(admin.id);
+
+    if (entryCount > 0) {
+      if (!perms.modify_time) {
+        return res.status(403).json({ error: 'You do not have permission to modify time entries.' });
+      }
+
+      const currentPin = (admin.pin || '').trim();
+      if (!currentPin) {
+        return res.status(403).json({ error: 'A PIN is required to delete a timesheet with entries.' });
+      }
+      if (!pin) {
+        return res.status(401).json({ error: 'PIN is required to delete this timesheet.' });
+      }
+      if (pin !== currentPin) {
+        return res.status(401).json({ error: 'Incorrect PIN.' });
+      }
+    }
+
+    const delRes = await dbRun(
+      'DELETE FROM kiosk_sessions WHERE id = ? AND kiosk_id = ?',
+      [sessionId, kioskId]
+    );
+    if (!delRes || delRes.changes === 0) {
+      return res.status(404).json({ error: 'Timesheet already removed.' });
+    }
+
+    // If this session was active for the kiosk, clear the project unless another session for it exists today
+    const kioskRow = await dbGet(
+      'SELECT project_id FROM kiosks WHERE id = ?',
+      [kioskId]
+    );
+    if (kioskRow && kioskRow.project_id && Number(kioskRow.project_id) === Number(sessionRow.project_id)) {
+      const other = await dbGet(
+        `
+          SELECT id
+          FROM kiosk_sessions
+          WHERE kiosk_id = ?
+            AND date = ?
+            AND project_id = ?
+            AND id != ?
+          LIMIT 1
+        `,
+        [kioskId, sessionRow.date, sessionRow.project_id, sessionId]
+      );
+      if (!other) {
+        await dbRun('UPDATE kiosks SET project_id = NULL WHERE id = ?', [kioskId]);
+      }
+    }
+
+    res.json({ ok: true, entry_count: entryCount });
+  } catch (err) {
+    console.error('Error deleting kiosk session:', err);
+    res.status(500).json({ error: 'Failed to delete timesheet.' });
+  }
 });
 
 // Set the active session (updates kiosk.project_id to that session’s project)
@@ -6858,7 +7431,8 @@ async function autoClockOutOpenPunchesAtMidnight() {
     const nowIso = new Date().toISOString();
 
     for (const p of openPunches) {
-      const start = new Date(p.clock_in_ts);
+      const startIso = p.clock_in_ts || nowIso;
+      const start = new Date(startIso);
       const end   = new Date(nowIso);
 
       let diffMs = end - start;
@@ -6869,7 +7443,7 @@ async function autoClockOutOpenPunchesAtMidnight() {
       }
 
       const hours = minutes / 60;
-      const startDate = p.clock_in_ts.slice(0, 10);
+      const startDate = startIso.slice(0, 10);
       const endDate   = nowIso.slice(0, 10);
 
       // 1) Close the punch and mark as auto

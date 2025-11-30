@@ -132,8 +132,8 @@
 
     <div class="form-field">
       <label for="te-review-note">Notes</label>
-      <textarea id="te-review-note" rows="3" placeholder="Required when modifying"></textarea>
-      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when modifying an exception.</p>
+      <textarea id="te-review-note" rows="3" placeholder="Required when rejecting or modifying"></textarea>
+      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when rejecting or modifying an exception.</p>
     </div>
 
     <p id="te-review-message" class="message"></p>
@@ -422,7 +422,7 @@
 <div id="time-entries-backdrop" class="modal-backdrop hidden"></div>
 
 <div id="time-entries-modal" class="modal hidden" role="dialog" aria-modal="true">
-  <div class="modal-card">
+  <div class="modal-card modal-card-wide time-entries-card">
     <div class="modal-header">
       <h3 id="time-entries-title">Time Entries</h3>
       <button
@@ -462,6 +462,14 @@
         <div class="form-field">
           <label for="edit-entry-hours">Hours</label>
           <input id="edit-entry-hours" type="number" min="0" step="0.01" readonly />
+        </div>
+        <div class="form-field" style="grid-column: 1 / -1;">
+          <label for="edit-entry-note">Note</label>
+          <textarea
+            id="edit-entry-note"
+            rows="2"
+            placeholder="Required when saving changes"
+          ></textarea>
         </div>
       </div>
       <div class="modal-footer">

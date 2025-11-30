@@ -320,8 +320,8 @@ async function loadTimeEntriesTable(filters = {}) {
   const heading = document.getElementById('time-entries-heading');
   if (!tbody) return;
 
-  // 7 columns now (Employee, Project, Date, Hours, Pay, Paid?, Paid on)
-  tbody.innerHTML = '<tr><td colspan="7">Loading...</td></tr>';
+  // columns: Entry ID, Employee, Project, Date, Hours, Pay, Paid?, Paid on
+  tbody.innerHTML = '<tr><td colspan="8">Loading...</td></tr>';
 
   const hasFilters = !!(
     filters.start ||
@@ -350,7 +350,7 @@ async function loadTimeEntriesTable(filters = {}) {
 
     if (!entries.length) {
       tbody.innerHTML =
-        '<tr><td colspan="7">(no time entries for this selection)</td></tr>';
+        '<tr><td colspan="8">(no time entries for this selection)</td></tr>';
       return;
     }
 
@@ -395,6 +395,7 @@ async function loadTimeEntriesTable(filters = {}) {
       // BUILD THE TABLE ROW
       // ─────────────────────────────────────────────
       tr.innerHTML = `
+        <td>${e.id != null ? e.id : ''}</td>
         <td>${e.employee_name || ''}</td>
         <td>${e.project_name || ''}</td>
         <td>${dateLabel}</td>
@@ -426,7 +427,7 @@ tr.dataset.endTime    = e.end_time || '';
   } catch (err) {
     console.error('Error loading time entries:', err.message);
     tbody.innerHTML =
-      '<tr><td colspan="7">Error loading time entries</td></tr>';
+      '<tr><td colspan="8">Error loading time entries</td></tr>';
   }
 }
 
@@ -862,28 +863,9 @@ if (clearBtn) {
     reviewSave.addEventListener('click', submitTimeExceptionReview);
   }
   if (reviewAction) {
-    reviewAction.addEventListener('change', () => {
-      const note = document.getElementById('te-review-note');
-      const noteHelp = document.getElementById('te-review-note-help');
-      const newBlock = document.getElementById('te-review-new-block');
-      const needNote = reviewAction.value === 'modify';
-      if (note) note.required = needNote;
-      if (noteHelp) noteHelp.classList.toggle('hidden', !needNote);
-      if (newBlock) newBlock.classList.toggle('hidden', reviewAction.value !== 'modify');
-      if (reviewAction.value !== 'modify') {
-        const startInput = document.getElementById('te-review-start');
-        const endInput = document.getElementById('te-review-end');
-        const projectSelect = document.getElementById('te-review-project');
-        const hoursInput = document.getElementById('te-review-hours');
-        if (startInput) startInput.value = '';
-        if (endInput) endInput.value = '';
-        if (projectSelect) projectSelect.value = '';
-        if (hoursInput) hoursInput.value = '';
-      } else {
-        fillReviewNewFieldsFromOriginal();
-      }
-    });
+    reviewAction.addEventListener('change', handleTimeExceptionActionChange);
   }
+  bindReviewTimeInputs();
 
   // Initial load: first load dropdowns, then load the table
   loadTimeExceptionsFilters().then(() => {
@@ -993,11 +975,13 @@ function fillReviewNewFieldsFromOriginal(rec = currentTimeExceptionRecord || {})
   const endInput = document.getElementById('te-review-end');
   const projectSelect = document.getElementById('te-review-project');
 
-  const startStr = rec.clock_in_ts
-    ? formatLocalTimeHHMM(rec.clock_in_ts)
+  const { startIso, endIso } = getTimeExceptionOriginalRange(rec);
+
+  const startStr = startIso
+    ? formatLocalTimeHHMM(startIso)
     : rec.start_time || '';
-  const endStr = rec.clock_out_ts
-    ? formatLocalTimeHHMM(rec.clock_out_ts)
+  const endStr = endIso
+    ? formatLocalTimeHHMM(endIso)
     : rec.end_time || '';
 
   if (startInput) startInput.value = startStr;
@@ -1006,6 +990,50 @@ function fillReviewNewFieldsFromOriginal(rec = currentTimeExceptionRecord || {})
   if (projectSelect) {
     projectSelect.value = rec.project_id ? String(rec.project_id) : '';
   }
+
+  updateReviewHoursDisplay();
+}
+
+function handleTimeExceptionActionChange() {
+  const reviewAction = document.getElementById('te-review-action');
+  const note = document.getElementById('te-review-note');
+  const noteHelp = document.getElementById('te-review-note-help');
+  const newBlock = document.getElementById('te-review-new-block');
+  const startInput = document.getElementById('te-review-start');
+  const endInput = document.getElementById('te-review-end');
+  const projectSelect = document.getElementById('te-review-project');
+  const hoursInput = document.getElementById('te-review-hours');
+
+  if (!reviewAction) return;
+
+  const needNote =
+    reviewAction.value === 'modify' || reviewAction.value === 'reject';
+  if (note) note.required = needNote;
+  if (noteHelp) noteHelp.classList.toggle('hidden', !needNote);
+  if (newBlock) newBlock.classList.toggle('hidden', reviewAction.value !== 'modify');
+
+  if (reviewAction.value !== 'modify') {
+    if (startInput) startInput.value = '';
+    if (endInput) endInput.value = '';
+    if (projectSelect) projectSelect.value = '';
+    if (hoursInput) hoursInput.value = '';
+  } else {
+    fillReviewNewFieldsFromOriginal();
+  }
+
+  updateReviewHoursDisplay();
+}
+
+function bindReviewTimeInputs() {
+  const startInput = document.getElementById('te-review-start');
+  const endInput = document.getElementById('te-review-end');
+  [startInput, endInput].forEach(input => {
+    if (input && !input.dataset.boundHours) {
+      input.dataset.boundHours = '1';
+      input.addEventListener('input', updateReviewHoursDisplay);
+      input.addEventListener('change', updateReviewHoursDisplay);
+    }
+  });
 }
 
 async function ensureTimeExceptionProjectsLoaded() {
@@ -1059,6 +1087,87 @@ function formatLocalTimeHHMM(isoString) {
   if (Number.isNaN(d)) return '';
   const pad = n => String(n).padStart(2, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function getTimeExceptionBaseDay(rec = {}) {
+  return (
+    (rec.clock_in_ts && rec.clock_in_ts.slice(0, 10)) ||
+    rec.start_date ||
+    rec.end_date ||
+    null
+  );
+}
+
+function calculateDurationHours(startIso, endIso) {
+  if (!startIso || !endIso) return null;
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  const diffMs = end - start;
+  if (diffMs < 0) return null;
+  const hours = diffMs / 3600000;
+  return Number.isFinite(hours) ? Number(hours.toFixed(2)) : null;
+}
+
+function getTimeExceptionOriginalRange(rec = {}) {
+  const startIso =
+    rec.clock_in_ts ||
+    (rec.start_date ? `${rec.start_date}T${rec.start_time || '00:00'}` : null);
+  const endIso =
+    rec.clock_out_ts ||
+    (rec.end_date ? `${rec.end_date}T${rec.end_time || '00:00'}` : null);
+
+  const hoursFromRange = calculateDurationHours(startIso, endIso);
+  const fallbackHours =
+    rec.duration_hours != null
+      ? Number(rec.duration_hours)
+      : rec.hours != null
+        ? Number(rec.hours)
+        : null;
+
+  const hours =
+    hoursFromRange != null
+      ? hoursFromRange
+      : !Number.isNaN(fallbackHours)
+        ? fallbackHours
+        : null;
+
+  return { startIso, endIso, hours };
+}
+
+function updateReviewHoursDisplay() {
+  const rec = currentTimeExceptionRecord || {};
+  const { hours: origHours } = getTimeExceptionOriginalRange(rec);
+  const origHoursEl = document.getElementById('te-review-orig-hours');
+  if (origHoursEl) {
+    origHoursEl.textContent =
+      origHours != null && !Number.isNaN(origHours)
+        ? `${origHours.toFixed(2)} hrs`
+        : '—';
+  }
+
+  const actionSelect = document.getElementById('te-review-action');
+  const isModify = actionSelect ? actionSelect.value === 'modify' : false;
+  const startInput = document.getElementById('te-review-start');
+  const endInput = document.getElementById('te-review-end');
+  const hoursInput = document.getElementById('te-review-hours');
+
+  if (!hoursInput) return;
+  if (!isModify) {
+    hoursInput.value = '';
+    return;
+  }
+
+  const baseDay = getTimeExceptionBaseDay(rec);
+  const startVal = startInput?.value;
+  const endVal = endInput?.value;
+  const startIso =
+    baseDay && startVal ? `${baseDay}T${startVal}:00` : null;
+  const endIso = baseDay && endVal ? `${baseDay}T${endVal}:00` : null;
+  const newHours = calculateDurationHours(startIso, endIso);
+
+  hoursInput.value =
+    newHours != null && !Number.isNaN(newHours) ? newHours.toFixed(2) : '';
 }
 
 let currentTimeExceptionRecord = null;
@@ -1187,8 +1296,8 @@ async function openTimeExceptionReviewModal(rec) {
   }
 
   // Original values display
-  const originalStartIso = rec.clock_in_ts || (rec.start_date ? `${rec.start_date}T${rec.start_time || '00:00'}` : null);
-  const originalEndIso = rec.clock_out_ts || (rec.end_date ? `${rec.end_date}T${rec.end_time || '00:00'}` : null);
+  const { startIso: originalStartIso, endIso: originalEndIso } =
+    getTimeExceptionOriginalRange(rec);
   if (origStart) origStart.textContent = originalStartIso ? new Date(originalStartIso).toLocaleString() : '—';
   if (origEnd) origEnd.textContent = originalEndIso ? new Date(originalEndIso).toLocaleString() : '—';
   if (origProject) origProject.textContent = rec.project_name || '(No project)';
@@ -1227,6 +1336,8 @@ async function openTimeExceptionReviewModal(rec) {
 
   const newBlock = document.getElementById('te-review-new-block');
   if (newBlock) newBlock.classList.add('hidden');
+
+  updateReviewHoursDisplay();
 
   modal.dataset.source = rec.source || '';
   modal.dataset.id = rec.id ? String(rec.id) : '';
@@ -1310,9 +1421,9 @@ async function submitTimeExceptionReview() {
     if (!confirmed) return;
   }
 
-  if (action === 'modify' && !note) {
+  if ((action === 'modify' || action === 'reject') && !note) {
     if (msgEl) {
-      msgEl.textContent = 'A note is required when modifying an exception.';
+      msgEl.textContent = 'A note is required when rejecting or modifying an exception.';
       msgEl.style.color = 'red';
     }
     return;
@@ -1320,11 +1431,7 @@ async function submitTimeExceptionReview() {
 
   const updates = {};
   if (action === 'modify') {
-    const dayStr =
-      (rec.clock_in_ts && rec.clock_in_ts.slice(0, 10)) ||
-      rec.start_date ||
-      rec.end_date ||
-      null;
+    const dayStr = getTimeExceptionBaseDay(rec);
 
     const startVal =
       startInput && startInput.value && dayStr
@@ -1354,8 +1461,8 @@ async function submitTimeExceptionReview() {
         updates.end_time = endVal.slice(11, 16);
       }
       if (startVal && endVal) {
-        const durationHours = (new Date(endVal) - new Date(startVal)) / 3600000;
-        if (!Number.isNaN(durationHours) && durationHours >= 0) {
+        const durationHours = calculateDurationHours(startVal, endVal);
+        if (durationHours != null) {
           updates.hours = durationHours;
         }
       }
@@ -1497,6 +1604,7 @@ async function loadTimeExceptionsTable() {
       tr.dataset.categories = categoryKeys.join(',');
 
       tr.innerHTML = `
+        <td>${r.id != null ? r.id : ''}</td>
         <td>${r.employee_name || ''}</td>
         <td>${r.project_name || ''}</td>
         <td>${startStr}</td>
@@ -1618,6 +1726,7 @@ async function ensureTimeExceptionModalReady() {
       <h4>Original</h4>
       <div class="te-review-row"><span class="label">Start</span><span id="te-review-orig-start"></span></div>
       <div class="te-review-row"><span class="label">End</span><span id="te-review-orig-end"></span></div>
+      <div class="te-review-row"><span class="label">Hours</span><span id="te-review-orig-hours"></span></div>
       <div class="te-review-row"><span class="label">Project</span><span id="te-review-orig-project"></span></div>
     </div>
     <div class="te-review-grid-two form-grid">
@@ -1649,11 +1758,16 @@ async function ensureTimeExceptionModalReady() {
           <select id="te-review-project"></select>
         </div>
       </div>
+      <div class="form-field">
+        <label for="te-review-hours">New hours (auto)</label>
+        <input type="number" id="te-review-hours" step="0.01" min="0" readonly />
+        <p class="text-sm text-gray-600">Calculated from start and end times.</p>
+      </div>
     </div>
     <div class="form-field te-review-notes">
       <label for="te-review-note">Notes</label>
-      <textarea id="te-review-note" rows="3" placeholder="Required when modifying"></textarea>
-      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when modifying an exception.</p>
+      <textarea id="te-review-note" rows="3" placeholder="Required when rejecting or modifying"></textarea>
+      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when rejecting or modifying an exception.</p>
     </div>
     <p id="te-review-message" class="message"></p>
     <div class="te-review-actions">
@@ -1696,29 +1810,9 @@ function bindTimeExceptionModalListeners() {
   }
   if (reviewAction && !reviewAction.dataset.bound) {
     reviewAction.dataset.bound = '1';
-    reviewAction.addEventListener('change', () => {
-      const note = document.getElementById('te-review-note');
-      const noteHelp = document.getElementById('te-review-note-help');
-      const newBlock = document.getElementById('te-review-new-block');
-      const needNote = reviewAction.value === 'modify';
-      if (note) note.required = needNote;
-      if (noteHelp) noteHelp.classList.toggle('hidden', !needNote);
-      if (newBlock) newBlock.classList.toggle('hidden', reviewAction.value !== 'modify');
-      if (reviewAction.value !== 'modify') {
-        // Clear new-entry fields when not modifying
-        const startInput = document.getElementById('te-review-start');
-        const endInput = document.getElementById('te-review-end');
-        const projectSelect = document.getElementById('te-review-project');
-        const hoursInput = document.getElementById('te-review-hours');
-        if (startInput) startInput.value = '';
-        if (endInput) endInput.value = '';
-        if (projectSelect) projectSelect.value = '';
-        if (hoursInput) hoursInput.value = '';
-      } else {
-        fillReviewNewFieldsFromOriginal();
-      }
-    });
+    reviewAction.addEventListener('change', handleTimeExceptionActionChange);
   }
+  bindReviewTimeInputs();
 }
 
 /* ───────── 7. DOMContentLoaded INIT ───────── */
@@ -1868,8 +1962,11 @@ if (connectBtn) {
     workers_see_shipments: document.getElementById('settings-workers-see-shipments'),
     workers_see_time: document.getElementById('settings-workers-see-time'),
     daily_fee: document.getElementById('settings-daily-fee'),
-    due_offset: document.getElementById('settings-due-offset')
+    kiosk_require_photo: document.getElementById('settings-kiosk-require-photo')
   };
+  const exceptionRuleCheckboxes = Array.from(
+    document.querySelectorAll('[data-exception-rule]')
+  );
   const passwordFields = {
     current: document.getElementById('settings-password-current'),
     next: document.getElementById('settings-password-new'),
@@ -1899,6 +1996,46 @@ if (connectBtn) {
       ...defaults,
       modify_pay_rates: perms.modify_pay_rates === true || perms.modify_pay_rates === 'true'
     };
+  }
+
+  const asBool = (val, fallback = false) => {
+    if (val === undefined || val === null) return fallback;
+    return val === true || val === 'true' || val === 1 || val === '1';
+  };
+
+  function applyExceptionRulesToUI(rawValue) {
+    if (!exceptionRuleCheckboxes.length) return;
+    let parsed = null;
+    if (typeof rawValue === 'string') {
+      try {
+        parsed = JSON.parse(rawValue);
+      } catch {
+        parsed = null;
+      }
+    } else if (rawValue && typeof rawValue === 'object') {
+      parsed = rawValue;
+    }
+
+    exceptionRuleCheckboxes.forEach(cb => {
+      const key = cb.dataset.exceptionRule;
+      if (!key) return;
+      const defaultState = cb.defaultChecked || true;
+      const enabled =
+        parsed && Object.prototype.hasOwnProperty.call(parsed, key)
+          ? asBool(parsed[key], defaultState)
+          : defaultState;
+      cb.checked = enabled;
+    });
+  }
+
+  function collectExceptionRuleSettings() {
+    const map = {};
+    exceptionRuleCheckboxes.forEach(cb => {
+      const key = cb.dataset.exceptionRule;
+      if (!key) return;
+      map[key] = !!cb.checked;
+    });
+    return map;
   }
 
   async function loadAccessControl(accessMap = {}) {
@@ -1947,7 +2084,10 @@ if (connectBtn) {
       if (settingsFields.workers_see_time) settingsFields.workers_see_time.checked =
         data.workers_see_time === 'true' || data.workers_see_time === true;
       if (settingsFields.daily_fee) settingsFields.daily_fee.value = data.daily_fee || '';
-      if (settingsFields.due_offset) settingsFields.due_offset.value = data.due_offset || '';
+      if (settingsFields.kiosk_require_photo) {
+        settingsFields.kiosk_require_photo.checked = asBool(data.kiosk_require_photo);
+      }
+      applyExceptionRulesToUI(data.time_exception_rules);
 
       const accessMap =
         typeof data.access_admins === 'string'
@@ -1994,7 +2134,8 @@ if (connectBtn) {
       workers_see_shipments: settingsFields.workers_see_shipments?.checked || false,
       workers_see_time: settingsFields.workers_see_time?.checked || false,
       daily_fee: settingsFields.daily_fee?.value || '',
-      due_offset: settingsFields.due_offset?.value || '',
+      kiosk_require_photo: settingsFields.kiosk_require_photo?.checked || false,
+      time_exception_rules: JSON.stringify(collectExceptionRuleSettings()),
       access_admins: JSON.stringify(collectAccessControl())
     };
     try {
@@ -2017,8 +2158,9 @@ if (connectBtn) {
         }, 3500);
       }
     } catch (err) {
+      console.error('Error saving settings:', err);
       if (settingsStatus) {
-        settingsStatus.textContent = 'Error saving settings.';
+        settingsStatus.textContent = err?.message || 'Error saving settings.';
         settingsStatus.style.color = 'crimson';
       }
     }

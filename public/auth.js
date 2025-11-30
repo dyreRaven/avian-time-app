@@ -22,6 +22,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const msgEl = document.getElementById('auth-message');
   const toggleBtn = document.getElementById('auth-toggle-btn');
   const toggleText = document.getElementById('auth-toggle-text');
+  const loginPasswordInput = document.getElementById('login-password');
+  const passwordToggleBtn = document.getElementById('password-toggle');
 
   // Confirm modal elements
   const confirmModal = document.getElementById('register-confirm-modal');
@@ -63,6 +65,15 @@ document.addEventListener('DOMContentLoaded', () => {
   if (toggleBtn) {
     toggleBtn.addEventListener('click', () => {
       setMode(mode === 'login' ? 'register' : 'login');
+    });
+  }
+
+  if (passwordToggleBtn && loginPasswordInput) {
+    passwordToggleBtn.addEventListener('click', () => {
+      const isHidden = loginPasswordInput.type === 'password';
+      loginPasswordInput.type = isHidden ? 'text' : 'password';
+      passwordToggleBtn.setAttribute('aria-pressed', isHidden ? 'true' : 'false');
+      passwordToggleBtn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
     });
   }
 

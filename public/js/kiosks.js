@@ -1,4 +1,4 @@
-/* ───────── SESSIONS (ADMIN CONSOLE) ───────── */
+/* ───────── TIMESHEETS (ADMIN CONSOLE) ───────── */
 
 let sessionsTableData = [];
 let selectedSession = null;
@@ -17,6 +17,7 @@ function formatDurationFrom(now, iso) {
 }
 
 async function loadSessionsSection() {
+  updateTimesheetHeading();
   await loadSessionsTable();
   clearSessionDetail();
 }
@@ -29,7 +30,7 @@ function clearSessionDetail() {
   selectedSession = null;
   if (card) card.classList.add('hidden');
   if (title) title.textContent = 'Current Workers';
-  if (tbody) tbody.innerHTML = '<tr><td colspan="3">(select a session)</td></tr>';
+  if (tbody) tbody.innerHTML = '<tr><td colspan="3">(select a timesheet)</td></tr>';
 }
 
 function formatAstTime(isoString) {
@@ -49,7 +50,7 @@ function renderSessionsTable() {
   if (!tbody) return;
 
   if (!sessionsTableData.length) {
-    tbody.innerHTML = '<tr><td colspan="5">(no sessions yet today)</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5">(no timesheets yet today)</td></tr>';
     return;
   }
 
@@ -95,7 +96,7 @@ function showSessionDetail(session, now = new Date()) {
   if (tbody) {
     const open = session.open_punches || [];
     if (!open.length) {
-      tbody.innerHTML = '<tr><td colspan="3">(no one clocked in on this session)</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="3">(no one clocked in on this timesheet)</td></tr>';
     } else {
       tbody.innerHTML = '';
       open.forEach(p => {
@@ -120,7 +121,7 @@ function showSessionDetail(session, now = new Date()) {
 async function loadSessionsTable() {
   const tbody = document.getElementById('session-table-body');
   if (tbody) {
-    tbody.innerHTML = '<tr><td colspan="5">Loading sessions…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5">Loading timesheets…</td></tr>';
   }
 
   try {
@@ -128,15 +129,27 @@ async function loadSessionsTable() {
     sessionsTableData = sessions || [];
     renderSessionsTable();
   } catch (err) {
-    console.error('Error loading sessions:', err);
+    console.error('Error loading timesheets:', err);
     if (tbody) {
-      tbody.innerHTML = '<tr><td colspan="5">Error loading sessions.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5">Error loading timesheets.</td></tr>';
     }
   }
 }
 
+function updateTimesheetHeading() {
+  const heading = document.getElementById('session-heading');
+  if (!heading) return;
+  const today = new Date();
+  const dateLabel = today.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+  heading.textContent = `Today's Timesheets - ${dateLabel}`;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-  // Auto-load once so the Sessions tab has data immediately
+  // Auto-load once so the Timesheets tab has data immediately
   loadSessionsSection();
 
   const refreshBtn = document.getElementById('session-refresh-btn');

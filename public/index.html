@@ -57,7 +57,7 @@
 
         <button class="nav-item" data-section="kiosks">
           <img src="/icons/kiosks.svg" class="nav-icon" alt="" aria-hidden="true" />
-          <span>Sessions</span>
+          <span>Timesheets</span>
         </button>
         <button class="nav-item" data-section="time-exceptions">
           <img src="/icons/alerts.svg" class="nav-icon" alt="" aria-hidden="true" />
@@ -587,6 +587,7 @@
                 <table class="table clickable-rows">
                   <thead>
                     <tr>
+                      <th>Entry ID</th>
                       <th>Employee</th>
                       <th>Project</th>
                       <th>Clock in</th>
@@ -600,7 +601,7 @@
 
                   <tbody id="time-exceptions-body">
                     <tr>
-                      <td colspan="8">(no data – pick a date range)</td>
+                      <td colspan="9">(no data – pick a date range)</td>
                     </tr>
                   </tbody>
                 </table>
@@ -674,13 +675,10 @@
                     Daily late fee (past pickup due date)
                     <input type="number" id="settings-daily-fee" min="0" step="0.01" placeholder="0.00" />
                   </label>
-                  <label>
-                    Default pickup due date offset (days from arrival)
-                    <input type="number" id="settings-due-offset" min="0" step="1" placeholder="0" />
-                  </label>
-                  <p class="card-sub">These values will be used to auto-calc estimated fees past the due date.</p>
+                  <p class="card-sub">This value will be used to auto-calc estimated fees past the due date.</p>
                 </div>
               </div>
+
             </div>
 
             <!-- Access control -->
@@ -704,6 +702,102 @@
                     </thead>
                     <tbody id="settings-access-body">
                       <tr><td colspan="6">(loading admins…)</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div class="card settings-card access-card hidden">
+              <div class="card-header">
+                <h2>Kiosk Rules</h2>
+              </div>
+              <div class="card-body">
+                <p class="card-sub">Temporarily hidden.</p>
+              </div>
+            </div>
+
+            <div class="card settings-card access-card">
+              <div class="card-header">
+                <h2>Time Exception Rules</h2>
+              </div>
+              <div class="card-body">
+                <p class="card-sub">Uncheck a rule to stop flagging it in Time Exceptions.</p>
+                <div class="table-wrapper">
+                  <table class="access-table exception-rules-table">
+                    <thead>
+                      <tr>
+                        <th>Rule</th>
+                        <th>Description</th>
+                        <th>Flag?</th>
+                      </tr>
+                    </thead>
+                    <tbody id="settings-exception-rules">
+                      <tr>
+                        <td>Missing clock-out</td>
+                        <td>Flag entries that never clocked out.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="missing_clock_out" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Long shift (&gt;12h)</td>
+                        <td>Highlight very long shifts.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="long_shift" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Multi-day shift</td>
+                        <td>Flag punches that span 24 hours or more.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="multi_day" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Crosses midnight</td>
+                        <td>Mark shifts that start and end on different dates.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="crosses_midnight" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>No project selected</td>
+                        <td>Require a project on every punch.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="no_project" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Clock-out project differs</td>
+                        <td>Detect when clock-out project does not match clock-in.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="project_mismatch" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Tiny punch (&lt;5 min)</td>
+                        <td>Catch accidental super-short punches.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="tiny_punch" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Weekly overtime threshold</td>
+                        <td>Flag weeks that exceed 50 hours.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="weekly_hours" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Clock-in outside geofence</td>
+                        <td>Require clock-ins inside the project fence.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="geofence_clock_in" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Clock-out outside geofence</td>
+                        <td>Require clock-outs inside the project fence.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="geofence_clock_out" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Auto clock-out</td>
+                        <td>Highlight any automatically closed punches.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="auto_clock_out" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Manual time entry with no punches</td>
+                        <td>Flag timesheet rows that lack kiosk punches.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="manual_no_punches" checked /></td>
+                      </tr>
+                      <tr>
+                        <td>Manual vs punches mismatch</td>
+                        <td>Compare manual hours to recorded punches.</td>
+                        <td class="center"><input type="checkbox" data-exception-rule="manual_hours_mismatch" checked /></td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -859,6 +953,7 @@
                 <table class="clickable-rows">
                   <thead>
                     <tr>
+                      <th>Entry ID</th>
                       <th>Employee</th>
                       <th>Project</th>
                       <th>Date</th>
@@ -870,7 +965,7 @@
                   </thead>
                   <tbody id="time-table-body">
                     <tr>
-                      <td colspan="7">(no time entries for this selection)</td>
+                      <td colspan="8">(no time entries for this selection)</td>
                     </tr>
                   </tbody>
                 </table>
@@ -879,15 +974,15 @@
           </div> <!-- /card -->
         </section>
 
-        <!-- SESSIONS SECTION -->
+        <!-- TIMESHEETS SECTION -->
         <section id="section-kiosks" class="section">
           <!-- Session list -->
           <div class="card">
             <div class="card-header">
               <div>
-                <h2>Sessions (Today)</h2>
+                <h2 id="session-heading">Today's Timesheets</h2>
                 <p class="card-sub">
-                  See every project session on all kiosks and who is currently clocked in.
+                  See every project timesheet on all kiosks and who is currently clocked in.
                 </p>
               </div>
               <div>
@@ -908,7 +1003,7 @@
                 </thead>
                 <tbody id="session-table-body">
                   <tr>
-                    <td colspan="5">(loading sessions…)</td>
+                    <td colspan="5">(loading timesheets…)</td>
                   </tr>
                 </tbody>
               </table>
@@ -933,7 +1028,7 @@
                   </tr>
                 </thead>
                 <tbody id="session-workers-body">
-                  <tr><td colspan="3">(select a session)</td></tr>
+                  <tr><td colspan="3">(select a timesheet)</td></tr>
                 </tbody>
               </table>
             </div>
