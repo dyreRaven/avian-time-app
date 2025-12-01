@@ -1,0 +1,236 @@
+/* Kiosk styles for phone-sized devices (<= 600px) */
+@media (max-width: 600px) {
+  /* Image background for phone */
+  html, body, .glass-shell {
+    background: #0f766e url('/images/modern.jpeg') center/cover no-repeat;
+  }
+
+  /* Remove hero on phones so steps dominate */
+  .kiosk-hero {
+    display: none;
+  }
+
+  /* Hide marketing copy so form + button lead */
+  .kiosk-steps-title,
+  .kiosk-steps-subtitle {
+    display: none;
+  }
+  #kiosk-step-1-title {
+    display: none;
+  }
+  /* First card: keep badge + "Step 1" overline + dropdown only */
+  .kiosk-step-card:first-child .kiosk-step-title,
+  .kiosk-step-card:first-child .kiosk-step-sub,
+  .kiosk-step-card:first-child .kiosk-label {
+    display: none;
+  }
+  .kiosk-step-card:first-child .kiosk-field.step-field + .kiosk-field {
+    display: none; /* hide project field */
+  }
+
+  /* Second card: keep badge + "Step 2" overline + button only */
+  .kiosk-step-card:nth-child(2) .kiosk-step-sub,
+  .kiosk-step-card:nth-child(2) #kiosk-step-2-sub,
+  .kiosk-step-card:nth-child(2) #kiosk-status {
+    display: none !important;
+  }
+  #kiosk-step-2-title,
+  #kiosk-step-2-sub {
+    display: none !important;
+  }
+  #kiosk-step-2-sub {
+    display: none !important;
+  }
+  .kiosk-step-card:nth-child(2) .kiosk-actions {
+    margin-top: 4px;
+  }
+  .kiosk-step-card:nth-child(2) .kiosk-step-row {
+    align-items: center;
+  }
+  .kiosk-step-card:nth-child(2) .kiosk-btn {
+    height: 72px;
+    align-items: center;
+  }
+
+  /* Tablet adjustments reused for phones so they don't rely on tablet file */
+  .kiosk-card {
+    padding: 24px 20px 24px;
+    border-radius: 22px;
+    min-height: calc(100vh - 48px);
+  }
+
+  .kiosk-body {
+    padding-top: 8px;
+  }
+
+  .kiosk-hero {
+    grid-template-columns: 1fr;
+    padding: 18px 20px;
+  }
+
+  .kiosk-hero-right {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .kiosk-label {
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+  }
+
+  .kiosk-select {
+    font-size: 1rem;
+  }
+
+  .kiosk-status {
+    font-size: 0.85rem;
+  }
+
+  /* Narrow tablet stack reused for phones */
+  .kiosk-steps-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .kiosk-steps-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Phone-specific tweaks */
+  .kiosk-shell {
+    height: auto;
+    min-height: 100vh;
+    align-items: flex-start;
+  }
+
+  .kiosk-card {
+    padding: 24px 16px 24px;
+    border-radius: 0;
+    min-height: calc(100vh - 48px);
+  }
+
+  .kiosk-hero {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .kiosk-date-big {
+    font-size: 1.15rem;
+  }
+
+  .kiosk-time {
+    font-size: 2.2rem;
+  }
+
+  .kiosk-header {
+    margin-bottom: 24px;
+    align-items: center;
+  }
+
+  .kiosk-brand {
+    gap: 12px;
+  }
+
+  .kiosk-logo {
+    width: 44px;
+    height: 44px;
+  }
+
+  .kiosk-logo img {
+    width: 32px;
+    height: auto;
+  }
+
+  .kiosk-meta-row {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  /* Hide yellow project bubble on phones */
+  #kiosk-project-pill {
+    display: none;
+  }
+
+  /* Hide project info inside Step 1 on phones */
+  #kiosk-project-label,
+  #kiosk-project-note,
+  .kiosk-project-display,
+  #kiosk-project-name {
+    display: none;
+  }
+
+  /* Show inline greeting on phones */
+  .kiosk-inline-greeting {
+    display: block;
+    font-size: 1rem;
+    font-weight: 700;
+  }
+
+  .kiosk-title {
+    font-size: 0.95rem;
+    letter-spacing: 0.18em;
+  }
+
+  .kiosk-sub {
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+  }
+
+  .kiosk-steps-grid {
+    gap: 12px;
+  }
+
+  .kiosk-step-card {
+    padding: 14px;
+  }
+
+  .kiosk-steps-eyebrow {
+    display: none;
+  }
+
+  .kiosk-step-title {
+    font-size: 1.15rem;
+  }
+
+  .kiosk-field {
+    margin-top: 20px;
+  }
+
+  .kiosk-select {
+    padding: 10px 12px;
+    font-size: 1rem;
+  }
+
+  .kiosk-btn {
+    width: 100%;
+    height: 96px;
+    max-width: none;
+    margin-top: 16px;
+  }
+
+  /* Show clock-in button text on phones */
+  #kiosk-punch {
+    font-size: 1.05rem;
+    line-height: 1.2;
+  }
+
+  #kiosk-status {
+    text-align: left;
+    padding: 0;
+    font-size: 0.9rem;
+  }
+
+  #pin-employee-name {
+    font-size: 0.9rem;
+    text-align: center;
+  }
+
+  .pin-section {
+    gap: 10px;
+  }
+
+  .pin-input {
+    font-size: 1.05rem;
+  }
+}

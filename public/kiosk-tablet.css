@@ -1,0 +1,105 @@
+/* Kiosk styles for tablet-sized devices (601px–900px) */
+@media (min-width: 601px) and (max-width: 900px) {
+  /* Match phone background */
+  html, body, .glass-shell {
+    background: #0f766e url('/images/modern.jpeg') center/cover no-repeat;
+    min-height: 100vh;
+  }
+
+  .glass-shell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100vw;
+    min-height: 100vh;
+    padding: 32px 20px;
+    box-sizing: border-box;
+  }
+
+  .glass-card {
+    margin: auto;
+    width: min(580px, 94vw);
+  }
+
+  .glass-body {
+    gap: 10px;
+  }
+
+  .glass-logo-center {
+    margin-bottom: 0;
+  }
+
+  /* Larger hero logo on tablet */
+  .glass-logo {
+    width: 180px;
+    height: 180px;
+  }
+
+  .glass-logo img {
+    width: 160px;
+    height: auto;
+  }
+
+  /* Slightly larger logo on tablet */
+  .kiosk-logo {
+    width: 80px;
+    height: 80px;
+  }
+
+  .kiosk-logo img {
+    width: 64px;
+    height: auto;
+  }
+
+  /* Center the main canvas on tablet */
+  .kiosk-shell {
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  .kiosk-card {
+    padding: 24px 20px 24px;
+    border-radius: 22px;
+    min-height: calc(100vh - 48px);
+    margin: 0 auto;
+  }
+
+  .kiosk-body {
+    padding-top: 8px;
+  }
+
+  .kiosk-hero {
+    grid-template-columns: 1fr;
+    padding: 18px 20px;
+  }
+
+  .kiosk-hero-right {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .kiosk-label {
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+  }
+
+  .kiosk-select {
+    font-size: 1rem;
+  }
+
+  .kiosk-status {
+    font-size: 0.85rem;
+  }
+}
+
+@media (min-width: 601px) and (max-width: 720px) {
+  .kiosk-steps-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .kiosk-steps-grid {
+    grid-template-columns: 1fr;
+  }
+}

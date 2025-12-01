@@ -2410,14 +2410,17 @@ function kaRenderProjectsSelect() {
   const sel = document.getElementById('ka-project-select');
   if (!sel) return;
 
-  sel.innerHTML = '<option value="">(No default project)</option>';
-
-  // Only show active projects in the picker (hide top-level customers)
-  const activeProjects = (kaProjects || []).filter(
-    p =>
-      (p.active === undefined || p.active === null || Number(p.active) === 1) &&
-      p.customer_name
+  const projects = Array.isArray(kaProjects) ? kaProjects : [];
+  const activeProjects = projects.filter(
+    p => p.active === undefined || p.active === null || Number(p.active) === 1
   );
+
+  if (!activeProjects.length) {
+    sel.innerHTML = '<option value="">(No projects available)</option>';
+    return;
+  }
+
+  sel.innerHTML = '<option value="">(Select a project)</option>';
 
   activeProjects.forEach(p => {
     const opt = document.createElement('option');

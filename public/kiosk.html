@@ -44,11 +44,208 @@ html, body {
   height: 100%;
   font-family: 'Space Grotesk', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
-  background: radial-gradient(circle at 20% 20%, #e0f2fe 0, #ecfeff 30%, #ecfdf5 65%, #f8fafc 100%);
+  background:
+    radial-gradient(circle at 20% 25%, rgba(16, 185, 129, 0.22) 0, rgba(16, 185, 129, 0.05) 32%, transparent 46%),
+    radial-gradient(circle at 78% 18%, rgba(52, 211, 153, 0.18) 0, rgba(52, 211, 153, 0.06) 28%, transparent 52%),
+    radial-gradient(circle at 30% 78%, rgba(16, 149, 131, 0.18) 0, rgba(16, 149, 131, 0.04) 34%, transparent 56%),
+    linear-gradient(135deg, #0f766e 0%, #0ea371 35%, #ecfdf3 100%);
 }
 
 body {
   color: var(--slate-800);
+}
+
+.glass-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: none;
+}
+
+.glass-card {
+  width: min(560px, 100%);
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 30px 80px rgba(15, 118, 110, 0.15), 0 0 0 1px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(14px);
+  border-radius: 30px;
+  padding: 36px 32px 38px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+.glass-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-direction: row;
+  gap: 14px;
+}
+
+.glass-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-start;
+}
+
+.glass-logo {
+  width: 90px;
+  height: 90px;
+  display: grid;
+  place-items: center;
+  box-shadow: none;
+}
+
+.glass-logo img {
+  width: 82px;
+  height: auto;
+}
+
+.glass-title {
+  font-size: 1.15rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--slate-800);
+  font-weight: 700;
+}
+
+.glass-sub {
+  font-size: 0.85rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--slate-500);
+}
+
+.lang-switch {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.lang-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: none;
+  background: none;
+  box-shadow: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.lang-btn.active {
+  transform: translateY(-2px);
+}
+
+.lang-btn:hover {
+  transform: translateY(-2px);
+}
+
+.glass-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  text-align: center;
+}
+
+.glass-logo-center {
+  display: flex;
+  justify-content: center;
+}
+
+.glass-greeting {
+  font-size: clamp(1.8rem, 2.4vw, 2.2rem);
+  font-weight: 700;
+  color: var(--slate-800);
+}
+
+.glass-subline {
+  font-size: 1.05rem;
+  color: var(--slate-600);
+}
+
+.glass-form {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.glass-label {
+  text-align: left;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--slate-500);
+}
+
+.glass-select {
+  width: 100%;
+  padding: 16px 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 1rem;
+  color: var(--slate-800);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.4);
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--slate-500) 50%),
+    linear-gradient(135deg, var(--slate-500) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 12px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.glass-select:focus {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 2px var(--emerald-500),
+    0 10px 24px rgba(16, 185, 129, 0.22);
+  background: #fff;
+}
+
+.glass-btn {
+  margin-top: 6px;
+  padding: 18px;
+  border-radius: 18px;
+  border: none;
+  width: 100%;
+  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-600));
+  color: #ecfdf5;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 0 20px 46px rgba(16, 185, 129, 0.32), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.glass-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 26px 60px rgba(16, 185, 129, 0.38);
+}
+
+.glass-status {
+  margin-top: 8px;
+  min-height: 20px;
+  font-size: 0.95rem;
+  color: var(--slate-700);
+  text-align: center;
+}
+
+.glass-status.kiosk-status-error {
+  color: #b91c1c;
+}
+.glass-status.kiosk-status-ok {
+  color: #15803d;
 }
 
 .hidden {
@@ -177,6 +374,14 @@ body {
   z-index: 1;
 }
 
+.kiosk-inline-greeting {
+  display: none;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--slate-800);
+  margin: 6px 0 12px;
+}
+
 .kiosk-chip {
   display: inline-flex;
   align-items: center;
@@ -218,6 +423,30 @@ body {
   margin-top: 8px;
   color: rgba(236, 253, 245, 0.8);
   font-size: 0.95rem;
+}
+
+.greet-primary {
+  font-weight: 700;
+  color: var(--slate-800);
+  margin: 0;
+}
+
+.greet-secondary {
+  font-weight: 500;
+  color: var(--slate-600);
+  margin: 2px 0 0 0;
+}
+
+.greet-secondary-row {
+  display: inline-flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 4px;
+}
+
+.kiosk-hero .greet-primary,
+.kiosk-hero .greet-secondary {
+  color: #ecfdf5;
 }
 
 .kiosk-hero-right {
@@ -333,10 +562,24 @@ body {
   color: rgba(236, 253, 245, 0.92);
 }
 
+.kiosk-step-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
 .kiosk-step-header {
   display: flex;
-  align-items: center;
-  gap: 16px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.kiosk-step-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .kiosk-step-badge {
@@ -345,6 +588,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  align-self: center;
   border-radius: 16px;
   background: var(--emerald-600);
   color: #ecfdf5;
@@ -532,27 +776,6 @@ body {
 
 .kiosk-step-card.kiosk-step-action .kiosk-status-ok {
   color: #d1fae5;
-}
-
-.kiosk-project-display {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: var(--slate-100);
-  border-radius: 12px;
-  box-shadow: inset 0 0 0 1px var(--slate-200);
-}
-
-.kiosk-project-name-text {
-  font-weight: 600;
-  color: var(--slate-800);
-  letter-spacing: 0.01em;
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 
@@ -933,283 +1156,60 @@ body {
   line-height: 1.5;
 }
 
-.kiosk-btn-danger {
-  background: #dc2626 !important;     /* red */
-  color: white !important;
+  .kiosk-btn-danger {
+    background: #dc2626 !important;     /* red */
+    color: white !important;
   border-color: #b91c1c !important;
 }
 
-.kiosk-btn-danger:active {
-  background: #b91c1c !important;
-}
-.kiosk-btn-danger {
-  box-shadow: 0 0 0 0 !important;
-  text-shadow: none !important;
-  filter: none !important;
-}
-
-/* =======================================================
-   RESPONSIVE TWEAKS – TABLET & PHONE
-   ======================================================= */
-
-/* General tablet-sized screens (sideways tablet, small laptops) */
-@media (max-width: 900px) {
-  .kiosk-card {
-    padding: 24px 20px 24px;
-    border-radius: 22px;
-    min-height: calc(100vh - 48px);
+  .kiosk-btn-danger:active {
+    background: #b91c1c !important;
   }
-
-  .kiosk-body {
-    padding-top: 8px;
+  .kiosk-btn-danger {
+    box-shadow: 0 0 0 0 !important;
+    text-shadow: none !important;
+    filter: none !important;
   }
-
-  .kiosk-hero {
-    grid-template-columns: 1fr;
-    padding: 18px 20px;
-  }
-
-  .kiosk-hero-right {
-    align-items: flex-start;
-    text-align: left;
-  }
-
-  .kiosk-label {
-    font-size: 0.75rem;
-    letter-spacing: 0.14em;
-  }
-
-  .kiosk-select {
-    font-size: 1rem;
-  }
-
-  .kiosk-status {
-    font-size: 0.85rem;
-  }
-}
-
-@media (max-width: 720px) {
-  .kiosk-steps-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .kiosk-steps-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* Phones and very small tablets in portrait */
-/* Phones and very small tablets in portrait */
-@media (max-width: 600px) {
-  /* Let content scroll instead of being hard-locked to the viewport height */
-  .kiosk-shell {
-    height: auto;
-    min-height: 100vh;
-    align-items: flex-start;
-  }
-
-  .kiosk-card {
-    padding: 24px 16px 24px;  /* a bit more top/bottom padding */
-    border-radius: 0;
-    min-height: calc(100vh - 48px);
-  }
-
-  .kiosk-hero {
-    padding: 16px;
-    border-radius: 16px;
-  }
-
-  .kiosk-date-big {
-    font-size: 1.15rem;
-  }
-
-  .kiosk-time {
-    font-size: 2.2rem;
-  }
-
-  .kiosk-header {
-    margin-bottom: 24px;      /* give the bar some breathing room */
-    align-items: center;
-  }
-
-  .kiosk-brand {
-    gap: 12px;
-  }
-
-  .kiosk-logo {
-    width: 44px;
-    height: 44px;
-  }
-
-  .kiosk-logo img {
-    width: 32px;
-    height: auto;
-  }
-
-  .kiosk-meta-row {
-    width: 100%;
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .kiosk-title {
-    font-size: 0.95rem;
-    letter-spacing: 0.18em;   /* keep the “fancy” spacing */
-  }
-
-  .kiosk-sub {
-    font-size: 0.72rem;
-    letter-spacing: 0.14em;
-  }
-
-  .kiosk-steps-grid {
-    gap: 12px;
-  }
-
-  .kiosk-step-card {
-    padding: 14px;
-  }
-
-  .kiosk-step-title {
-    font-size: 1.15rem;
-  }
-
-  .kiosk-field {
-    margin-top: 20px;
-  }
-
-  .kiosk-select {
-    padding: 10px 12px;
-    font-size: 1rem;
-  }
-
-  .kiosk-btn {
-    width: 100%;
-    height: 96px;
-    max-width: none;
-    margin-top: 16px;
-  }
-
-  #kiosk-status {
-    text-align: left;
-    padding: 0;
-    font-size: 0.9rem;
-  }
-
-  /* Pin modal tweaks for small screens */
-  #pin-employee-name {
-    font-size: 0.9rem;
-    text-align: center;
-  }
-
-  .pin-section {
-    gap: 10px;
-  }
-
-  .pin-input {
-    font-size: 1.05rem;
-  }
-}
-
-
-
-
-
   </style>
+  <!-- Scoped responsive styles so tablet and phone tweaks stay isolated -->
+  <link rel="stylesheet" href="/kiosk-tablet.css" media="(min-width: 601px) and (max-width: 900px)" />
+  <link rel="stylesheet" href="/kiosk-phone.css" media="(max-width: 600px)" />
 </head>
 
 <body>
-  <div class="kiosk-shell">
-    <div class="kiosk-card">
-      <div class="kiosk-header">
-        <div class="kiosk-brand">
-          <div class="kiosk-logo" id="kiosk-logo">
-            <img src="/images/logo.png" alt="Avian Group logo" />
-          </div>
+  <div class="glass-shell">
+    <div class="glass-card">
+      <div class="glass-header">
+        <div class="glass-brand">
           <div>
-            <div class="kiosk-title">Avian Time</div>
-            <div class="kiosk-sub" id="kiosk-subtitle">Jobsite Kiosk</div>
+            <div class="glass-title">Avian Time</div>
+            <div class="glass-sub">Jobsite Kiosk</div>
           </div>
+        </div>
+        <div class="lang-switch">
+          <button class="lang-btn active" data-lang="en" aria-label="English">🇺🇸</button>
+          <button class="lang-btn" data-lang="es" aria-label="Español">🇲🇽</button>
+          <button class="lang-btn" data-lang="ht" aria-label="Kreyòl">🇭🇹</button>
         </div>
       </div>
 
-      <div class="kiosk-body">
-        <div class="kiosk-hero">
-          <div class="kiosk-hero-left">
-            <div class="kiosk-greeting" id="kiosk-greeting">Welcome crew</div>
-            <div class="kiosk-greeting-sub" id="kiosk-greeting-sub"></div>
-          </div>
-          <div class="kiosk-hero-right">
-            <div class="kiosk-day" id="kiosk-day-label">Thursday</div>
-            <div class="kiosk-date-big" id="kiosk-date-label">March 7, 2024</div>
-            <div class="kiosk-time" id="kiosk-time-label">10:24 AM</div>
+      <div class="glass-body">
+        <div class="glass-logo-center">
+          <div class="glass-logo">
+            <img src="/images/logo.png" alt="Avian Group logo" />
           </div>
         </div>
+        <div id="kiosk-inline-greeting" class="glass-greeting">Good morning</div>
+        <div class="glass-subline" id="kiosk-greeting">Please select your name below and tap the button to begin or end your shift.</div>
 
-        <div class="kiosk-form-panel">
-          <div class="kiosk-steps-header">
-            <div>
-              <div class="kiosk-steps-eyebrow">Clock</div>
-              <div class="kiosk-steps-title">Two quick steps</div>
-              <div class="kiosk-steps-subtitle">Pick your name, then tap the clock button.</div>
-            </div>
-            <div class="kiosk-meta-row">
-              <div class="kiosk-chip kiosk-chip-light" id="kiosk-project-pill"></div>
-            </div>
-          </div>
+        <div class="glass-form">
+          <label class="glass-label" id="kiosk-employee-label" for="kiosk-employee">Employee</label>
+          <select id="kiosk-employee" class="glass-select">
+            <option value="" id="kiosk-employee-placeholder">Select your name</option>
+          </select>
 
-          <div class="kiosk-steps-grid">
-            <div class="kiosk-step-card">
-              <div class="kiosk-step-header">
-                <span class="kiosk-step-badge">1</span>
-                <div>
-                  <div class="kiosk-step-overline">Step 1</div>
-                  <div class="kiosk-step-title" id="kiosk-step-1-title">Select your name.</div>
-                  <div class="kiosk-step-sub" id="kiosk-step-1-sub">Make sure the right crew is selected.</div>
-                </div>
-              </div>
-
-              <div class="kiosk-field step-field">
-                <label class="kiosk-label">
-                  <span id="kiosk-employee-label">Employee</span>
-                </label>
-                <select id="kiosk-employee" class="kiosk-select">
-                  <option value="" id="kiosk-employee-placeholder">Select your name / Seleccione su nombre / Chwazi non ou</option>
-                </select>
-              </div>
-
-              <div class="kiosk-field step-field">
-                <label class="kiosk-label">
-                  <span id="kiosk-project-label">Project</span>
-                  <span class="kiosk-label-note" id="kiosk-project-note">(selected by foreman)</span>
-                </label>
-                <div class="kiosk-project-display">
-                  <div class="kiosk-chip kiosk-chip-light" id="kiosk-project-pill"></div>
-                  <div class="kiosk-project-name-text" id="kiosk-project-name"></div>
-                </div>
-              </div>
-            </div>
-
-            <div class="kiosk-step-card kiosk-step-action">
-              <div class="kiosk-step-header">
-                <span class="kiosk-step-badge">2</span>
-                <div>
-                  <div class="kiosk-step-overline">Step 2</div>
-                  <div class="kiosk-step-title" id="kiosk-step-2-title">Tap to Clock In</div>
-                  <div class="kiosk-step-sub" id="kiosk-step-2-sub">We'll guide you through PIN or photo if needed.</div>
-                </div>
-              </div>
-
-              <div class="kiosk-actions">
-                <button id="kiosk-punch" class="kiosk-btn">
-                  Tap to Clock In
-                </button>
-              </div>
-
-              <div id="kiosk-status" class="kiosk-status"></div>
-            </div>
-          </div>
+          <button id="kiosk-punch" class="glass-btn kiosk-btn">Tap to Clock In</button>
+          <div id="kiosk-status" class="glass-status kiosk-status"></div>
         </div>
       </div>
     </div>
@@ -1239,7 +1239,7 @@ body {
         type="tel"
         inputmode="numeric"
         maxlength="4"
-        autocomplete="off"
+        autocomplete="new-password"
         autocapitalize="off"
         autocorrect="off"
         spellcheck="false"
@@ -1256,7 +1256,7 @@ body {
         type="tel"
         inputmode="numeric"
         maxlength="4"
-        autocomplete="off"
+        autocomplete="new-password"
         autocapitalize="off"
         autocorrect="off"
         spellcheck="false"
@@ -1321,7 +1321,7 @@ body {
             class="modal-input"
             type="tel"
             inputmode="numeric"
-            autocomplete="off"
+            autocomplete="new-password"
             autocapitalize="off"
             autocorrect="off"
             spellcheck="false"
