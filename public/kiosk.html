@@ -98,12 +98,32 @@ body {
   display: grid;
   place-items: center;
   box-shadow: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  position: relative;
 }
 
-.glass-logo img {
-  width: 82px;
-  height: auto;
+.glass-logo::before {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  background: url('/images/logo.png') center/contain no-repeat;
+  pointer-events: none;
 }
+
+ .logo-hotspot {
+  position: absolute;
+  inset: -10px;
+  z-index: 3;
+  background: transparent;
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+   user-select: none;
+ }
 
 .glass-title {
   font-size: 1.15rem;
@@ -317,6 +337,9 @@ body {
   width: 36px;
   height: auto;
   display: block;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .kiosk-title {
@@ -1195,8 +1218,19 @@ body {
 
       <div class="glass-body">
         <div class="glass-logo-center">
-          <div class="glass-logo">
-            <img src="/images/logo.png" alt="Avian Group logo" />
+          <div
+            class="glass-logo"
+            id="kiosk-logo-wrapper"
+            role="button"
+            aria-label="Admin access"
+            aria-hidden="true"
+          >
+            <button
+              type="button"
+              class="logo-hotspot"
+              id="kiosk-logo-hotspot"
+              aria-label="Admin access"
+            ></button>
           </div>
         </div>
         <div id="kiosk-inline-greeting" class="glass-greeting">Good morning</div>

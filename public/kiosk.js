@@ -18,7 +18,24 @@ const LANG_COPY = {
     tapIn: 'Tap to Clock In',
     tapOut: 'Tap to Clock Out',
     selectYourNameStatus: 'Select your name.',
-    projectNotSet: 'Project not set for this tablet. See your supervisor to clock in.'
+    projectNotSet: 'Project not set for this tablet. See your supervisor to clock in.',
+    pinTitleExisting: 'Employee PIN',
+    pinTitleNew: 'Create Your PIN',
+    pinSubtitleExisting: 'Enter your PIN to clock in or out.',
+    pinSubtitleNew: 'First time clocking in — create a 4-digit PIN you’ll use on any Avian kiosk.',
+    pinStatusNoPin: 'This person does not have a PIN set yet.',
+    pinStatusIncorrect: 'Incorrect PIN.',
+    pinStatusEnter: 'Enter PIN.',
+    pinStatusEnterPin: 'Enter your PIN.',
+    pinStatusPinOkPhoto: 'PIN OK. Take required photo.',
+    pinStatusCreateBoth: 'Enter and confirm a 4-digit PIN.',
+    pinStatusDigitsOnly: 'PIN must be exactly 4 digits.',
+    pinStatusMismatch: 'PINs do not match. Please try again.',
+    pinStatusSaveErr: 'Could not save PIN. Check connection and try again.',
+    pinStatusPinCreatedPhoto: 'PIN created. Take required photo.',
+    pinStatusPinCreatedClocked: 'PIN successfully created. You are now clocked in.',
+    pinToggleShow: 'Show PIN',
+    pinToggleHide: 'Hide PIN'
   },
   es: {
     greetMorning: 'Buenos días',
@@ -30,7 +47,24 @@ const LANG_COPY = {
     tapIn: 'Registrar entrada',
     tapOut: 'Registrar salida',
     selectYourNameStatus: 'Seleccione su nombre.',
-    projectNotSet: 'Proyecto no está configurado para esta tableta. Consulte a su supervisor para registrar entrada.'
+    projectNotSet: 'Proyecto no está configurado para esta tableta. Consulte a su supervisor para registrar entrada.',
+    pinTitleExisting: 'PIN del empleado',
+    pinTitleNew: 'Crear tu PIN',
+    pinSubtitleExisting: 'Ingresa tu PIN para marcar entrada o salida.',
+    pinSubtitleNew: 'Primer fichaje: crea un PIN de 4 dígitos que usarás en cualquier kiosko Avian.',
+    pinStatusNoPin: 'Esta persona no tiene un PIN configurado.',
+    pinStatusIncorrect: 'PIN incorrecto.',
+    pinStatusEnter: 'Ingresa el PIN.',
+    pinStatusEnterPin: 'Ingresa tu PIN.',
+    pinStatusPinOkPhoto: 'PIN OK. Toma la foto requerida.',
+    pinStatusCreateBoth: 'Ingresa y confirma un PIN de 4 dígitos.',
+    pinStatusDigitsOnly: 'El PIN debe tener exactamente 4 dígitos.',
+    pinStatusMismatch: 'Los PIN no coinciden. Inténtalo de nuevo.',
+    pinStatusSaveErr: 'No se pudo guardar el PIN. Verifica la conexión e inténtalo otra vez.',
+    pinStatusPinCreatedPhoto: 'PIN creado. Toma la foto requerida.',
+    pinStatusPinCreatedClocked: 'PIN creado correctamente. Ya estás registrado.',
+    pinToggleShow: 'Mostrar PIN',
+    pinToggleHide: 'Ocultar PIN'
   },
   ht: {
     greetMorning: 'Bonjou',
@@ -42,7 +76,24 @@ const LANG_COPY = {
     tapIn: 'Komanse travay',
     tapOut: 'Fini travay',
     selectYourNameStatus: 'Tanpri chwazi non ou.',
-    projectNotSet: 'Pa gen pwojè sa sou tablet sa; fòk ou wè ak sipèvizè ou pou anrejistre lè ou antre.'
+    projectNotSet: 'Pa gen pwojè sa sou tablet sa; fòk ou wè ak sipèvizè ou pou anrejistre lè ou antre.',
+    pinTitleExisting: 'PIN anplwaye',
+    pinTitleNew: 'Kreye PIN ou',
+    pinSubtitleExisting: 'Antre PIN ou pou antre oswa soti.',
+    pinSubtitleNew: 'Premye fwa w ap anrejistre — kreye yon PIN 4 chif pou nenpòt kios Avian.',
+    pinStatusNoPin: 'Moun sa pa gen PIN ankò.',
+    pinStatusIncorrect: 'PIN la pa kòrèk.',
+    pinStatusEnter: 'Antre PIN la.',
+    pinStatusEnterPin: 'Antre PIN ou.',
+    pinStatusPinOkPhoto: 'PIN bon. Pran foto obligatwa a.',
+    pinStatusCreateBoth: 'Antre epi konfime yon PIN 4 chif.',
+    pinStatusDigitsOnly: 'PIN la dwe gen egzakteman 4 chif.',
+    pinStatusMismatch: 'PIN yo pa menm. Eseye ankò.',
+    pinStatusSaveErr: 'Pa t ka sove PIN lan. Tcheke koneksyon an epi eseye ankò.',
+    pinStatusPinCreatedPhoto: 'PIN kreye. Pran foto obligatwa a.',
+    pinStatusPinCreatedClocked: 'PIN kreye avèk siksè. Ou deja anrejistre.',
+    pinToggleShow: 'Montre PIN',
+    pinToggleHide: 'Kache PIN'
   }
 };
 
@@ -445,10 +496,9 @@ function openAdminDashboard(employeeId) {
     params.set('device_id', deviceId);
     params.set('employee_id', employeeId);
 
-    // First time today → open in "start-of-day" mode
-    if (!isKioskDayStarted()) {
+    // Open in start-of-day mode if day not started OR no project set yet
+    if (!isKioskDayStarted() || !(kioskConfig && kioskConfig.project_id)) {
       params.set('start', '1');
-      markKioskDayStarted();
     }
 
     const adminUrl = '/kiosk-admin.html?' + params.toString();
@@ -585,11 +635,11 @@ function submitAdminLogin() {
   const entered = (pinInput.value || '').trim();
 
   if (!id) {
-    status.textContent = 'Select an admin.';
+    status.textContent = getCopy('selectYourNameStatus');
     return;
   }
   if (!entered) {
-    status.textContent = 'Enter PIN.';
+    status.textContent = getCopy('pinStatusEnter');
     return;
   }
 
@@ -601,12 +651,12 @@ function submitAdminLogin() {
 
   const storedPin = (emp.pin || '').trim();
   if (!storedPin) {
-    status.textContent = 'This person does not have a PIN set yet.';
+    status.textContent = getCopy('pinStatusNoPin');
     return;
   }
 
   if (storedPin !== entered) {
-    status.textContent = 'Incorrect PIN.';
+    status.textContent = getCopy('pinStatusIncorrect');
     return;
   }
 
@@ -620,8 +670,22 @@ function submitAdminLogin() {
 
 
 function setupAdminLongPress() {
-  const logo = document.getElementById('kiosk-logo');
-  if (!logo) return;
+  const logoContainer =
+    document.getElementById('kiosk-logo-wrapper') ||
+    document.querySelector('.glass-logo') ||
+    document.querySelector('.kiosk-logo');
+  const hotspot =
+    document.getElementById('kiosk-logo-hotspot') ||
+    (logoContainer ? logoContainer.querySelector('.logo-hotspot') : null);
+
+  const target = hotspot || logoContainer;
+  if (!target) return;
+
+  // Disable system callout/drag/save on the logo image
+  target.style.webkitTouchCallout = 'none';
+  target.style.webkitUserSelect = 'none';
+  target.style.userSelect = 'none';
+  target.style.touchAction = 'none';
 
   const start = (event) => {
     // 🚫 Stop default press/hold behavior (copy/save image popup)
@@ -644,18 +708,29 @@ function setupAdminLongPress() {
   };
 
   // Normal press events
-  logo.addEventListener('mousedown', start);
-  logo.addEventListener('touchstart', start, { passive: false });
+  ['mousedown', 'pointerdown'].forEach(evt =>
+    target.addEventListener(evt, start)
+  );
+  target.addEventListener('touchstart', start, { passive: false, capture: true });
 
-  logo.addEventListener('mouseup', cancel);
-  logo.addEventListener('mouseleave', cancel);
-  logo.addEventListener('touchend', cancel);
-  logo.addEventListener('touchcancel', cancel);
+  ['mouseup', 'mouseleave', 'pointerup', 'pointerleave'].forEach(evt =>
+    target.addEventListener(evt, cancel)
+  );
+  target.addEventListener('touchend', cancel, { capture: true });
+  target.addEventListener('touchcancel', cancel, { capture: true });
 
-  // 🚫 Block the context menu entirely
-  logo.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
+  // 🚫 Block the context menu / long-press menu entirely
+  ['contextmenu', 'gesturestart'].forEach(evt => {
+    target.addEventListener(evt, (e) => {
+      e.preventDefault();
+    }, { capture: true });
   });
+
+  // Extra guard: if touch holds more than 100ms, stop propagation to avoid image menu
+  target.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, { passive: false, capture: true });
 }
 
 
@@ -719,13 +794,13 @@ function showPinModal(employee) {
 
   // Title + explanatory label
   if (titleEl) {
-    titleEl.textContent = hasPin ? 'Employee PIN' : 'Create Your PIN';
+    titleEl.textContent = hasPin ? getCopy('pinTitleExisting') : getCopy('pinTitleNew');
   }
 
 if (modeLabelEl) {
   modeLabelEl.textContent = hasPin
-    ? 'Enter your PIN to clock in or out.'
-    : 'First time clocking in — create a 4-digit PIN you’ll use on any Avian kiosk.';
+    ? getCopy('pinSubtitleExisting')
+    : getCopy('pinSubtitleNew');
 }
 
 
@@ -742,7 +817,7 @@ if (modeLabelEl) {
   }
 
   if (toggleBtn) {
-    toggleBtn.textContent = 'Show PIN';
+    toggleBtn.textContent = getCopy('pinToggleShow');
   }
 
   if (status) {
@@ -855,12 +930,12 @@ async function submitPin() {
     // 1. PIN VALIDATION
     if (!pinValidated) {
       if (!entered) {
-        setPinError('Enter your PIN.');
+        setPinError(getCopy('pinStatusEnterPin'));
         return;
       }
 
       if (entered !== storedPin) {
-        setPinError('Incorrect PIN — could not clock in. Please try again.');
+        setPinError(getCopy('pinStatusIncorrect'));
         pinInput.value = '';
 
         // Brief pause so they can see the error, then back to main screen
@@ -875,14 +950,18 @@ async function submitPin() {
       pinInput.value = '';
 
     if (employee.require_photo && !currentPhotoBase64) {
-      setPinOk('PIN OK. Take required photo.');
+      setPinOk(getCopy('pinStatusPinOkPhoto'));
       return;
     }
   }
 
     const isAdminStartOfDay = employee.is_admin && !isKioskDayStarted();
+    const noProjectSet = !kioskConfig || !kioskConfig.project_id;
+    const shouldOpenAdmin =
+      employee.is_admin &&
+      (!isKioskDayStarted() || noProjectSet);
 
-    if (isAdminStartOfDay) {
+    if (shouldOpenAdmin) {
       hidePinModal();
       openAdminDashboard(employee.id);
       return;
@@ -899,17 +978,17 @@ async function submitPin() {
   const pin2 = pinConfirmInput ? pinConfirmInput.value.trim() : '';
 
   if (!pin1 || !pin2) {
-    setPinError('Enter and confirm a 4-digit PIN.');
+    setPinError(getCopy('pinStatusCreateBoth'));
     return;
   }
 
   if (!/^\d{4}$/.test(pin1) || !/^\d{4}$/.test(pin2)) {
-    setPinError('PIN must be exactly 4 digits.');
+    setPinError(getCopy('pinStatusDigitsOnly'));
     return;
   }
 
   if (pin1 !== pin2) {
-    setPinError('PINs do not match. Please try again.');
+    setPinError(getCopy('pinStatusMismatch'));
     pinInput.value = '';
     if (pinConfirmInput) pinConfirmInput.value = '';
     return;
@@ -942,7 +1021,7 @@ async function submitPin() {
 
     } else {
       // Real server error → do NOT continue
-      setPinError(msg || 'Could not save PIN. Check connection and try again.');
+      setPinError(msg || getCopy('pinStatusSaveErr'));
       return;
     }
   }
@@ -955,7 +1034,7 @@ async function submitPin() {
   if (pinConfirmInput) pinConfirmInput.value = '';
 
   if (employee.require_photo && !currentPhotoBase64) {
-    setPinOk('PIN created. Take required photo.');
+    setPinOk(getCopy('pinStatusPinCreatedPhoto'));
     return;
   }
 
@@ -1030,7 +1109,7 @@ async function performPunch(employee_id) {
 
   if (justCreatedPin) {
     // First-time PIN message – no extra random text
-    msg = 'PIN successfully created. You are now clocked in.';
+    msg = getCopy('pinStatusPinCreatedClocked');
     justCreatedPin = false; // reset flag
   } else {
     // Normal clock-in – keep the fun random messages
