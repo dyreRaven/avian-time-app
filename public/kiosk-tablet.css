@@ -44,11 +44,29 @@
   .kiosk-logo {
     width: 80px;
     height: 80px;
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0;
+  }
+
+  /* Extra specificity to fully clear the white badge */
+  .kiosk-header .kiosk-logo,
+  .kiosk-brand .kiosk-logo,
+  .kiosk-logo::before,
+  .kiosk-logo::after {
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    outline: none !important;
   }
 
   .kiosk-logo img {
     width: 64px;
     height: auto;
+    background: transparent !important;
   }
 
   /* Center the main canvas on tablet */

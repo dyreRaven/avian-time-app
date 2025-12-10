@@ -5519,18 +5519,6 @@ body {
   gap: 6px;
 }
 
-.ka-session-hint {
-  color: #64748b;
-  font-size: 0.82rem;
-  cursor: pointer;
-}
-
-.ka-session-actions-inline {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-}
-
 .ka-session-head {
   display: flex;
   align-items: flex-start;

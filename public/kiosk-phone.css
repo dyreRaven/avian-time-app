@@ -149,15 +149,21 @@
 
   /* Hide yellow project bubble on phones */
   #kiosk-project-pill {
-    display: none;
+    display: inline-flex;
+    padding: 6px 10px;
+    font-size: 0.72rem;
   }
 
   /* Hide project info inside Step 1 on phones */
   #kiosk-project-label,
-  #kiosk-project-note,
   .kiosk-project-display,
   #kiosk-project-name {
-    display: none;
+    display: block;
+    text-align: center;
+  }
+
+  #kiosk-project-label {
+    margin-right: 0;
   }
 
   /* Show inline greeting on phones */

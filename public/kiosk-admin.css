@@ -230,7 +230,7 @@ body {
 }
 
 .main-inner {
-  padding: 24px 32px 32px;
+  padding: 16px 32px 28px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -258,7 +258,8 @@ body {
   justify-content: space-between;
   align-items: flex-start;
   gap: 18px;
-  margin-bottom: 14px;
+  margin-bottom: 6px;
+  margin-top: 0;
 }
 
 .card-header h2 {
@@ -1998,7 +1999,7 @@ table.vendors-table th:first-child {
   max-width: none !important;
   margin: 2rem auto;         /* center horizontally */
   padding: 2rem;
-  min-height: 500px;         /* looks substantial even with 1 worker */
+  min-height: 540px;         /* looks substantial even with 1 worker */
   display: flex;
   flex-direction: column;
   border-radius: 16px;
@@ -3840,7 +3841,7 @@ body {
   display: block;
   width: 100vw;
   flex: 1;
-  padding: 24px;
+  padding: 0 18px 18px;
   background: #ffffff;
   overflow-x: auto;
 }
@@ -3851,9 +3852,13 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 10px;
   padding-bottom: 120px; /* space for footer + bottom nav */
   overflow-x: hidden;
+}
+
+#ka-sessions-card {
+  margin-bottom: 18px;
 }
 
 /* Minimal dropdown arrow for all selects in kiosk admin */
@@ -5519,18 +5524,6 @@ body {
   gap: 6px;
 }
 
-.ka-session-hint {
-  color: #64748b;
-  font-size: 0.82rem;
-  cursor: pointer;
-}
-
-.ka-session-actions-inline {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-}
-
 .ka-session-head {
   display: flex;
   align-items: flex-start;
@@ -5539,9 +5532,78 @@ body {
   flex-wrap: wrap;
 }
 
+#ka-live-card .card-header.ka-live-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ka-live-header-left p {
+  margin: 2px 0;
+}
+
+.ka-live-header-right {
+  display: flex;
+  gap: 8px;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+}
+
+.ka-live-stat {
+  font-weight: 700;
+  color: var(--slate-700);
+}
+
 #ka-kiosk-status {
   margin: 0 0 8px 0;
   padding: 0 4px;
+}
+
+.ka-sticky-prompt {
+  display: none;
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #0ea5e9;
+  color: white;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ka-sticky-prompt.show {
+  display: flex;
+}
+
+.ka-sticky-prompt .ka-prompt-text {
+  flex: 1;
+  font-weight: 600;
+}
+
+.ka-sticky-prompt .ka-prompt-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ka-sticky-prompt .btn-inline {
+  background: white;
+  color: #0f172a;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ka-sticky-prompt .btn-inline.secondary {
+  background: rgba(255,255,255,0.2);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.3);
 }
 
 .ka-session-body .form-field {
@@ -5583,6 +5645,10 @@ body {
   flex: 0 0 auto;
 }
 
+.ka-session-filter-wrap {
+  gap: 10px;
+}
+
 .ka-icon-btn {
   padding: 10px 16px;
   font-size: 0.9rem;
@@ -5611,6 +5677,15 @@ body {
 #ka-notify-open svg {
   width: 22px;
   height: 22px;
+}
+
+.ka-live-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 0;
 }
 
 .ka-icon-img {
@@ -6952,4 +7027,139 @@ body {
   cursor: pointer;
   width: 100%;
   user-select: none;
+}
+
+/* Tablet-only tweaks (601px–900px) */
+@media (min-width: 601px) and (max-width: 900px) {
+  #ka-sessions-card .card-header {
+    align-items: flex-start;
+    gap: 12px;
+  }
+  #ka-sessions-card .card-sub {
+    max-width: 640px;
+    margin-bottom: 10px;
+  }
+  #ka-sessions-card .ka-session-inline {
+    max-width: none;
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    column-gap: 20px;
+    row-gap: 6px;
+    align-items: center;
+  }
+  #ka-sessions-card .ka-session-inline label[for="ka-project-select"] {
+    grid-column: 1;
+  }
+  #ka-project-select {
+    grid-column: 1;
+    width: 100%;
+  }
+  #ka-sessions-card .ka-session-inline .btn.primary {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+    width: 260px;
+    margin-left: 0;
+    align-self: center;
+  }
+  #ka-session-filter {
+    width: 260px;
+  }
+}
+
+/* Keep "Current Workers" title and count on one line with subtitle beneath */
+#ka-live-card .card-header {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+#ka-live-card .ka-live-header-top {
+  width: 100%;
+}
+
+#ka-live-card {
+  padding-top: 12px;
+}
+
+/* Pull the Timesheets/Current Workers section up slightly */
+#ka-view-live {
+  margin-top: -8px;
+}
+
+/* Extra breathing room above Timesheets header */
+#ka-sessions-card {
+  padding-top: 28px;
+}
+
+.ka-active-project {
+  border: 1px solid var(--slate-200);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  display: grid;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+.ka-active-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+  color: var(--slate-500);
+}
+.ka-active-name {
+  font-weight: 700;
+  color: var(--slate-800);
+}
+#ka-start-new-btn {
+  margin-top: 36px;
+  margin-bottom: 16px;
+  display: inline-flex;
+}
+.ka-session-create {
+  margin-top: 10px;
+}
+#ka-session-create .ka-session-actions-row {
+  margin-top: 18px;
+  gap: 12px;
+}
+#ka-session-list {
+  margin-top: 14px;
+  margin-bottom: 24px;
+}
+
+/* Global spacing for timesheet creation controls */
+#ka-session-create .ka-session-inline {
+  margin-bottom: 24px;
+}
+
+/* Tablet layout adjustments for timesheet controls */
+@media (min-width: 601px) and (max-width: 900px) {
+#ka-session-create .ka-session-inline {
+    max-width: none;
+    width: 100%;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+  #ka-session-create .ka-session-inline label[for="ka-project-select"] {
+    grid-column: auto;
+  }
+  #ka-session-create #ka-project-select {
+    grid-column: auto;
+    width: 100%;
+  }
+  #ka-start-new-btn {
+    width: 260px;
+    margin-left: 0;
+    margin-top: 24px;
+  }
+}
+
+.ka-session-actions-row {
+  justify-content: flex-start;
+  margin-top: 36px;
+  gap: 14px;
 }

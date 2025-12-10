@@ -7,6 +7,7 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
+const crypto = require('crypto');
 
 const db = require('./db'); // ensure DB initializes
 const PDFDocument = require('pdfkit'); // PDF export for time-entries
@@ -2509,20 +2510,27 @@ app.post('/api/employees/:id/pin', async (req, res) => {
     if (devId && devSecret) {
       try {
         const kioskRow = await dbGet(
-          'SELECT id FROM kiosks WHERE device_id = ? LIMIT 1',
+          'SELECT id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
           [devId]
         );
         if (kioskRow) {
-          // Support old kiosks without a secret: treat as not OK if secret missing on either side
-          const secretRow = await dbGet(
-            'SELECT device_secret FROM kiosks WHERE id = ?',
-            [kioskRow.id]
-          );
-          const expected = (secretRow && secretRow.device_secret) || '';
+          let expected = kioskRow.device_secret || '';
+
+          // Auto-backfill a missing secret the first time we see a valid one from this device
+          if (!expected) {
+            expected = devSecret;
+            try {
+              await dbRun(
+                'UPDATE kiosks SET device_secret = ? WHERE id = ?',
+                [devSecret, kioskRow.id]
+              );
+            } catch (errUpdate) {
+              console.error('Failed to backfill kiosk device_secret:', errUpdate);
+            }
+          }
+
           if (expected && expected === devSecret) {
             kioskOk = true;
-          } else if (!expected) {
-            kioskOk = false; // secret required from now on
           }
         }
       } catch (err) {
@@ -4279,306 +4287,354 @@ app.post('/api/kiosk/punch', (req, res) => {
       .status(400)
       .json({ error: 'client_id and employee_id are required.' });
   }
+  if (!project_id) {
+    return res
+      .status(400)
+      .json({ error: 'Project not set for this device. Have a supervisor set today’s project first.' });
+  }
 
-  const punchTime = device_timestamp || new Date().toISOString();
+  // Ensure a timesheet exists for today for this device/project before allowing punches
+  const today = getTodayIsoDate();
+  const sessionSql = `
+    SELECT id
+    FROM kiosk_sessions
+    WHERE date = ?
+      AND project_id = ?
+      AND (
+        (device_id IS NULL AND ? IS NULL)
+        OR device_id = ?
+      )
+    ORDER BY id DESC
+    LIMIT 1
+  `;
 
-  // 1) Check if this client_id was already processed (offline re-sync safety)
-  db.get(
-    'SELECT * FROM time_punches WHERE client_id = ?',
-    [client_id],
-    (err, existing) => {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
+  const processPunch = () => {
+    const punchTime = device_timestamp || new Date().toISOString();
 
-      if (existing) {
-        // Idempotent behavior: we already handled this punch
-        const mode = existing.clock_out_ts ? 'clock_out' : 'clock_in';
-        return res.json({
-          ok: true,
-          alreadyProcessed: true,
-          mode,
-          geofence_violation: !!existing.geo_violation,
-          geo_distance_m: existing.geo_distance_m,
-          geo_radius_m: null
-        });
-      }
-
-      // 2) Look for an open punch for this employee (no clock_out_ts yet)
-      const openSql = `
-        SELECT *
-        FROM time_punches
-        WHERE employee_id = ?
-          AND clock_out_ts IS NULL
-        ORDER BY clock_in_ts DESC
-        LIMIT 1
-      `;
-
-      db.get(openSql, [employee_id], (err2, open) => {
-        if (err2) {
-          return res.status(500).json({ error: err2.message });
+    // 1) Check if this client_id was already processed (offline re-sync safety)
+    db.get(
+      'SELECT * FROM time_punches WHERE client_id = ?',
+      [client_id],
+      (err, existing) => {
+        if (err) {
+          return res.status(500).json({ error: err.message });
         }
 
-        // ───── CASE A: CLOCK IN ─────
-        if (!open) {
-          // Geofence metrics for this punch (clock-in)
-          let geoDistance = null;
-          let geoViolation = 0;
-          let geoRadius = null;
-
-          const doClockIn = () => {
-            getTodayForemanForDevice(
-              device_id,
-              employee_id,
-              (errForeman, foremanId) => {
-                if (errForeman) {
-                  console.error(
-                    'Error looking up foreman for device:',
-                    errForeman
-                  );
-                  foremanId = null;
-                }
-
-                const insertSql = `
-                  INSERT INTO time_punches
-                    (client_id,
-                     employee_id,
-                     project_id,
-                     clock_in_ts,
-                     clock_in_lat,
-                     clock_in_lng,
-                     clock_in_photo,
-                     device_id,
-                     foreman_employee_id,
-                     geo_distance_m,
-                     geo_violation)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               `;
-
-                db.run(
-                  insertSql,
-                  [
-                    client_id,
-                    employee_id,
-                    project_id || null,
-                    punchTime,
-                    lat ?? null,
-                    lng ?? null,
-                    photo_base64 || null,
-                    device_id || null,
-                    foremanId || null,
-                    geoDistance,
-                    geoViolation
-                  ],
-                  function (err3) {
-                    if (err3) {
-                      if (
-                        err3.message &&
-                        err3.message.includes(
-                          'UNIQUE constraint failed: time_punches.client_id'
-                        )
-                      ) {
-                        return res.json({
-                          ok: true,
-                          mode: 'clock_in',
-                          alreadyProcessed: true,
-                          geofence_violation: geoViolation === 1,
-                          geo_distance_m: geoDistance,
-                          geo_radius_m: geoRadius
-                        });
-                      }
-
-                      return res.status(500).json({ error: err3.message });
-                    }
-
-                    return res.json({
-                      ok: true,
-                      mode: 'clock_in',
-                      punch_id: this.lastID,
-                      geofence_violation: geoViolation === 1,
-                      geo_distance_m: geoDistance,
-                      geo_radius_m: geoRadius
-                    });
-                  }
-                );
-              }
-            );
-          };
-
-          // If we have project + GPS → compute geofence, but DO NOT BLOCK
-          if (project_id && lat != null && lng != null) {
-            db.get(
-              'SELECT geo_lat, geo_lng, geo_radius FROM projects WHERE id = ?',
-              [project_id],
-              (errProj, project) => {
-                if (errProj) {
-                  console.error('Geofence lookup error:', errProj);
-                  return doClockIn();
-                }
-
-                if (
-                  project &&
-                  project.geo_lat != null &&
-                  project.geo_lng != null &&
-                  project.geo_radius != null
-                ) {
-                  const latNum    = Number(lat);
-                  const lngNum    = Number(lng);
-                  const projLat   = Number(project.geo_lat);
-                  const projLng   = Number(project.geo_lng);
-                  const radiusNum = Number(project.geo_radius);
-
-                  if (
-                    !Number.isNaN(latNum) &&
-                    !Number.isNaN(lngNum) &&
-                    !Number.isNaN(projLat) &&
-                    !Number.isNaN(projLng) &&
-                    !Number.isNaN(radiusNum)
-                  ) {
-                    geoRadius = radiusNum;
-                    const dist = distanceMeters(
-                      latNum,
-                      lngNum,
-                      projLat,
-                      projLng
-                    );
-                    geoDistance = dist;
-                    if (dist > radiusNum) {
-                      geoViolation = 1;
-                    }
-                  }
-                }
-
-                return doClockIn();
-              }
-            );
-          } else {
-            return doClockIn();
-          }
+        if (existing) {
+          // Idempotent behavior: we already handled this punch
+          const mode = existing.clock_out_ts ? 'clock_out' : 'clock_in';
+          return res.json({
+            ok: true,
+            alreadyProcessed: true,
+            mode,
+            geofence_violation: !!existing.geo_violation,
+            geo_distance_m: existing.geo_distance_m,
+            geo_radius_m: null
+          });
         }
 
-        // ───── CASE B: CLOCK OUT ─────
-        const updateSql = `
-          UPDATE time_punches
-          SET clock_out_ts = ?,
-              clock_out_project_id = ?,
-              clock_out_lat = ?,
-              clock_out_lng = ?
-          WHERE id = ?
+        // 2) Look for an open punch for this employee (no clock_out_ts yet)
+        const openSql = `
+          SELECT *
+          FROM time_punches
+          WHERE employee_id = ?
+            AND clock_out_ts IS NULL
+          ORDER BY clock_in_ts DESC
+          LIMIT 1
         `;
 
-        db.run(
-          updateSql,
-          [punchTime, project_id || null, lat ?? null, lng ?? null, open.id],
-          (err3) => {
-            if (err3) {
-              return res.status(500).json({ error: err3.message });
-            }
+        db.get(openSql, [employee_id], (err2, open) => {
+          if (err2) {
+            return res.status(500).json({ error: err2.message });
+          }
 
-            const startIso = open.clock_in_ts || punchTime;
-            const start = new Date(startIso);
-            const end = new Date(punchTime);
-            const diffMs = end - start;
+          // ───── CASE A: CLOCK IN ─────
+          if (!open) {
+            // Geofence metrics for this punch (clock-in)
+            let geoDistance = null;
+            let geoViolation = 0;
+            let geoRadius = null;
 
-            let minutes = Math.ceil(diffMs / 60000);
-            if (!Number.isFinite(minutes) || minutes < 0) minutes = 0;
+            const doClockIn = () => {
+              getTodayForemanForDevice(
+                device_id,
+                employee_id,
+                (errForeman, foremanId) => {
+                  if (errForeman) {
+                    console.error(
+                      'Error looking up foreman for device:',
+                      errForeman
+                    );
+                    foremanId = null;
+                  }
 
-            const hours = minutes / 60;
-            const startDate = (startIso || punchTime).slice(0, 10);
-            const endDate = (punchTime || startIso).slice(0, 10);
+                  const insertSql = `
+                    INSERT INTO time_punches
+                      (client_id,
+                       employee_id,
+                       project_id,
+                       clock_in_ts,
+                       clock_in_lat,
+                       clock_in_lng,
+                       clock_in_photo,
+                       device_id,
+                       foreman_employee_id,
+                       geo_distance_m,
+                       geo_violation)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 `;
 
-            db.get(
-              'SELECT rate FROM employees WHERE id = ?',
-              [employee_id],
-              (err4, row) => {
-                if (err4) {
-                  console.error('Rate lookup error in kiosk punch:', err4);
-                  return res.json({
-                    ok: true,
-                    mode: 'clock_out',
-                    hours,
-                    warning:
-                      'Clocked out, but failed to compute pay (rate lookup error).'
-                  });
-                }
-
-                if (!row) {
-                  return res
-                    .status(400)
-                    .json({ error: 'Invalid employee_id.' });
-                }
-
-                const rate = parseFloat(row.rate || 0);
-                const total_pay = rate * hours;
-
-                const timeEntrySql = `
-                  INSERT INTO time_entries
-                    (employee_id, project_id, start_date, end_date, hours, total_pay, foreman_employee_id)
-                  VALUES (?, ?, ?, ?, ?, ?, ?)
-                `;
-
-                const finalProjectId =
-                  open.project_id || project_id || null;
-                const foremanId = open.foreman_employee_id || null;
-
-                db.run(
-                  timeEntrySql,
-                  [
-                    employee_id,
-                    finalProjectId,
-                    startDate,
-                    endDate,
-                    hours,
-                    total_pay,
-                    foremanId
-                  ],
-                  function (err5) {
-                    if (err5) {
-                      console.error(
-                        'Failed to insert time_entry from kiosk punch:',
-                        err5
-                      );
-                      return res.json({
-                        ok: true,
-                        mode: 'clock_out',
-                        hours,
-                        total_pay,
-                        warning:
-                          'Clocked out, but failed to create time entry in DB.'
-                      });
-                    }
-
-                    const entryId = this.lastID;
-
-                    db.run(
-                      `UPDATE time_punches
-                       SET time_entry_id = ?
-                       WHERE id = ?`,
-                      [entryId, open.id],
-                      (errLink) => {
-                        if (errLink) {
-                          console.error(
-                            'Failed to link punch to time entry:',
-                            errLink
-                          );
+                  db.run(
+                    insertSql,
+                    [
+                      client_id,
+                      employee_id,
+                      project_id || null,
+                      punchTime,
+                      lat ?? null,
+                      lng ?? null,
+                      photo_base64 || null,
+                      device_id || null,
+                      foremanId || null,
+                      geoDistance,
+                      geoViolation
+                    ],
+                    function (err3) {
+                      if (err3) {
+                        if (
+                          err3.message &&
+                          err3.message.includes(
+                            'UNIQUE constraint failed: time_punches.client_id'
+                          )
+                        ) {
+                          return res.json({
+                            ok: true,
+                            mode: 'clock_in',
+                            alreadyProcessed: true,
+                            geofence_violation: geoViolation === 1,
+                            geo_distance_m: geoDistance,
+                            geo_radius_m: geoRadius
+                          });
                         }
 
+                        return res.status(500).json({ error: err3.message });
+                      }
+
+                      return res.json({
+                        ok: true,
+                        mode: 'clock_in',
+                        id: this.lastID,
+                        punch_id: this.lastID,
+                        geofence_violation: geoViolation === 1,
+                        geo_distance_m: geoDistance,
+                        geo_radius_m: geoRadius
+                      });
+                    }
+                  );
+                }
+              );
+            };
+
+            // If we have project + GPS → compute geofence, but DO NOT BLOCK
+            if (project_id && lat != null && lng != null) {
+              db.get(
+                'SELECT geo_lat, geo_lng, geo_radius FROM projects WHERE id = ?',
+                [project_id],
+                (errProj, project) => {
+                  if (errProj) {
+                    console.error('Geofence lookup error:', errProj);
+                    return doClockIn();
+                  }
+
+                  if (
+                    project &&
+                    project.geo_lat != null &&
+                    project.geo_lng != null &&
+                    project.geo_radius != null
+                  ) {
+                    const latNum    = Number(lat);
+                    const lngNum    = Number(lng);
+                    const projLat   = Number(project.geo_lat);
+                    const projLng   = Number(project.geo_lng);
+                    const radiusNum = Number(project.geo_radius);
+
+                    if (
+                      !Number.isNaN(latNum) &&
+                      !Number.isNaN(lngNum) &&
+                      !Number.isNaN(projLat) &&
+                      !Number.isNaN(projLng) &&
+                      !Number.isNaN(radiusNum)
+                    ) {
+                      geoRadius = radiusNum;
+                      const dist = distanceMeters(
+                        latNum,
+                        lngNum,
+                        projLat,
+                        projLng
+                      );
+                      geoDistance = dist;
+                      if (dist > radiusNum) {
+                        geoViolation = 1;
+                      }
+                    }
+                  }
+
+                  return doClockIn();
+                }
+              );
+            } else {
+              return doClockIn();
+            }
+            return;
+          }
+
+          // ───── CASE B: CLOCK OUT ─────
+          const updateSql = `
+            UPDATE time_punches
+            SET clock_out_ts = ?,
+                clock_out_project_id = ?,
+                clock_out_lat = ?,
+                clock_out_lng = ?,
+                clock_out_photo = ?
+            WHERE id = ?
+          `;
+
+          db.run(
+            updateSql,
+            [
+              punchTime,
+              project_id || null,
+              lat ?? null,
+              lng ?? null,
+              photo_base64 || null,
+              open.id
+            ],
+            (err3) => {
+              if (err3) {
+                return res.status(500).json({ error: err3.message });
+              }
+
+              const startIso = open.clock_in_ts || punchTime;
+              const start = new Date(startIso);
+              const end = new Date(punchTime);
+              const diffMs = end - start;
+
+              let minutes = Math.ceil(diffMs / 60000);
+              if (!Number.isFinite(minutes) || minutes < 0) minutes = 0;
+
+              const hours = minutes / 60;
+              const startDate = (startIso || punchTime).slice(0, 10);
+              const endDate = (punchTime || startIso).slice(0, 10);
+
+              db.get(
+                'SELECT rate FROM employees WHERE id = ?',
+                [employee_id],
+                (err4, row) => {
+                  if (err4) {
+                    console.error('Rate lookup error in kiosk punch:', err4);
+                    return res.json({
+                      ok: true,
+                      mode: 'clock_out',
+                      hours,
+                      warning:
+                        'Clocked out, but failed to compute pay (rate lookup error).'
+                    });
+                  }
+
+                  if (!row) {
+                    return res
+                      .status(400)
+                      .json({ error: 'Invalid employee_id.' });
+                  }
+
+                  const rate = parseFloat(row.rate || 0);
+                  const total_pay = rate * hours;
+
+                  const timeEntrySql = `
+                    INSERT INTO time_entries
+                      (employee_id, project_id, start_date, end_date, hours, total_pay, foreman_employee_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                  `;
+
+                  const finalProjectId =
+                    open.project_id || project_id || null;
+                  const foremanId = open.foreman_employee_id || null;
+
+                  db.run(
+                    timeEntrySql,
+                    [
+                      employee_id,
+                      finalProjectId,
+                      startDate,
+                      endDate,
+                      hours,
+                      total_pay,
+                      foremanId
+                    ],
+                    function (err5) {
+                      if (err5) {
+                        console.error(
+                          'Failed to insert time_entry from kiosk punch:',
+                          err5
+                        );
                         return res.json({
                           ok: true,
                           mode: 'clock_out',
                           hours,
                           total_pay,
-                          time_entry_id: entryId
+                          warning:
+                            'Clocked out, but failed to create time entry in DB.'
                         });
                       }
-                    );
-                  }
-                );
-              }
-            );
-          }
-        );
-      });
+
+                      const entryId = this.lastID;
+
+                      db.run(
+                        `UPDATE time_punches
+                         SET time_entry_id = ?
+                         WHERE id = ?`,
+                        [entryId, open.id],
+                        (errLink) => {
+                          if (errLink) {
+                            console.error(
+                              'Failed to link punch to time entry:',
+                              errLink
+                            );
+                          }
+
+                          return res.json({
+                            ok: true,
+                            mode: 'clock_out',
+                            hours,
+                            total_pay,
+                            time_entry_id: entryId
+                          });
+                        }
+                      );
+                    }
+                  );
+                }
+              );
+            }
+          );
+        });
+      }
+    );
+  };
+
+  db.get(
+    sessionSql,
+    [today, project_id, device_id || null, device_id || null],
+    (errSession, sessionRow) => {
+      if (errSession) {
+        return res.status(500).json({ error: errSession.message });
+      }
+      if (!sessionRow) {
+        return res.status(400).json({
+          error: 'No timesheet exists for this project on this device today. Have a supervisor set a timesheet first.'
+        });
+      }
+      processPunch();
     }
   );
 });
@@ -4658,7 +4714,8 @@ app.post('/api/kiosks', (req, res) => {
 });
 
 app.post('/api/kiosks/register', (req, res) => {
-  const { device_id } = req.body || {};
+  const { device_id, device_secret } = req.body || {};
+  const providedSecret = (device_secret || '').trim();
 
   if (!device_id) {
     return res.status(400).json({ error: 'device_id is required.' });
@@ -4678,6 +4735,22 @@ app.post('/api/kiosks/register', (req, res) => {
     if (err) return res.status(500).json({ error: err.message });
 
     if (row) {
+      // Ensure every kiosk row has a secret; if missing, create/backfill it
+      if (!row.device_secret) {
+        row.device_secret =
+          providedSecret || crypto.randomBytes(16).toString('hex');
+
+        db.run(
+          `UPDATE kiosks SET device_secret = ? WHERE id = ?`,
+          [row.device_secret, row.id],
+          errSecret => {
+            if (errSecret) {
+              console.error('Failed to backfill kiosk device_secret:', errSecret);
+            }
+          }
+        );
+      }
+
       const today = getTodayIsoDate();
 
       // Pull today’s sessions for this device
@@ -4746,13 +4819,14 @@ app.post('/api/kiosks/register', (req, res) => {
 
     // No kiosk yet for this device → create a placeholder row
     const insertSql = `
-      INSERT INTO kiosks (name, location, device_id, require_photo)
-      VALUES (?, ?, ?, 0)
+      INSERT INTO kiosks (name, location, device_id, require_photo, device_secret)
+      VALUES (?, ?, ?, 0, ?)
     `;
     const name = 'New kiosk';
     const location = null;
+    const newSecret = providedSecret || crypto.randomBytes(16).toString('hex');
 
-    db.run(insertSql, [name, location, device_id], function (err2) {
+    db.run(insertSql, [name, location, device_id, newSecret], function (err2) {
       if (err2) return res.status(500).json({ error: err2.message });
 
       const newId = this.lastID;
@@ -4761,6 +4835,7 @@ app.post('/api/kiosks/register', (req, res) => {
         [newId],
         (err3, kioskRow) => {
           if (err3) return res.status(500).json({ error: err3.message });
+          kioskRow.device_secret = newSecret;
           res.json({ ok: true, kiosk: kioskRow, sessions: [], active_session_id: null });
         }
       );
@@ -4784,6 +4859,7 @@ app.get('/api/kiosks/:id/open-punches', (req, res) => {
         return res.json([]); // no device tied or kiosk not found
       }
 
+      const today = getTodayIsoDate();
       const sql = `
         SELECT
           tp.id,
@@ -4792,16 +4868,20 @@ app.get('/api/kiosks/:id/open-punches', (req, res) => {
           tp.project_id,
           p.name AS project_name,
           p.customer_name,
-          tp.clock_in_ts
+          tp.clock_in_ts,
+          tp.clock_out_ts
         FROM time_punches tp
         JOIN employees e ON tp.employee_id = e.id
         LEFT JOIN projects p ON tp.project_id = p.id
-        WHERE tp.clock_out_ts IS NULL
-          AND tp.device_id = ?
-        ORDER BY tp.clock_in_ts ASC
+        WHERE date(tp.clock_in_ts) = ?
+          AND (
+            (tp.device_id IS NULL AND ? IS NULL)
+            OR tp.device_id = ?
+          )
+        ORDER BY (tp.clock_out_ts IS NULL) DESC, tp.clock_in_ts ASC
       `;
 
-      db.all(sql, [kiosk.device_id], (err2, rows) => {
+      db.all(sql, [today, kiosk.device_id, kiosk.device_id], (err2, rows) => {
         if (err2) return res.status(500).json({ error: err2.message });
         res.json(rows || []);
       });
@@ -4828,6 +4908,8 @@ app.get('/api/kiosks/:id/sessions', (req, res) => {
         ks.project_id,
         ks.date,
         ks.created_at,
+        ks.created_by_employee_id,
+        ea.name AS created_by_name,
         p.name AS project_name,
         p.customer_name,
         COALESCE((
@@ -4852,6 +4934,7 @@ app.get('/api/kiosks/:id/sessions', (req, res) => {
         ), 0) AS open_count
       FROM kiosk_sessions ks
       LEFT JOIN projects p ON p.id = ks.project_id
+      LEFT JOIN employees ea ON ea.id = ks.created_by_employee_id
       WHERE ks.kiosk_id = ?
         AND ks.date = ?
       ORDER BY ks.created_at ASC
@@ -4871,7 +4954,7 @@ app.post('/api/kiosks/:id/sessions', (req, res) => {
     return res.status(400).json({ error: 'Invalid kiosk id.' });
   }
 
-  const { project_id, make_active } = req.body || {};
+  const { project_id, make_active, admin_id } = req.body || {};
   if (!project_id) {
     return res.status(400).json({ error: 'project_id is required.' });
   }
@@ -4882,49 +4965,71 @@ app.post('/api/kiosks/:id/sessions', (req, res) => {
 
     const today = getTodayIsoDate();
     const insertSql = `
-      INSERT INTO kiosk_sessions (kiosk_id, device_id, project_id, date)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO kiosk_sessions (kiosk_id, device_id, project_id, date, created_by_employee_id)
+      VALUES (?, ?, ?, ?, ?)
     `;
 
-    db.run(insertSql, [kioskId, kiosk.device_id || null, project_id, today], function (err2) {
-      if (err2) return res.status(500).json({ error: err2.message });
+    // Check if this is the first timesheet for the kiosk today so we can surface it to the UI
+    db.get(
+      `SELECT COUNT(*) AS cnt FROM kiosk_sessions WHERE kiosk_id = ? AND date = ?`,
+      [kioskId, today],
+      (errCount, countRow) => {
+        if (errCount) return res.status(500).json({ error: errCount.message });
+        const isFirstToday = (countRow && Number(countRow.cnt)) === 0;
 
-      const sessionId = this.lastID;
-
-      const afterInsert = () => {
-        db.get(
-          `
-            SELECT ks.id,
-                   ks.project_id,
-                   ks.date,
-                   ks.created_at,
-                   p.name AS project_name,
-                   p.customer_name
-            FROM kiosk_sessions ks
-            LEFT JOIN projects p ON p.id = ks.project_id
-            WHERE ks.id = ?
-          `,
-          [sessionId],
-          (err3, session) => {
-            if (err3) return res.status(500).json({ error: err3.message });
-            res.json({ ok: true, session, active_project_id: make_active ? Number(project_id) : null });
-          }
-        );
-      };
-
-      if (make_active) {
         db.run(
-          `UPDATE kiosks SET project_id = ? WHERE id = ?`,
-          [project_id, kioskId],
-          (err4) => {
-            if (err4) return res.status(500).json({ error: err4.message });
-            afterInsert();
+          insertSql,
+          [kioskId, kiosk.device_id || null, project_id, today, admin_id || null],
+          function (err2) {
+            if (err2) return res.status(500).json({ error: err2.message });
+
+            const sessionId = this.lastID;
+
+            const afterInsert = () => {
+              db.get(
+                `
+                  SELECT ks.id,
+                         ks.project_id,
+                         ks.date,
+                         ks.created_at,
+                         ks.created_by_employee_id,
+                         ea.name AS created_by_name,
+                         p.name AS project_name,
+                         p.customer_name
+                  FROM kiosk_sessions ks
+                  LEFT JOIN projects p ON p.id = ks.project_id
+                  LEFT JOIN employees ea ON ea.id = ks.created_by_employee_id
+                  WHERE ks.id = ?
+                `,
+                [sessionId],
+                (err3, session) => {
+                  if (err3) return res.status(500).json({ error: err3.message });
+                  res.json({
+                    ok: true,
+                    session,
+                    active_project_id: make_active ? Number(project_id) : null,
+                    first_session_today: isFirstToday
+                  });
+                }
+              );
+            };
+
+            if (make_active) {
+              db.run(
+                `UPDATE kiosks SET project_id = ? WHERE id = ?`,
+                [project_id, kioskId],
+                (err4) => {
+                  if (err4) return res.status(500).json({ error: err4.message });
+                  afterInsert();
+                }
+              );
+            } else {
+              afterInsert();
+            }
           }
         );
-      } else {
-        afterInsert();
       }
-    });
+    );
   });
 });
 

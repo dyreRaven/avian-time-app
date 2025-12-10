@@ -30,7 +30,34 @@
 
 
   </header>
-  <p id="ka-kiosk-status" class="ka-status"></p>
+<p id="ka-kiosk-status" class="ka-status"></p>
+<div id="ka-clockin-prompt" class="ka-sticky-prompt" role="alert">
+  <div class="ka-prompt-text" id="ka-clockin-prompt-text"></div>
+  <select id="ka-clockin-project-select" class="ka-select-arrow" style="display:none;"></select>
+  <div class="ka-prompt-actions">
+    <button id="ka-clockin-yes" class="btn-inline">Clock in</button>
+    <button id="ka-clockin-skip" class="btn-inline secondary">Skip</button>
+  </div>
+</div>
+
+<!-- Modal for clock-in choice -->
+<div id="ka-clockin-modal-backdrop" class="ka-modal-backdrop hidden">
+  <div class="ka-modal">
+    <div class="ka-modal-header">
+      <h3 id="ka-clockin-modal-title">Clock in?</h3>
+      <button id="ka-clockin-modal-close" class="btn ghost btn-sm" type="button">×</button>
+    </div>
+    <p id="ka-clockin-modal-text"></p>
+    <div id="ka-clockin-modal-project-wrap" style="display:none; margin-bottom:12px;">
+      <label class="ka-session-label" for="ka-clockin-modal-project">Choose timesheet</label>
+      <select id="ka-clockin-modal-project" class="ka-select-arrow"></select>
+    </div>
+    <div class="ka-modal-actions">
+      <button id="ka-clockin-modal-yes" class="btn primary" type="button">Clock in</button>
+      <button id="ka-clockin-modal-skip" class="btn secondary" type="button">Skip</button>
+    </div>
+  </div>
+</div>
 
   <!-- ============================
        VIEW: LIVE WORKERS
@@ -39,36 +66,65 @@
   <div class="card" id="ka-sessions-card">
     <div class="card-header">
       <div>
-        <h2 id="ka-timesheet-heading">Today's Timesheets</h2>
+        <h2 id="ka-timesheet-heading">Timesheets</h2>
         <p class="card-sub">
-          Pick a project to start a timesheet, then set it active for this tablet.
-          The active timesheet is the project workers will be clocked into on this device.
+          Pick a project and hit Start New Timesheet to make it the active project for this tablet. Workers will clock into that project.
         </p>
+      </div>
+      <div class="ka-session-filter-wrap" style="margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+        <div class="ka-session-filter">
+          <label class="ka-session-label" for="ka-session-filter">Show</label>
+          <select id="ka-session-filter" class="ka-select-arrow">
+            <option value="active" selected>Active (today)</option>
+            <option value="today">All today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="range">Custom range…</option>
+          </select>
+        </div>
+        <div class="ka-session-range hidden" id="ka-session-range" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          <label class="ka-session-label" for="ka-session-range-start">From</label>
+          <input type="date" id="ka-session-range-start" class="ka-select-arrow" />
+          <label class="ka-session-label" for="ka-session-range-end">To</label>
+          <input type="date" id="ka-session-range-end" class="ka-select-arrow" />
+          <button id="ka-session-apply" class="btn secondary btn-sm" type="button">Apply</button>
+        </div>
       </div>
     </div>
     <div class="card-body">
-      <div class="ka-session-inline">
-        <label class="ka-session-label" for="ka-project-select">Project</label>
-        <select id="ka-project-select"></select>
-        <button id="ka-add-session-btn" class="btn primary btn-sm">Start New Timesheet</button>
+      <button id="ka-start-new-btn" class="btn primary btn-sm hidden">Start new timesheet</button>
+
+      <div id="ka-session-create" class="ka-session-create hidden">
+        <div class="ka-session-inline">
+          <label class="ka-session-label" for="ka-project-select">Project</label>
+          <select id="ka-project-select"></select>
+        </div>
+        <div class="ka-session-inline ka-session-actions-row">
+          <button id="ka-add-session-btn" class="btn primary btn-sm">Create new timesheet</button>
+        </div>
+        <div class="ka-session-inline" style="justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <div id="ka-session-status" class="ka-status"></div>
+        </div>
       </div>
-      <div class="ka-session-inline" style="justify-content: space-between; align-items: center;">
-        <div id="ka-session-status" class="ka-status"></div>
-        <button id="ka-toggle-timesheets" class="btn ghost btn-sm" type="button">View inactive timesheets</button>
-      </div>
-      <div id="ka-session-list" class="ka-muted">No timesheets for today yet. Start one to set the active project.</div>
+
+      <div id="ka-session-list" class="ka-status ka-status-error" style="margin-bottom: 10px;">No timesheets have been created today. Start one to set the active project.</div>
     </div>
   </div>
 
   <div class="card" id="ka-live-card">
-    <div class="card-header">
-      <div>
-        <h2>Current Workers</h2>
-        <p id="ka-live-project-label" class="card-sub">
-          Project not set yet.
-        </p>
+    <div class="card-header ka-live-header">
+      <div class="ka-live-header-left">
+        <div class="ka-live-header-top">
+          <h2 id="ka-live-title">Current Workers</h2>
+          <span id="ka-live-count-tag" class="ka-tag gray">0 active</span>
+        </div>
+        <p id="ka-live-project-label" class="card-sub">Project not set yet.</p>
+        <p id="ka-live-date-label" class="card-sub">—</p>
+        <p id="ka-live-created-by" class="card-sub">Created by —</p>
       </div>
-      <span id="ka-live-count-tag" class="ka-tag gray">0 active</span>
+      <div class="ka-live-header-right">
+        <div class="ka-live-stat" id="ka-live-open-stat">Open punches: 0</div>
+        <div class="ka-live-stat" id="ka-live-entry-stat">Entries today: 0</div>
+      </div>
     </div>
 
     <div class="table-wrap">
@@ -78,6 +134,7 @@
             <th>Employee</th>
             <th>Time Clocked In</th>
             <th>Time on Clock</th>
+            <th>Time Clocked Out</th>
           </tr>
         </thead>
         <tbody id="ka-live-body">
@@ -367,8 +424,8 @@
           </div>
           <div class="ka-dual-right">
             <div class="ka-pin-row">
-              <input type="password" id="ka-pin-new" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="New 4-digit PIN" />
-              <input type="password" id="ka-pin-confirm" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="Confirm PIN" />
+              <input type="password" id="ka-pin-new" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" autofill="off" placeholder="New 4-digit PIN" />
+              <input type="password" id="ka-pin-confirm" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" autofill="off" placeholder="Confirm PIN" />
             </div>
             <div class="ka-pin-actions">
               <button type="button" id="ka-pin-save" class="btn secondary btn-sm">Update PIN</button>
@@ -397,6 +454,8 @@
               inputmode="numeric"
               pattern="[0-9]*"
               maxlength="4"
+              autocomplete="one-time-code"
+              autofill="off"
               placeholder="Re-enter your PIN"
             />
             <button type="button" id="ka-rates-pin-submit" class="btn secondary btn-sm">Unlock</button>
@@ -440,9 +499,6 @@
 </div>
   </section>
 
-  <div class="ka-footer">
-    This view is limited for kiosk foremen. Full admin tools are available on the desktop console.
-  </div>
 </div>
 
 <!-- ============================

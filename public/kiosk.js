@@ -5,6 +5,7 @@ const CACHE_EMP_KEY = 'avian_kiosk_employees_v1';
 const CACHE_PROJ_KEY = 'avian_kiosk_projects_v1';
 const CURRENT_PROJECT_KEY = 'avian_kiosk_current_project_v1';
 const DEVICE_ID_KEY = 'avian_kiosk_device_id_v1';
+const DEVICE_SECRET_KEY = 'avian_kiosk_device_secret_v1';
 const PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
 
 const LANG_COPY = {
@@ -19,6 +20,7 @@ const LANG_COPY = {
     tapOut: 'Tap to Clock Out',
     selectYourNameStatus: 'Select your name.',
     projectNotSet: 'Project not set for this tablet. See your supervisor to clock in.',
+    timesheetNotSet: 'No timesheet set for this tablet today. See your supervisor to choose a project first.',
     pinTitleExisting: 'Employee PIN',
     pinTitleNew: 'Create Your PIN',
     pinSubtitleExisting: 'Enter your PIN to clock in or out.',
@@ -48,6 +50,7 @@ const LANG_COPY = {
     tapOut: 'Registrar salida',
     selectYourNameStatus: 'Seleccione su nombre.',
     projectNotSet: 'Proyecto no está configurado para esta tableta. Consulte a su supervisor para registrar entrada.',
+    timesheetNotSet: 'No hay parte de trabajo para esta tableta hoy. Pida a su supervisor que elija un proyecto primero.',
     pinTitleExisting: 'PIN del empleado',
     pinTitleNew: 'Crear tu PIN',
     pinSubtitleExisting: 'Ingresa tu PIN para marcar entrada o salida.',
@@ -77,6 +80,7 @@ const LANG_COPY = {
     tapOut: 'Fini travay',
     selectYourNameStatus: 'Tanpri chwazi non ou.',
     projectNotSet: 'Pa gen pwojè sa sou tablet sa; fòk ou wè ak sipèvizè ou pou anrejistre lè ou antre.',
+    timesheetNotSet: 'Pa gen fèy travay pou jodi a sou tablet sa. Wè sipèvizè a pou chwazi yon pwojè anvan.',
     pinTitleExisting: 'PIN anplwaye',
     pinTitleNew: 'Kreye PIN ou',
     pinSubtitleExisting: 'Antre PIN ou pou antre oswa soti.',
@@ -96,14 +100,16 @@ const LANG_COPY = {
     pinToggleHide: 'Kache PIN'
   }
 };
+const DEFAULT_LANGUAGE = 'en';
 
 
 let employeesCache = [];
 let projectsCache = [];
 let currentProjectName = '';
 let currentEmployee = null;
-let currentLanguage = 'en';
+let currentLanguage = DEFAULT_LANGUAGE;
 let manualLanguageOverride = null;
+let manualLanguageEmployeeId = null;
 let pinValidated = false;
 let currentPhotoBase64 = null;
 let cameraStream = null;
@@ -119,10 +125,31 @@ let kioskConfig = {
 let kioskSessions = [];
 let activeSessionId = null;
 let justCreatedPin = false;
+let offlineSyncTimerId = null;
+let offlineSyncInFlight = false;
 
 // ====== BASIC HELPERS ======
 
 let successTimeout = null;
+
+function disableAutofillPinInput(el) {
+  if (!el) return;
+  el.setAttribute('autocomplete', 'one-time-code');
+  el.setAttribute('autofill', 'off');
+  el.setAttribute('inputmode', 'numeric');
+  el.setAttribute('pattern', '[0-9]*');
+  el.setAttribute('data-lpignore', 'true');
+  el.setAttribute('data-1p-ignore', 'true');
+  el.setAttribute('data-form-type', 'other');
+  // Randomize name so password managers avoid saving it
+  el.name = `pin-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function hardenPinFields() {
+  ['pin-input', 'pin-confirm-input', 'admin-login-pin'].forEach(id => {
+    disableAutofillPinInput(document.getElementById(id));
+  });
+}
 
 function showSuccessOverlay(message, durationMs = 5000) {  // ⬅️ 5 seconds default
   const backdrop = document.getElementById('success-backdrop');
@@ -160,6 +187,22 @@ function showSuccessOverlay(message, durationMs = 5000) {  // ⬅️ 5 seconds d
   }
 }
 
+// Replace native dialogs with our in-app overlay to avoid browser chrome like "IP address says"
+function overrideNativeDialogs() {
+  window.alert = function kioskAlert(message) {
+    showSuccessOverlay(String(message || ''));
+  };
+  window.confirm = function kioskConfirm(message) {
+    showSuccessOverlay(String(message || ''));
+    return false;
+  };
+  window.prompt = function kioskPrompt(message) {
+    showSuccessOverlay(String(message || ''));
+    return null;
+  };
+}
+overrideNativeDialogs();
+
 
 
 
@@ -167,7 +210,12 @@ async function fetchJSON(url, options = {}) {
   const opts = Object.assign({ credentials: 'include' }, options);
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || data.message || 'Request failed');
+  if (!res.ok) {
+    const err = new Error(data.error || data.message || 'Request failed');
+    err.status = res.status;
+    err.statusText = res.statusText;
+    throw err;
+  }
   return data;
 }
 
@@ -180,25 +228,37 @@ function makeClientId() {
       Math.random().toString(36).slice(2);
 }
 
-const CLOCK_IN_MESSAGES = [
-  'Clocked IN — have a safe shift!',
-  'Clocked IN — have a great day!',
-  'Clocked IN — stay safe out there!',
-  'Clocked IN — let’s build something awesome today!',
-  'Clocked IN — thanks for being on time!',
-  'Clocked IN — you’re all set, have a good shift!'
-];
+const CLOCK_IN_MESSAGES_BY_LANG = {
+  en: [
+    'You are now clocked in — thanks for your hard work!',
+    'You are now clocked in — have a good day!'
+  ],
+  es: [
+    'Ya estás registrado — gracias por tu gran trabajo.',
+    'Ya estás registrado — que tengas un buen día.'
+  ],
+  ht: [
+    'Ou anrejistre kounye a — mèsi pou bon travay ou.',
+    'Ou anrejistre kounye a — pase yon bon jounen.'
+  ]
+};
 
 const GREET_EN = 'Select your name';
 const GREET_ES = 'Seleccione su nombre';
 const GREET_HT = 'Chwazi non ou';
 
 function getRandomClockInMessage() {
-  if (!Array.isArray(CLOCK_IN_MESSAGES) || !CLOCK_IN_MESSAGES.length) {
-    return 'Clocked IN — have a safe shift!';
+  const messages =
+    CLOCK_IN_MESSAGES_BY_LANG[currentLanguage] ||
+    CLOCK_IN_MESSAGES_BY_LANG.en ||
+    [];
+
+  if (!Array.isArray(messages) || !messages.length) {
+    return 'You are now clocked in — thanks for your hard work!';
   }
-  const idx = Math.floor(Math.random() * CLOCK_IN_MESSAGES.length);
-  return CLOCK_IN_MESSAGES[idx];
+
+  const idx = Math.floor(Math.random() * messages.length);
+  return messages[idx];
 }
 
 function loadPendingPins() {
@@ -219,7 +279,9 @@ function addPendingPinUpdate(update) {
   list.push({
     employee_id: update.employee_id,
     pin: update.pin,
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    device_id: kioskDeviceId || getOrCreateDeviceId(),
+    device_secret: getOrCreateDeviceSecret()
   });
   savePendingPins(list);
 }
@@ -244,6 +306,14 @@ function addToQueue(punch) {
 }
 function removeFromQueue(id) {
   saveQueue(loadQueue().filter(p => p.client_id !== id));
+}
+
+function isConnectionIssue(err, message) {
+  const status = err && (err.status || err.code);
+  const msg = String(message || (err && err.message) || '').toLowerCase();
+  const networkish = /network|failed to fetch|offline|connection|timed out/.test(msg);
+  const serverDown = typeof status === 'number' && status >= 500;
+  return !navigator.onLine || networkish || serverDown;
 }
 
 function saveCache(key, v) {
@@ -275,6 +345,35 @@ function getOrCreateDeviceId() {
     localStorage.setItem(DEVICE_ID_KEY, id);
   }
   return id;
+}
+
+function getDeviceSecret() {
+  try {
+    return localStorage.getItem(DEVICE_SECRET_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function setDeviceSecret(secret) {
+  if (!secret) return;
+  try {
+    localStorage.setItem(DEVICE_SECRET_KEY, secret);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function getOrCreateDeviceSecret() {
+  let secret = getDeviceSecret();
+  if (!secret) {
+    secret =
+      'sec-' +
+      Math.random().toString(36).slice(2) +
+      Math.random().toString(36).slice(2);
+    setDeviceSecret(secret);
+  }
+  return secret;
 }
 
 function showDeviceIdInUI() {
@@ -315,9 +414,38 @@ function getProjectNameById(id) {
   return match ? match.name || '' : '';
 }
 
+function getActiveProjectLabel() {
+  const projectId = kioskConfig && kioskConfig.project_id;
+  if (!projectId) return '';
+
+  // Preferred: cached project list
+  const fromCache = getProjectNameById(projectId);
+  if (fromCache) return fromCache;
+
+  // Next: active session info
+  if (activeSessionId && kioskSessions && kioskSessions.length) {
+    const active = kioskSessions.find(s => Number(s.id) === Number(activeSessionId));
+    if (active) {
+      const sessionName =
+        active.project_name ||
+        getProjectNameById(active.project_id) ||
+        '';
+      if (sessionName) return sessionName;
+    }
+  }
+
+  // Server may supply a project_name directly
+  if (kioskConfig && kioskConfig.project_name) {
+    return kioskConfig.project_name;
+  }
+
+  // Fallback to the id as a label
+  return `Project ${projectId}`;
+}
+
 function setCurrentProject(projectId) {
   kioskConfig.project_id = projectId || null;
-  currentProjectName = projectId ? getProjectNameById(projectId) || '' : '';
+  currentProjectName = projectId ? (getActiveProjectLabel() || getProjectNameById(projectId) || '') : '';
 
   if (projectId) {
     localStorage.setItem(CURRENT_PROJECT_KEY, String(projectId));
@@ -329,26 +457,13 @@ function setCurrentProject(projectId) {
 }
 
 function updateProjectChip() {
-  const chip = document.getElementById('kiosk-project-pill');
   const projectNameEl = document.getElementById('kiosk-project-name');
-  if (!chip) return;
 
   const hasProject = !!(kioskConfig && kioskConfig.project_id);
   const label = hasProject
-    ? currentProjectName || getProjectNameById(kioskConfig.project_id) || 'Project'
-    : 'Project';
+    ? currentProjectName || getActiveProjectLabel() || 'Project'
+    : 'No project set';
 
-  chip.classList.remove('hidden');
-
-  if (!hasProject) {
-    chip.textContent = 'Project';
-    chip.classList.add('chip-warning');
-    if (projectNameEl) projectNameEl.textContent = 'selected by foreman';
-    return;
-  }
-
-  chip.classList.remove('chip-warning');
-  chip.textContent = label;
   if (projectNameEl) projectNameEl.textContent = label;
 }
 
@@ -404,6 +519,12 @@ function setLanguage(lang) {
   });
 }
 
+function resetLanguageOverride() {
+  manualLanguageOverride = null;
+  manualLanguageEmployeeId = null;
+  setLanguage(DEFAULT_LANGUAGE);
+}
+
 function applyKioskProjectDefault() {
   let projectId = null;
 
@@ -429,13 +550,19 @@ async function initKioskConfig() {
     const data = await fetchJSON('/api/kiosks/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_id: kioskDeviceId })
+      body: JSON.stringify({
+        device_id: kioskDeviceId,
+        device_secret: getOrCreateDeviceSecret()
+      })
     });
 
     if (data && data.kiosk) {
       kioskConfig = data.kiosk;
       kioskSessions = data.sessions || [];
       activeSessionId = data.active_session_id || null;
+      if (data.kiosk.device_secret) {
+        setDeviceSecret(data.kiosk.device_secret);
+      }
       applyKioskProjectDefault();
     }
   } catch (err) {
@@ -448,13 +575,19 @@ async function refreshKioskProjectFromServer() {
     const data = await fetchJSON('/api/kiosks/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_id: kioskDeviceId || getOrCreateDeviceId() })
+      body: JSON.stringify({
+        device_id: kioskDeviceId || getOrCreateDeviceId(),
+        device_secret: getOrCreateDeviceSecret()
+      })
     });
 
     if (data && data.kiosk) {
       kioskConfig = data.kiosk;
       kioskSessions = data.sessions || kioskSessions;
       activeSessionId = data.active_session_id || activeSessionId;
+      if (data.kiosk.device_secret) {
+        setDeviceSecret(data.kiosk.device_secret);
+      }
       applyKioskProjectDefault();
     }
   } catch (err) {
@@ -488,7 +621,8 @@ function markKioskDayStarted() {
   }
 }
 
-function openAdminDashboard(employeeId) {
+function openAdminDashboard(employeeId, options = {}) {
+  const { skipPin = false } = options || {};
   try {
     const params = new URLSearchParams();
     const deviceId = kioskDeviceId || getOrCreateDeviceId();
@@ -499,6 +633,10 @@ function openAdminDashboard(employeeId) {
     // Open in start-of-day mode if day not started OR no project set yet
     if (!isKioskDayStarted() || !(kioskConfig && kioskConfig.project_id)) {
       params.set('start', '1');
+    }
+
+    if (skipPin) {
+      params.set('skip_pin', '1');
     }
 
     const adminUrl = '/kiosk-admin.html?' + params.toString();
@@ -664,7 +802,7 @@ function submitAdminLogin() {
   status.textContent = '';
   hideAdminLoginModal();
 
-  openAdminDashboard(id);
+  openAdminDashboard(id, { skipPin: true });
 }
 
 
@@ -681,7 +819,6 @@ function setupAdminLongPress() {
   const target = hotspot || logoContainer;
   if (!target) return;
 
-  // Disable system callout/drag/save on the logo image
   target.style.webkitTouchCallout = 'none';
   target.style.webkitUserSelect = 'none';
   target.style.userSelect = 'none';
@@ -776,6 +913,19 @@ function showPinModal(employee) {
 
   const storedPin = (employee.pin || '').trim();
   const hasPin = !!storedPin;
+
+  // Block PIN modal for non-admins if no project/timesheet is active.
+  // Admins can still proceed so they can be routed to kiosk-admin to create one.
+  const hasProject = !!(kioskConfig && kioskConfig.project_id);
+  const hasSession = !!activeSessionId;
+  if (!employee.is_admin && (!hasProject || !hasSession)) {
+    const kioskStatus = document.getElementById('kiosk-status');
+    if (kioskStatus) {
+      kioskStatus.textContent = getCopy('timesheetNotSet');
+      kioskStatus.className = 'glass-status kiosk-status kiosk-status-error';
+    }
+    return;
+  }
 
   if (nameEl) {
     const baseName = employee.nickname || employee.name;
@@ -955,15 +1105,26 @@ async function submitPin() {
     }
   }
 
-    const isAdminStartOfDay = employee.is_admin && !isKioskDayStarted();
-    const noProjectSet = !kioskConfig || !kioskConfig.project_id;
-    const shouldOpenAdmin =
-      employee.is_admin &&
-      (!isKioskDayStarted() || noProjectSet);
+    let hasProject = !!(kioskConfig && kioskConfig.project_id);
+    const hasSession = !!activeSessionId;
+    const dayStarted = isKioskDayStarted();
 
-    if (shouldOpenAdmin) {
+    // If the server says there's an active session, ensure the kiosk project is set from it.
+    if (!hasProject && hasSession && kioskSessions && kioskSessions.length) {
+      const active = kioskSessions.find(s => Number(s.id) === Number(activeSessionId));
+      if (active && active.project_id) {
+        setCurrentProject(active.project_id);
+        hasProject = true;
+      }
+    }
+
+    // Admins should be routed to the kiosk-admin flow when no active timesheet is available
+    // (either no session yet, or we haven't started the day with a project).
+    const needsTimesheet = employee.is_admin && !(hasSession || (hasProject && dayStarted));
+
+    if (needsTimesheet) {
       hidePinModal();
-      openAdminDashboard(employee.id);
+      openAdminDashboard(employee.id, { skipPin: true });
       return;
     }
 
@@ -999,7 +1160,11 @@ async function submitPin() {
     await fetchJSON(`/api/employees/${employee.id}/pin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: pin1 })
+      body: JSON.stringify({
+        pin: pin1,
+        device_id: kioskDeviceId || getOrCreateDeviceId(),
+        device_secret: getOrCreateDeviceSecret()
+      })
     });
 
     // Success online
@@ -1010,10 +1175,11 @@ async function submitPin() {
     console.error('Error setting PIN', err);
 
     const msg = (err && err.message) ? String(err.message) : '';
+    const offlineIssue = isConnectionIssue(err, msg);
 
     // Offline, auth, or network failure → save locally and queue for sync
     const authLike = /auth|login|credential|session/i.test(msg);
-    if (!navigator.onLine || /NetworkError|Failed to fetch/i.test(msg) || authLike) {
+    if (offlineIssue || authLike) {
       addPendingPinUpdate({ employee_id: employee.id, pin: pin1 });
 
       employee.pin = pin1;           // treat as saved locally
@@ -1042,7 +1208,7 @@ async function submitPin() {
 
   if (isAdminStartOfDay) {
     hidePinModal();
-    openAdminDashboard(employee.id);
+    openAdminDashboard(employee.id, { skipPin: true });
     return;
   }
 
@@ -1081,16 +1247,18 @@ async function performPunch(employee_id) {
     device_id: kioskDeviceId || null
   };
 
-  addToQueue(punch);
-
   if (!navigator.onLine) {
+    addToQueue(punch);
     status.textContent = 'Saved offline — will sync.';
     status.className = 'glass-status kiosk-status kiosk-status-ok';
+    showSuccessOverlay('Saved offline — will sync when back online.');
+    startOfflineSyncLoop();
 
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
     setDefaultPunchButton(btn);
+    resetLanguageOverride();
 
     return;
   }
@@ -1101,8 +1269,6 @@ async function performPunch(employee_id) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(punch)
     });
-
-        removeFromQueue(client_id);
 
     if (data.mode === 'clock_in') {
   let msg;
@@ -1126,22 +1292,40 @@ async function performPunch(employee_id) {
       status.textContent = '';
     }
 
-    status.className = 'glass-status kiosk-status kiosk-status-ok';
+  status.className = 'glass-status kiosk-status kiosk-status-ok';
 
 
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
     setDefaultPunchButton(btn);
+    resetLanguageOverride();
   } catch (err) {
     console.error('Error syncing punch', err);
-    status.textContent = 'Could not sync — saved offline.';
-    status.className = 'glass-status kiosk-status kiosk-status-error';
+    const msg = err && err.message ? String(err.message) : '';
+    const projectMsg = getCopy('projectNotSet');
+    const showProjectMsg = /project|timesheet/i.test(msg);
+    const offlineIssue = isConnectionIssue(err, msg);
+
+    if (showProjectMsg) {
+      status.textContent = projectMsg;
+      status.className = 'glass-status kiosk-status kiosk-status-error';
+    } else if (offlineIssue) {
+      addToQueue(punch);
+      status.textContent = 'Saved offline — will sync.';
+      status.className = 'glass-status kiosk-status kiosk-status-ok';
+      showSuccessOverlay('Saved offline — will sync when back online.');
+      startOfflineSyncLoop();
+    } else {
+      status.textContent = msg || 'Could not sync punch.';
+      status.className = 'glass-status kiosk-status kiosk-status-error';
+    }
 
     const empSel = document.getElementById('kiosk-employee');
     const btn = document.getElementById('kiosk-punch');
     if (empSel) empSel.value = '';
     setDefaultPunchButton(btn);
+    resetLanguageOverride();
   }
 }
 
@@ -1158,13 +1342,19 @@ async function syncPendingEmployees() {
   const remaining = [];
 
   for (const item of pending) {
+    const deviceId = item.device_id || kioskDeviceId || getOrCreateDeviceId();
+    const deviceSecret =
+      item.device_secret || getOrCreateDeviceSecret();
+
     try {
       await fetchJSON(`/api/employees/${item.employee_id}/pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pin: item.pin,
-          allowOverride: true
+          allowOverride: true,
+          device_id: deviceId,
+          device_secret: deviceSecret
         })
       });
       // If this succeeds, the server now knows the pin — nothing else to do
@@ -1255,6 +1445,21 @@ async function onEmployeeChange() {
   const empId = empSel.value;
   const emp = employeesCache.find(e => String(e.id) === String(empId));
 
+  // If a manual override is active but this is a different employee selection, clear the override.
+  if (
+    manualLanguageOverride &&
+    manualLanguageEmployeeId &&
+    empId &&
+    empId !== manualLanguageEmployeeId
+  ) {
+    resetLanguageOverride();
+  }
+
+  // Tie a freshly chosen employee to the active manual override so it stays scoped to that person.
+  if (manualLanguageOverride && empId && !manualLanguageEmployeeId) {
+    manualLanguageEmployeeId = empId;
+  }
+
   const langToUse =
     manualLanguageOverride ||
     (emp ? normalizeLanguage(emp.language) : currentLanguage);
@@ -1333,10 +1538,48 @@ async function syncQueueToServer() {
   }
 }
 
+// ====== OFFLINE SYNC COORDINATOR ======
+
+function hasOfflineDataToSync() {
+  try {
+    const punches = loadQueue();
+    const pins = loadPendingPins();
+    return (Array.isArray(punches) && punches.length > 0) ||
+      (Array.isArray(pins) && pins.length > 0);
+  } catch {
+    return false;
+  }
+}
+
+async function syncOfflineData(trigger = 'manual') {
+  if (offlineSyncInFlight) return;
+  if (!navigator.onLine && !hasOfflineDataToSync()) return;
+
+  offlineSyncInFlight = true;
+  try {
+    await syncPendingEmployees();
+    await syncQueueToServer();
+  } catch (err) {
+    console.error('Offline sync failed', trigger, err);
+  } finally {
+    offlineSyncInFlight = false;
+  }
+}
+
+function startOfflineSyncLoop() {
+  if (offlineSyncTimerId) clearInterval(offlineSyncTimerId);
+  offlineSyncTimerId = setInterval(() => {
+    if (!hasOfflineDataToSync()) return;
+    syncOfflineData('interval');
+  }, 30000);
+}
+
 
 // ====== INIT ======
 
 document.addEventListener('DOMContentLoaded', async () => {
+  hardenPinFields();
+
   // Device ID + kiosk config
   kioskDeviceId = getOrCreateDeviceId();
   showDeviceIdInUI();
@@ -1370,6 +1613,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     btn.addEventListener('click', () => {
       const lang = normalizeLanguage(btn.getAttribute('data-lang') || 'en');
       manualLanguageOverride = lang;
+      const empSel = document.getElementById('kiosk-employee');
+      manualLanguageEmployeeId = empSel && empSel.value ? empSel.value : null;
       setLanguage(lang);
     });
   });
@@ -1435,7 +1680,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       pinInput.type = newType;
       if (pinConfirmInput) pinConfirmInput.type = newType;
 
-      pinToggle.textContent = newType === 'password' ? 'Show PIN' : 'Hide PIN';
+      pinToggle.textContent = newType === 'password' ? getCopy('pinToggleShow') : getCopy('pinToggleHide');
     });
   }
 
