@@ -184,15 +184,30 @@ async function kaEnsureAdminClockInPrompt(preferProjectId = null) {
 }
 
 function kaMarkDayStarted() {
-  if (!kaDeviceId) return;
+  const key = kaKioskDayKey();
+  if (!key) return;
+  try {
+    localStorage.setItem(key, '1');
+  } catch {}
+}
+
+function isKioskDayStarted() {
+  const key = kaKioskDayKey();
+  if (!key) return false;
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function kaKioskDayKey() {
+  if (!kaDeviceId) return null;
   const now = new Date();
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
-  const key = `avian_kiosk_day_started_${kaDeviceId}_${y}-${m}-${d}`;
-  try {
-    localStorage.setItem(key, '1');
-  } catch {}
+  return `avian_kiosk_day_started_${kaDeviceId}_${y}-${m}-${d}`;
 }
 
 function kaReadPendingPins() {
@@ -1640,22 +1655,39 @@ async function kaLoadLiveWorkers() {
   const tag = document.getElementById('ka-live-count-tag');
   if (!tbody) return;
 
-  // Loading row (3 columns: Employee | Clock In | Time on Clock)
+  // Loading row (4 columns: Employee | Clock In | Time on Clock | Clock Out)
   tbody.innerHTML = `
-    <tr><td colspan="3" class="ka-muted">(loading…)</td></tr>
+    <tr><td colspan="4" class="ka-muted">(loading…)</td></tr>
   `;
 
   try {
     const rows = await fetchJSON(`/api/kiosks/${kaKiosk.id}/open-punches`);
+    const punchRows = Array.isArray(rows) ? rows : [];
     tbody.innerHTML = '';
+
+    const activeSession = kaComputeActiveSession(kaSessions || []);
+    const activeProjectId =
+      activeSession && activeSession.project_id !== undefined && activeSession.project_id !== null
+        ? Number(activeSession.project_id)
+        : (kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null
+            ? Number(kaKiosk.project_id)
+            : null);
+    const projectLabel =
+      (activeSession && (activeSession.project_name || kaProjectLabelById(activeSession.project_id))) ||
+      (kaKiosk && kaKiosk.project_id && kaProjectLabelById(kaKiosk.project_id)) ||
+      (punchRows[0] && punchRows[0].project_name) ||
+      'Project not set';
+
+    const filteredRows =
+      activeProjectId !== null
+        ? punchRows.filter(r => Number(r.project_id) === activeProjectId)
+        : punchRows;
+    const entryCount = filteredRows.length;
+    const openCount = filteredRows.filter(r => !r.clock_out_ts).length;
 
     const liveTitle = document.getElementById('ka-live-title');
     if (liveTitle) {
-      const projectLabel =
-        (kaKiosk && kaKiosk.project_id && kaProjectLabelById(kaKiosk.project_id)) ||
-        (rows && rows[0] && rows[0].project_name) ||
-        'Project not set';
-      liveTitle.textContent = `Current Workers — ${projectLabel}`;
+      liveTitle.textContent = `Current Workers - ${projectLabel}`;
     }
     const dateLabelEl = document.getElementById('ka-live-date-label');
     if (dateLabelEl) {
@@ -1665,9 +1697,9 @@ async function kaLoadLiveWorkers() {
     }
 
     // ----- No workers currently clocked in/out today -----
-    if (!rows || !rows.length) {
+    if (!punchRows.length || filteredRows.length === 0) {
       tbody.innerHTML = `
-        <tr><td colspan="4" class="ka-muted">(no punches today on this kiosk)</td></tr>
+        <tr><td colspan="4" class="ka-muted">(${activeProjectId !== null ? 'no punches today on this project' : 'no punches today on this kiosk'})</td></tr>
       `;
       if (tag) {
         tag.textContent = '0 active';
@@ -1681,7 +1713,7 @@ async function kaLoadLiveWorkers() {
     let olderThanTodayCount = 0;
 
     // ----- Build rows: Employee | Clock In | Time on Clock -----
-    rows.forEach(r => {
+    filteredRows.forEach(r => {
       const tr = document.createElement('tr');
 
       let clockInLabel = '–';
@@ -1743,7 +1775,7 @@ async function kaLoadLiveWorkers() {
     });
 
     if (tag) {
-      const activeCount = rows.filter(r => !r.clock_out_ts).length;
+      const activeCount = openCount;
       tag.textContent = `${activeCount} active`;
       tag.className = activeCount > 0 ? 'ka-tag green' : 'ka-tag gray';
     }
@@ -1765,7 +1797,7 @@ async function kaLoadLiveWorkers() {
   } catch (err) {
     console.error('Error loading live workers:', err);
     tbody.innerHTML = `
-      <tr><td colspan="3" class="ka-muted">(error loading live workers)</td></tr>
+      <tr><td colspan="4" class="ka-muted">(error loading live workers)</td></tr>
     `;
     if (tag) {
       tag.textContent = 'Error';
@@ -1806,15 +1838,23 @@ function kaShowView(view) {
   }
 }
 
+function kaParseUtcTimestamp(ts) {
+  if (!ts) return null;
+  const normalized = ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
+  const dt = new Date(normalized);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
 function kaSessionRowMeta(session) {
-  const created = session.created_at ? new Date(session.created_at) : null;
-  const timeLabel = created
-    ? created.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : '—';
-  const open = session.open_count || 0;
-  const entries = session.entry_count || 0;
+  const createdAt = kaParseUtcTimestamp(session.created_at);
   const dateLabel = kaFmtDateMDY(session.date || kaTodayIso());
-  return `${dateLabel} • Started ${timeLabel} • ${open} open • ${entries} total`;
+  const timeLabel = createdAt
+    ? createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '—';
+  const createdBy = session.created_by_name || '—';
+  const topLine = `${dateLabel} • Started ${timeLabel}`;
+  const bottomLine = `Created by ${createdBy}`;
+  return `${topLine}<br>${bottomLine}`;
 }
 
 function kaSessionRangeForMode() {
@@ -1868,6 +1908,44 @@ function kaComputeActiveSession(sessions) {
   return sorted[0] || null;
 }
 
+function kaHasMultipleProjectSessions() {
+  if (!Array.isArray(kaSessions)) return false;
+  const ids = new Set();
+  kaSessions.forEach(s => {
+    if (!s) return;
+    const pid = Number(s.project_id);
+    if (Number.isFinite(pid)) ids.add(pid);
+  });
+  return ids.size > 1;
+}
+
+function kaSessionProjectLabel(session) {
+  if (!session) return 'this project';
+  return (
+    session.project_name ||
+    kaProjectLabelById(session.project_id) ||
+    (session.project_id ? `Project ${session.project_id}` : 'this project')
+  );
+}
+
+function kaConfirmActiveSessionSwitch(targetSessionId) {
+  if (!targetSessionId) return true;
+
+  const activeSession = kaComputeActiveSession(kaSessions || []);
+  if (activeSession && Number(activeSession.id) === Number(targetSessionId)) {
+    return true;
+  }
+
+  if (!kaHasMultipleProjectSessions()) return true;
+
+  const targetSession = (kaSessions || []).find(s => Number(s.id) === Number(targetSessionId));
+  const projectLabel = kaSessionProjectLabel(targetSession);
+
+  return window.confirm(
+    `Set ${projectLabel} from this timesheet as the active project for this kiosk?`
+  );
+}
+
 function kaSessionDatesBetween(start, end, maxDays = 14) {
   const dates = [];
   const s = new Date(start);
@@ -1915,6 +1993,9 @@ function kaRenderSessions() {
       : (kaKiosk && kaKiosk.project_id ? Number(kaKiosk.project_id) : null);
   const normalizedActiveSessionId = Number.isFinite(activeSessionId) ? activeSessionId : null;
   const normalizedActiveProjectId = Number.isFinite(activeProjectId) ? activeProjectId : null;
+  const hasExplicitActive =
+    Number.isFinite(normalizedActiveSessionId) ||
+    (kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null);
   const isSessionActive = (s) => {
     if (!s) return false;
     if (normalizedActiveSessionId !== null) return Number(s.id) === normalizedActiveSessionId;
@@ -1924,9 +2005,13 @@ function kaRenderSessions() {
   const filtered =
     kaSessionFilterMode === 'active'
       ? sessions.filter(s => {
-          const open = Number(s.open_count || 0) > 0;
           const isActive = isSessionActive(s);
-          return open || isActive;
+          if (isActive) return true;
+          // If no active session is configured yet, still surface sessions with open punches
+          if (!hasExplicitActive) {
+            return Number(s.open_count || 0) > 0;
+          }
+          return false;
         })
       : sessions;
 
@@ -1969,17 +2054,13 @@ function kaRenderSessions() {
           <div class="ka-session-meta">${kaSessionRowMeta(s)}</div>
         </div>
       </div>
-    `;
-
-    const meta = document.createElement('div');
-    meta.className = 'ka-session-meta';
-    meta.innerHTML = `
-      <span class="ka-session-tag">Open punches: ${s.open_count || 0}</span>
-      <span class="ka-session-tag">Entries today: ${s.entry_count || 0}</span>
+      <div class="ka-session-meta ka-session-meta-right">
+        <span class="ka-session-tag">Open punches: ${s.open_count || 0}</span>
+        <span class="ka-session-tag">Entries today: ${s.entry_count || 0}</span>
+      </div>
     `;
 
     main.appendChild(head);
-    main.appendChild(meta);
 
     const del = document.createElement('button');
     del.className = 'ka-session-delete';
@@ -2488,7 +2569,7 @@ async function kaInit() {
 
   if (!kaDeviceId) {
     alert('Missing kiosk device ID in URL (device_id).');
-    kaSetText('ka-kiosk-name', 'No kiosk selected');
+    kaSetText('ka-kiosk-name', kaAdminDisplayName());
     return;
   }
 
@@ -2811,7 +2892,11 @@ async function kaInit() {
       const row = e.target.closest('.ka-session-row');
       if (row && row.dataset.sessionId) {
         const id = Number(row.dataset.sessionId);
-        if (id) kaSetActiveSession(id);
+        if (id) {
+          const confirmed = kaConfirmActiveSessionSwitch(id);
+          if (!confirmed) return;
+          kaSetActiveSession(id);
+        }
       }
     });
     sessionList.addEventListener('touchstart', kaHandleSessionTouchStart, { passive: true });
@@ -2865,7 +2950,7 @@ async function kaInit() {
     );
 
     if (!kaKiosk) {
-      kaSetText('ka-kiosk-name', 'Kiosk not linked');
+      kaSetText('ka-kiosk-name', kaAdminDisplayName());
       kaSetText('ka-kiosk-device-id', kaDeviceId);
       const statusEl = document.getElementById('ka-kiosk-status');
       if (statusEl) {
@@ -3486,7 +3571,7 @@ async function kaStartDayAndClockIn() {
 // --- Render header + project + photo toggle ---
 
 function kaRenderKioskHeader() {
-  kaSetText('ka-kiosk-name', kaKiosk.name || '(Unnamed kiosk)');
+  kaSetText('ka-kiosk-name', kaAdminDisplayName());
   kaSetText('ka-kiosk-device-id', kaKiosk.device_id || '(none)');
 }
 

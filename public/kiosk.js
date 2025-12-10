@@ -491,10 +491,11 @@ function setCurrentProject(projectId) {
 function updateProjectChip() {
   const projectNameEl = document.getElementById('kiosk-project-name');
 
-  const hasProject = !!(kioskConfig && kioskConfig.project_id);
+  const active = getActiveSession();
+  const hasProject = !!(active && active.project_id);
   const label = hasProject
     ? currentProjectName || getActiveProjectLabel() || 'Project'
-    : 'No project set';
+    : 'None';
 
   if (projectNameEl) projectNameEl.textContent = label;
 }

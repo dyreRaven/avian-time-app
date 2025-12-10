@@ -4917,22 +4917,16 @@ app.get('/api/kiosks/:id/sessions', (req, res) => {
           FROM time_punches tp
           WHERE tp.project_id = ks.project_id
             AND substr(tp.clock_in_ts, 1, 10) = ks.date
-            AND (
-              (ks.device_id IS NULL AND tp.device_id IS NULL)
-              OR tp.device_id = ks.device_id
-            )
         ), 0) AS entry_count,
         COALESCE((
           SELECT COUNT(*)
           FROM time_punches tp
           WHERE tp.clock_out_ts IS NULL
-            AND (
-              (ks.device_id IS NULL AND tp.device_id IS NULL)
-              OR tp.device_id = ks.device_id
-            )
             AND tp.project_id = ks.project_id
+            AND substr(tp.clock_in_ts, 1, 10) = ks.date
         ), 0) AS open_count
       FROM kiosk_sessions ks
+      LEFT JOIN kiosks k ON k.id = ks.kiosk_id
       LEFT JOIN projects p ON p.id = ks.project_id
       LEFT JOIN employees ea ON ea.id = ks.created_by_employee_id
       WHERE ks.kiosk_id = ?
@@ -5241,14 +5235,19 @@ app.get('/api/kiosk-sessions/today', (req, res) => {
       if (err2) return res.status(500).json({ error: err2.message });
       const byKey = new Map();
       list.forEach(s => {
-        const key = `${s.device_id || ''}|${s.project_id || ''}`;
-        byKey.set(key, s);
+        const devKey = `dev:${s.device_id || ''}|${s.project_id || ''}`;
+        byKey.set(devKey, s);
+        if (s.kiosk_id) {
+          const kioskKey = `kiosk:${s.kiosk_id}|${s.project_id || ''}`;
+          byKey.set(kioskKey, s);
+        }
         s.open_punches = [];
       });
 
       (punches || []).forEach(p => {
-        const key = `${p.device_id || ''}|${p.project_id || ''}`;
-        const match = byKey.get(key);
+        const devKey = `dev:${p.device_id || ''}|${p.project_id || ''}`;
+        const kioskKey = `kiosk:${p.kiosk_id || ''}|${p.project_id || ''}`;
+        const match = byKey.get(devKey) || byKey.get(kioskKey);
         if (match) {
           match.open_punches.push(p);
         }
