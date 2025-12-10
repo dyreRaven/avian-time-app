@@ -414,33 +414,65 @@ function getProjectNameById(id) {
   return match ? match.name || '' : '';
 }
 
-function getActiveProjectLabel() {
-  const projectId = kioskConfig && kioskConfig.project_id;
-  if (!projectId) return '';
+function sortSessionsByRecency(list) {
+  return (Array.isArray(list) ? [...list] : []).sort((a, b) => {
+    const dateDiff = (b.date || '').localeCompare(a.date || '');
+    if (dateDiff !== 0) return dateDiff;
+    return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+  });
+}
 
-  // Preferred: cached project list
-  const fromCache = getProjectNameById(projectId);
-  if (fromCache) return fromCache;
+function computeActiveSession(sessions, sessionId, kioskProjectId) {
+  const sorted = sortSessionsByRecency(sessions);
+  if (!sorted.length) return null;
 
-  // Next: active session info
-  if (activeSessionId && kioskSessions && kioskSessions.length) {
-    const active = kioskSessions.find(s => Number(s.id) === Number(activeSessionId));
-    if (active) {
-      const sessionName =
-        active.project_name ||
-        getProjectNameById(active.project_id) ||
-        '';
-      if (sessionName) return sessionName;
+  const normalizedSessionId =
+    sessionId !== null && sessionId !== undefined ? Number(sessionId) : null;
+  const normalizedProjectId =
+    kioskProjectId !== null && kioskProjectId !== undefined ? Number(kioskProjectId) : null;
+  const validSessionId = Number.isFinite(normalizedSessionId) ? normalizedSessionId : null;
+  const validProjectId = Number.isFinite(normalizedProjectId) ? normalizedProjectId : null;
+
+  if (validSessionId !== null) {
+    const matchById = sorted.find(s => Number(s.id) === validSessionId);
+    if (matchById && (validProjectId === null || Number(matchById.project_id) === validProjectId)) {
+      return matchById;
     }
   }
 
-  // Server may supply a project_name directly
-  if (kioskConfig && kioskConfig.project_name) {
-    return kioskConfig.project_name;
+  if (validProjectId !== null) {
+    const matchByProject = sorted.find(s => Number(s.project_id) === validProjectId);
+    if (matchByProject) return matchByProject;
+  }
+
+  return sorted[0] || null;
+}
+
+function getActiveSession() {
+  return computeActiveSession(kioskSessions, activeSessionId, kioskConfig && kioskConfig.project_id);
+}
+
+function getActiveProjectLabel() {
+  const active = getActiveSession();
+  if (active && active.project_id) {
+    const fromSession =
+      getProjectNameById(active.project_id) ||
+      active.project_name ||
+      '';
+    if (fromSession) return fromSession;
+    return `Project ${active.project_id}`;
+  }
+
+  const projectId = kioskConfig && kioskConfig.project_id;
+  if (projectId) {
+    const fromCache = getProjectNameById(projectId);
+    if (fromCache) return fromCache;
+    if (kioskConfig && kioskConfig.project_name) return kioskConfig.project_name;
+    return `Project ${projectId}`;
   }
 
   // Fallback to the id as a label
-  return `Project ${projectId}`;
+  return '';
 }
 
 function setCurrentProject(projectId) {
@@ -528,9 +560,11 @@ function resetLanguageOverride() {
 function applyKioskProjectDefault() {
   let projectId = null;
 
-  if (activeSessionId && kioskSessions && kioskSessions.length) {
-    const active = kioskSessions.find(s => Number(s.id) === Number(activeSessionId));
-    if (active && active.project_id) projectId = active.project_id;
+  const active = getActiveSession();
+  if (active && active.project_id) {
+    activeSessionId = active.id || activeSessionId;
+    projectId = active.project_id;
+    kioskConfig.project_id = projectId;
   } else if (kioskConfig && kioskConfig.project_id) {
     projectId = kioskConfig.project_id;
   } else {
@@ -917,7 +951,8 @@ function showPinModal(employee) {
   // Block PIN modal for non-admins if no project/timesheet is active.
   // Admins can still proceed so they can be routed to kiosk-admin to create one.
   const hasProject = !!(kioskConfig && kioskConfig.project_id);
-  const hasSession = !!activeSessionId;
+  const activeSession = getActiveSession();
+  const hasSession = !!(activeSession && activeSession.project_id);
   if (!employee.is_admin && (!hasProject || !hasSession)) {
     const kioskStatus = document.getElementById('kiosk-status');
     if (kioskStatus) {
@@ -1106,16 +1141,14 @@ async function submitPin() {
   }
 
     let hasProject = !!(kioskConfig && kioskConfig.project_id);
-    const hasSession = !!activeSessionId;
+    const activeSession = getActiveSession();
+    const hasSession = !!(activeSession && activeSession.project_id);
     const dayStarted = isKioskDayStarted();
 
     // If the server says there's an active session, ensure the kiosk project is set from it.
-    if (!hasProject && hasSession && kioskSessions && kioskSessions.length) {
-      const active = kioskSessions.find(s => Number(s.id) === Number(activeSessionId));
-      if (active && active.project_id) {
-        setCurrentProject(active.project_id);
-        hasProject = true;
-      }
+    if (!hasProject && hasSession && activeSession && activeSession.project_id) {
+      setCurrentProject(activeSession.project_id);
+      hasProject = true;
     }
 
     // Admins should be routed to the kiosk-admin flow when no active timesheet is available
@@ -1591,12 +1624,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   await initKioskConfig();
 
   // Sync any offline stuff
-  syncPendingEmployees();
-  syncQueueToServer();
+  await syncOfflineData('init');
+  startOfflineSyncLoop();
 
   // Periodically refresh the active project so workers always see the foreman’s current session
   setInterval(refreshKioskProjectFromServer, 30000);
-  window.addEventListener('focus', refreshKioskProjectFromServer);
+  window.addEventListener('focus', () => {
+    refreshKioskProjectFromServer();
+    syncOfflineData('focus');
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) syncOfflineData('visibility');
+  });
 
   // Main kiosk controls
   const punchBtn = document.getElementById('kiosk-punch');
@@ -1689,6 +1728,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // When we regain internet, try syncing again
 window.addEventListener('online', () => {
-  syncPendingEmployees();
-  syncQueueToServer();
+  syncOfflineData('online');
+  startOfflineSyncLoop();
 });
