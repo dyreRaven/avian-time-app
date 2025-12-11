@@ -7676,7 +7676,7 @@ body {
   background: transparent;
   color: #0f172a;
   border-radius: 0;
-  padding: 2px 18px 2px 14px;
+  padding: 2px 28px 2px 18px; /* wider horizontal padding */
   display: inline-flex;
   align-items: center;
   justify-content: center;
