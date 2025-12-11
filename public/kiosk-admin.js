@@ -3964,6 +3964,8 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
   const expectedShip = kaFmtDateMMDDYYYY(shipment.expected_ship_date) || '—';
   const expectedArrival = kaFmtDateMMDDYYYY(shipment.expected_arrival_date) || '—';
   const pickupDate = kaFmtDateMMDDYYYY(shipment.picked_up_date) || '—';
+  const pickupUpdatedBy = shipment.picked_up_updated_by || '';
+  const pickupUpdatedAt = shipment.picked_up_updated_at || '';
   const storageDue = kaFmtDateMMDDYYYY(shipment.storage_due_date) || '—';
   const paidShipper = Number(shipment.shipper_paid) === 1 ? 'Paid' : 'Unpaid';
   const paidCustoms = Number(shipment.customs_paid) === 1 ? 'Paid' : 'Unpaid';
@@ -4046,6 +4048,11 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
           <button type="button" class="btn primary btn-sm" id="ka-pickup-save">Save pickup</button>
           <span class="ka-status" id="ka-pickup-status"></span>
         </div>
+        ${
+          pickupUpdatedBy || pickupUpdatedAt
+            ? `<div class="ka-pickup-meta">Last updated by ${pickupUpdatedBy || '—'}${pickupUpdatedAt ? ` on ${pickupUpdatedAt}` : ''}</div>`
+            : ''
+        }
       </div>
 
       <div class="ka-items-overview-card">
