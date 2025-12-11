@@ -1439,6 +1439,13 @@ async function kaStartNotifyTimer(forcePing = false) {
 function kaInitNotifyPanel() {
   if (!kaCurrentAdmin || !kaCurrentAdmin.id) return;
 
+  kaNotifiedShipments = new Set();
+  kaReminderTimestamps = {};
+  if (kaNotifyTimer) {
+    clearInterval(kaNotifyTimer);
+    kaNotifyTimer = null;
+  }
+
   const saved = kaLoadNotifyPrefFromStorage();
   kaApplyNotifyPrefToUI(saved, kaNotifyStatusesSource());
 
