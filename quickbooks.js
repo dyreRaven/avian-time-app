@@ -19,6 +19,40 @@ const {
 const AUTH_BASE = 'https://appcenter.intuit.com/connect/oauth2';
 const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 const API_BASE = 'https://sandbox-quickbooks.api.intuit.com/v3/company';
+let refreshPromise = null; // serialize refresh attempts so we don't race/overwrite
+
+// Ensure Name-on-Checks timestamp columns exist
+async function ensureNameOnChecksColumns() {
+  const runPromise = (sql) =>
+    new Promise((resolve, reject) => {
+      db.run(sql, err => (err ? reject(err) : resolve()));
+    });
+  return new Promise((resolve, reject) => {
+    db.all('PRAGMA table_info(employees)', async (err, rows) => {
+      if (err) return reject(err);
+      const cols = rows.map(r => r.name);
+      const needed = [];
+      if (!cols.includes('name_on_checks_updated_at')) {
+        needed.push("ALTER TABLE employees ADD COLUMN name_on_checks_updated_at TEXT");
+      }
+      if (!cols.includes('name_on_checks_qbo_updated_at')) {
+        needed.push("ALTER TABLE employees ADD COLUMN name_on_checks_qbo_updated_at TEXT");
+      }
+      try {
+        for (const sql of needed) {
+          await runPromise(sql);
+        }
+        resolve(true);
+      } catch (e) {
+        // If another process added it, ignore the duplicate column error
+        if (String(e.message || '').includes('duplicate column')) {
+          return resolve(true);
+        }
+        reject(e);
+      }
+    });
+  });
+}
 
 // Load toggleable time exception rules from app_settings
 function loadExceptionRulesMap() {
@@ -139,14 +173,17 @@ function saveTokens({ access_token, refresh_token, expires_in }) {
   // expires_in = seconds from now
   const expiresAt = Date.now() + (expires_in - 60) * 1000; // minus 60s for safety
 
-  db.serialize(() => {
-    // Only one row – wipe old, insert new
-    db.run('DELETE FROM qbo_tokens');
-    db.run(
-      'INSERT INTO qbo_tokens (access_token, refresh_token, expires_at) VALUES (?,?,?)',
-      [access_token, refresh_token, expiresAt]
-    );
-  });
+  db.run(
+    `
+      INSERT INTO qbo_tokens (id, access_token, refresh_token, expires_at)
+      VALUES (1, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        access_token  = excluded.access_token,
+        refresh_token = excluded.refresh_token,
+        expires_at    = excluded.expires_at
+    `,
+    [access_token, refresh_token, expiresAt]
+  );
 }
 
 function getTokensFromDb() {
@@ -155,6 +192,12 @@ function getTokensFromDb() {
       if (err) return reject(err);
       resolve(row || null);
     });
+  });
+}
+
+function clearTokens() {
+  return new Promise((resolve, reject) => {
+    db.run('DELETE FROM qbo_tokens', err => (err ? reject(err) : resolve()));
   });
 }
 
@@ -221,15 +264,39 @@ async function getAccessToken() {
     return null;
   }
 
-  console.log('[QBO] Access token expired; refreshing…');
+  const startedRefresh = !refreshPromise;
+  if (!refreshPromise) {
+    console.log('[QBO] Access token expired; refreshing…');
+    refreshPromise = refreshAccessToken(row.refresh_token).finally(() => {
+      refreshPromise = null;
+    });
+  } else {
+    console.log('[QBO] Access token expired; waiting on existing refresh…');
+  }
+
   try {
-    const refreshed = await refreshAccessToken(row.refresh_token);
-    return refreshed.access_token;
+    const refreshed = await refreshPromise;
+    return refreshed?.access_token || null;
   } catch (err) {
-    console.error(
-      '[QBO] Error refreshing token:',
-      err.response?.status || err.message
-    );
+    if (startedRefresh) {
+      console.error(
+        '[QBO] Error refreshing token:',
+        err.response?.status || err.message
+      );
+
+      const status = err.response?.status;
+      if (status === 400 || status === 401) {
+        console.warn('[QBO] Clearing stored tokens; please reconnect QuickBooks.');
+        try {
+          await clearTokens();
+        } catch (wipeErr) {
+          console.warn(
+            '[QBO] Failed to clear tokens after refresh error:',
+            wipeErr.message || wipeErr
+          );
+        }
+      }
+    }
     return null;
   }
 }
@@ -378,13 +445,12 @@ async function syncEmployeesFromQuickBooks() {
       const updateSql = `
         UPDATE employees
         SET
-          name           = ?,
-          name_on_checks = CASE
-            WHEN IFNULL(name_on_checks, '') = '' THEN ?
-            ELSE name_on_checks
-          END,
-          email          = ?,
-          active         = ?
+          name = ?,
+          name_on_checks = ?,
+          name_on_checks_updated_at = ?,
+          name_on_checks_qbo_updated_at = ?,
+          email = ?,
+          active = ?
         WHERE employee_qbo_id = ?
       `;
 
@@ -401,19 +467,27 @@ async function syncEmployeesFromQuickBooks() {
           is_admin,
           uses_timekeeping,
           email,
-          language
+          language,
+          name_on_checks_updated_at,
+          name_on_checks_qbo_updated_at
         )
-        VALUES (?, ?, NULL, ?, 0, ?, NULL, 0, 0, 1, ?, 'en')
+        VALUES (?, ?, NULL, ?, 0, ?, NULL, 0, 0, 1, ?, 'en', ?, ?)
       `;
 
       let processed = 0;
 
       employees.forEach(emp => {
         const qboId = String(emp.Id);
-        const displayName = emp.DisplayName || [
-          emp.GivenName || '',
-          emp.FamilyName || ''
-        ].join(' ').trim();
+        const qboPrintName = (emp.PrintOnCheckName || '').trim();
+        const displayName =
+          qboPrintName ||
+          emp.DisplayName ||
+          [emp.GivenName || '', emp.FamilyName || ''].join(' ').trim();
+        const qboUpdatedIso =
+          emp.MetaData && emp.MetaData.LastUpdatedTime
+            ? new Date(emp.MetaData.LastUpdatedTime).toISOString()
+            : null;
+        const qboUpdatedMs = qboUpdatedIso ? Date.parse(qboUpdatedIso) : 0;
 
         const email =
           emp.PrimaryEmailAddr && emp.PrimaryEmailAddr.Address
@@ -423,34 +497,82 @@ async function syncEmployeesFromQuickBooks() {
         const isActive =
           emp.Active === true || emp.Active === 'true' ? 1 : 0;
 
-        // 1) Try to update existing employee (keep rate/admin/pin flags)
-        db.run(
-          updateSql,
-          [displayName, displayName, email, isActive, qboId],
-          function (err) {
-            if (err) return reject(err);
+        db.get(
+          `
+            SELECT
+              name_on_checks,
+              name_on_checks_updated_at,
+              name_on_checks_qbo_updated_at
+            FROM employees
+            WHERE employee_qbo_id = ?
+            LIMIT 1
+          `,
+          [qboId],
+          (lookupErr, row) => {
+            if (lookupErr) return reject(lookupErr);
 
-            if (this.changes && this.changes > 0) {
-              processed++;
-              if (processed === employees.length) {
-                resolve(processed);
-              }
-              return;
-            }
+            const localName = row ? (row.name_on_checks || '').trim() : '';
+            const localUpdatedMs = row && row.name_on_checks_updated_at
+              ? Date.parse(row.name_on_checks_updated_at)
+              : 0;
+            const localQboUpdatedMs = row && row.name_on_checks_qbo_updated_at
+              ? Date.parse(row.name_on_checks_qbo_updated_at)
+              : 0;
 
-            // 2) If no row updated, insert a new employee
-            db.run(
-              insertSql,
-              [qboId, displayName, displayName, isActive, email],
-              function (err2) {
-                if (err2) return reject(err2);
+            const shouldTakeQbo =
+              !localName ||
+              (qboUpdatedMs && qboUpdatedMs > Math.max(localUpdatedMs, localQboUpdatedMs));
 
-                processed++;
-                if (processed === employees.length) {
-                  resolve(processed);
+            const finalNameOnChecks = shouldTakeQbo
+              ? (qboPrintName || displayName)
+              : (row ? row.name_on_checks : (qboPrintName || displayName));
+
+            const finalLocalUpdated = shouldTakeQbo
+              ? row?.name_on_checks_updated_at || null
+              : row?.name_on_checks_updated_at || null;
+            const finalQboUpdated = qboUpdatedIso || row?.name_on_checks_qbo_updated_at || null;
+
+            if (row) {
+              db.run(
+                updateSql,
+                [
+                  displayName,
+                  finalNameOnChecks || null,
+                  finalLocalUpdated,
+                  finalQboUpdated,
+                  email,
+                  isActive,
+                  qboId
+                ],
+                function (errUpdate) {
+                  if (errUpdate) return reject(errUpdate);
+                  processed++;
+                  if (processed === employees.length) {
+                    resolve(processed);
+                  }
                 }
-              }
-            );
+              );
+            } else {
+              db.run(
+                insertSql,
+                [
+                  qboId,
+                  displayName,
+                  finalNameOnChecks || null,
+                  isActive,
+                  email,
+                  null,
+                  qboUpdatedIso || null
+                ],
+                function (errInsert) {
+                  if (errInsert) return reject(errInsert);
+                  processed++;
+                  if (processed === employees.length) {
+                    resolve(processed);
+                  }
+                }
+              );
+            }
           }
         );
       });
@@ -1299,13 +1421,14 @@ async function createChecksForPeriod(start, end, options = {}) {
         results.push({
           employeeId: draft.employee_id,
           employeeName: draft.employee_name,
-          totalHours: Number(draft.total_hours || 0),
-          totalPay: Number(draft.total_pay || 0),
-          ok: true,
-          qboTxnId,
-          mergedExisting: true,
-          warnings: nameWarning ? [nameWarning] : []
-        });
+        totalHours: Number(draft.total_hours || 0),
+        totalPay: Number(draft.total_pay || 0),
+        ok: true,
+        qboTxnId,
+        mergedExisting: true,
+        warnings: nameWarning ? [nameWarning] : [],
+        warningCodes: nameWarning ? ['print_name_sync_failed'] : []
+      });
         continue; // move to next employee
       } catch (err) {
         let friendly = err.response ? `HTTP ${err.response.status}` : err.message;
@@ -1397,7 +1520,8 @@ async function createChecksForPeriod(start, end, options = {}) {
         totalPay: Number(draft.total_pay || 0),
         ok: true,
         qboTxnId,
-        warnings: nameWarning ? [nameWarning] : []
+        warnings: nameWarning ? [nameWarning] : [],
+        warningCodes: nameWarning ? ['print_name_sync_failed'] : []
       });
     } catch (err) {
       let friendly = err.response ? `HTTP ${err.response.status}` : err.message;
@@ -1423,7 +1547,8 @@ async function createChecksForPeriod(start, end, options = {}) {
         totalPay: Number(draft.total_pay || 0),
         ok: false,
         error: friendly,
-        warnings: nameWarning ? [nameWarning] : []
+        warnings: nameWarning ? [nameWarning] : [],
+        warningCodes: nameWarning ? ['print_name_sync_failed'] : []
       });
 
       // Decide if this looks "catastrophic" (platform / network) vs per-employee.
@@ -1465,5 +1590,6 @@ module.exports = {
   syncEmployeesFromQuickBooks,
   listPayrollAccounts,
   listClasses,
-  setPrintOnCheckName
+  setPrintOnCheckName,
+  ensureNameOnChecksColumns
 };

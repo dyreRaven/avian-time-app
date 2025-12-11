@@ -61,35 +61,6 @@ async function logTimeEntryAudit({
   }
 }
 
-async function logPayrollEvent({
-  event_type,
-  message,
-  payroll_run_id = null,
-  details = null
-}) {
-  try {
-    await dbRun(
-      `
-        INSERT INTO payroll_audit_log (
-          event_type,
-          payroll_run_id,
-          message,
-          details_json,
-          created_at
-        )
-        VALUES (?, ?, ?, ?, datetime('now'))
-      `,
-      [
-        event_type,
-        payroll_run_id || null,
-        message || null,
-        details ? JSON.stringify(details) : null
-      ]
-    );
-  } catch (err) {
-    console.error('Failed to write payroll audit log:', err);
-  }
-}
 // ───────── SHIPMENT DOCUMENT UPLOADS ─────────
 
 const uploadsRoot = path.join(__dirname, 'public', 'uploads', 'shipments');
@@ -354,7 +325,8 @@ const {
   syncEmployeesFromQuickBooks,
   listPayrollAccounts,
   listClasses,
-  setPrintOnCheckName
+  setPrintOnCheckName,
+  ensureNameOnChecksColumns
 } = require('./quickbooks');
 
 
@@ -2503,6 +2475,13 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
     return res.status(400).json({ error: 'Invalid employee id.' });
   }
 
+  try {
+    await ensureNameOnChecksColumns();
+  } catch (err) {
+    console.error('Error ensuring name_on_checks columns:', err);
+    return res.status(500).json({ error: 'Database migration failed.' });
+  }
+
   const raw = (req.body && req.body.name_on_checks) || '';
   const name = String(raw || '').trim();
   const normalized = name ? name : null;
@@ -2565,7 +2544,13 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
     }
 
     await dbRun(
-      'UPDATE employees SET name_on_checks = ? WHERE id = ?',
+      `
+        UPDATE employees
+        SET
+          name_on_checks = ?,
+          name_on_checks_updated_at = datetime('now')
+        WHERE id = ?
+      `,
       [normalized, id]
     );
 
@@ -2583,6 +2568,15 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
           payeeRef,
           error: qboWarning
         });
+      } else if (qboRes?.ok && !qboRes.skipped) {
+        await dbRun(
+          `
+            UPDATE employees
+            SET name_on_checks_qbo_updated_at = datetime('now')
+            WHERE id = ?
+          `,
+          [id]
+        );
       }
     }
 
@@ -2756,7 +2750,7 @@ app.post('/api/sync/payroll-accounts', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/projects', (req, res) => {
+app.post('/api/projects', requireAuth, async (req, res) => {
   const {
     id,
     name,
@@ -2767,71 +2761,116 @@ app.post('/api/projects', (req, res) => {
     geo_radius
   } = req.body;
 
-  // Normalize coords
-  const lat =
-    geo_lat === '' || geo_lat === null || geo_lat === undefined
+  const DEFAULT_RADIUS = 120; // 120 meters ≈ 400 feet
+  const hasLatInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'geo_lat');
+  const hasLngInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'geo_lng');
+  const hasRadiusInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'geo_radius');
+
+  const latInput =
+    !hasLatInput || geo_lat === '' || geo_lat === null || geo_lat === undefined
       ? null
       : Number(geo_lat);
-  const lng =
-    geo_lng === '' || geo_lng === null || geo_lng === undefined
+  const lngInput =
+    !hasLngInput || geo_lng === '' || geo_lng === null || geo_lng === undefined
       ? null
       : Number(geo_lng);
-const DEFAULT_RADIUS = 120; // 120 meters ≈ 400 feet
+  const radiusInput =
+    !hasRadiusInput || geo_radius === '' || geo_radius === null || geo_radius === undefined
+      ? DEFAULT_RADIUS
+      : Number(geo_radius);
 
-const radius =
-  geo_radius === '' || geo_radius === null || geo_radius === undefined
-    ? DEFAULT_RADIUS
-    : Number(geo_radius);
-
-if (radius !== null && Number.isNaN(radius)) {
-  return res.status(400).json({ error: 'Invalid geofence radius.' });
-}
-
-  // Either both null, or both provided
-  if ((lat === null) !== (lng === null)) {
-    return res
-      .status(400)
-      .json({ error: 'Please enter both latitude and longitude, or leave both blank.' });
+  if (hasLatInput && latInput !== null && Number.isNaN(latInput)) {
+    return res.status(400).json({ error: 'Invalid geofence latitude.' });
+  }
+  if (hasLngInput && lngInput !== null && Number.isNaN(lngInput)) {
+    return res.status(400).json({ error: 'Invalid geofence longitude.' });
+  }
+  if (hasRadiusInput && radiusInput !== null && Number.isNaN(radiusInput)) {
+    return res.status(400).json({ error: 'Invalid geofence radius.' });
   }
 
-  if ((lat !== null && Number.isNaN(lat)) || (lng !== null && Number.isNaN(lng))) {
-    return res.status(400).json({ error: 'Invalid geofence coordinates.' });
-  }
-
-  if (id) {
-    // ✅ EXISTING PROJECT (from QuickBooks): ONLY update geofence
-    db.run(
-      `
-        UPDATE projects
-        SET geo_lat = ?, geo_lng = ?, geo_radius = ?, project_timezone = ?
-        WHERE id = ?
-      `,
-      [lat, lng, radius, project_timezone || null, id],
-      function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) {
-          return res.status(404).json({ error: 'Project not found.' });
-        }
-        res.json({ ok: true, id });
+  try {
+    if (id) {
+      const existing = await dbGet(
+        `SELECT geo_lat, geo_lng, geo_radius FROM projects WHERE id = ?`,
+        [id]
+      );
+      if (!existing) {
+        return res.status(404).json({ error: 'Project not found.' });
       }
-    );
-  } else {
+
+      const finalLat = hasLatInput ? latInput : existing.geo_lat;
+      const finalLng = hasLngInput ? lngInput : existing.geo_lng;
+      const finalRadius =
+        hasRadiusInput ? radiusInput : existing.geo_radius;
+
+      if ((finalLat === null) !== (finalLng === null)) {
+        return res.status(400).json({
+          error: 'Please enter both latitude and longitude, or leave both blank.'
+        });
+      }
+      if (
+        (finalLat !== null && Number.isNaN(finalLat)) ||
+        (finalLng !== null && Number.isNaN(finalLng))
+      ) {
+        return res.status(400).json({ error: 'Invalid geofence coordinates.' });
+      }
+      if (finalRadius !== null && Number.isNaN(finalRadius)) {
+        return res.status(400).json({ error: 'Invalid geofence radius.' });
+      }
+
+      const updateRes = await dbRun(
+        `
+          UPDATE projects
+          SET geo_lat = ?, geo_lng = ?, geo_radius = ?, project_timezone = ?
+          WHERE id = ?
+        `,
+        [finalLat, finalLng, finalRadius, project_timezone || null, id]
+      );
+
+      if (!updateRes || updateRes.changes === 0) {
+        return res.status(404).json({ error: 'Project not found.' });
+      }
+
+      return res.json({ ok: true, id });
+    }
+
     // (Optional) manual project insert – here name IS required
     if (!name) {
       return res.status(400).json({ error: 'Project name is required.' });
     }
 
-db.run(
-  `
-    INSERT INTO projects (name, customer_name, project_timezone, geo_lat, geo_lng, geo_radius)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `,
-  [name, customer_name || null, project_timezone || null, lat, lng, radius],
-  function (err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ ok: true, id: this.lastID });
-  }
-);
+    const finalLat = hasLatInput ? latInput : null;
+    const finalLng = hasLngInput ? lngInput : null;
+    const finalRadius = hasRadiusInput ? radiusInput : DEFAULT_RADIUS;
+
+    if ((finalLat === null) !== (finalLng === null)) {
+      return res.status(400).json({
+        error: 'Please enter both latitude and longitude, or leave both blank.'
+      });
+    }
+    if (
+      (finalLat !== null && Number.isNaN(finalLat)) ||
+      (finalLng !== null && Number.isNaN(finalLng))
+    ) {
+      return res.status(400).json({ error: 'Invalid geofence coordinates.' });
+    }
+    if (finalRadius !== null && Number.isNaN(finalRadius)) {
+      return res.status(400).json({ error: 'Invalid geofence radius.' });
+    }
+
+    const insert = await dbRun(
+      `
+        INSERT INTO projects (name, customer_name, project_timezone, geo_lat, geo_lng, geo_radius)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [name, customer_name || null, project_timezone || null, finalLat, finalLng, finalRadius]
+    );
+
+    return res.json({ ok: true, id: insert.lastID });
+  } catch (err) {
+    console.error('Error saving project:', err);
+    return res.status(500).json({ error: 'Failed to save project.' });
   }
 });
 
@@ -2928,7 +2967,7 @@ function pickFields(obj, keys = []) {
   }, {});
 }
 
-app.get('/api/time-exceptions', async (req, res) => {
+app.get('/api/time-exceptions', requireAuth, async (req, res) => {
   try {
     const {
       start,
@@ -3443,7 +3482,7 @@ app.get('/api/time-exceptions', async (req, res) => {
 
 
 
-app.post('/api/time-exceptions/:id/review', async (req, res) => {
+app.post('/api/time-exceptions/:id/review', requireAuth, async (req, res) => {
   const exceptionId = Number(req.params.id);
   const {
     source,          // 'punch' | 'time_entry'
@@ -3863,7 +3902,7 @@ app.post('/api/time-exceptions/:id/review', async (req, res) => {
   }
 });
 
-app.post('/api/time-exceptions/:id/resolve', async (req, res) => {
+app.post('/api/time-exceptions/:id/resolve', requireAuth, async (req, res) => {
   const punchId = Number(req.params.id);
   if (!punchId) {
     return res.status(400).json({ ok: false, error: 'Invalid punch ID.' });
@@ -3905,7 +3944,7 @@ app.post('/api/time-exceptions/:id/resolve', async (req, res) => {
   }
 });
 
-app.get('/api/time-punches/open', (req, res) => {
+app.get('/api/time-punches/open', requireAuth, (req, res) => {
   const sql = `
     SELECT
       tp.id,
@@ -3928,7 +3967,7 @@ app.get('/api/time-punches/open', (req, res) => {
   });
 });
 
-app.get('/api/projects', (req, res) => {
+app.get('/api/projects', requireAuth, (req, res) => {
   const status = req.query.status || 'active'; // 'active' | 'inactive' | 'all'
 
   let whereClause = '';
@@ -3956,7 +3995,7 @@ app.get('/api/projects', (req, res) => {
   });
 });
 
-app.get('/api/time-entries', (req, res) => {
+app.get('/api/time-entries', requireAuth, (req, res) => {
   let { start, end, employee_id, project_id } = req.query;
 
   // If nothing specified, default to "today"
@@ -4061,7 +4100,7 @@ app.get('/api/time-entries', (req, res) => {
 });
 
 
-app.post('/api/time-entries', (req, res) => {
+app.post('/api/time-entries', requireAuth, (req, res) => {
   const { employee_id, project_id, start_date, end_date, start_time, end_time, hours } = req.body;
 
   // Trim string inputs to block empty/whitespace-only dates/times
@@ -4112,7 +4151,7 @@ db.run(
   );
 });
 
-app.post('/api/time-entries/:id', (req, res) => {
+app.post('/api/time-entries/:id', requireAuth, (req, res) => {
   const id = Number(req.params.id);
   const {
     employee_id,
@@ -4250,7 +4289,7 @@ app.post('/api/time-entries/:id', (req, res) => {
 });
 
 // Mark a time entry as "accuracy verified" (or clear verification)
-app.post('/api/time-entries/:id/verify', (req, res) => {
+app.post('/api/time-entries/:id/verify', requireAuth, (req, res) => {
   const id = Number(req.params.id);
   if (!id) {
     return res.status(400).json({ error: 'Invalid time entry id.' });
@@ -4310,7 +4349,7 @@ app.post('/api/time-entries/:id/verify', (req, res) => {
 });
 
 // Mark a time entry as "exception resolved" (admin/foreman)
-app.post('/api/time-entries/:id/resolve', (req, res) => {
+app.post('/api/time-entries/:id/resolve', requireAuth, (req, res) => {
   const id = Number(req.params.id);
   if (!id) {
     return res.status(400).json({ error: 'Invalid time entry id.' });
@@ -5522,6 +5561,89 @@ function computeItemsVerifiedFlagFromItems(items) {
   return allVerified ? 1 : 0;
 }
 
+async function ensureShipmentAccess(req) {
+  // 1) Try session-based auth first (employees with admin or kiosk shipment access)
+  if (req.session && req.session.employeeId) {
+    const emp = await dbGet(
+      `
+        SELECT id, is_admin, kiosk_can_view_shipments, IFNULL(active, 1) AS active
+        FROM employees
+        WHERE id = ?
+      `,
+      [req.session.employeeId]
+    );
+
+    if (emp && emp.active && (emp.is_admin || emp.kiosk_can_view_shipments)) {
+      return { ok: true, employee: emp, via: 'session' };
+    }
+  }
+
+  // 1b) Admin console session without a linked employee (e.g., bootstrap admin user)
+  if (req.session && req.session.userId && !req.session.employeeId) {
+    return { ok: true, via: 'session' };
+  }
+
+  // 2) Fallback for kiosk/field devices: require employee_id + device credentials
+  const empId = Number(
+    (req.body && req.body.employee_id) ||
+      (req.query && req.query.employee_id)
+  );
+  const deviceId = (
+    (req.body && req.body.device_id) ||
+    (req.query && req.query.device_id) ||
+    ''
+  ).trim();
+  const deviceSecret = (
+    (req.body && req.body.device_secret) ||
+    (req.query && req.query.device_secret) ||
+    ''
+  ).trim();
+
+  if (!empId || !deviceId || !deviceSecret) {
+    return { ok: false, status: 401, error: 'Not authenticated' };
+  }
+
+  const kioskRow = await dbGet(
+    'SELECT id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
+    [deviceId]
+  );
+  if (!kioskRow) {
+    return { ok: false, status: 403, error: 'Not authorized' };
+  }
+
+  let expectedSecret = kioskRow.device_secret || '';
+  if (!expectedSecret && deviceSecret) {
+    expectedSecret = deviceSecret;
+    try {
+      await dbRun(
+        'UPDATE kiosks SET device_secret = ? WHERE id = ?',
+        [deviceSecret, kioskRow.id]
+      );
+    } catch (err) {
+      console.error('Failed to backfill kiosk device_secret (shipments):', err);
+    }
+  }
+
+  if (!expectedSecret || expectedSecret !== deviceSecret) {
+    return { ok: false, status: 403, error: 'Not authorized' };
+  }
+
+  const emp = await dbGet(
+    `
+      SELECT id, is_admin, kiosk_can_view_shipments, IFNULL(active, 1) AS active
+      FROM employees
+      WHERE id = ?
+    `,
+    [empId]
+  );
+
+  if (!emp || !emp.active || !(emp.is_admin || emp.kiosk_can_view_shipments)) {
+    return { ok: false, status: 403, error: 'Not authorized' };
+  }
+
+  return { ok: true, employee: emp, kiosk: kioskRow, via: 'kiosk' };
+}
+
 function normalizeNotificationStatuses(rawStatuses) {
   const arr = Array.isArray(rawStatuses) ? rawStatuses : [];
   const out = [];
@@ -6650,30 +6772,11 @@ app.get('/api/shipments/:id/documents', async (req, res) => {
       return res.status(400).json({ error: 'Invalid shipment id.' });
     }
 
-    // Auth guard: session OR kiosk admin with employee_id
-    const hasSession = req.session && req.session.userId;
-    if (!hasSession) {
-      const empId = Number(req.query.employee_id);
-      if (!empId) {
-        return res.status(401).json({ error: 'Not authenticated' });
-      }
-
-      const emp = await dbGet(
-        `
-          SELECT id, is_admin, kiosk_can_view_shipments, IFNULL(active, 1) AS active
-          FROM employees
-          WHERE id = ?
-        `,
-        [empId]
-      );
-
-      if (
-        !emp ||
-        !emp.active ||
-        !(emp.is_admin || emp.kiosk_can_view_shipments)
-      ) {
-        return res.status(403).json({ error: 'Not authorized' });
-      }
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
     }
 
     const docs = await dbAll(
@@ -6836,29 +6939,11 @@ app.post('/api/shipments/:id/storage', async (req, res) => {
       employee_id
     } = req.body || {};
 
-    // Auth guard: normal session OR kiosk admin/foreman identified by employee_id
-    if (!(req.session && req.session.userId)) {
-      const empId = Number(employee_id);
-      if (!empId) {
-        return res.status(401).json({ error: 'Not authenticated' });
-      }
-
-      const emp = await dbGet(
-        `
-          SELECT id, is_admin, kiosk_can_view_shipments, IFNULL(active, 1) AS active
-          FROM employees
-          WHERE id = ?
-        `,
-        [empId]
-      );
-
-      if (
-        !emp ||
-        !emp.active ||
-        !(emp.is_admin || emp.kiosk_can_view_shipments)
-      ) {
-        return res.status(403).json({ error: 'Not authorized' });
-      }
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
     }
 
     const existing = await dbGet(
@@ -6937,6 +7022,13 @@ app.post('/api/shipments/:id/verify-items', async (req, res) => {
   }
 
   try {
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
+    }
+
     const nowIso = new Date().toISOString();
 
     const stmt = db.prepare(`
@@ -7381,37 +7473,14 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
       status,
       ready_for_pickup,
       start,
-      end,
-      employee_id
+      end
     } = req.query || {};
 
-    // --- Auth guard ---
-    const hasSession = req.session && req.session.userId;
-    let kioskEmployee = null;
-
-    if (!hasSession) {
-      // Allow kiosk admins/foremen to access shipments if they identify themselves
-      const empIdNum = Number(employee_id);
-      if (!empIdNum) {
-        return res.status(401).json({ error: 'Not authenticated' });
-      }
-
-      kioskEmployee = await dbGet(
-        `
-          SELECT id, is_admin, kiosk_can_view_shipments, IFNULL(active, 1) AS active
-          FROM employees
-          WHERE id = ?
-        `,
-        [empIdNum]
-      );
-
-      if (
-        !kioskEmployee ||
-        !kioskEmployee.active ||
-        !(kioskEmployee.is_admin || kioskEmployee.kiosk_can_view_shipments)
-      ) {
-        return res.status(403).json({ error: 'Not authorized' });
-      }
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
     }
 
     // ───── DETAIL MODE: single shipment with items + history ─────

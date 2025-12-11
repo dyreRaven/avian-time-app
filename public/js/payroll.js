@@ -23,6 +23,24 @@ let lastPayrollResults = null;
 let lastPayrollRunId = null;
 let lastTimeEntriesContext = null;
 
+function collectPayrollWarnings(results) {
+  if (!Array.isArray(results)) return [];
+  const list = [];
+  results.forEach(r => {
+    if (!r) return;
+    const warnings = Array.isArray(r.warnings) ? r.warnings : [];
+    const codes = Array.isArray(r.warningCodes) ? r.warningCodes : [];
+    warnings.forEach((msg, idx) => {
+      list.push({
+        employee: r.employeeName || '(Employee)',
+        message: msg,
+        code: codes[idx] || codes[0] || null
+      });
+    });
+  });
+  return list;
+}
+
 // Utils
 function formatDateUS(dateInput) {
   if (!dateInput) return '';
@@ -1096,9 +1114,13 @@ currentPayrollRows.forEach(r => {
     const results = Array.isArray(data.results) ? data.results : [];
     const failed = results.filter(r => r && r.ok === false);
     const okList = results.filter(r => r && r.ok !== false);
+    const warnings = collectPayrollWarnings(results);
     let msg = `Checks created successfully.\nPayroll run ID: ${data.payrollRunId || '(none)'}`;
     if (results.length) msg += `\n\nSummary: ${okList.length} succeeded, ${failed.length} failed.`;
     if (failed.length) msg += '\n\nFailed:\n' + failed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
+    if (warnings.length) {
+      msg += '\n\nDiscrepancies:\n' + warnings.map(w => `• ${w.employee} – ${w.message}`).join('\n');
+    }
     alert(msg);
     if (retryBtn) retryBtn.disabled = !failed.length;
     if (typeof loadPayrollSummary === 'function') loadPayrollSummary();
@@ -1176,9 +1198,13 @@ async function retryFailedChecksForCurrentRun() {
     const results = Array.isArray(data.results) ? data.results : [];
     const failedAgain = results.filter(r => r && r.ok === false);
     const succeeded = results.filter(r => r && r.ok !== false);
+    const warnings = collectPayrollWarnings(results);
     let msg = `Retry complete.\nPayroll run ID: ${data.payrollRunId || lastPayrollRunId || '(none)'}`;
     if (results.length) msg += `\n\nSummary: ${succeeded.length} succeeded, ${failedAgain.length} failed.`;
     if (failedAgain.length) msg += '\n\nStill failing:\n' + failedAgain.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
+    if (warnings.length) {
+      msg += '\n\nDiscrepancies:\n' + warnings.map(w => `• ${w.employee} – ${w.message}`).join('\n');
+    }
     alert(msg);
     if (retryBtn) retryBtn.disabled = !failedAgain.length;
     if (typeof loadPayrollSummary === 'function') loadPayrollSummary();

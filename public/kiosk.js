@@ -7,6 +7,7 @@ const CURRENT_PROJECT_KEY = 'avian_kiosk_current_project_v1';
 const DEVICE_ID_KEY = 'avian_kiosk_device_id_v1';
 const DEVICE_SECRET_KEY = 'avian_kiosk_device_secret_v1';
 const PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
+const APP_TIMEZONE = 'America/Puerto_Rico';
 
 const LANG_COPY = {
   en: {
@@ -123,6 +124,7 @@ let kioskConfig = {
   require_photo: 0
 };
 let kioskSessions = [];
+let kioskSessionsLoaded = false;
 let activeSessionId = null;
 let justCreatedPin = false;
 let offlineSyncTimerId = null;
@@ -597,6 +599,7 @@ async function initKioskConfig() {
     if (data && data.kiosk) {
       kioskConfig = data.kiosk;
       kioskSessions = data.sessions || [];
+      kioskSessionsLoaded = true;
       activeSessionId = data.active_session_id || null;
       if (data.kiosk.device_secret) {
         setDeviceSecret(data.kiosk.device_secret);
@@ -622,6 +625,7 @@ async function refreshKioskProjectFromServer() {
     if (data && data.kiosk) {
       kioskConfig = data.kiosk;
       kioskSessions = data.sessions || kioskSessions;
+      kioskSessionsLoaded = true;
       activeSessionId = data.active_session_id || activeSessionId;
       if (data.kiosk.device_secret) {
         setDeviceSecret(data.kiosk.device_secret);
@@ -659,8 +663,28 @@ function markKioskDayStarted() {
   }
 }
 
+function hasTodayTimesheet() {
+  let today;
+  try {
+    today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: APP_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
+  } catch {
+    const now = new Date();
+    today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+      now.getDate()
+    ).padStart(2, '0')}`;
+  }
+  return (kioskSessions || []).some(
+    s => (s.date || '').slice(0, 10) === today && s.project_id
+  );
+}
+
 function openAdminDashboard(employeeId, options = {}) {
-  const { skipPin = false } = options || {};
+  const { skipPin = false, forceStart = false } = options || {};
   try {
     const params = new URLSearchParams();
     const deviceId = kioskDeviceId || getOrCreateDeviceId();
@@ -669,7 +693,11 @@ function openAdminDashboard(employeeId, options = {}) {
     params.set('employee_id', employeeId);
 
     // Open in start-of-day mode if day not started OR no project set yet
-    if (!isKioskDayStarted() || !(kioskConfig && kioskConfig.project_id)) {
+    if (
+      forceStart ||
+      !isKioskDayStarted() ||
+      !(kioskConfig && kioskConfig.project_id)
+    ) {
       params.set('start', '1');
     }
 
@@ -1147,7 +1175,7 @@ async function submitPin() {
     let hasProject = !!(kioskConfig && kioskConfig.project_id);
     const activeSession = getActiveSession();
     const hasSession = !!(activeSession && activeSession.project_id);
-    const dayStarted = isKioskDayStarted();
+    const hasTimesheetToday = hasTodayTimesheet();
 
     // If the server says there's an active session, ensure the kiosk project is set from it.
     if (!hasProject && hasSession && activeSession && activeSession.project_id) {
@@ -1156,12 +1184,12 @@ async function submitPin() {
     }
 
     // Admins should be routed to the kiosk-admin flow when no active timesheet is available
-    // (either no session yet, or we haven't started the day with a project).
-    const needsTimesheet = employee.is_admin && !(hasSession || (hasProject && dayStarted));
+    // (no session today and we have up-to-date session data).
+    const needsTimesheet = employee.is_admin && kioskSessionsLoaded && !hasTimesheetToday;
 
     if (needsTimesheet) {
       hidePinModal();
-      openAdminDashboard(employee.id, { skipPin: true });
+      openAdminDashboard(employee.id, { skipPin: true, forceStart: true });
       return;
     }
 
@@ -1238,6 +1266,14 @@ async function submitPin() {
 
   if (employee.require_photo && !currentPhotoBase64) {
     setPinOk(getCopy('pinStatusPinCreatedPhoto'));
+    return;
+  }
+
+  const needsTimesheet =
+    employee.is_admin && kioskSessionsLoaded && !hasTodayTimesheet();
+  if (needsTimesheet) {
+    hidePinModal();
+    openAdminDashboard(employee.id, { skipPin: true, forceStart: true });
     return;
   }
 
@@ -1356,6 +1392,15 @@ async function performPunch(employee_id) {
     } else {
       status.textContent = msg || 'Could not sync punch.';
       status.className = 'glass-status kiosk-status kiosk-status-error';
+    }
+
+    const isAdminPunch =
+      (employeesCache || []).some(
+        e => String(e.id) === String(employee_id) && e.is_admin
+      );
+    if (showProjectMsg && isAdminPunch) {
+      openAdminDashboard(employee_id, { skipPin: true, forceStart: true });
+      return;
     }
 
     const empSel = document.getElementById('kiosk-employee');

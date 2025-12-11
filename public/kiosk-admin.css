@@ -258,7 +258,7 @@ body {
   justify-content: space-between;
   align-items: flex-start;
   gap: 18px;
-  margin-bottom: 6px;
+  margin-bottom: 14px;
   margin-top: 0;
 }
 
@@ -295,7 +295,7 @@ body {
 .card-header-actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 2rem;
 }
 
 .qb-actions {
@@ -5182,7 +5182,7 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 18px;
   flex-wrap: wrap;
 }
 
@@ -5292,12 +5292,17 @@ body {
 
 /* ───────── KIOSK-ADMIN SHIPMENTS (MATCH OTHER CARDS) ───────── */
 
+/* Extra breathing room inside the shipments card */
+#ka-shipments-card {
+  padding: 24px 24px 26px;
+}
+
 /* Filters row */
 .ka-shipments-filters {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 24px;
   flex-wrap: wrap;
 }
 
@@ -5632,11 +5637,12 @@ body {
 }
 
 .ka-session-head {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 12px;
   width: 100%;
+  flex-wrap: nowrap;
 }
 
 .ka-session-meta {
@@ -5650,18 +5656,14 @@ body {
 
 .ka-session-meta-right {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 10px 14px;
   justify-content: flex-end;
   align-items: center;
   text-align: right;
   margin-left: auto;
-  position: static;
-  justify-self: end;
-  flex: 0 0 auto;
   min-width: 0;
-  flex-shrink: 0;
-  width: max-content;
+  flex: 0 0 auto;
 }
 
 .ka-session-tag {
@@ -5671,6 +5673,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
 }
 
 .ka-session-workers-btn {
@@ -5705,15 +5708,48 @@ body {
 
 @media (max-width: 640px) {
   .ka-session-head {
-    grid-template-columns: 1fr;
-    align-items: flex-start;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
   .ka-session-meta-right {
+    margin-left: 0;
     justify-content: flex-start;
     text-align: left;
-    justify-self: start;
-    margin-left: 0;
+    width: 100%;
   }
+}
+
+@media (min-width: 641px) {
+  .ka-session-head { flex-wrap: nowrap; }
+  .ka-session-meta-right { flex-wrap: nowrap; }
+}
+
+/* Ensure timesheet rows use the flex spacing above */
+#ka-session-list .ka-session-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  flex-wrap: nowrap;
+}
+#ka-session-list .ka-session-info {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+#ka-session-list .ka-session-meta-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  justify-content: flex-end;
+  align-items: center;
+  text-align: right;
+  margin-left: auto;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 #ka-live-card .card-header.ka-live-header {
@@ -5865,19 +5901,21 @@ body {
 }
 
 #ka-notify-open {
-  width: 44px;
-  height: 44px;
+  width: auto;
+  height: auto;
   min-width: 0;
-  padding: 10px;
-  border-radius: 50%;
-  border: 1px solid #0f766e;
-  background: #f7fdfa;
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.12);
+  padding: 0;
+  margin-right: 12px;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 
-#ka-notify-open svg {
-  width: 22px;
-  height: 22px;
+#ka-notify-open img {
+  width: 26px;
+  height: 26px;
+  display: block;
 }
 
 .ka-live-header-top {
@@ -5939,7 +5977,7 @@ body {
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  flex: 1 1 0;
+  flex: 1 1 320px;
   min-width: 0;
 }
 
@@ -6712,14 +6750,350 @@ body {
   color: #0f172a;
 }
 
+/* ───────── Updated shipments list layout ───────── */
+.ka-shipments-list {
+  margin-top: 6px;
+}
+
+.ka-ship-card {
+  padding: 14px 16px;
+  gap: 10px;
+}
+
+.ka-ship-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ka-ship-card-titlewrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ka-ship-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ka-ship-title {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--slate-800);
+  word-break: break-word;
+}
+
+.ka-ship-bol-pill {
+  font-size: 0.82rem;
+  color: #0f766e;
+  background: #e6f4ef;
+  border: 1px solid #cde7df;
+  padding: 4px 8px;
+  border-radius: 999px;
+  line-height: 1.2;
+  text-decoration: none;
+}
+
+.ka-docs-btn {
+  border: none;
+  background: transparent;
+  color: #0f766e;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.ka-docs-btn svg {
+  fill: currentColor;
+  width: 24px;
+  height: 24px;
+}
+
+.ka-docs-btn:hover {
+  transform: translateY(-1px);
+}
+
+#ka-docs-modal {
+  padding: 26px 26px 22px;
+}
+
+#ka-docs-body {
+  padding: 10px 4px 12px;
+}
+
+#ka-docs-modal h3 {
+  margin-bottom: 14px;
+}
+
+#ka-docs-modal .ka-modal-actions {
+  margin-top: 6px;
+}
+
+.ka-docs-list ul {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  color: #0f172a;
+}
+
+.ka-docs-list li {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ka-doc-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ka-docs-list a {
+  color: #0f172a;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.ka-doc-name {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ka-doc-type {
+  font-size: 0.8rem;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.ka-docs-list a:hover {
+  color: #0f766e;
+}
+
+.ka-doc-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: #0f766e;
+  text-decoration: none;
+}
+
+.ka-doc-download:hover {
+  transform: translateY(-1px);
+}
+
+.ka-ship-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.86rem;
+  color: var(--slate-500);
+}
+
+.ka-ship-meta-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ka-ship-header-right {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ka-ship-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ka-ship-status-pill.is-green {
+  background: #e6f4ef;
+  color: #0f766e;
+}
+
+.ka-ship-status-pill.is-amber {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.ka-ship-status-pill.is-gray {
+  background: #f3f4f6;
+  color: #475569;
+}
+
+.ka-ship-verify-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ka-ship-verify-meta {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ka-ship-verify-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  width: fit-content;
+}
+
+.ka-ship-verify-pill.done {
+  background: #ecfdf3;
+  color: #166534;
+}
+
+.ka-ship-verify-pill.partial {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.ka-ship-verify-pill.none {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.ka-ship-verify-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.ka-ship-verify-bar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #0fb27a, #0f766e);
+  transition: width 0.2s ease;
+}
+
+.ka-ship-payment-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.ka-ship-verify-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #475569;
+  text-align: right;
+}
+
+.ka-ship-verify-label.done {
+  color: #166534;
+}
+
+.ka-ship-verify-label.partial {
+  color: #c2410c;
+}
+
+.ka-ship-verify-label.none {
+  color: #475569;
+}
+
+.ka-ship-pay-badge {
+  padding: 5px 10px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid #e5e7eb;
+  color: #334155;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.ka-ship-pay-badge.paid {
+  background: #ecfdf3;
+  border-color: #bbf7d0;
+  color: #15803d;
+}
+
+.ka-ship-pay-badge.unpaid {
+  background: #f8fafc;
+  border-color: #e5e7eb;
+  color: #475569;
+}
+
+.ka-pay-icon {
+  font-weight: 800;
+}
+
+.ka-ship-pay-badge.paid .ka-pay-icon {
+  color: #15803d;
+}
+
+.ka-ship-pay-badge.unpaid .ka-pay-icon {
+  color: #b91c1c;
+}
+
+.ka-ship-card-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.ka-ship-card-actions .btn {
+  min-height: 44px;
+}
+
 /* Items modal */
 #ka-items-modal {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.5);
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
+  justify-content: flex-end;
   z-index: 9999;
 }
 
@@ -6728,28 +7102,44 @@ body {
 }
 
 .ka-items-modal-content {
-  width: min(960px, 95vw);
-  max-height: 90vh;
+  width: min(1080px, 94vw);
+  height: 100vh;
   background: #ffffff;
-  border-radius: 16px;
+  border-top-left-radius: 18px;
+  border-bottom-left-radius: 18px;
   box-shadow: 0 24px 64px rgba(15,23,42,0.35);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  margin-left: auto;
 }
 
 .ka-items-modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 16px;
+  gap: 12px;
+  padding: 18px 20px 12px;
   border-bottom: 1px solid #e5e7eb;
 }
 
+.ka-items-modal-headings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
 .ka-items-modal-title {
-  font-size: 1rem;
+  font-size: 1.05rem;
   font-weight: 700;
   color: #111827;
+  word-break: break-word;
+}
+
+.ka-items-modal-sub {
+  font-size: 0.9rem;
+  color: #6b7280;
 }
 
 .ka-items-modal-close {
@@ -6760,16 +7150,16 @@ body {
 }
 
 .ka-items-modal-body {
-  padding: 12px 16px;
+  padding: 12px 20px 16px;
   overflow-y: auto;
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
 }
 
 .ka-items-modal-footer {
-  padding: 12px 16px;
+  padding: 14px 20px;
   border-top: 1px solid #e5e7eb;
   display: flex;
   justify-content: flex-end;
@@ -6795,6 +7185,110 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+/* Drawer tabs */
+.ka-items-tabs {
+  display: flex;
+  gap: 10px;
+  padding: 0 20px 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.ka-items-tab-btn {
+  border: 1px solid #d1d5db;
+  background: #f8fafc;
+  color: #0f172a;
+  padding: 8px 14px;
+  border-radius: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.ka-items-tab-btn.active {
+  background: #ecfdf3;
+  border-color: #bbf7d0;
+  color: #166534;
+}
+
+.ka-items-tab-panel {
+  display: none;
+}
+
+.ka-items-tab-panel.active {
+  display: block;
+}
+
+#ka-items-modal-body.active {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Overview panel */
+.ka-items-overview-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.ka-items-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.ka-items-overview-card {
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.ka-items-overview-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  margin-bottom: 2px;
+}
+
+.ka-items-overview-value {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.ka-items-docs {
+  border: 1px dashed #d1d5db;
+  border-radius: 12px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.ka-items-docs h4 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+  color: #0f172a;
+}
+
+.ka-items-docs ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #0f172a;
+}
+
+.ka-items-docs a {
+  color: #0ea5e9;
+}
+
+@media (max-width: 768px) {
+  .ka-items-modal-content {
+    width: 100%;
+    border-radius: 0;
+  }
 }
 
 .ka-ship-item-controls label {

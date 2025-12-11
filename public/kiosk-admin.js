@@ -74,6 +74,7 @@ let kaLiveRefreshTimer = null;
 let kaLiveRefreshInFlight = false;
 let kaSessionRefreshInFlight = false;
 let kaLiveProjectOverride = null;
+let kaDialogsOverridden = false;
 
 
 // --- Small helpers ---
@@ -89,6 +90,38 @@ function kaShowStatusMessage(message, variant = 'ok', lockMs = 0) {
   if (lockMs && Number(lockMs) > 0) {
     kaStatusLockUntil = Date.now() + Number(lockMs);
   }
+}
+
+function kaShowInlineAlert(message, variant = 'error', lockMs = 8000) {
+  kaShowStatusMessage(message, variant, lockMs);
+}
+
+function kaOverrideNativeDialogs() {
+  if (kaDialogsOverridden) return;
+  kaDialogsOverridden = true;
+  const safeAlert = (msg) => {
+    const text = msg === undefined || msg === null ? '' : String(msg);
+    kaShowInlineAlert(text || 'Notice', 'error', 8000);
+  };
+  try {
+    window.alert = safeAlert;
+  } catch {
+    // ignore override failures
+  }
+}
+kaOverrideNativeDialogs();
+
+async function fetchJSON(url, options = {}) {
+  const opts = Object.assign({ credentials: 'include' }, options);
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || data.message || 'Request failed');
+    err.status = res.status;
+    err.statusText = res.statusText;
+    throw err;
+  }
+  return data;
 }
 
 function kaClearStatusIfUnlocked() {
@@ -618,10 +651,10 @@ function kaRenderPaymentDocList(docs) {
 
 async function kaHydrateShipmentCard(shipmentId, adminId) {
   try {
+    const params = kaShipmentAuthParams();
+    const suffix = params.toString() ? `?${params.toString()}` : '';
     const resp = await fetchJSON(
-      `/api/shipments/${shipmentId}/documents${
-        adminId ? `?employee_id=${adminId}` : ''
-      }`
+      `/api/shipments/${shipmentId}/documents${suffix}`
     );
     const docs = kaNormalizeDocs(resp);
     const bolDoc = kaFindDocByType(docs, 'bol');
@@ -649,6 +682,16 @@ function kaSetBolLink(shipmentId, doc) {
   el.target = '_blank';
   el.rel = 'noopener noreferrer';
   el.classList.remove('disabled');
+}
+
+function kaShipmentAuthParams() {
+  const params = new URLSearchParams();
+  const adminId = kaAdminAuthId();
+  if (adminId) params.set('employee_id', adminId);
+  if (kaDeviceId) params.set('device_id', kaDeviceId);
+  const secret = kaGetDeviceSecret();
+  if (secret) params.set('device_secret', secret);
+  return params;
 }
 
 function kaUpdateBolDetail(shipmentId, doc) {
@@ -864,6 +907,69 @@ function kaToggleNotifyFields(enabled) {
   if (body) body.classList.toggle('hidden', !enabled);
 }
 
+function kaShipStatusTone(status) {
+  const st = (status || '').toLowerCase();
+  if (st.includes('cleared') || st.includes('picked up') || st.includes('release')) {
+    return 'is-green';
+  }
+  if (
+    st.includes('await') ||
+    st.includes('sail') ||
+    st.includes('transit') ||
+    st.includes('order') ||
+    st.includes('arrived') ||
+    st.includes('forwarder') ||
+    st.includes('port')
+  ) {
+    return 'is-amber';
+  }
+  return 'is-gray';
+}
+
+function kaShipVerificationInfo(sh) {
+  const total = Number(sh.items_total) || 0;
+  const verified = Number(sh.items_verified_count) || 0;
+  const percent = total ? Math.min(100, Math.round((verified / total) * 100)) : 0;
+
+  if (!total) {
+    return {
+      total: 0,
+      verified: 0,
+      percent: 0,
+      tone: 'none',
+      label: 'No items added'
+    };
+  }
+
+  if (verified >= total) {
+    return {
+      total,
+      verified,
+      percent: 100,
+      tone: 'done',
+      label: 'All items verified'
+    };
+  }
+
+  if (verified > 0) {
+    return {
+      total,
+      verified,
+      percent,
+      tone: 'partial',
+      label: `${verified}/${total} verified`
+    };
+  }
+
+  return {
+    total,
+    verified,
+    percent,
+    tone: 'none',
+    label: `0/${total} verified`
+  };
+}
+
 function kaRenderShipmentsList(list) {
   const wrap = document.getElementById('ka-shipments-list');
   if (!wrap) return;
@@ -876,36 +982,75 @@ function kaRenderShipmentsList(list) {
   wrap.innerHTML = '';
 
   list.forEach(sh => {
-    const verifiedText =
-      sh.items_total && sh.items_verified_count !== undefined
-        ? `${sh.items_verified_count || 0}/${sh.items_total} items verified`
-        : '';
+    const title = sh.title || sh.reference || `Shipment #${sh.id || ''}`;
+    const bol = sh.bol_number ? `BOL ${sh.bol_number}` : '';
+    const project = sh.project_name ? sh.project_name : 'No project set';
+    const verify = kaShipVerificationInfo(sh);
+    const statusClass = kaShipStatusTone(sh.status);
+    const shipperPaid = Number(sh.shipper_paid) === 1 ? 'paid' : 'unpaid';
+    const clearingPaid = Number(sh.customs_paid) === 1 ? 'paid' : 'unpaid';
 
     const card = document.createElement('div');
     card.className = 'ka-ship-card';
     card.dataset.shipmentId = sh.id;
+    card.dataset.kaOpenItems = sh.id;
     card.innerHTML = `
-      <div class="ka-ship-card-head">
-        <div>
-          <div class="ka-ship-title">${sh.title || sh.reference || `Shipment #${sh.id || ''}`}</div>
-          <div class="ka-ship-meta">
-            ${sh.project_name ? sh.project_name : 'No project set'}
-            ${sh.bol_number ? ` · BOL ${sh.bol_number}` : ''}
+      <div class="ka-ship-card-header">
+        <div class="ka-ship-card-titlewrap">
+          <div class="ka-ship-title-row">
+            <div class="ka-ship-title">${title}</div>
+          </div>
+          <div class="ka-ship-meta-row">
+            <span class="ka-ship-meta-text">${project}</span>
+            ${
+              sh.expected_arrival_date
+                ? `<span class="ka-ship-meta-text">ETA ${sh.expected_arrival_date}</span>`
+                : ''
+            }
           </div>
         </div>
-        <div class="ka-tag">${sh.status || 'Status'}</div>
+        <div class="ka-ship-header-right">
+          ${
+            bol
+              ? `<a class="ka-ship-bol-pill ka-ship-bol" data-bol-for="${sh.id}" href="javascript:void(0)">${bol}</a>`
+              : ''
+          }
+          <button type="button" class="ka-docs-btn" data-ka-docs="${sh.id}" aria-label="View documents">
+            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 3a1 1 0 0 0-1 1v9.586l-2.293-2.293a1 1 0 1 0-1.414 1.414l4 4a1 1 0 0 0 1.414 0l4-4a1 1 0 0 0-1.414-1.414L13 13.586V4a1 1 0 0 0-1-1Zm-7 14a1 1 0 0 0 0 2h14a1 1 0 1 0 0-2H5Z"/>
+            </svg>
+          </button>
+        </div>
       </div>
-      <div class="ka-ship-card-body">
-        ${verifiedText ? `<div class="ka-ship-meta">${verifiedText}</div>` : ''}
+
+      <div class="ka-ship-verify-row">
         ${
-          sh.expected_arrival_date
-            ? `<div class="ka-ship-meta">ETA ${sh.expected_arrival_date}</div>`
+          verify.total
+            ? `<div class="ka-ship-verify-bar"><span style="width:${verify.percent}%;"></span></div>`
             : ''
         }
+        <div class="ka-ship-verify-meta">
+          <div class="ka-ship-verify-label ${verify.tone}">
+            ${verify.tone === 'done' ? 'All items verified ✓' : verify.label}
+          </div>
+        </div>
       </div>
+
+      <div class="ka-ship-payment-row">
+        <span class="ka-ship-pay-badge ${shipperPaid}" data-ka-docs-payment="shipper" data-ka-docs-id="${sh.id}">
+          <span class="ka-pay-icon">${shipperPaid === 'paid' ? '✓' : '✕'}</span>
+          Shipper ${shipperPaid === 'paid' ? 'Paid' : 'Unpaid'}
+        </span>
+        <span class="ka-ship-pay-badge ${clearingPaid}" data-ka-docs-payment="clearing" data-ka-docs-id="${sh.id}">
+          <span class="ka-pay-icon">${clearingPaid === 'paid' ? '✓' : '✕'}</span>
+          Clearing ${clearingPaid === 'paid' ? 'Paid' : 'Unpaid'}
+        </span>
+      </div>
+
       <div class="ka-ship-card-actions">
+        <div class="ka-ship-status-pill ${statusClass}">${sh.status || 'Status'}</div>
         <button type="button" class="btn secondary btn-sm" data-ka-open-items="${sh.id}">
-          View / verify items
+          View & verify items
         </button>
       </div>
     `;
@@ -914,6 +1059,30 @@ function kaRenderShipmentsList(list) {
 
   if (!wrap.dataset.bound) {
     wrap.addEventListener('click', (e) => {
+      const bolLink = e.target.closest('.ka-ship-bol');
+      if (bolLink && bolLink.dataset.bolUrl) {
+        return; // let the BOL link open normally when available
+      }
+
+      const docsBtn = e.target.closest('[data-ka-docs]');
+      if (docsBtn) {
+        const sid = Number(docsBtn.dataset.kaDocs);
+        if (sid) {
+          kaOpenDocsModal(sid, 'all');
+        }
+        return;
+      }
+
+      const payBtn = e.target.closest('[data-ka-docs-payment]');
+      if (payBtn) {
+        const sid = Number(payBtn.dataset.kaDocsId);
+        const mode = payBtn.dataset.kaDocsPayment || 'all';
+        if (sid) {
+          kaOpenDocsModal(sid, mode);
+        }
+        return;
+      }
+
       const btn = e.target.closest('[data-ka-open-items]');
       if (btn) {
         const sid = Number(btn.dataset.kaOpenItems);
@@ -940,9 +1109,7 @@ async function kaLoadShipments() {
     listEl.innerHTML = '<div class="ka-ship-muted">Loading shipments…</div>';
   }
 
-  const params = new URLSearchParams();
-  const adminId = kaAdminAuthId();
-  if (adminId) params.set('employee_id', adminId);
+  const params = kaShipmentAuthParams();
 
   const statusVal = statusSel ? statusSel.value : '';
   if (statusVal && statusVal !== 'all') {
@@ -1492,7 +1659,9 @@ function kaRenderStorageSection(storageGrid, shipment, card) {
       const payload = {
         picked_up_by: pickedByInput?.value ? pickedByInput.value.trim() : '',
         picked_up_date: pickedDateInput?.value || null,
-        employee_id: adminId
+        employee_id: adminId,
+        device_id: kaDeviceId,
+        device_secret: kaGetDeviceSecret()
       };
 
       setStatus('Saving storage & pickup…');
@@ -2874,6 +3043,27 @@ async function kaInit() {
     kaCloseItemsModal();
   });
 
+  // Docs modal controls
+  const docsBackdrop = document.getElementById('ka-docs-backdrop');
+  document.getElementById('ka-docs-close')?.addEventListener('click', kaCloseDocsModal);
+  if (docsBackdrop) {
+    docsBackdrop.addEventListener('click', (e) => {
+      if (e.target === docsBackdrop) kaCloseDocsModal();
+    });
+  }
+  const docsBody = document.getElementById('ka-docs-body');
+  if (docsBody && !docsBody.dataset.bound) {
+    docsBody.addEventListener('click', (e) => {
+      const dl = e.target.closest('.ka-doc-download');
+      if (dl && dl.href) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.open(dl.href, '_blank');
+      }
+    });
+    docsBody.dataset.bound = '1';
+  }
+
   // ────────────────────────────────────────────────
   // Change-project (mid-day) button
   // This SHOULD NOT clock everyone out.
@@ -3252,7 +3442,13 @@ async function kaInit() {
     kaShowView('live');
   } catch (err) {
     console.error('Error initializing kiosk admin:', err);
-    alert('Error loading kiosk admin data: ' + (err.message || err));
+    const msg = err && err.message ? String(err.message) : 'Error loading kiosk admin data.';
+    kaShowInlineAlert(msg, 'error', 10000);
+    if (/auth|login|credential/i.test(msg)) {
+      setTimeout(() => {
+        window.location.href = '/auth.html';
+      }, 400);
+    }
   }
 }
 
@@ -3283,25 +3479,235 @@ function kaForceCloseAllModals() {
   kaCloseItemsModal();
 }
 
+function kaSetItemsTab(tab) {
+  const panels = document.querySelectorAll('[data-ka-items-panel]');
+  const buttons = document.querySelectorAll('[data-ka-items-tab]');
+  panels.forEach(panel => {
+    const match = (panel.dataset.kaItemsPanel || '') === tab;
+    panel.classList.toggle('active', match);
+    panel.hidden = !match;
+  });
+  buttons.forEach(btn => {
+    const match = (btn.dataset.kaItemsTab || '') === tab;
+    btn.classList.toggle('active', match);
+    btn.setAttribute('aria-pressed', match ? 'true' : 'false');
+  });
+}
+
+function kaCloseDocsModal() {
+  document.getElementById('ka-docs-backdrop')?.classList.add('hidden');
+}
+
+function kaDocMatchesShipper(doc) {
+  const t = (doc.doc_type || doc.doc_label || doc.title || '').toLowerCase();
+  return (
+    t.includes('freight') ||
+    t.includes('forwarder') ||
+    t.includes('shipping') ||
+    t.includes('ff') ||
+    t.includes('shipper')
+  );
+}
+
+function kaDocMatchesClearing(doc) {
+  const t = (doc.doc_type || doc.doc_label || doc.title || '').toLowerCase();
+  return (
+    t.includes('customs') ||
+    t.includes('clearing') ||
+    t.includes('broker') ||
+    t.includes('duties')
+  );
+}
+
+function kaRenderDocsList(docs) {
+  if (!Array.isArray(docs) || !docs.length) {
+    return '<div class="ka-ship-muted">(No documents uploaded)</div>';
+  }
+  const items = docs.map(doc => {
+    const href = doc.url || doc.file_path || '#';
+    const label =
+      doc.label || doc.doc_label || doc.title || doc.filename || 'Document';
+    const downloadName =
+      doc.filename || doc.original_name || doc.title || doc.label || 'document';
+    const type = doc.doc_type || doc.doc_label || '';
+    const extra = type ? `<span class="ka-doc-type">${type}</span>` : '';
+    return `
+      <li class="ka-doc-row">
+        <div class="ka-doc-line">
+          <a class="ka-doc-name" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>
+          ${extra}
+        </div>
+        <a class="ka-doc-download" href="${href}" target="_blank" rel="noopener noreferrer" download="${downloadName}" aria-label="Download document">
+          <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 3a1 1 0 0 0-1 1v9.586l-2.293-2.293a1 1 0 1 0-1.414 1.414l4 4a1 1 0 0 0 1.414 0l4-4a1 1 0 0 0-1.414-1.414L13 13.586V4a1 1 0 0 0-1-1Zm-7 14a1 1 0 0 0 0 2h14a1 1 0 1 0 0-2H5Z"/>
+          </svg>
+        </a>
+      </li>
+    `;
+  });
+  return `<ul>${items.join('')}</ul>`;
+}
+
+async function kaOpenDocsModal(shipmentId, mode = 'all') {
+  const backdrop = document.getElementById('ka-docs-backdrop');
+  const body = document.getElementById('ka-docs-body');
+  const titleEl = document.getElementById('ka-docs-title');
+  if (!backdrop || !body) return;
+
+  body.innerHTML = '<div class="ka-ship-muted">(loading…)</div>';
+  backdrop.classList.remove('hidden');
+
+  try {
+    const params = kaShipmentAuthParams();
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const resp = await fetchJSON(`/api/shipments/${shipmentId}/documents${suffix}`);
+    const docs = kaNormalizeDocs(resp);
+
+    let filtered = docs;
+    if (mode === 'shipper') filtered = docs.filter(kaDocMatchesShipper);
+    if (mode === 'clearing') filtered = docs.filter(kaDocMatchesClearing);
+
+    if (titleEl) {
+      const titles = {
+        shipper: 'Shipper proof of payment',
+        clearing: 'Clearing proof of payment',
+        all: 'Shipment documents'
+      };
+      titleEl.textContent = titles[mode] || titles.all;
+    }
+
+    body.innerHTML = filtered.length
+      ? kaRenderDocsList(filtered)
+      : '<div class="ka-ship-muted">(No documents found for this category.)</div>';
+  } catch (err) {
+    console.error('Failed to load documents', err);
+    body.innerHTML = `<div class="ka-ship-muted">(Error loading documents: ${err.message || err})</div>`;
+  }
+}
+
+function kaRenderShipmentOverview(shipment, docs = [], items = []) {
+  if (!shipment) {
+    return '<div class="ka-ship-muted">(No shipment details)</div>';
+  }
+
+  const statusClass = kaShipStatusTone(shipment.status);
+  const bolLabel = shipment.bol_number ? `BOL ${shipment.bol_number}` : '';
+  const project = shipment.project_name || 'No project set';
+  const vendor = shipment.vendor_name || '';
+  const tracking = shipment.tracking_number || '';
+  const freight = shipment.freight_forwarder || '';
+  const expected = shipment.expected_arrival_date || '—';
+  const storageDue = shipment.storage_due_date || '—';
+  const paidShipper = Number(shipment.shipper_paid) === 1 ? 'Paid' : 'Unpaid';
+  const paidCustoms = Number(shipment.customs_paid) === 1 ? 'Paid' : 'Unpaid';
+  const totalPrice =
+    shipment.total_price !== undefined && shipment.total_price !== null
+      ? `$${Number(shipment.total_price).toFixed(2)}`
+      : '—';
+
+  const verify = kaShipVerificationInfo(shipment);
+  const normalizedDocs = kaNormalizeDocs(docs);
+  const bolDoc = kaFindDocByType(normalizedDocs, 'bol');
+  const otherDocs = normalizedDocs.filter(d => !bolDoc || d !== bolDoc);
+
+  const docItems = [];
+  if (bolDoc) {
+    const href = bolDoc.url || bolDoc.file_path || '#';
+    const label =
+      bolDoc.label || bolDoc.doc_label || bolDoc.title || bolDoc.filename || 'BOL';
+    docItems.push(
+      `<li><a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a> (BOL)</li>`
+    );
+  }
+  otherDocs.forEach(doc => {
+    const href = doc.url || doc.file_path || '#';
+    const label = doc.label || doc.doc_label || doc.title || doc.filename || 'Document';
+    docItems.push(
+      `<li><a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a></li>`
+    );
+  });
+
+  const docsHtml = docItems.length
+    ? `<ul>${docItems.join('')}</ul>`
+    : '<div class="ka-ship-muted">(No documents uploaded)</div>';
+
+  return `
+    <div class="ka-items-overview-top">
+      <div class="ka-ship-status-pill ${statusClass}">${shipment.status || 'Status'}</div>
+      ${bolLabel ? `<span class="ka-ship-bol-pill">${bolLabel}</span>` : ''}
+      <span class="ka-ship-meta-text">${project}</span>
+    </div>
+
+    <div class="ka-items-overview-grid">
+      <div class="ka-items-overview-card">
+        <div class="ka-items-overview-label">Verification</div>
+        <div class="ka-items-overview-value">
+          ${verify.tone === 'done' ? 'All items verified ✓' : verify.label}
+        </div>
+        ${verify.total ? `<div class="ka-ship-verify-bar"><span style="width:${verify.percent}%;"></span></div>` : ''}
+      </div>
+
+      <div class="ka-items-overview-card">
+        <div class="ka-items-overview-label">Arrival / Storage</div>
+        <div class="ka-items-overview-value">ETA: ${expected}</div>
+        <div class="ka-ship-meta-text">Storage due: ${storageDue}</div>
+      </div>
+
+      <div class="ka-items-overview-card">
+        <div class="ka-items-overview-label">Payments</div>
+        <div class="ka-items-overview-value">Shipper: ${paidShipper}</div>
+        <div class="ka-items-overview-value">Clearing: ${paidCustoms}</div>
+        <div class="ka-ship-meta-text">Total: ${totalPrice}</div>
+      </div>
+
+      <div class="ka-items-overview-card">
+        <div class="ka-items-overview-label">Project / Vendor</div>
+        <div class="ka-items-overview-value">${project}</div>
+        ${vendor ? `<div class="ka-ship-meta-text">Vendor: ${vendor}</div>` : ''}
+        ${freight ? `<div class="ka-ship-meta-text">Forwarder: ${freight}</div>` : ''}
+        ${tracking ? `<div class="ka-ship-meta-text">Tracking: ${tracking}</div>` : ''}
+      </div>
+    </div>
+
+    <div class="ka-items-docs">
+      <h4>Documents</h4>
+      ${docsHtml}
+    </div>
+  `;
+}
+
 async function kaOpenItemsModal(shipmentId) {
   const modal = document.getElementById('ka-items-modal');
   const body = document.getElementById('ka-items-modal-body');
   const titleEl = document.getElementById('ka-items-modal-title');
-  if (!modal || !body || !titleEl) return;
+  const subEl = document.getElementById('ka-items-modal-sub');
+  const overviewEl = document.getElementById('ka-items-overview');
+  if (!modal || !body || !titleEl || !overviewEl) return;
 
   kaShipmentItemsDirty.clear();
   kaItemsModalShipmentId = shipmentId;
+  kaSetItemsTab('items');
+
+  if (!modal.dataset.tabsBound) {
+    const tabBtns = modal.querySelectorAll('[data-ka-items-tab]');
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.kaItemsTab || 'items';
+        kaSetItemsTab(tab);
+      });
+    });
+    modal.dataset.tabsBound = '1';
+  }
 
   // Always load fresh detail for this shipment
   let shipment = null;
   let items = [];
+  let documents = [];
   try {
+    const params = kaShipmentAuthParams();
+    params.set('shipment_id', shipmentId);
     const report = await fetchJSON(
-      '/api/reports/shipment-verification?shipment_id=' +
-        shipmentId +
-        (kaCurrentAdmin && kaCurrentAdmin.id
-          ? `&employee_id=${kaCurrentAdmin.id}`
-          : '')
+      '/api/reports/shipment-verification?' + params.toString()
     );
     shipment = report.shipment || {};
     items = Array.isArray(report.items) ? report.items : [];
@@ -3309,13 +3715,38 @@ async function kaOpenItemsModal(shipmentId) {
   } catch (err) {
     console.error('Failed to load shipment for items modal', err);
     body.innerHTML = '<div class="ka-ship-muted">(Error loading items)</div>';
+    overviewEl.innerHTML = '<div class="ka-ship-muted">(Error loading overview)</div>';
     modal.classList.remove('hidden');
     return;
   }
 
+  try {
+    const docParams = kaShipmentAuthParams();
+    const suffix = docParams.toString() ? `?${docParams.toString()}` : '';
+    const resp = await fetchJSON(`/api/shipments/${shipmentId}/documents${suffix}`);
+    documents = kaNormalizeDocs(resp);
+  } catch (err) {
+    console.warn('Failed to load shipment documents', err);
+    documents = [];
+  }
+
+  kaShipmentDetail = { shipment, items, documents };
+
+  const bolDoc = kaFindDocByType(documents, 'bol');
+  kaSetBolLink(shipmentId, bolDoc);
+
   titleEl.textContent =
-    (shipment.title || shipment.reference || `Shipment #${shipment.id}`) +
-    (shipment.bol_number ? ` · BOL ${shipment.bol_number}` : '');
+    (shipment.title || shipment.reference || `Shipment #${shipment.id || shipmentId || ''}`);
+  if (subEl) {
+    const parts = [
+      shipment.status || '',
+      shipment.bol_number ? `BOL ${shipment.bol_number}` : '',
+      shipment.project_name || ''
+    ].filter(Boolean);
+    subEl.textContent = parts.join(' · ');
+  }
+
+  overviewEl.innerHTML = kaRenderShipmentOverview(shipment, documents, items);
 
   body.innerHTML = '';
 

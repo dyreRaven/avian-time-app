@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <title>Avian Time – Kiosk Admin</title>
-  <link rel="stylesheet" href="/kiosk-admin.css" />
+  <link rel="stylesheet" href="/kiosk-admin.css?v=20241211g" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#10b981" />
 
@@ -152,21 +152,17 @@
   <div id="ka-shipments-card" class="card">
     <div class="card-header">
       <h2>Shipments – Ready to Pick Up</h2>
-      <p class="card-sub">
-        Tap a shipment to see details, download documents, and verify items in the field.
-      </p>
-      <button id="ka-notify-open" class="ka-icon-btn" type="button" aria-label="Shipment notifications">
-        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path d="M12 3a6 6 0 0 0-6 6v3.586l-.707.707A1 1 0 0 0 6 15h12a1 1 0 0 0 .707-1.707L18 12.586V9a6 6 0 0 0-6-6Zm0 18a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 21Z"/>
-        </svg>
-      </button>
+      <div class="card-header-actions">
+        <button id="ka-shipments-refresh" class="btn secondary btn-sm ka-ship-refresh" type="button">
+          Refresh
+        </button>
+        <button id="ka-notify-open" class="ka-icon-btn" type="button" aria-label="Shipment notifications">
+          <img src="/icons/notifications.svg" alt="" aria-hidden="true" width="26" height="26" />
+        </button>
+      </div>
     </div>
 
     <div class="ka-shipments-filters">
-      <button id="ka-shipments-refresh" class="btn secondary btn-sm ka-ship-refresh">
-        ⟳ Refresh
-      </button>
-
       <label class="ka-shipments-filter-label">
         Status:
         <select id="ka-shipments-filter" class="ka-select-arrow">
@@ -536,20 +532,48 @@
 </nav>
 
 <script src="/js/utils.js"></script>
-<script src="/kiosk-admin.js"></script>
+<script src="/kiosk-admin.js?v=20241211g"></script>
 <!-- Items modal -->
 <div id="ka-items-modal" class="hidden">
   <div class="ka-items-modal-content">
     <div class="ka-items-modal-header">
-      <div class="ka-items-modal-title" id="ka-items-modal-title">Verify items</div>
+      <div class="ka-items-modal-headings">
+        <div class="ka-items-modal-title" id="ka-items-modal-title">Verify items</div>
+        <div class="ka-items-modal-sub" id="ka-items-modal-sub"></div>
+      </div>
       <button type="button" class="ka-items-modal-close" id="ka-items-modal-close">×</button>
     </div>
-    <div class="ka-items-modal-body" id="ka-items-modal-body">
-      <div class="ka-ship-muted">(loading items…)</div>
+
+    <div class="ka-items-tabs" role="tablist">
+      <button type="button" class="ka-items-tab-btn active" data-ka-items-tab="overview">Overview</button>
+      <button type="button" class="ka-items-tab-btn" data-ka-items-tab="items">Items</button>
     </div>
+
+    <div class="ka-items-modal-body">
+      <div class="ka-items-tab-panel active" id="ka-items-overview" data-ka-items-panel="overview">
+        <div class="ka-ship-muted">(loading overview…)</div>
+      </div>
+      <div class="ka-items-tab-panel" id="ka-items-modal-body" data-ka-items-panel="items">
+        <div class="ka-ship-muted">(loading items…)</div>
+      </div>
+    </div>
+
     <div class="ka-items-modal-footer">
       <button class="btn btn-secondary btn-sm" id="ka-items-modal-cancel">Close</button>
       <button class="btn btn-primary btn-sm" id="ka-items-modal-save">Save verification</button>
+    </div>
+  </div>
+</div>
+
+<!-- Shipment documents modal -->
+<div id="ka-docs-backdrop" class="ka-modal-backdrop hidden">
+  <div class="ka-modal" style="max-width: 520px;" id="ka-docs-modal">
+    <h3 id="ka-docs-title">Shipment documents</h3>
+    <div id="ka-docs-body" class="ka-docs-list">
+      <div class="ka-ship-muted">(loading…)</div>
+    </div>
+    <div class="ka-modal-actions">
+      <button class="btn primary btn-sm" id="ka-docs-close">Close</button>
     </div>
   </div>
 </div>
