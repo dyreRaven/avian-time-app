@@ -4010,292 +4010,102 @@ async function kaOpenItemsModal(shipmentId) {
   overviewEl.innerHTML = kaRenderShipmentOverview(shipment, documents, items);
   kaBindOverviewUpload();
 
-  body.innerHTML = '';
+  const hasItems = Array.isArray(items) && items.length > 0;
 
-  if (!items || !items.length) {
-    body.innerHTML = '<div class="ka-ship-muted">(No items on this shipment)</div>';
-  } else {
-    items.forEach(item => {
-      const v = item.verification || {};
-      const status = v.status || '';
-      const notes = v.notes || '';
-      const storage = v.storage_override || '';
-      const lastBy = v.verified_by || '';
-      const lastAt = v.verified_at || '';
-      const initials = kaInitials(lastBy);
-
-      const rowEl = document.createElement('div');
-      rowEl.className = 'ka-ship-item-row';
-
-      rowEl.innerHTML = `
-        <div class="ka-ship-item-main">
-          <div class="ka-ship-item-desc">${item.description || '(No description)'}</div>
-          <div class="ka-ship-item-qty">
-            Qty: <strong>${item.quantity}</strong>
-            ${item.unit ? `<span> ${item.unit}</span>` : ''}
-          </div>
+  body.innerHTML = `
+    <div class="ka-items-toolbar">
+      <div class="ka-items-summary" id="ka-items-summary">
+        <div class="ka-summary-pill status-verified" data-ka-item-count="verified">
+          <span class="ka-summary-label">Verified</span>
+          <span class="ka-summary-count">0</span>
         </div>
-
-        <div class="ka-ship-item-controls">
-          <div class="ka-ship-status-buttons" data-ship-item-id="${item.id}">
-            <button type="button" class="ka-status-pill status-verified ${status === 'verified' ? 'active' : ''}" data-status="verified">V</button>
-            <button type="button" class="ka-status-pill status-missing ${status === 'missing' ? 'active' : ''}" data-status="missing">M</button>
-            <button type="button" class="ka-status-pill status-damaged ${status === 'damaged' ? 'active' : ''}" data-status="damaged">D</button>
-            <button type="button" class="ka-status-pill status-wrong_item ${status === 'wrong_item' ? 'active' : ''}" data-status="wrong_item">WI</button>
-            <button type="button" class="ka-status-pill ${!status ? 'active' : ''}" data-status="">Clear</button>
-          </div>
-          <label>
-            Storage info (optional)
-            <textarea rows="2" data-ship-item-storage-id="${item.id}">${storage || ''}</textarea>
-          </label>
-          <label>
-            Notes
-            <textarea rows="2" data-ship-item-notes-id="${item.id}">${notes || ''}</textarea>
-          </label>
-          <div class="ka-ship-item-footer">
-            <div class="ka-ship-item-last">
-              ${
-                lastBy || lastAt
-                  ? `
-                    <div class="ka-ship-item-verifier">
-                      <span class="ka-ship-item-initials">${initials || '—'}</span>
-                      <span class="ka-ship-item-verifier-meta">
-                        ${lastBy || ''}
-                        ${lastAt ? ` · ${lastAt.slice(0, 10)}` : ''}
-                      </span>
-                    </div>
-                  `
-                  : '<span class="ka-ship-muted">Not verified yet</span>'
-              }
-            </div>
-            <div class="ka-ship-item-actions">
-              <button type="button" class="btn primary btn-sm ka-ship-item-save">Save item</button>
-            </div>
-          </div>
+        <div class="ka-summary-pill status-missing" data-ka-item-count="missing">
+          <span class="ka-summary-label">Missing</span>
+          <span class="ka-summary-count">0</span>
         </div>
-      `;
+        <div class="ka-summary-pill status-damaged" data-ka-item-count="damaged">
+          <span class="ka-summary-label">Damaged</span>
+          <span class="ka-summary-count">0</span>
+        </div>
+        <div class="ka-summary-pill status-wrong_item" data-ka-item-count="wrong_item">
+          <span class="ka-summary-label">Wrong</span>
+          <span class="ka-summary-count">0</span>
+        </div>
+        <div class="ka-summary-pill status-unverified" data-ka-item-count="unverified">
+          <span class="ka-summary-label">Unverified</span>
+          <span class="ka-summary-count">0</span>
+        </div>
+      </div>
+      <div class="ka-items-actions">
+        <label class="ka-items-inline-toggle">
+          <input type="checkbox" id="ka-items-filter-unverified" ${kaItemsFilterUnverifiedFirst ? 'checked' : ''} />
+          <span>Unverified first</span>
+        </label>
+        <input type="search" id="ka-items-search" placeholder="Search description or SKU" value="${kaItemsFilterTerm}" />
+        <button type="button" class="btn secondary btn-sm" id="ka-items-mark-all">Mark all verified</button>
+      </div>
+    </div>
 
-      const statusButtons = Array.from(
-        rowEl.querySelectorAll('.ka-status-pill')
-      );
-      const notesEl = rowEl.querySelector(
-        'textarea[data-ship-item-notes-id]'
-      );
-      const storageEl = rowEl.querySelector(
-        'textarea[data-ship-item-storage-id]'
-      );
-      const saveBtn = rowEl.querySelector('.ka-ship-item-save');
-      const itemId = item.id;
+    <div id="ka-items-list" class="ka-items-list">
+      ${hasItems ? '' : '<div class="ka-ship-muted">(No items on this shipment)</div>'}
+    </div>
 
-      const applyStatusStyle = () => {
-        const activeBtn = statusButtons.find(btn =>
-          btn.classList.contains('active')
-        );
-        const val = activeBtn ? activeBtn.dataset.status || '' : '';
-        rowEl.classList.remove(
-          'status-verified',
-          'status-missing',
-          'status-damaged',
-          'status-wrong_item'
-        );
-        if (val) {
-          rowEl.classList.add(`status-${val}`);
-        }
-      };
+    <div id="ka-items-savebar" class="ka-items-savebar hidden">
+      <div class="ka-items-savebar-text"><span id="ka-items-savebar-count">0</span> unsaved changes</div>
+      <div class="ka-items-savebar-actions">
+        <button type="button" class="btn secondary btn-sm" id="ka-items-undo">Undo changes</button>
+        <button type="button" class="btn primary btn-sm" id="ka-items-save-now">Save now</button>
+      </div>
+    </div>
+  `;
 
-      const buildPayload = () => {
-        const nowIso = new Date().toISOString();
-        const admin = kaCurrentAdmin || {};
-        const verifiedBy =
-          admin.nickname || admin.name || 'Field Admin';
+  if (hasItems) {
+    kaRenderItemsList(shipmentId);
+  }
+  kaUpdateItemsSummaryUI();
+  kaUpdateItemsSavebar();
 
-        const activeBtn = statusButtons.find(btn => btn.classList.contains('active'));
-        const newStatus = activeBtn ? activeBtn.dataset.status || '' : '';
-
-        return {
-          status: newStatus,
-          notes: notesEl.value || '',
-          storage_override: storageEl ? storageEl.value || '' : '',
-          verified_at: nowIso,
-          verified_by: verifiedBy,
-        };
-      };
-
-      const removeRow = () => {
-        const cleanup = () => {
-          rowEl.remove();
-          const anyLeft = body.querySelector('.ka-ship-item-row');
-          if (!anyLeft) {
-            body.innerHTML =
-              '<div class="ka-ship-muted">(All items saved. Close and reopen to review again.)</div>';
-          }
-        };
-
-        rowEl.classList.add('ka-item-swipe-out');
-        rowEl.addEventListener('animationend', cleanup, { once: true });
-        setTimeout(cleanup, 450); // fallback if animation event misses
-      };
-
-      const enableSwipeToRemove = () => {
-        let startX = 0;
-        let startY = 0;
-        let trackingId = null;
-
-        const begin = (x, y, id = null) => {
-          if (rowEl.dataset.saved !== '1') return;
-          startX = x;
-          startY = y;
-          trackingId = id;
-        };
-
-        const cancel = () => {
-          trackingId = null;
-        };
-
-        const move = (x, y, id = null) => {
-          if (rowEl.dataset.saved !== '1') return;
-          if (trackingId !== null && id !== null && trackingId !== id) return;
-          if (trackingId === null && id !== null) {
-            trackingId = id;
-          }
-          const dx = x - startX;
-          const dy = Math.abs(y - startY);
-          if (dy > 40) {
-            cancel();
-            return;
-          }
-          if (dx < -50) {
-            cancel();
-            removeRow();
-          }
-        };
-
-        // Pointer (mouse/stylus/touch) support
-        rowEl.addEventListener('pointerdown', (e) => {
-          if (e.pointerType === 'mouse' && e.button !== 0) return;
-          begin(e.clientX, e.clientY, e.pointerId);
-          if (rowEl.setPointerCapture) {
-            try {
-              rowEl.setPointerCapture(e.pointerId);
-            } catch {}
-          }
-        });
-
-        rowEl.addEventListener('pointermove', (e) => {
-          move(e.clientX, e.clientY, e.pointerId);
-        });
-
-        const pointerEnd = (e) => {
-          cancel();
-          if (rowEl.releasePointerCapture) {
-            try {
-              rowEl.releasePointerCapture(e.pointerId);
-            } catch {}
-          }
-        };
-
-        rowEl.addEventListener('pointerup', pointerEnd);
-        rowEl.addEventListener('pointercancel', pointerEnd);
-
-        // Touch fallback (older Safari)
-        rowEl.addEventListener('touchstart', (e) => {
-          const t = e.touches && e.touches[0];
-          if (!t) return;
-          begin(t.clientX, t.clientY, 'touch');
-        }, { passive: true });
-
-        rowEl.addEventListener('touchmove', (e) => {
-          const t = e.touches && e.touches[0];
-          if (!t) return;
-          move(t.clientX, t.clientY, 'touch');
-        }, { passive: true });
-
-        rowEl.addEventListener('touchend', () => cancel(), { passive: true });
-        rowEl.addEventListener('touchcancel', () => cancel(), { passive: true });
-      };
-
-      function markDirty() {
-        const payload = buildPayload();
-        kaShipmentItemsDirty.set(itemId, payload);
-        applyStatusStyle();
-
-        const badge = rowEl.querySelector('.ka-ship-item-initials');
-        const meta = rowEl.querySelector('.ka-ship-item-verifier-meta');
-        if (badge) badge.textContent = kaInitials(payload.verified_by) || '—';
-        if (meta) {
-          meta.textContent = `${payload.verified_by || ''}${
-            payload.verified_at ? ` · ${payload.verified_at.slice(0, 10)}` : ''
-          }`;
-        }
-      }
-
-      applyStatusStyle();
-      const labelMap = {
-        verified: { short: 'V', full: 'Verified' },
-        missing: { short: 'M', full: 'Missing' },
-        damaged: { short: 'D', full: 'Damaged' },
-        wrong_item: { short: 'WI', full: 'Wrong Item' },
-        '': { short: 'Clear', full: 'Clear' }
-      };
-
-      const updatePills = () => {
-        const activeBtn = statusButtons.find(b => b.classList.contains('active'));
-        statusButtons.forEach(b => {
-          const val = b.dataset.status || '';
-          const labels = labelMap[val] || { short: val || 'Clear', full: val || 'Clear' };
-          const isActive = activeBtn && b === activeBtn;
-          b.textContent = isActive ? labels.full : labels.short;
-          if (activeBtn && b !== activeBtn) {
-            b.classList.add('muted');
-          } else {
-            b.classList.remove('muted');
-          }
-        });
-      };
-
-      statusButtons.forEach(btn => {
-        btn.addEventListener('click', () => {
-          statusButtons.forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          updatePills();
-          markDirty();
-        });
-      });
-      notesEl.addEventListener('blur', markDirty);
-      storageEl?.addEventListener('blur', markDirty);
-      if (saveBtn) {
-        saveBtn.addEventListener('click', async () => {
-          const payload = buildPayload();
-          kaShipmentItemsDirty.set(itemId, payload);
-
-          const originalLabel = saveBtn.textContent;
-          saveBtn.disabled = true;
-          saveBtn.textContent = 'Saving…';
-
-          const ok = await kaSaveShipmentVerificationFor(shipmentId, {
-            onlyItemId: itemId,
-          });
-
-          if (ok) {
-            rowEl.dataset.saved = '1';
-            rowEl.classList.add('ka-item-saved');
-            saveBtn.textContent = 'Saved';
-            setTimeout(() => {
-              saveBtn.disabled = false;
-              saveBtn.textContent = originalLabel;
-            }, 800);
-          } else {
-            saveBtn.disabled = false;
-            saveBtn.textContent = originalLabel;
-          }
-        });
-      }
-      updatePills();
-      applyStatusStyle();
-      enableSwipeToRemove();
-
-      body.appendChild(rowEl);
+  const searchEl = document.getElementById('ka-items-search');
+  if (searchEl && !searchEl.dataset.bound) {
+    searchEl.addEventListener('input', () => {
+      kaItemsFilterTerm = searchEl.value || '';
+      kaRenderItemsList(shipmentId);
     });
+    searchEl.dataset.bound = '1';
+  }
+
+  const unverifiedToggle = document.getElementById('ka-items-filter-unverified');
+  if (unverifiedToggle && !unverifiedToggle.dataset.bound) {
+    unverifiedToggle.addEventListener('change', () => {
+      kaItemsFilterUnverifiedFirst = !!unverifiedToggle.checked;
+      kaRenderItemsList(shipmentId);
+    });
+    unverifiedToggle.dataset.bound = '1';
+  }
+
+  const markAllBtn = document.getElementById('ka-items-mark-all');
+  if (markAllBtn && !markAllBtn.dataset.bound) {
+    markAllBtn.addEventListener('click', () => kaMarkAllItemsVerified(shipmentId));
+    markAllBtn.dataset.bound = '1';
+  }
+
+  const saveNowBtn = document.getElementById('ka-items-save-now');
+  if (saveNowBtn && !saveNowBtn.dataset.bound) {
+    saveNowBtn.addEventListener('click', () => {
+      kaClearItemAutoSaves();
+      kaSaveShipmentVerificationFor(shipmentId);
+    });
+    saveNowBtn.dataset.bound = '1';
+  }
+
+  const undoBtn = document.getElementById('ka-items-undo');
+  if (undoBtn && !undoBtn.dataset.bound) {
+    undoBtn.addEventListener('click', () => {
+      kaClearItemAutoSaves();
+      kaShipmentItemsDirty.clear();
+      kaOpenItemsModal(shipmentId);
+    });
+    undoBtn.dataset.bound = '1';
   }
 
   modal.classList.remove('hidden');
