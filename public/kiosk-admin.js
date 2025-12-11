@@ -747,6 +747,7 @@ function kaNotifyStorageKey() {
 }
 
 function kaLoadNotifyPrefFromStorage() {
+  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return { ...KA_NOTIFY_DEFAULT };
   try {
     const raw = localStorage.getItem(kaNotifyStorageKey());
     if (!raw) return { ...KA_NOTIFY_DEFAULT };
@@ -774,6 +775,7 @@ function kaLoadNotifyPrefFromStorage() {
 }
 
 function kaSaveNotifyPref(pref) {
+  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return;
   try {
     localStorage.setItem(kaNotifyStorageKey(), JSON.stringify(pref || KA_NOTIFY_DEFAULT));
   } catch {}
