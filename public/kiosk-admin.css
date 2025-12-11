@@ -5972,24 +5972,6 @@ body {
   justify-content: center;
 }
 
-#ka-notify-open {
-  width: auto;
-  height: auto;
-  min-width: 0;
-  padding: 0;
-  margin-right: 12px;
-  border-radius: 0;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-}
-
-#ka-notify-open img {
-  width: 26px;
-  height: 26px;
-  display: block;
-}
-
 .ka-live-header-top {
   display: flex;
   align-items: center;
@@ -7702,10 +7684,6 @@ body {
   font-weight: 600;
   line-height: 1;
   position: relative;
-}
-
-.ka-item-row.collapsed .ka-item-collapse {
-  transform: rotate(-90deg);
 }
 
 .ka-item-body {
