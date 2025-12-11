@@ -7676,16 +7676,16 @@ body {
   background: transparent;
   color: #0f172a;
   border-radius: 0;
-  padding: 2px 28px 2px 18px; /* wider horizontal padding */
+  padding: 2px 18px; /* keep hit area but rely on glyph stretch for width */
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.4rem;
+  font-size: 1.35rem;
   cursor: pointer;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 0.9;
   position: relative;
-  transform: translateY(-2px);
+  transform: translateY(-2px) scaleX(1.6); /* widen caret without thickening stroke much */
 }
 
 .ka-item-body {
