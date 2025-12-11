@@ -353,7 +353,8 @@ const {
   createChecksForPeriod,
   syncEmployeesFromQuickBooks,
   listPayrollAccounts,
-  listClasses
+  listClasses,
+  setPrintOnCheckName
 } = require('./quickbooks');
 
 
@@ -2167,6 +2168,7 @@ app.get('/api/kiosk/employees', (req, res) => {
     SELECT
       id,
       name,
+      name_on_checks,
       nickname,
       is_admin,
       pin,
@@ -2489,6 +2491,106 @@ app.post('/api/employees/:id/language', (req, res) => {
       res.json({ ok: true, language: lang });
     }
   );
+});
+
+// Lightweight endpoint to update Name on Checks (kiosk admin)
+// Auth rules:
+//  - If there is a logged-in session, allow.
+//  - Otherwise, allow if a kiosk device_id + device_secret match a known kiosk (same as PIN endpoint).
+app.post('/api/employees/:id/name-on-checks', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  const raw = (req.body && req.body.name_on_checks) || '';
+  const name = String(raw || '').trim();
+  const normalized = name ? name : null;
+
+  // Auth check (session OR kiosk device secret)
+  const hasSession = req.session && req.session.userId;
+  let kioskOk = false;
+
+  if (!hasSession) {
+    const { device_id, device_secret } = req.body || {};
+    const devId = (device_id || '').trim();
+    const devSecret = (device_secret || '').trim();
+    if (devId && devSecret) {
+      try {
+        const kioskRow = await dbGet(
+          'SELECT id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
+          [devId]
+        );
+        if (kioskRow) {
+          let expected = kioskRow.device_secret || '';
+          if (!expected && devSecret) {
+            expected = devSecret;
+            try {
+              await dbRun(
+                'UPDATE kiosks SET device_secret = ? WHERE id = ?',
+                [devSecret, kioskRow.id]
+              );
+            } catch (errUpdate) {
+              console.error('Failed to backfill kiosk device_secret:', errUpdate);
+            }
+          }
+          if (expected && expected === devSecret) {
+            kioskOk = true;
+          }
+        }
+      } catch (err) {
+        console.error('Error looking up kiosk by device_id:', err);
+        return res.status(500).json({ error: 'Internal server error.' });
+      }
+    }
+  }
+
+  if (!hasSession && !kioskOk) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  try {
+    const empRow = await dbGet(
+      `
+        SELECT id, name, name_on_checks, vendor_qbo_id, employee_qbo_id
+        FROM employees
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [id]
+    );
+
+    if (!empRow) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+
+    await dbRun(
+      'UPDATE employees SET name_on_checks = ? WHERE id = ?',
+      [normalized, id]
+    );
+
+    // Try to push to QuickBooks immediately if we have a payee ref
+    let qboWarning = null;
+    const payeeRef = empRow.vendor_qbo_id
+      ? { value: empRow.vendor_qbo_id, type: 'Vendor' }
+      : (empRow.employee_qbo_id ? { value: empRow.employee_qbo_id, type: 'Employee' } : null);
+    if (payeeRef && normalized) {
+      const qboRes = await setPrintOnCheckName(payeeRef, normalized);
+      if (!qboRes?.ok && !qboRes?.skipped) {
+        qboWarning = qboRes.error || 'Could not update QuickBooks.';
+        console.warn('[NameOnChecks/QBO] Immediate update failed', {
+          employee_id: id,
+          payeeRef,
+          error: qboWarning
+        });
+      }
+    }
+
+    res.json({ ok: true, id, name_on_checks: normalized, qbo_warning: qboWarning });
+  } catch (err) {
+    console.error('Error updating name_on_checks:', err);
+    return res.status(500).json({ error: 'Failed to update name on checks.' });
+  }
 });
 
 app.post('/api/employees/:id/pin', async (req, res) => {
@@ -4494,8 +4596,7 @@ app.post('/api/kiosk/punch', (req, res) => {
             SET clock_out_ts = ?,
                 clock_out_project_id = ?,
                 clock_out_lat = ?,
-                clock_out_lng = ?,
-                clock_out_photo = ?
+                clock_out_lng = ?
             WHERE id = ?
           `;
 
@@ -4506,7 +4607,6 @@ app.post('/api/kiosk/punch', (req, res) => {
               project_id || null,
               lat ?? null,
               lng ?? null,
-              photo_base64 || null,
               open.id
             ],
             (err3) => {
@@ -5090,7 +5190,14 @@ app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
     );
 
     const entryCount = counts && counts.entry_count ? Number(counts.entry_count) : 0;
+    const openCount = counts && counts.open_count ? Number(counts.open_count) : 0;
     const perms = await getAdminAccessPerms(admin.id);
+
+    if (openCount > 0) {
+      return res.status(409).json({
+        error: 'Cannot delete this timesheet while workers are clocked in. Clock them out first.'
+      });
+    }
 
     if (entryCount > 0) {
       if (!perms.modify_time) {
@@ -7515,7 +7622,7 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
 
 /* ───────── MIDNIGHT AUTO CLOCK-OUT JOB ───────── */
 
-async function autoClockOutOpenPunchesAtMidnight() {
+async function autoClockOutStaleOpenPunches(reason = 'midnight_auto') {
   try {
     // Find any open punches that started on a prior calendar day
     const openPunches = await dbAll(
@@ -7528,7 +7635,7 @@ async function autoClockOutOpenPunchesAtMidnight() {
     );
 
     if (!openPunches || openPunches.length === 0) {
-      console.log('⏰ Midnight auto-clock-out: no stale open punches.');
+      console.log(`⏰ Auto clock-out (${reason}): no stale open punches.`);
       return;
     }
 
@@ -7560,7 +7667,7 @@ async function autoClockOutOpenPunchesAtMidnight() {
               clock_out_project_id = ?
           WHERE id = ?
         `,
-        [nowIso, 'midnight_auto', p.project_id || null, p.id]
+        [nowIso, reason, p.project_id || null, p.id]
       );
 
       // 2) Compute total pay from employee rate
@@ -7610,10 +7717,10 @@ await dbRun(
     }
 
     console.log(
-      `⏰ Midnight auto-clock-out: closed ${openPunches.length} open punches.`
+      `⏰ Auto clock-out (${reason}): closed ${openPunches.length} open punches.`
     );
   } catch (err) {
-    console.error('⏰ Midnight auto-clock-out error:', err);
+    console.error(`⏰ Auto clock-out (${reason}) error:`, err);
   }
 }
 
@@ -7633,10 +7740,17 @@ function scheduleMidnightAutoClockOut() {
   );
 
   setTimeout(async () => {
-    await autoClockOutOpenPunchesAtMidnight();
+    await autoClockOutStaleOpenPunches('midnight_auto');
     // Re-schedule for the following midnight
     scheduleMidnightAutoClockOut();
   }, delayMs);
+}
+
+// Run a catch-up job on startup and hourly in case midnight was missed
+function scheduleAutoClockOutCatchUp() {
+  const runCatchUp = () => autoClockOutStaleOpenPunches('catch_up_auto');
+  runCatchUp();
+  setInterval(runCatchUp, 60 * 60 * 1000); // hourly
 }
 
 
@@ -7647,6 +7761,9 @@ app.listen(PORT, () => {
 
   // Start the midnight auto clock-out scheduler
   scheduleMidnightAutoClockOut();
+
+  // Start periodic catch-up so stale punches are auto-closed after outages
+  scheduleAutoClockOutCatchUp();
 });
 
 // Run a backup at startup

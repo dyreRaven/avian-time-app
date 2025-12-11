@@ -574,6 +574,9 @@ function applyKioskProjectDefault() {
   }
 
   setCurrentProject(projectId);
+  if (projectId) {
+    markKioskDayStarted();
+  }
 }
 
 
@@ -1566,8 +1569,15 @@ async function syncQueueToServer() {
       removeFromQueue(punch.client_id);
     } catch (err) {
       console.error('Error syncing queued punch, will retry later:', err);
-      // Stop on first failure to avoid hammering the server / bad network
-      break;
+      const msg = err && err.message ? String(err.message) : '';
+      const offlineIssue = isConnectionIssue(err, msg);
+      if (offlineIssue) {
+        // Likely transient connectivity – try again on next tick
+        break;
+      }
+
+      // Hard failure (e.g., missing timesheet) – drop this punch so the queue doesn't block others
+      removeFromQueue(punch.client_id);
     }
   }
 }

@@ -42,6 +42,7 @@ let kaFirstActiveSetShown = false;
 const KA_VIEWS = ['live', 'shipments', 'time', 'settings'];
 const KA_PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
 const KA_OFFLINE_QUEUE_KEY = 'avian_kiosk_offline_punches_v1';
+const KA_APP_TIMEZONE = 'America/Puerto_Rico';
 const KA_SHIPMENT_STATUSES = [
   'Pre-Order',
   'Ordered',
@@ -69,6 +70,10 @@ let kaReminderTimestamps = {};
 let kaStatusLockUntil = 0;
 let kaAdminOpenPunch = null;
 let kaClockInPromptActive = false;
+let kaLiveRefreshTimer = null;
+let kaLiveRefreshInFlight = false;
+let kaSessionRefreshInFlight = false;
+let kaLiveProjectOverride = null;
 
 
 // --- Small helpers ---
@@ -92,6 +97,119 @@ function kaClearStatusIfUnlocked() {
   if (!el) return;
   el.textContent = '';
   el.className = 'ka-status';
+}
+
+function kaEnsureConfirmModal() {
+  let backdrop = document.getElementById('ka-confirm-backdrop');
+  if (backdrop) return backdrop;
+
+  backdrop = document.createElement('div');
+  backdrop.id = 'ka-confirm-backdrop';
+  backdrop.className = 'ka-modal-backdrop hidden';
+  backdrop.innerHTML = `
+    <div class="ka-modal" role="dialog" aria-modal="true">
+      <h3 id="ka-confirm-title">Confirm</h3>
+      <p id="ka-confirm-message"></p>
+      <div class="ka-modal-actions">
+        <button type="button" class="btn secondary btn-sm" id="ka-confirm-cancel">Cancel</button>
+        <button type="button" class="btn primary btn-sm" id="ka-confirm-yes">Yes</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  return backdrop;
+}
+
+function kaShowConfirmDialog(message, { okLabel = 'Yes', cancelLabel = 'Cancel', title = 'Confirm' } = {}) {
+  const backdrop = kaEnsureConfirmModal();
+  const msgEl = document.getElementById('ka-confirm-message');
+  const titleEl = document.getElementById('ka-confirm-title');
+  const yesBtn = document.getElementById('ka-confirm-yes');
+  const cancelBtn = document.getElementById('ka-confirm-cancel');
+
+  if (!backdrop || !msgEl || !yesBtn || !cancelBtn || !titleEl) {
+    return Promise.resolve(window.confirm ? window.confirm(message) : true);
+  }
+
+  msgEl.textContent = message || '';
+  titleEl.textContent = title || 'Confirm';
+  yesBtn.textContent = okLabel || 'Yes';
+  cancelBtn.textContent = cancelLabel || 'Cancel';
+  backdrop.classList.remove('hidden');
+
+  return new Promise(resolve => {
+    const cleanup = (result) => {
+      backdrop.classList.add('hidden');
+      yesBtn.onclick = null;
+      cancelBtn.onclick = null;
+      backdrop.onclick = null;
+      resolve(result);
+    };
+
+    yesBtn.onclick = () => cleanup(true);
+    cancelBtn.onclick = () => cleanup(false);
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) cleanup(false);
+    };
+  });
+}
+
+function kaCurrentLiveProjectId() {
+  const overridePid = Number(kaLiveProjectOverride);
+  if (Number.isFinite(overridePid)) return overridePid;
+
+  const activeSession = kaComputeActiveSession(kaSessions || []);
+  if (activeSession && activeSession.project_id !== undefined && activeSession.project_id !== null) {
+    const pid = Number(activeSession.project_id);
+    if (Number.isFinite(pid)) return pid;
+  }
+
+  if (kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null) {
+    const pid = Number(kaKiosk.project_id);
+    if (Number.isFinite(pid)) return pid;
+  }
+
+  return null;
+}
+
+async function kaRefreshLiveData() {
+  if (kaLiveRefreshInFlight) return;
+  kaLiveRefreshInFlight = true;
+  try {
+    await Promise.all([kaLoadLiveWorkers(), kaLoadTimeEntries()]);
+  } catch (err) {
+    console.warn('Live refresh failed', err);
+  } finally {
+    kaLiveRefreshInFlight = false;
+  }
+}
+
+function kaStartLiveRefresh() {
+  if (kaLiveRefreshTimer) clearInterval(kaLiveRefreshTimer);
+  // Kick off an immediate refresh so counts update right away
+  kaRefreshLiveData();
+  kaLiveRefreshTimer = setInterval(() => {
+    kaRefreshLiveData();
+  }, 15000);
+}
+
+function kaStopLiveRefresh() {
+  if (kaLiveRefreshTimer) {
+    clearInterval(kaLiveRefreshTimer);
+    kaLiveRefreshTimer = null;
+  }
+}
+
+async function kaRefreshSessionsAndLive() {
+  if (kaSessionRefreshInFlight) return;
+  kaSessionRefreshInFlight = true;
+  try {
+    await kaLoadSessions();
+  } catch (err) {
+    console.warn('Session refresh failed', err);
+  } finally {
+    kaSessionRefreshInFlight = false;
+  }
 }
 
 async function kaRefreshAdminPunchStatus() {
@@ -160,7 +278,7 @@ async function kaEnsureAdminClockInPrompt(preferProjectId = null) {
         })
       });
       await kaRefreshAdminPunchStatus();
-      kaLoadLiveWorkers();
+      await kaRefreshSessionsAndLive();
       kaShowStatusMessage(
         'Timesheet set and you are clocked in on this project. You should now appear under Current Workers.',
         'ok',
@@ -833,11 +951,6 @@ async function kaLoadShipments() {
     }
   }
 
-  // Default “ready for pickup” behavior matches the UI label
-  if (!statusVal || statusVal === 'status:Cleared - Ready for Release') {
-    params.set('ready_for_pickup', '1');
-  }
-
   const projVal = projSel ? projSel.value : '';
   if (projVal) params.set('project_id', projVal);
 
@@ -1223,13 +1336,13 @@ function kaApplyAccessUI() {
   actionCols.forEach(col => col.classList.toggle('hidden', !kaCanModifyTime()));
 
   const ratesBlock = document.getElementById('ka-rates-block');
-  const ratesToggle = document.getElementById('ka-rates-toggle');
   const ratesEditor = document.getElementById('ka-rates-editor');
+  const ratesTile = document.querySelector('[data-settings-section="rates"]');
   const canRates = kaCanModifyPayRates();
   if (ratesBlock) ratesBlock.classList.toggle('hidden', !canRates);
+  if (ratesTile) ratesTile.classList.toggle('hidden', !canRates);
   if (!canRates) {
     kaRatesUnlocked = false;
-    if (ratesToggle) ratesToggle.checked = false;
     ratesEditor?.classList.add('hidden');
   }
 
@@ -1573,6 +1686,21 @@ function kaGetDeviceSecret() {
 }
 
 function kaTodayIso() {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: KA_APP_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    const parts = fmt.formatToParts(new Date());
+    const y = parts.find(p => p.type === 'year')?.value;
+    const m = parts.find(p => p.type === 'month')?.value;
+    const d = parts.find(p => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch (err) {
+    console.warn('Falling back to local date for kaTodayIso:', err);
+  }
   const now = new Date();
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
@@ -1587,6 +1715,14 @@ function kaFmtDateMDY(input) {
   const dd = String(dt.getDate()).padStart(2, '0');
   const yy = dt.getFullYear();
   return `${mm}/${dd}/${yy}`;
+}
+
+function kaIsoOffsetDays(baseIso, deltaDays) {
+  if (!baseIso) return '';
+  const dt = new Date(baseIso + 'T00:00:00');
+  if (Number.isNaN(dt.getTime())) return '';
+  dt.setDate(dt.getDate() + Number(deltaDays || 0));
+  return dt.toISOString().slice(0, 10);
 }
 
 function kaProjectLabelById(projectId) {
@@ -1665,6 +1801,9 @@ async function kaLoadLiveWorkers() {
     const punchRows = Array.isArray(rows) ? rows : [];
     tbody.innerHTML = '';
 
+    const hasOverride = kaLiveProjectOverride !== null && kaLiveProjectOverride !== undefined;
+    const overrideProjectId = hasOverride ? Number(kaLiveProjectOverride) : null;
+    let liveProjectId = kaCurrentLiveProjectId();
     const activeSession = kaComputeActiveSession(kaSessions || []);
     const activeProjectId =
       activeSession && activeSession.project_id !== undefined && activeSession.project_id !== null
@@ -1672,22 +1811,57 @@ async function kaLoadLiveWorkers() {
         : (kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null
             ? Number(kaKiosk.project_id)
             : null);
+
+    const filterByProject = (pid) =>
+      pid !== null && pid !== undefined
+        ? punchRows.filter(r => Number(r.project_id) === Number(pid))
+        : punchRows;
+
+    let filteredRows = filterByProject(liveProjectId);
+
+    // Auto-switch view to a project that actually has punches so counts show immediately on load
+    if (!hasOverride && filteredRows.length === 0 && punchRows.length > 0) {
+      const fallbackProjectId = Number(punchRows[0].project_id);
+      if (Number.isFinite(fallbackProjectId)) {
+        liveProjectId = fallbackProjectId;
+        kaLiveProjectOverride = fallbackProjectId;
+        filteredRows = filterByProject(liveProjectId);
+      }
+    }
+
+    const liveSession =
+      liveProjectId !== null
+        ? (kaSessions || []).find(s => Number(s.project_id) === liveProjectId)
+        : null;
     const projectLabel =
-      (activeSession && (activeSession.project_name || kaProjectLabelById(activeSession.project_id))) ||
-      (kaKiosk && kaKiosk.project_id && kaProjectLabelById(kaKiosk.project_id)) ||
+      (liveSession && (liveSession.project_name || kaProjectLabelById(liveSession.project_id))) ||
+      (liveProjectId !== null && kaProjectLabelById(liveProjectId)) ||
       (punchRows[0] && punchRows[0].project_name) ||
       'Project not set';
 
-    const filteredRows =
-      activeProjectId !== null
-        ? punchRows.filter(r => Number(r.project_id) === activeProjectId)
-        : punchRows;
+    const finalActiveProjectId = Number.isFinite(activeProjectId) ? activeProjectId : null;
+    const isNonActiveView =
+      liveProjectId !== null &&
+      finalActiveProjectId !== null &&
+      liveProjectId !== finalActiveProjectId;
+
     const entryCount = filteredRows.length;
     const openCount = filteredRows.filter(r => !r.clock_out_ts).length;
 
     const liveTitle = document.getElementById('ka-live-title');
     if (liveTitle) {
       liveTitle.textContent = `Current Workers - ${projectLabel}`;
+      if (isNonActiveView) {
+        const tag = document.createElement('span');
+        tag.className = 'ka-live-nonactive';
+        tag.textContent = '(Non-Active)';
+        liveTitle.appendChild(tag);
+      } else if (liveProjectId !== null && finalActiveProjectId !== null && liveProjectId === finalActiveProjectId) {
+        const tag = document.createElement('span');
+        tag.className = 'ka-live-active';
+        tag.textContent = '(Active)';
+        liveTitle.appendChild(tag);
+      }
     }
     const dateLabelEl = document.getElementById('ka-live-date-label');
     if (dateLabelEl) {
@@ -1699,10 +1873,10 @@ async function kaLoadLiveWorkers() {
     // ----- No workers currently clocked in/out today -----
     if (!punchRows.length || filteredRows.length === 0) {
       tbody.innerHTML = `
-        <tr><td colspan="4" class="ka-muted">(${activeProjectId !== null ? 'no punches today on this project' : 'no punches today on this kiosk'})</td></tr>
+        <tr><td colspan="4" class="ka-muted">(${liveProjectId !== null ? 'no punches today on this project' : 'no punches today on this kiosk'})</td></tr>
       `;
       if (tag) {
-        tag.textContent = '0 active';
+        tag.textContent = '0 Active workers';
         tag.className = 'ka-tag gray';
       }
       return;
@@ -1774,10 +1948,11 @@ async function kaLoadLiveWorkers() {
       tbody.appendChild(tr);
     });
 
+    // Update active count tag with live data (no extra refresh required)
     if (tag) {
-      const activeCount = openCount;
-      tag.textContent = `${activeCount} active`;
-      tag.className = activeCount > 0 ? 'ka-tag green' : 'ka-tag gray';
+      const count = openCount;
+      tag.textContent = `${count} Active worker${count === 1 ? '' : 's'}`;
+      tag.className = `ka-tag ${count > 0 ? 'green' : 'gray'}`;
     }
 
     // Optional warning about previous-day open punches
@@ -1859,16 +2034,17 @@ function kaSessionRowMeta(session) {
 
 function kaSessionRangeForMode() {
   if (kaSessionFilterMode === 'yesterday') {
-    return kaRangeForMode('yesterday');
+    const today = kaTodayIso();
+    const yesterday = kaIsoOffsetDays(today, -1);
+    return { start: yesterday, end: yesterday, useServerToday: false };
   }
   if (kaSessionFilterMode === 'range') {
     const start = kaSessionRangeStart || kaTodayIso();
     const end = kaSessionRangeEnd || start;
-    return { start, end };
+    return { start, end, useServerToday: false };
   }
-  // active & today default to today
-  const todayRange = kaRangeForMode('today');
-  return todayRange;
+  // active & today → let the server decide "today" based on its timezone
+  return { start: null, end: null, useServerToday: true };
 }
 
 function kaSortSessionsByRecency(list) {
@@ -1928,7 +2104,7 @@ function kaSessionProjectLabel(session) {
   );
 }
 
-function kaConfirmActiveSessionSwitch(targetSessionId) {
+async function kaConfirmActiveSessionSwitch(targetSessionId) {
   if (!targetSessionId) return true;
 
   const activeSession = kaComputeActiveSession(kaSessions || []);
@@ -1941,8 +2117,9 @@ function kaConfirmActiveSessionSwitch(targetSessionId) {
   const targetSession = (kaSessions || []).find(s => Number(s.id) === Number(targetSessionId));
   const projectLabel = kaSessionProjectLabel(targetSession);
 
-  return window.confirm(
-    `Set ${projectLabel} from this timesheet as the active project for this kiosk?`
+  return kaShowConfirmDialog(
+    `Set ${projectLabel} from this timesheet as the active project for this kiosk?`,
+    { okLabel: 'Set active', cancelLabel: 'Cancel' }
   );
 }
 
@@ -1961,14 +2138,15 @@ function kaSessionDatesBetween(start, end, maxDays = 14) {
 }
 
 function kaSessionFilterLabel() {
-  if (kaSessionFilterMode === 'active') return `Active (${kaFmtDateMDY(kaTodayIso())})`;
-  if (kaSessionFilterMode === 'today') return `Today (${kaFmtDateMDY(kaTodayIso())})`;
+  const today = kaTodayIso();
+  if (kaSessionFilterMode === 'active') return `Active (${kaFmtDateMDY(today)})`;
+  if (kaSessionFilterMode === 'today') return `Today (${kaFmtDateMDY(today)})`;
   if (kaSessionFilterMode === 'yesterday') {
-    const y = kaRangeForMode('yesterday').start;
+    const y = kaIsoOffsetDays(today, -1);
     return `Yesterday (${kaFmtDateMDY(y)})`;
   }
   if (kaSessionFilterMode === 'range') {
-    const start = kaSessionRangeStart || kaTodayIso();
+    const start = kaSessionRangeStart || today;
     const end = kaSessionRangeEnd || start;
     const sLbl = kaFmtDateMDY(start);
     const eLbl = kaFmtDateMDY(end);
@@ -2030,10 +2208,13 @@ function kaRenderSessions() {
     return;
   }
 
+  const liveProjectId = kaCurrentLiveProjectId();
   list.innerHTML = '';
   filtered.forEach(s => {
     const projName = s.project_name || kaProjectLabelById(s.project_id) || '(Project)';
     const isActive = isSessionActive(s);
+    const projIdNum = Number(s.project_id);
+    const showWorkersBtn = Number.isFinite(projIdNum);
     const row = document.createElement('div');
     row.className = 'ka-session-row';
     row.dataset.sessionId = s.id;
@@ -2057,6 +2238,13 @@ function kaRenderSessions() {
       <div class="ka-session-meta ka-session-meta-right">
         <span class="ka-session-tag">Open punches: ${s.open_count || 0}</span>
         <span class="ka-session-tag">Entries today: ${s.entry_count || 0}</span>
+        ${
+          showWorkersBtn
+            ? `<button type="button" class="ka-session-workers-btn" data-ka-session-workers="${projIdNum}" aria-label="View workers" title="View workers">
+                <img src="/icons/worker.svg" class="ka-session-workers-icon" alt="" aria-hidden="true" />
+              </button>`
+            : ''
+        }
       </div>
     `;
 
@@ -2084,8 +2272,8 @@ async function kaLoadSessions() {
   }
 
   try {
-    const { start, end } = kaSessionRangeForMode();
-    const dates = kaSessionDatesBetween(start, end);
+    const { start, end, useServerToday } = kaSessionRangeForMode();
+    const dates = useServerToday ? [''] : kaSessionDatesBetween(start, end);
     if (!dates.length) {
       if (status) {
         status.textContent = 'Invalid date range.';
@@ -2097,11 +2285,12 @@ async function kaLoadSessions() {
     const allSessions = [];
     for (const dt of dates) {
       try {
-        const sessions = await fetchJSON(
-          `/api/kiosks/${kaKiosk.id}/sessions?date=${encodeURIComponent(dt)}`
-        );
+        const url = dt
+          ? `/api/kiosks/${kaKiosk.id}/sessions?date=${encodeURIComponent(dt)}`
+          : `/api/kiosks/${kaKiosk.id}/sessions`;
+        const sessions = await fetchJSON(url);
         (Array.isArray(sessions) ? sessions : []).forEach(s => {
-          allSessions.push({ ...s, date: s.date || dt });
+          allSessions.push({ ...s, date: s.date || dt || kaTodayIso() });
         });
       } catch (err) {
         console.error('Error loading kiosk sessions for date', dt, err);
@@ -2118,6 +2307,7 @@ async function kaLoadSessions() {
     kaRenderSessions();
     kaUpdateActiveProjectUI();
     await kaRefreshAdminPunchStatus();
+    await kaRefreshLiveData();
     if (status) {
       status.textContent = '';
       status.className = 'ka-status';
@@ -2168,6 +2358,7 @@ async function kaAddSession() {
     } else {
       kaKiosk.project_id = projectId;
     }
+    kaLiveProjectOverride = null;
     kaNewSessionVisible = false;
 
     await kaLoadSessions();
@@ -2236,7 +2427,8 @@ async function kaAddSession() {
     }
     kaRenderProjectsSelect();
     kaUpdateActiveProjectUI();
-    kaLoadLiveWorkers();
+    await kaRefreshLiveData();
+    kaMarkDayStarted();
 
     // First active project of the day → offer to return to clock-in
     if (!kaFirstActiveSetShown && isKioskDayStarted() === false) {
@@ -2267,13 +2459,15 @@ async function kaSetActiveSession(sessionId) {
       body: JSON.stringify({ session_id: sessionId })
     });
     kaActiveSessionId = sessionId;
+    kaLiveProjectOverride = null;
     if (resp && resp.project_id) {
       kaKiosk.project_id = resp.project_id;
     }
     kaRenderProjectsSelect();
     kaRenderSessions();
     kaUpdateActiveProjectUI();
-    kaLoadLiveWorkers();
+    kaMarkDayStarted();
+    await kaRefreshLiveData();
     if (status) {
       status.textContent = 'Active project updated for this kiosk.';
       status.className = 'ka-status ka-status-ok';
@@ -2357,7 +2551,7 @@ function kaShowClockInPrompt({ projectId, adminId, adminName, message, projectOp
           })
         });
         await kaRefreshAdminPunchStatus();
-        kaLoadLiveWorkers();
+        await kaRefreshSessionsAndLive();
         kaShowStatusMessage(
           'Timesheet set and you are clocked in on this project. You should now appear under Current Workers.',
           'ok',
@@ -2452,31 +2646,61 @@ function kaShowClockInModal({ projectId, adminName, message, projectOptions }) {
 }
 
 async function kaSwitchAdminProject(fromProjectId, toProjectId) {
-  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return;
+  if (!kaCurrentAdmin || !kaCurrentAdmin.id || !toProjectId) return;
   const adminId = Number(kaCurrentAdmin.id);
-  // Clock out of current
-  await fetchJSON('/api/kiosk/punch', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: 'switch-out-' + Date.now().toString(36),
-      employee_id: adminId,
-      project_id: fromProjectId,
-      lat: null,
-      lng: null,
-      device_timestamp: new Date().toISOString(),
-      photo_base64: null,
-      device_id: kaDeviceId
-    })
-  });
-  // Clock in to new
+  const targetProjectId = Number(toProjectId);
+  const sourceProjectId =
+    fromProjectId !== undefined && fromProjectId !== null
+      ? Number(fromProjectId)
+      : null;
+
+  // 1) Refresh current status
+  await kaRefreshAdminPunchStatus();
+  const open =
+    kaAdminOpenPunch && kaAdminOpenPunch.open ? kaAdminOpenPunch : null;
+
+  // If already on target, just refresh UI
+  if (open && Number(open.project_id) === targetProjectId) {
+    await kaRefreshSessionsAndLive();
+    return;
+  }
+
+  // 2) If clocked in elsewhere, clock out first
+  if (open) {
+    const outProjectId =
+      sourceProjectId !== null ? sourceProjectId : open.project_id;
+    await fetchJSON('/api/kiosk/punch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: 'switch-out-' + Date.now().toString(36),
+        employee_id: adminId,
+        project_id: outProjectId,
+        lat: null,
+        lng: null,
+        device_timestamp: new Date().toISOString(),
+        photo_base64: null,
+        device_id: kaDeviceId
+      })
+    });
+    await kaRefreshAdminPunchStatus();
+    if (
+      kaAdminOpenPunch &&
+      kaAdminOpenPunch.open &&
+      Number(kaAdminOpenPunch.project_id) !== targetProjectId
+    ) {
+      throw new Error('Could not clock out of previous project. Please clock out manually.');
+    }
+  }
+
+  // 3) Clock in to the target project
   await fetchJSON('/api/kiosk/punch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       client_id: 'switch-in-' + Date.now().toString(36),
       employee_id: adminId,
-      project_id: toProjectId,
+      project_id: targetProjectId,
       lat: null,
       lng: null,
       device_timestamp: new Date().toISOString(),
@@ -2485,7 +2709,7 @@ async function kaSwitchAdminProject(fromProjectId, toProjectId) {
     })
   });
   await kaRefreshAdminPunchStatus();
-  kaLoadLiveWorkers();
+  await kaRefreshSessionsAndLive();
 }
 
 function kaHideSessionDelete(row) {
@@ -2524,7 +2748,7 @@ async function kaDeleteSession(sessionId) {
     }
     kaRenderProjectsSelect();
     kaRenderSessions();
-    kaLoadLiveWorkers();
+    await kaRefreshLiveData();
     if (status) {
       status.textContent = 'Timesheet deleted.';
       status.className = 'ka-status ka-status-ok';
@@ -2608,11 +2832,11 @@ async function kaInit() {
     .getElementById('ka-lang-employee')
     ?.addEventListener('change', kaSyncLanguageChoice);
   document
+    .getElementById('ka-namechecks-employee')
+    ?.addEventListener('change', kaSyncNameOnChecksInput);
+  document
     .getElementById('ka-admin-select')
     ?.addEventListener('change', kaHandleAdminChange);
-  document
-    .getElementById('ka-rates-toggle')
-    ?.addEventListener('change', kaHandleRatesToggleChange);
   document
     .getElementById('ka-rates-pin-submit')
     ?.addEventListener('click', kaUnlockRatesWithPin);
@@ -2625,8 +2849,12 @@ async function kaInit() {
   document
     .getElementById('ka-logout-btn')
     ?.addEventListener('click', kaLogoutToKiosk);
+  document
+    .getElementById('ka-namechecks-save')
+    ?.addEventListener('click', kaHandleNameOnChecksSave);
   window.addEventListener('online', () => kaSyncPendingPins());
   kaResetRatesUI();
+  kaInitSettingsToggles();
 
   // Shipment notifications panel
   kaInitNotifyPanel();
@@ -2668,8 +2896,8 @@ async function kaInit() {
         status.className = 'ka-status ka-status-ok';
       }
 
-      // Optional refresh of active workers
-      kaLoadLiveWorkers();
+      // Optional refresh of active data
+      kaRefreshLiveData();
     });
   }
 
@@ -2882,20 +3110,30 @@ async function kaInit() {
 
   const sessionList = document.getElementById('ka-session-list');
   if (sessionList) {
-    sessionList.addEventListener('click', (e) => {
+    sessionList.addEventListener('click', async (e) => {
       const deleteBtn = e.target.closest('[data-ka-delete-session]');
       if (deleteBtn) {
         const id = Number(deleteBtn.dataset.kaDeleteSession);
         if (id) kaDeleteSession(id);
         return;
       }
+      const workersBtn = e.target.closest('[data-ka-session-workers]');
+      if (workersBtn) {
+        const projectId = Number(workersBtn.dataset.kaSessionWorkers);
+        if (Number.isFinite(projectId)) {
+          kaLiveProjectOverride = projectId;
+          kaRenderSessions();
+          await kaLoadLiveWorkers();
+        }
+        return;
+      }
       const row = e.target.closest('.ka-session-row');
       if (row && row.dataset.sessionId) {
         const id = Number(row.dataset.sessionId);
         if (id) {
-          const confirmed = kaConfirmActiveSessionSwitch(id);
+          const confirmed = await kaConfirmActiveSessionSwitch(id);
           if (!confirmed) return;
-          kaSetActiveSession(id);
+          await kaSetActiveSession(id);
         }
       }
     });
@@ -2972,19 +3210,20 @@ async function kaInit() {
     kaSetupStartOfDayUI();
     await kaLoadSessions();
 
-   await Promise.all([
-     kaLoadForeman(),
-     kaLoadLiveWorkers(),
-     kaLoadTimeEntries(),
-   ]);
-   kaApplyPayrollVisibility();
-   // Preload shipments project filter
-   const shipProjSel = document.getElementById('ka-shipments-project');
-   if (shipProjSel) {
-     shipProjSel.innerHTML = '<option value="">All projects</option>';
-     (kaProjects || []).forEach(p => {
-       const opt = document.createElement('option');
-       opt.value = p.id;
+    await Promise.all([
+      kaLoadForeman(),
+      kaLoadLiveWorkers(),
+      kaLoadTimeEntries(),
+    ]);
+    kaApplyPayrollVisibility();
+    kaStartLiveRefresh();
+    // Preload shipments project filter
+    const shipProjSel = document.getElementById('ka-shipments-project');
+    if (shipProjSel) {
+      shipProjSel.innerHTML = '<option value="">All projects</option>';
+      (kaProjects || []).forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
         opt.textContent = p.name || '(Unnamed project)';
         shipProjSel.appendChild(opt);
       });
@@ -3034,7 +3273,8 @@ function kaCloseItemsModal() {
 function kaForceCloseAllModals() {
   const ids = [
     'ka-return-backdrop',
-    'ka-time-action-backdrop'
+    'ka-time-action-backdrop',
+    'ka-confirm-backdrop'
   ];
   ids.forEach(id => {
     const el = document.getElementById(id);
@@ -3556,7 +3796,7 @@ async function kaStartDayAndClockIn() {
     if (btn) btn.style.display = 'none';
 
     // Refresh live workers table so you show up there
-    kaLoadLiveWorkers();
+    await kaRefreshLiveData();
   } catch (err) {
     console.error('Error starting day and clocking in foreman:', err);
     if (status) {
@@ -3670,7 +3910,10 @@ function kaToggleAdminSettingsVisibility(adminId) {
     document.getElementById('ka-pin-new'),
     document.getElementById('ka-pin-confirm'),
     document.getElementById('ka-pin-save'),
-    document.getElementById('ka-lang-save')
+    document.getElementById('ka-lang-save'),
+    document.getElementById('ka-namechecks-employee'),
+    document.getElementById('ka-namechecks-input'),
+    document.getElementById('ka-namechecks-save')
   ];
   toggleEls.forEach(el => {
     if (el) el.disabled = !hasAdmin;
@@ -3691,12 +3934,14 @@ function kaHandleAdminChange() {
 function kaRenderSettingsForm() {
   const pinSelect = document.getElementById('ka-pin-employee');
   const langSelect = document.getElementById('ka-lang-employee');
+  const nameChecksSelect = document.getElementById('ka-namechecks-employee');
   // Always show settings; do not gate on admin selection
   kaToggleAdminSettingsVisibility(true);
 
   // Force dropdowns to start at the placeholder
   if (pinSelect) pinSelect.value = '';
   if (langSelect) langSelect.value = '';
+  if (nameChecksSelect) nameChecksSelect.value = '';
 
   const fillSelect = (selectEl) => {
     if (!selectEl) return;
@@ -3714,8 +3959,24 @@ function kaRenderSettingsForm() {
 
   fillSelect(pinSelect);
   fillSelect(langSelect);
+  fillSelect(nameChecksSelect);
 
   kaSyncLanguageChoice();
+  kaSyncNameOnChecksInput();
+}
+
+function kaInitSettingsToggles() {
+  document.querySelectorAll('.ka-settings-tile').forEach(tile => {
+    const toggle = tile.querySelector('.ka-settings-toggle');
+    const content = tile.querySelector('.ka-settings-content');
+    if (!toggle || !content) return;
+    const isCollapsed = tile.classList.contains('collapsed');
+    toggle.setAttribute('aria-expanded', String(!isCollapsed));
+    toggle.addEventListener('click', () => {
+      const nowCollapsed = tile.classList.toggle('collapsed');
+      toggle.setAttribute('aria-expanded', String(!nowCollapsed));
+    });
+  });
 }
 
 async function kaSaveKioskSettings() {
@@ -4015,17 +4276,92 @@ function kaSyncLanguageChoice() {
   }
 }
 
+function kaSyncNameOnChecksInput() {
+  const sel = document.getElementById('ka-namechecks-employee');
+  const input = document.getElementById('ka-namechecks-input');
+  const status = document.getElementById('ka-namechecks-status');
+  if (status) {
+    status.textContent = '';
+    status.className = 'ka-status';
+  }
+  if (!sel || !input) return;
+  const id = sel.value ? Number(sel.value) : null;
+  const emp = id ? (kaEmployees || []).find(e => Number(e.id) === Number(id)) : null;
+  input.value = emp ? (emp.name_on_checks || emp.name || '') : '';
+}
+
+async function kaHandleNameOnChecksSave() {
+  const sel = document.getElementById('ka-namechecks-employee');
+  const input = document.getElementById('ka-namechecks-input');
+  const status = document.getElementById('ka-namechecks-status');
+
+  if (status) {
+    status.textContent = '';
+    status.className = 'ka-status';
+  }
+
+  const id = sel && sel.value ? Number(sel.value) : null;
+  const value = input ? (input.value || '').trim() : '';
+  if (!id) {
+    if (status) {
+      status.textContent = 'Pick an employee or admin first.';
+      status.classList.add('ka-status-error');
+    }
+    return;
+  }
+
+  const emp = (kaEmployees || []).find(e => Number(e.id) === Number(id));
+  if (!emp) {
+    if (status) {
+      status.textContent = 'Employee not found.';
+      status.classList.add('ka-status-error');
+    }
+    return;
+  }
+
+  try {
+    if (status) {
+      status.textContent = 'Saving name on checks…';
+      status.className = 'ka-status';
+    }
+    const deviceSecret = kaGetDeviceSecret();
+    const res = await fetchJSON(`/api/employees/${id}/name-on-checks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name_on_checks: value || null,
+        device_id: kaDeviceId || null,
+        device_secret: deviceSecret
+      })
+    });
+    emp.name_on_checks = value || null;
+    if (status) {
+      const warning = res && res.qbo_warning;
+      status.textContent = warning
+        ? `Updated locally. QuickBooks warning: ${warning}`
+        : 'Name on checks updated.';
+      status.classList.add(warning ? 'ka-status-error' : 'ka-status-ok');
+    }
+  } catch (err) {
+    console.error('Error updating name on checks', err);
+    if (status) {
+      status.textContent = 'Error updating name on checks.';
+      status.classList.add('ka-status-error');
+    }
+  }
+}
+
 function kaResetRatesUI(message = '') {
   const status = document.getElementById('ka-rates-status');
   const editor = document.getElementById('ka-rates-editor');
   const tbody = document.getElementById('ka-rates-body');
-  const toggle = document.getElementById('ka-rates-toggle');
   const pinRow = document.getElementById('ka-rates-pin-row');
+  const pinInput = document.getElementById('ka-rates-pin');
 
   kaRatesUnlocked = false;
-  if (toggle) toggle.checked = false;
-  pinRow?.classList.add('hidden');
+  pinRow?.classList.remove('hidden');
   editor?.classList.add('hidden');
+  if (pinInput) pinInput.value = '';
 
   if (tbody) {
     tbody.innerHTML = '<tr><td colspan="4" class="ka-muted">(locked)</td></tr>';
@@ -4092,7 +4428,7 @@ async function kaLoadRatesTable() {
     kaRatesData = Array.isArray(res.employees) ? res.employees : [];
     kaRenderRatesTable(kaRatesData);
     if (status) {
-      status.textContent = 'Unlocked. Rates are visible for a short time.';
+      status.textContent = 'Unlocked. Rates are visible for 10 minutes.';
       status.className = 'ka-status ka-status-ok';
     }
   } catch (err) {
@@ -4147,7 +4483,7 @@ async function kaUnlockRatesWithPin() {
     });
     kaRatesUnlocked = true;
     if (status) {
-      status.textContent = 'Unlocked. Rates are visible for a short time.';
+      status.textContent = 'Unlocked. Rates are visible for 10 minutes.';
       status.className = 'ka-status ka-status-ok';
     }
     pinRow?.classList.add('hidden');
@@ -4165,29 +4501,14 @@ async function kaUnlockRatesWithPin() {
 }
 
 function kaHandleRatesToggleChange() {
-  const toggle = document.getElementById('ka-rates-toggle');
   const pinRow = document.getElementById('ka-rates-pin-row');
   const pinInput = document.getElementById('ka-rates-pin');
   const editor = document.getElementById('ka-rates-editor');
 
-  if (!toggle) return;
-
-  if (!toggle.checked) {
-    kaResetRatesUI();
-    return;
-  }
-
-  if (!kaCanModifyPayRates()) {
-    kaResetRatesUI('You do not have permission to modify pay rates.');
-    return;
-  }
-
-  editor?.classList.add('hidden');
-  pinRow?.classList.remove('hidden');
-  if (pinInput) {
-    pinInput.value = '';
-    pinInput.focus();
-  }
+  // Directly show the PIN prompt; unlock happens via button click
+  if (pinRow) pinRow.classList.remove('hidden');
+  if (editor) editor.classList.add('hidden');
+  if (pinInput) pinInput.value = '';
 }
 
 async function kaHandleRateSaveClick(evt) {
@@ -4244,28 +4565,28 @@ async function kaHandleRateSaveClick(evt) {
 // --- Time entries (approvals + editing) ---
 
 function kaRangeForMode(mode = 'today') {
-  const today = new Date();
-  const iso = (dt) => {
+  const todayIso = kaTodayIso();
+  const toIso = (dt) => {
     const y = dt.getFullYear();
     const m = String(dt.getMonth() + 1).padStart(2, '0');
     const d = String(dt.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   };
-
+  const today = new Date(todayIso + 'T00:00:00');
   if (mode === 'yesterday') {
     const y = new Date(today);
     y.setDate(y.getDate() - 1);
-    return { start: iso(y), end: iso(y) };
+    return { start: toIso(y), end: toIso(y) };
   }
 
   if (mode === 'last7') {
     const start = new Date(today);
     start.setDate(start.getDate() - 6);
-    return { start: iso(start), end: iso(today) };
+    return { start: toIso(start), end: toIso(today) };
   }
 
   // default → today
-  return { start: iso(today), end: iso(today) };
+  return { start: toIso(today), end: toIso(today) };
 }
 
 function kaSetTimeRange(mode) {

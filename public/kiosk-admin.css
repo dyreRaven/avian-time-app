@@ -268,6 +268,19 @@ body {
   color: var(--slate-800);
 }
 
+#ka-view-settings .card-header h2 {
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+
+#ka-view-settings .card {
+  padding: 28px 24px 28px;
+}
+
+#ka-view-settings .card-header {
+  margin-bottom: 18px;
+}
+
 .card-sub {
   margin: 4px 0 0;
   font-size: 0.85rem;
@@ -4276,20 +4289,26 @@ body {
 
 .ka-pin-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 6px;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .ka-pin-row input {
-  flex: 1 1 160px;
+  flex: 0 0 auto;
+  width: 100%;
+  height: 36px !important;
+  padding: 8px 10px !important;
+  line-height: 1.2;
+  box-sizing: border-box;
 }
 
 .ka-pin-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 8px;
+  margin-top: 10px;
+  margin-bottom: 0;
 }
 
 .ka-dual-row {
@@ -4297,6 +4316,12 @@ body {
   flex-wrap: wrap;
   gap: 10px;
   align-items: flex-start;
+}
+
+.ka-pin-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .ka-dual-left {
@@ -4705,7 +4730,9 @@ body {
 .ka-settings-grid {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
+  margin-top: 16px;
+  padding-bottom: 24px;
 }
 
 .ka-settings-tile {
@@ -4722,6 +4749,19 @@ body {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.ka-settings-head:focus-visible {
+  outline: 2px solid #0ea5e9;
+  outline-offset: 4px;
 }
 
 .ka-settings-title {
@@ -4730,11 +4770,92 @@ body {
   color: #0f172a;
 }
 
+.ka-restricted-label {
+  color: #dc2626;
+  font-weight: 500;
+}
+
 .ka-settings-sub {
   margin: 4px 0 0;
   color: #6b7280;
   font-size: 0.92rem;
   line-height: 1.4;
+}
+
+.ka-settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ka-lang-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 14px;
+  margin-bottom: 0;
+}
+
+.ka-lang-actions .btn {
+  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-600));
+  color: #ecfdf5;
+  box-shadow: 0 10px 22px rgba(16, 185, 129, 0.3);
+}
+
+.ka-namechecks-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
+.ka-namechecks-actions .btn {
+  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-600));
+  color: #ecfdf5;
+  box-shadow: 0 10px 22px rgba(16, 185, 129, 0.3);
+}
+
+/* Language section spacing tweaks */
+#ka-settings-language {
+  gap: 6px;
+}
+
+#ka-settings-language .ka-status {
+  margin-top: 0;
+  min-height: 0;
+}
+
+[data-settings-section="language"].ka-settings-tile {
+  padding-bottom: 8px;
+}
+
+.ka-settings-chevron {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-right: 2px solid #0f172a;
+  border-bottom: 2px solid #0f172a;
+  transform: rotate(-135deg);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+  margin-top: 4px;
+}
+
+.ka-settings-tile.collapsed .ka-settings-content {
+  display: none;
+}
+
+.ka-settings-tile.collapsed .ka-settings-head {
+  margin-bottom: 0;
+}
+
+.ka-settings-tile.collapsed .ka-settings-chevron {
+  transform: rotate(45deg);
+}
+
+#ka-logout-btn {
+  align-self: flex-start;
+  width: auto;
+  min-width: 0;
+  margin-top: 14px;
+  margin-bottom: 2px;
 }
 
 .ka-startday-warning {
@@ -5036,8 +5157,7 @@ body {
     max-width: 100vw;
     margin: 0;
     border-radius: 0;
-    padding-left: 12px;
-    padding-right: 12px;
+    padding: 22px 18px 28px;
     box-sizing: border-box;
   }
 
@@ -5472,6 +5592,7 @@ body {
   display: flex;
   align-items: stretch;
   transition: transform 180ms ease;
+  width: 100%;
 }
 
 .ka-session-main {
@@ -5480,6 +5601,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  width: 100%;
+  min-width: 0;
 }
 
 .ka-session-delete {
@@ -5512,9 +5635,8 @@ body {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
-  gap: 10px;
-  position: relative;
-  padding-right: 0;
+  gap: 12px;
+  width: 100%;
 }
 
 .ka-session-meta {
@@ -5529,13 +5651,17 @@ body {
 .ka-session-meta-right {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 10px 14px;
   justify-content: flex-end;
   align-items: center;
   text-align: right;
   margin-left: auto;
   position: static;
   justify-self: end;
+  flex: 0 0 auto;
+  min-width: 0;
+  flex-shrink: 0;
+  width: max-content;
 }
 
 .ka-session-tag {
@@ -5547,9 +5673,40 @@ body {
   gap: 6px;
 }
 
+.ka-session-workers-btn {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #0f172a;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  line-height: 1.2;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.ka-session-workers-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.ka-session-workers-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.ka-session-workers-btn:active {
+  transform: translateY(1px);
+}
+
 @media (max-width: 640px) {
   .ka-session-head {
     grid-template-columns: 1fr;
+    align-items: flex-start;
   }
   .ka-session-meta-right {
     justify-content: flex-start;
@@ -5732,6 +5889,37 @@ body {
   margin-bottom: 0;
 }
 
+#ka-live-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ka-live-nonactive {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #b45309;
+  border: 1px solid #fed7aa;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.ka-live-active {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #ecfdf3;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
 .ka-icon-img {
   width: 18px;
   height: 18px;
@@ -5751,6 +5939,8 @@ body {
   display: flex;
   gap: 8px;
   align-items: flex-start;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .ka-session-active-icon {

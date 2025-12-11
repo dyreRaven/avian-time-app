@@ -379,7 +379,10 @@ async function syncEmployeesFromQuickBooks() {
         UPDATE employees
         SET
           name           = ?,
-          name_on_checks = ?,
+          name_on_checks = CASE
+            WHEN IFNULL(name_on_checks, '') = '' THEN ?
+            ELSE name_on_checks
+          END,
           email          = ?,
           active         = ?
         WHERE employee_qbo_id = ?
@@ -453,6 +456,71 @@ async function syncEmployeesFromQuickBooks() {
       });
     });
   });
+}
+
+/* ───────── Shared helper: set PrintOnCheckName for a payee ───────── */
+async function setPrintOnCheckName(payeeRef, desiredName) {
+  if (!payeeRef || !payeeRef.value || !desiredName) {
+    return { ok: false, error: 'Missing payeeRef or desired name.' };
+  }
+
+  const accessToken = await getAccessToken();
+  const realmId = QBO_REALM_ID;
+  if (!accessToken || !realmId) {
+    return { ok: false, error: 'Not connected to QuickBooks.' };
+  }
+
+  const type = payeeRef.type === 'Vendor' ? 'Vendor' : 'Employee';
+
+  try {
+    const data = await qboQuery(
+      `select Id, SyncToken, DisplayName, PrintOnCheckName from ${type} where Id = '${payeeRef.value}'`
+    );
+    const raw = data && data.QueryResponse && data.QueryResponse[type];
+    const entity = Array.isArray(raw) ? raw[0] : raw;
+    if (!entity || !entity.Id || typeof entity.SyncToken === 'undefined') {
+      return { ok: false, error: `${type} not found in QuickBooks.` };
+    }
+
+    const current = (entity.PrintOnCheckName || entity.DisplayName || '').trim();
+    if (current === desiredName.trim()) {
+      return { ok: true, skipped: true };
+    }
+
+    const url = `${API_BASE}/${realmId}/${type.toLowerCase()}`;
+    const payload = {
+      sparse: true,
+      Id: entity.Id,
+      SyncToken: entity.SyncToken,
+      PrintOnCheckName: desiredName,
+      DisplayName: entity.DisplayName || desiredName
+    };
+
+    await axios.post(url, payload, {
+      params: { minorversion: 62 },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return { ok: true };
+  } catch (err) {
+    let friendly = err.response ? `HTTP ${err.response.status}` : err.message;
+    if (err.response && err.response.data) {
+      const fault = err.response.data.Fault;
+      const firstError =
+        fault && Array.isArray(fault.Error) && fault.Error[0]
+          ? fault.Error[0]
+          : null;
+      if (firstError) {
+        if (firstError.Message) friendly = firstError.Message;
+        if (firstError.Detail) friendly += ' – ' + firstError.Detail;
+      }
+    }
+    return { ok: false, error: friendly };
+  }
 }
 
 
@@ -765,6 +833,7 @@ async function buildCheckDrafts(start, end, options = {}) {
       SELECT
         e.id AS employee_id,
         e.name AS employee_name,
+        e.name_on_checks AS employee_name_on_checks,
         e.vendor_qbo_id,
         e.employee_qbo_id,
         p.id AS project_id,
@@ -799,7 +868,7 @@ async function buildCheckDrafts(start, end, options = {}) {
 
   sql += `
       GROUP BY
-        e.id, e.name, e.vendor_qbo_id,
+        e.id, e.name, e.name_on_checks, e.vendor_qbo_id,
         p.id, p.name
       ORDER BY
         e.name,
@@ -819,9 +888,12 @@ async function buildCheckDrafts(start, end, options = {}) {
   for (const r of rows) {
     let draft = byEmployee.get(r.employee_id);
     if (!draft) {
+      const displayName = r.employee_name_on_checks || r.employee_name;
       draft = {
         employee_id: r.employee_id,
-        employee_name: r.employee_name,
+        employee_name: displayName,
+        employee_name_raw: r.employee_name,
+        name_on_checks: r.employee_name_on_checks || null,
         vendor_qbo_id: r.vendor_qbo_id,
         employee_qbo_id: r.employee_qbo_id,
         total_hours: 0,
@@ -1063,6 +1135,8 @@ async function createChecksForPeriod(start, end, options = {}) {
 
   const results = [];
 
+  const ensurePayeePrintName = setPrintOnCheckName;
+
   // If we hit a "catastrophic" QBO error (network outage, 5xx, auth),
   // we stop sending further checks and just mark the remaining employees
   // as "not sent due to previous error".
@@ -1165,6 +1239,15 @@ async function createChecksForPeriod(start, end, options = {}) {
       ? { value: draft.vendor_qbo_id, type: 'Vendor' }
       : (draft.employee_qbo_id ? { value: draft.employee_qbo_id, type: 'Employee' } : null);
 
+    const desiredPrintName = draft.name_on_checks || draft.employee_name || '';
+    let nameWarning = null;
+    if (desiredPrintName) {
+      const nameRes = await ensurePayeePrintName(payeeRef, desiredPrintName);
+      if (!nameRes?.ok && !nameRes?.skipped) {
+        nameWarning = `Could not update print name in QuickBooks: ${nameRes.error || 'Unknown error'}`;
+      }
+    }
+
     // See if a check for this payee is already queued to print; if so, append lines to it
     const existingQueuedCheck = await findExistingQueuedCheck(
       payeeRef,
@@ -1220,7 +1303,8 @@ async function createChecksForPeriod(start, end, options = {}) {
           totalPay: Number(draft.total_pay || 0),
           ok: true,
           qboTxnId,
-          mergedExisting: true
+          mergedExisting: true,
+          warnings: nameWarning ? [nameWarning] : []
         });
         continue; // move to next employee
       } catch (err) {
@@ -1246,7 +1330,8 @@ async function createChecksForPeriod(start, end, options = {}) {
           totalHours: Number(draft.total_hours || 0),
           totalPay: Number(draft.total_pay || 0),
           ok: false,
-          error: friendly
+          error: friendly,
+          warnings: nameWarning ? [nameWarning] : []
         });
 
         const status = err.response ? err.response.status : null;
@@ -1311,7 +1396,8 @@ async function createChecksForPeriod(start, end, options = {}) {
         totalHours: Number(draft.total_hours || 0),
         totalPay: Number(draft.total_pay || 0),
         ok: true,
-        qboTxnId
+        qboTxnId,
+        warnings: nameWarning ? [nameWarning] : []
       });
     } catch (err) {
       let friendly = err.response ? `HTTP ${err.response.status}` : err.message;
@@ -1336,7 +1422,8 @@ async function createChecksForPeriod(start, end, options = {}) {
         totalHours: Number(draft.total_hours || 0),
         totalPay: Number(draft.total_pay || 0),
         ok: false,
-        error: friendly
+        error: friendly,
+        warnings: nameWarning ? [nameWarning] : []
       });
 
       // Decide if this looks "catastrophic" (platform / network) vs per-employee.
@@ -1377,5 +1464,6 @@ module.exports = {
   createChecksForPeriod,
   syncEmployeesFromQuickBooks,
   listPayrollAccounts,
-  listClasses
+  listClasses,
+  setPrintOnCheckName
 };
