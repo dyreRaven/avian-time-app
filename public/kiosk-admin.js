@@ -4817,7 +4817,10 @@ function kaRenderItemRow(item, shipmentId) {
       const itemIdNum = Number(item.id);
       markDirty(null, { skipAuto: true });
       const ok = await kaSaveShipmentVerificationFor(shipmentId, { onlyItemId: itemIdNum });
-      if (ok) refreshUnsavedState(false);
+      if (ok) {
+        refreshUnsavedState(false);
+        row.classList.add('collapsed');
+      }
     });
   }
 
