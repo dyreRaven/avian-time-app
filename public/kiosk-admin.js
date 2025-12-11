@@ -45,6 +45,8 @@ let kaFirstActiveSetShown = false;
 const KA_VIEWS = ['live', 'shipments', 'time', 'settings'];
 const KA_PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
 const KA_OFFLINE_QUEUE_KEY = 'avian_kiosk_offline_punches_v1';
+const KA_VERIFY_QUEUE_KEY = 'avian_kiosk_verify_queue_v1';
+const KA_SHIPMENTS_CACHE_KEY = 'avian_kiosk_shipments_cache_v1';
 const KA_APP_TIMEZONE = 'America/Puerto_Rico';
 const KA_SHIPMENT_STATUSES = [
   'Pre-Order',
@@ -608,6 +610,35 @@ function kaNormalizeDocs(resp) {
     }));
 }
 
+function kaDocIsPayment(doc = {}) {
+  const text = [
+    doc.doc_type,
+    doc.doc_label,
+    doc.title,
+    doc.label,
+    doc.filename,
+    doc.original_name
+  ]
+    .map(v => (v || '').toString().toLowerCase())
+    .join(' ')
+    .trim();
+
+  if (!text) return false;
+  return (
+    text.includes('payment') ||
+    text.includes('proof of payment') ||
+    text.includes('invoice') ||
+    text.includes('paid') ||
+    text.includes('receipt')
+  );
+}
+
+function kaFilterDocsForPermissions(docs) {
+  const list = Array.isArray(docs) ? docs : [];
+  if (kaCanViewPayroll()) return list;
+  return list.filter(doc => !kaDocIsPayment(doc));
+}
+
 function kaFindDocByType(docs, typeMatch) {
   if (!Array.isArray(docs)) return null;
   const lower = typeMatch.toLowerCase();
@@ -659,7 +690,7 @@ async function kaHydrateShipmentCard(shipmentId, adminId) {
     const resp = await fetchJSON(
       `/api/shipments/${shipmentId}/documents${suffix}`
     );
-    const docs = kaNormalizeDocs(resp);
+    const docs = kaFilterDocsForPermissions(kaNormalizeDocs(resp));
     const bolDoc = kaFindDocByType(docs, 'bol');
     kaSetBolLink(shipmentId, bolDoc);
   } catch (err) {
@@ -1028,14 +1059,20 @@ function kaRenderShipmentsList(list) {
     const statusClass = kaShipStatusTone(sh.status);
     const shipperPaid = Number(sh.shipper_paid) === 1 ? 'paid' : 'unpaid';
     const clearingPaid = Number(sh.customs_paid) === 1 ? 'paid' : 'unpaid';
+    const showPaymentDetails = kaCanViewPayroll();
     const late = kaStorageLateFees(sh.storage_due_date, sh.storage_daily_late_fee);
     const isOverdue = late.daysLate > 0 && late.estimate > 0;
+    const overdueText = showPaymentDetails
+      ? `Shipment overdue · Estimated charges: $${late.estimate.toFixed(2)}`
+      : 'Shipment overdue';
+    const shipperDocsAttr = showPaymentDetails ? `data-ka-docs-payment="shipper" data-ka-docs-id="${sh.id}"` : '';
+    const clearingDocsAttr = showPaymentDetails ? `data-ka-docs-payment="clearing" data-ka-docs-id="${sh.id}"` : '';
 
     const card = document.createElement('div');
     card.className = 'ka-ship-card';
     card.dataset.shipmentId = sh.id;
     card.innerHTML = `
-      ${isOverdue ? `<div class="ka-ship-overdue">Shipment overdue · Estimated charges: $${late.estimate.toFixed(2)}</div>` : ''}
+      ${isOverdue ? `<div class="ka-ship-overdue">${overdueText}</div>` : ''}
       <div class="ka-ship-card-header">
         <div class="ka-ship-card-titlewrap">
           <div class="ka-ship-title-row">
@@ -1082,11 +1119,11 @@ function kaRenderShipmentsList(list) {
       </div>
 
       <div class="ka-ship-payment-row">
-        <span class="ka-ship-pay-badge ${shipperPaid}" data-ka-docs-payment="shipper" data-ka-docs-id="${sh.id}">
+        <span class="ka-ship-pay-badge ${shipperPaid}" ${shipperDocsAttr}>
           <span class="ka-pay-icon">${shipperPaid === 'paid' ? '✓' : '✕'}</span>
           Shipper ${shipperPaid === 'paid' ? 'Paid' : 'Unpaid'}
         </span>
-        <span class="ka-ship-pay-badge ${clearingPaid}" data-ka-docs-payment="clearing" data-ka-docs-id="${sh.id}">
+        <span class="ka-ship-pay-badge ${clearingPaid}" ${clearingDocsAttr}>
           <span class="ka-pay-icon">${clearingPaid === 'paid' ? '✓' : '✕'}</span>
           Clearing ${clearingPaid === 'paid' ? 'Paid' : 'Unpaid'}
         </span>
@@ -1166,16 +1203,42 @@ async function kaLoadShipments() {
   const projVal = projSel ? projSel.value : '';
   if (projVal) params.set('project_id', projVal);
 
+  const useCache = !navigator.onLine;
+
+  if (useCache) {
+    const cached = kaLoadShipmentsCache();
+    if (cached) {
+      kaShipments = cached.shipments || [];
+      kaRenderShipmentsList(kaShipments);
+      kaProcessNewShipmentsForAlert();
+      kaStartNotifyTimer(true);
+      if (listEl) {
+        listEl.innerHTML = `<div class="ka-ship-muted">Offline – showing last downloaded shipments.</div>`;
+      }
+      return;
+    }
+  }
+
   try {
     const resp = await fetchJSON('/api/reports/shipment-verification?' + params.toString());
     const rows = Array.isArray(resp.shipments) ? resp.shipments : [];
     kaShipments = rows;
+    kaSaveShipmentsCache(rows);
     kaRenderShipmentsList(rows);
     kaProcessNewShipmentsForAlert();
     kaStartNotifyTimer(true);
   } catch (err) {
     console.error('Error loading shipments:', err);
-    if (listEl) {
+    const cached = kaLoadShipmentsCache();
+    if (cached && Array.isArray(cached.shipments) && cached.shipments.length) {
+      kaShipments = cached.shipments;
+      kaRenderShipmentsList(kaShipments);
+      kaProcessNewShipmentsForAlert();
+      kaStartNotifyTimer(true);
+      if (listEl) {
+        listEl.innerHTML = `<div class="ka-ship-muted">Offline – showing last downloaded shipments (may be stale).</div>`;
+      }
+    } else if (listEl) {
       listEl.innerHTML = `<div class="ka-ship-muted">Error loading shipments: ${err.message || err}</div>`;
     }
   }
@@ -1374,31 +1437,10 @@ async function kaStartNotifyTimer(forcePing = false) {
 }
 
 function kaInitNotifyPanel() {
+  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return;
+
   const saved = kaLoadNotifyPrefFromStorage();
   kaApplyNotifyPrefToUI(saved, kaNotifyStatusesSource());
-
-  const openBtn = document.getElementById('ka-notify-open');
-  const modal = document.getElementById('ka-notify-modal');
-  const backdrop = document.getElementById('ka-notify-backdrop');
-  const closeBtn = document.getElementById('ka-notify-close');
-
-  function closeModal() {
-    modal?.classList.add('hidden');
-    backdrop?.classList.add('hidden');
-  }
-
-  function openModal() {
-    modal?.classList.remove('hidden');
-    backdrop?.classList.remove('hidden');
-  }
-
-  if (openBtn) openBtn.addEventListener('click', openModal);
-  if (closeBtn) closeBtn.addEventListener('click', closeModal);
-  if (backdrop) {
-    backdrop.addEventListener('click', (e) => {
-      if (e.target === backdrop) closeModal();
-    });
-  }
 
   const statusBtn = document.getElementById('ka-notify-statuses-btn');
   const statusMenu = document.getElementById('ka-notify-statuses-menu');
@@ -1520,17 +1562,9 @@ function kaApplyAccessUI() {
   const shipSection = document.getElementById('ka-view-shipments');
   if (shipSection) shipSection.classList.toggle('hidden', !kaCanViewShipments());
 
-  const notifyBtn = document.getElementById('ka-notify-open');
-  const notifyModal = document.getElementById('ka-notify-modal');
-  const notifyBackdrop = document.getElementById('ka-notify-backdrop');
   const showNotify = kaCanViewShipments();
-  if (notifyBtn) notifyBtn.style.display = showNotify ? '' : 'none';
-  if (!showNotify) {
-    notifyModal?.classList.add('hidden');
-    notifyBackdrop?.classList.add('hidden');
-    document.getElementById('ka-notify-projects-menu')?.classList.add('hidden');
-    document.getElementById('ka-notify-statuses-menu')?.classList.add('hidden');
-  }
+  const notifyTile = document.getElementById('ka-notify-settings-tile');
+  if (notifyTile) notifyTile.style.display = showNotify ? '' : 'none';
 
   const timeSection = document.getElementById('ka-view-time');
   if (timeSection) timeSection.classList.toggle('hidden', !kaCanViewTimeReports());
@@ -1620,6 +1654,7 @@ function kaUpdateShipmentCardDue(card, shipment) {
     shipment.storage_due_date,
     shipment.storage_daily_late_fee
   );
+  const showPaymentDetails = kaCanViewPayroll();
   const dueLabel = shipment.storage_due_date
     ? kaFormatDateIso(shipment.storage_due_date)
     : 'No due date set';
@@ -1630,7 +1665,10 @@ function kaUpdateShipmentCardDue(card, shipment) {
   if (daysLate > 0 && estimate > 0) {
     const lt = document.createElement('span');
     lt.className = 'late-text';
-    lt.textContent = `${daysLate} day${daysLate === 1 ? '' : 's'} late · Est. ${kaFmtMoney(estimate) || '$0.00'}`;
+    const baseText = `${daysLate} day${daysLate === 1 ? '' : 's'} past due`;
+    lt.textContent = showPaymentDetails
+      ? `${baseText} · Est. ${kaFmtMoney(estimate) || '$0.00'}`
+      : baseText;
     dueBox.appendChild(lt);
   }
 }
@@ -1971,6 +2009,97 @@ function kaLoadOfflinePunches() {
     return Array.isArray(arr) ? arr : [];
   } catch {
     return [];
+  }
+}
+
+function kaLoadVerificationQueue() {
+  try {
+    const raw = localStorage.getItem(KA_VERIFY_QUEUE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function kaSaveVerificationQueue(list) {
+  try {
+    localStorage.setItem(KA_VERIFY_QUEUE_KEY, JSON.stringify(list || []));
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function kaQueueShipmentVerification(shipmentId, items = []) {
+  if (!shipmentId || !Array.isArray(items) || !items.length) return;
+  const queue = kaLoadVerificationQueue();
+  let entry = queue.find(q => Number(q.shipment_id) === Number(shipmentId));
+  if (!entry) {
+    entry = { shipment_id: shipmentId, items: [], queued_at: new Date().toISOString() };
+    queue.push(entry);
+  }
+
+  const byId = new Map((entry.items || []).map(it => [Number(it.shipment_item_id), it]));
+  items.forEach(it => {
+    const idNum = Number(it.shipment_item_id);
+    if (!Number.isFinite(idNum)) return;
+    byId.set(idNum, {
+      shipment_item_id: idNum,
+      verification: it.verification || {}
+    });
+  });
+
+  entry.items = Array.from(byId.values());
+  entry.queued_at = new Date().toISOString();
+  kaSaveVerificationQueue(queue);
+}
+
+async function kaSyncVerificationQueue() {
+  const queue = kaLoadVerificationQueue();
+  if (!Array.isArray(queue) || !queue.length) return;
+
+  const remaining = [];
+
+  for (const job of queue) {
+    if (!job || !job.shipment_id || !Array.isArray(job.items) || !job.items.length) continue;
+    try {
+      await fetchJSON(`/api/shipments/${job.shipment_id}/verify-items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: job.items })
+      });
+    } catch (err) {
+      console.warn('Failed to sync queued verification', err);
+      remaining.push(job);
+    }
+  }
+
+  kaSaveVerificationQueue(remaining);
+}
+
+function kaLoadShipmentsCache() {
+  try {
+    const raw = localStorage.getItem(KA_SHIPMENTS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.shipments)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function kaSaveShipmentsCache(shipments) {
+  try {
+    localStorage.setItem(
+      KA_SHIPMENTS_CACHE_KEY,
+      JSON.stringify({
+        shipments: Array.isArray(shipments) ? shipments : [],
+        cached_at: new Date().toISOString()
+      })
+    );
+  } catch {
+    // ignore quota errors
   }
 }
 
@@ -3067,11 +3196,9 @@ async function kaInit() {
     .getElementById('ka-namechecks-save')
     ?.addEventListener('click', kaHandleNameOnChecksSave);
   window.addEventListener('online', () => kaSyncPendingPins());
+  window.addEventListener('online', () => kaSyncVerificationQueue());
   kaResetRatesUI();
   kaInitSettingsToggles();
-
-  // Shipment notifications panel
-  kaInitNotifyPanel();
 
   // Start-of-day button (foreman “save & clock me in”)
   document
@@ -3079,8 +3206,12 @@ async function kaInit() {
     ?.addEventListener('click', kaStartDayAndClockIn);
 
   // Items modal controls
-  document.getElementById('ka-items-modal-close')?.addEventListener('click', kaCloseItemsModal);
-  document.getElementById('ka-items-modal-cancel')?.addEventListener('click', kaCloseItemsModal);
+  document.getElementById('ka-items-modal-close')?.addEventListener('click', async () => {
+    await kaCloseItemsModal();
+  });
+  document.getElementById('ka-items-modal-cancel')?.addEventListener('click', async () => {
+    await kaCloseItemsModal();
+  });
   document.getElementById('ka-items-modal-save')?.addEventListener('click', async () => {
     kaClearItemAutoSaves();
     let ok = true;
@@ -3088,7 +3219,7 @@ async function kaInit() {
       ok = await kaSaveShipmentVerificationFor(kaItemsModalShipmentId);
     }
     if (ok) {
-      kaCloseItemsModal();
+      await kaCloseItemsModal();
     }
   });
 
@@ -3403,9 +3534,6 @@ async function kaInit() {
         kaEmployees.find(
           (e) => String(e.id) === String(kaStartEmployeeId)
         ) || null;
-
-      // Reload notification prefs now that we know which admin is using this device
-      kaApplyNotifyPrefToUI(kaLoadNotifyPrefFromStorage(), kaNotifyStatusesSource());
     }
 
     if (!kaCurrentAdmin || !kaCurrentAdmin.is_admin) {
@@ -3421,6 +3549,9 @@ async function kaInit() {
     if (kaCurrentAdmin && kaCurrentAdmin.id) {
       kaSelectedAdminId = String(kaCurrentAdmin.id);
     }
+
+    // Load shipment notification UI now that we know which admin is logged in
+    kaInitNotifyPanel();
 
     await kaLoadAccessPerms();
     kaRenderTimeFilters();
@@ -3489,6 +3620,7 @@ async function kaInit() {
 
     // Try to sync any offline PIN updates now that we are loaded
     await kaSyncPendingPins();
+    await kaSyncVerificationQueue();
 
     // Default view → Live Workers
     kaShowView('live');
@@ -3513,9 +3645,43 @@ async function kaInit() {
 
 document.addEventListener('DOMContentLoaded', kaInit);
 
-function kaCloseItemsModal() {
+function kaVerificationQueueHasShipment(shipmentId) {
+  if (!shipmentId) return kaLoadVerificationQueue().length > 0;
+  return kaLoadVerificationQueue().some(
+    job => Number(job.shipment_id) === Number(shipmentId) && Array.isArray(job.items) && job.items.length
+  );
+}
+
+function kaHasUnsavedItems(shipmentId) {
+  const dirtyMap = kaShipmentItemsDirty.size > 0;
+  const pendingTimers = kaItemAutoSaveTimers.size > 0;
+  const queued = kaVerificationQueueHasShipment(shipmentId);
+  return dirtyMap || pendingTimers || queued;
+}
+
+async function kaCloseItemsModal(opts = {}) {
+  const force = opts.force === true;
+  const shipmentId = kaItemsModalShipmentId;
+
+  if (!force && kaHasUnsavedItems(shipmentId)) {
+    const proceed = await kaShowConfirmDialog(
+      'You have unsent item changes. Save all updates before closing?',
+      {
+        okLabel: 'Save & close',
+        cancelLabel: 'Keep working',
+        title: 'Unsaved item updates'
+      }
+    );
+    if (!proceed) return;
+    if (shipmentId) {
+      await kaSaveShipmentVerificationFor(shipmentId, { silent: true });
+    }
+  }
+
   const modal = document.getElementById('ka-items-modal');
   if (modal) modal.classList.add('hidden');
+  document.body.classList.remove('ka-modal-open');
+  document.documentElement.classList.remove('ka-modal-open');
   kaClearItemAutoSaves();
   kaShipmentItemsDirty.clear();
   kaItemsFilterTerm = '';
@@ -3538,7 +3704,7 @@ function kaForceCloseAllModals() {
     const el = document.getElementById(id);
     if (el) el.classList.add('hidden');
   });
-  kaCloseItemsModal();
+  kaCloseItemsModal({ force: true });
 }
 
 function kaSetItemsTab(tab) {
@@ -3572,12 +3738,46 @@ function kaFindShipmentItem(itemId) {
   return kaShipmentDetail.items.find(it => Number(it.id) === Number(itemId)) || null;
 }
 
+function kaNormalizeVerification(raw, fallbackNotes = '') {
+  let v = raw;
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      v = null;
+    }
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) {
+    v = {};
+  }
+  const notes = v.notes ?? fallbackNotes ?? '';
+  const storage = v.storage_override ?? v.storage ?? '';
+  return {
+    status: v.status || '',
+    notes,
+    storage_override: storage || '',
+    verified_at: v.verified_at ?? v.verifiedAt ?? '',
+    verified_by: v.verified_by ?? v.verifiedBy ?? '',
+    issue_type: v.issue_type ?? v.issueType ?? '',
+    history: Array.isArray(v.history) ? v.history : []
+  };
+}
+
+function kaNormalizeShipmentItems(items = []) {
+  return (items || []).map(it => {
+    const verification = kaNormalizeVerification(
+      it.verification || it.verification_json || null,
+      it.notes
+    );
+    return { ...it, verification };
+  });
+}
+
 function kaCurrentItemState(item) {
   if (!item) return null;
-  const verification = { ...(item.verification || {}) };
+  const verification = kaNormalizeVerification(item.verification || {}, item.notes);
   const pending = kaShipmentItemsDirty.get(item.id);
   if (pending) Object.assign(verification, pending);
-  if (!verification.storage_override) verification.storage_override = verification.storage_override || '';
   return { ...item, verification };
 }
 
@@ -3657,10 +3857,11 @@ function kaDocMatchesClearing(doc) {
 }
 
 function kaRenderDocsList(docs) {
-  if (!Array.isArray(docs) || !docs.length) {
+  const list = kaFilterDocsForPermissions(docs);
+  if (!Array.isArray(list) || !list.length) {
     return '<div class="ka-ship-muted">(No documents uploaded)</div>';
   }
-  const items = docs.map(doc => {
+  const items = list.map(doc => {
     const href = doc.url || doc.file_path || '#';
     const label =
       doc.label || doc.doc_label || doc.title || doc.filename || 'Document';
@@ -3766,7 +3967,7 @@ async function kaReloadDocsForOverview(shipmentId) {
     const params = kaShipmentAuthParams();
     const suffix = params.toString() ? `?${params.toString()}` : '';
     const resp = await fetchJSON(`/api/shipments/${shipmentId}/documents${suffix}`);
-    const documents = kaNormalizeDocs(resp);
+    const documents = kaFilterDocsForPermissions(kaNormalizeDocs(resp));
     if (kaShipmentDetail) {
       kaShipmentDetail.documents = documents;
       const overviewEl = document.getElementById('ka-items-overview');
@@ -3797,12 +3998,19 @@ function kaBindPickupControls(shipment) {
   const dateInput = document.getElementById('ka-pickup-date');
   const saveBtn = document.getElementById('ka-pickup-save');
   const statusEl = document.getElementById('ka-pickup-status');
+  const metaEl = document.getElementById('ka-pickup-meta');
+  const modalToast = document.getElementById('ka-modal-toast');
+  const updaterName = kaCurrentAdmin
+    ? (kaCurrentAdmin.nickname || kaCurrentAdmin.name || 'Admin')
+    : '';
 
   if (!select || !dateInput || !saveBtn) return;
 
   const admins = kaPickupAdminOptions();
   const currentName = (shipment && shipment.picked_up_by) ? String(shipment.picked_up_by).trim() : '';
   const currentDate = shipment && shipment.picked_up_date ? shipment.picked_up_date : '';
+  const lastBy = shipment && shipment.picked_up_updated_by ? shipment.picked_up_updated_by : '';
+  const lastAt = shipment && shipment.picked_up_updated_at ? shipment.picked_up_updated_at : '';
 
   // Populate select
   select.innerHTML = '<option value="">Select admin</option>';
@@ -3858,15 +4066,13 @@ function kaBindPickupControls(shipment) {
       return;
     }
 
-    const existingName = (shipment && shipment.picked_up_by) ? String(shipment.picked_up_by).trim() : '';
-    const existingDate = shipment && shipment.picked_up_date ? shipment.picked_up_date.slice(0, 10) : '';
-    const lastBy = shipment && shipment.picked_up_updated_by ? shipment.picked_up_updated_by : '';
-    const lastAt = shipment && shipment.picked_up_updated_at ? shipment.picked_up_updated_at : '';
+    const existingName = currentName;
+    const existingDate = currentDate ? currentDate.slice(0, 10) : '';
     const changingExisting =
       (existingName && existingName !== pickedVal) ||
       (existingDate && existingDate !== pickedDate);
 
-    if (changingExisting && (lastBy || lastAt)) {
+    if (changingExisting && (existingName || existingDate)) {
       const confirmMsg = `Pickup info was last set by ${lastBy || 'someone'}${lastAt ? ` on ${lastAt}` : ''}.\nDo you want to overwrite it with your changes?`;
       const ok = await kaShowConfirmDialog(confirmMsg, { okLabel: 'Overwrite', cancelLabel: 'Cancel', title: 'Update pickup' });
       if (!ok) return;
@@ -3894,15 +4100,21 @@ function kaBindPickupControls(shipment) {
           body: JSON.stringify(payload)
         }
       );
+      const saved = resp && resp.shipment ? resp.shipment : resp;
       if (kaShipmentDetail && kaShipmentDetail.shipment) {
-        kaShipmentDetail.shipment.picked_up_by = resp.picked_up_by || pickedVal;
-        kaShipmentDetail.shipment.picked_up_date = resp.picked_up_date || pickedDate;
+        kaShipmentDetail.shipment.picked_up_by = saved.picked_up_by || pickedVal;
+        kaShipmentDetail.shipment.picked_up_date = saved.picked_up_date || pickedDate;
+        kaShipmentDetail.shipment.picked_up_updated_by = saved.picked_up_updated_by || updaterName || '';
+        kaShipmentDetail.shipment.picked_up_updated_at = saved.picked_up_updated_at || '';
       }
       if (statusEl) {
         statusEl.textContent = 'Pickup saved.';
         statusEl.className = 'ka-status ka-status-ok';
       }
-      kaShowInlineAlert('Pickup updated successfully.', 'ok', 3000);
+      if (metaEl) {
+        metaEl.textContent = `Last updated by ${kaShipmentDetail.shipment.picked_up_updated_by || updaterName || '—'}${kaShipmentDetail.shipment.picked_up_updated_at ? ` on ${kaShipmentDetail.shipment.picked_up_updated_at}` : ''}`;
+      }
+      kaShowModalToast('Pickup updated successfully.', 'ok');
       // Refresh overview to reflect updates
       const overviewEl = document.getElementById('ka-items-overview');
       if (overviewEl && kaShipmentDetail) {
@@ -3926,6 +4138,22 @@ function kaBindPickupControls(shipment) {
   };
 }
 
+function kaShowModalToast(message, variant = 'ok', duration = 2500) {
+  const el = document.getElementById('ka-modal-toast');
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.remove('hidden', 'error');
+  if (variant === 'error') el.classList.add('error');
+  el.style.opacity = '1';
+  setTimeout(() => {
+    el.style.opacity = '0';
+  }, duration);
+  setTimeout(() => {
+    el.classList.add('hidden');
+    el.style.opacity = '1';
+  }, duration + 300);
+}
+
 async function kaOpenDocsModal(shipmentId, mode = 'all') {
   const backdrop = document.getElementById('ka-docs-backdrop');
   const body = document.getElementById('ka-docs-body');
@@ -3939,7 +4167,7 @@ async function kaOpenDocsModal(shipmentId, mode = 'all') {
     const params = kaShipmentAuthParams();
     const suffix = params.toString() ? `?${params.toString()}` : '';
     const resp = await fetchJSON(`/api/shipments/${shipmentId}/documents${suffix}`);
-    const docs = kaNormalizeDocs(resp);
+    const docs = kaFilterDocsForPermissions(kaNormalizeDocs(resp));
 
     let filtered = docs;
     if (mode === 'shipper') filtered = docs.filter(kaDocMatchesShipper);
@@ -3976,6 +4204,7 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
   const freight = shipment.freight_forwarder || '';
   const poNumber = shipment.po_number || '—';
   const internalRef = shipment.reference || '—';
+  const canViewPayments = kaCanViewPayroll();
   const expectedShip = kaFmtDateMMDDYYYY(shipment.expected_ship_date) || '—';
   const expectedArrival = kaFmtDateMMDDYYYY(shipment.expected_arrival_date) || '—';
   const pickupDate = kaFmtDateMMDDYYYY(shipment.picked_up_date) || '—';
@@ -3998,8 +4227,23 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
         );
 
   const verify = kaShipVerificationInfo(shipment);
-  const normalizedDocs = kaNormalizeDocs(docs);
+  const normalizedDocs = kaFilterDocsForPermissions(kaNormalizeDocs(docs));
+  const paymentRows = [
+    { label: 'Vendor Paid', status: paidVendor, amount: amountVendor },
+    { label: 'Freight Forwarder Paid', status: paidShipper, amount: amountShipper },
+    { label: 'Customs Paid', status: paidCustoms, amount: amountCustoms }
+  ];
+  const paymentTotalsRow = canViewPayments
+    ? `<div class="ka-items-overview-pair"><span>Total Paid</span><strong>${totalPaid}</strong></div>`
+    : '';
+  const paymentsHtml = paymentRows
+    .map(row => {
+      const amountPart = canViewPayments && row.amount !== '—' ? ` (${row.amount})` : '';
+      return `<div class="ka-items-overview-pair"><span>${row.label}</span><strong>${row.status}${amountPart}</strong></div>`;
+    })
+    .join('');
   const bolDoc = kaFindDocByType(normalizedDocs, 'bol');
+  const bolHref = bolDoc ? (bolDoc.url || bolDoc.file_path || null) : null;
   const otherDocs = normalizedDocs.filter(d => !bolDoc || d !== bolDoc);
 
   const docItems = [];
@@ -4029,7 +4273,15 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
         <div class="ka-items-overview-label">Shipment</div>
         <div class="ka-items-overview-pair"><span>Status</span><strong class="ka-ship-status-pill ${statusClass}">${shipment.status || 'Status'}</strong></div>
         <div class="ka-items-overview-pair"><span>Project</span><strong>${project}</strong></div>
-        ${bolLabel ? `<div class="ka-items-overview-pair"><span>BOL</span><strong class="ka-ship-bol-pill">${bolLabel}</strong></div>` : ''}
+        ${
+          bolLabel
+            ? `<div class="ka-items-overview-pair"><span>BOL</span>${
+                bolHref
+                  ? `<a class="ka-ship-bol-pill" href="${bolHref}" target="_blank" rel="noopener noreferrer">${bolLabel}</a>`
+                  : `<strong class="ka-ship-bol-pill">${bolLabel}</strong>`
+              }</div>`
+            : ''
+        }
         <div class="ka-items-overview-pair"><span>PO #</span><strong>${poNumber}</strong></div>
         <div class="ka-items-overview-pair"><span>Internal Ref #</span><strong>${internalRef}</strong></div>
         <div class="ka-items-overview-pair"><span>Freight Forwarder</span><strong>${freight || '—'}</strong></div>
@@ -4042,7 +4294,6 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
         <div class="ka-items-overview-pair"><span>Expected Arrival</span><strong>${expectedArrival || '—'}</strong></div>
         <div class="ka-items-overview-pair"><span>Due for Pickup</span><strong>${storageDue || '—'}</strong></div>
         <div class="ka-items-overview-pair"><span>Tracking #</span><strong>${tracking || '—'}</strong></div>
-        <div class="ka-items-overview-pair"><span>BOL #</span><strong>${shipment.bol_number || '—'}</strong></div>
       </div>
 
       <div class="ka-items-overview-card">
@@ -4065,17 +4316,15 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
         </div>
         ${
           pickupUpdatedBy || pickupUpdatedAt
-            ? `<div class="ka-pickup-meta">Last updated by ${pickupUpdatedBy || '—'}${pickupUpdatedAt ? ` on ${pickupUpdatedAt}` : ''}</div>`
-            : ''
+            ? `<div class="ka-pickup-meta" id="ka-pickup-meta">Last updated by ${pickupUpdatedBy || '—'}${pickupUpdatedAt ? ` on ${pickupUpdatedAt}` : ''}</div>`
+            : `<div class="ka-pickup-meta" id="ka-pickup-meta"></div>`
         }
       </div>
 
       <div class="ka-items-overview-card">
         <div class="ka-items-overview-label">Payments</div>
-        <div class="ka-items-overview-pair"><span>Vendor Paid</span><strong>${paidVendor} ${amountVendor !== '—' ? `(${amountVendor})` : ''}</strong></div>
-        <div class="ka-items-overview-pair"><span>Freight Forwarder Paid</span><strong>${paidShipper} ${amountShipper !== '—' ? `(${amountShipper})` : ''}</strong></div>
-        <div class="ka-items-overview-pair"><span>Customs Paid</span><strong>${paidCustoms} ${amountCustoms !== '—' ? `(${amountCustoms})` : ''}</strong></div>
-        <div class="ka-items-overview-pair"><span>Total Paid</span><strong>${totalPaid}</strong></div>
+        ${paymentsHtml}
+        ${paymentTotalsRow}
       </div>
 
     </div>
@@ -4126,6 +4375,9 @@ async function kaOpenItemsModal(shipmentId) {
   const overviewEl = document.getElementById('ka-items-overview');
   if (!modal || !body || !titleEl || !overviewEl) return;
 
+  document.body.classList.add('ka-modal-open');
+  document.documentElement.classList.add('ka-modal-open');
+
   kaShipmentItemsDirty.clear();
   kaClearItemAutoSaves();
   kaItemsModalShipmentId = shipmentId;
@@ -4153,7 +4405,7 @@ async function kaOpenItemsModal(shipmentId) {
       '/api/reports/shipment-verification?' + params.toString()
     );
     shipment = report.shipment || {};
-    items = Array.isArray(report.items) ? report.items : [];
+    items = kaNormalizeShipmentItems(Array.isArray(report.items) ? report.items : []);
     kaShipmentDetail = { shipment, items };
   } catch (err) {
     console.error('Failed to load shipment for items modal', err);
@@ -4167,7 +4419,7 @@ async function kaOpenItemsModal(shipmentId) {
     const docParams = kaShipmentAuthParams();
     const suffix = docParams.toString() ? `?${docParams.toString()}` : '';
     const resp = await fetchJSON(`/api/shipments/${shipmentId}/documents${suffix}`);
-    documents = kaNormalizeDocs(resp);
+    documents = kaFilterDocsForPermissions(kaNormalizeDocs(resp));
   } catch (err) {
     console.warn('Failed to load shipment documents', err);
     documents = [];
@@ -4223,6 +4475,10 @@ async function kaOpenItemsModal(shipmentId) {
       ${hasItems ? '' : '<div class="ka-ship-muted">(No items on this shipment)</div>'}
     </div>
 
+    <div class="ka-items-bottom-actions">
+      <button type="button" class="btn primary btn-sm" id="ka-items-save-close">Save & close</button>
+    </div>
+
     <div id="ka-items-savebar" class="ka-items-savebar hidden">
       <div class="ka-items-savebar-text"><span id="ka-items-savebar-count">0</span> unsaved changes</div>
       <div class="ka-items-savebar-actions">
@@ -4254,6 +4510,21 @@ async function kaOpenItemsModal(shipmentId) {
       kaSaveShipmentVerificationFor(shipmentId);
     });
     saveNowBtn.dataset.bound = '1';
+  }
+
+  const saveCloseBtn = document.getElementById('ka-items-save-close');
+  if (saveCloseBtn && !saveCloseBtn.dataset.bound) {
+    saveCloseBtn.addEventListener('click', async () => {
+      kaClearItemAutoSaves();
+      let ok = true;
+      if (shipmentId) {
+        ok = await kaSaveShipmentVerificationFor(shipmentId);
+      }
+      if (ok) {
+        kaCloseItemsModal();
+      }
+    });
+    saveCloseBtn.dataset.bound = '1';
   }
 
   const undoBtn = document.getElementById('ka-items-undo');
@@ -4347,18 +4618,39 @@ function kaRenderItemRow(item, shipmentId) {
   if (kaShipmentItemsDirty.has(Number(item.id))) row.classList.add('is-unsaved');
 
   const statuses = [
+    { val: '', label: 'Unverified' },
     { val: 'verified', label: 'Verified' },
     { val: 'missing', label: 'Missing' },
     { val: 'damaged', label: 'Damaged' },
-    { val: 'wrong_item', label: 'Wrong item' },
-    { val: '', label: 'Clear' }
+    { val: 'wrong_item', label: 'Wrong item' }
   ];
 
   const hasNotesOpen = !!notes || !!storage;
+  const statusLabel = kaItemStatusLabel(status);
 
   row.innerHTML = `
     <div class="ka-item-row-head">
-      <div class="ka-item-title">${item.description || '(No description)'}</div>
+      <div>
+        <div class="ka-item-title">${item.description || '(No description)'}</div>
+        <div class="ka-item-meta-line">
+          <span>Qty: ${qty}${unit ? ` ${unit}` : ''}</span>
+          ${sku ? `<span class="ka-item-meta-dot">•</span><span>SKU: ${sku}</span>` : ''}
+          ${vendorName ? `<span class="ka-item-meta-dot">•</span><span>Vendor: ${vendorName}</span>` : ''}
+        </div>
+      </div>
+      <div class="ka-item-head-right">
+        <span class="ka-item-status-chip">${statusLabel}</span>
+        <button type="button" class="ka-item-collapse" data-ka-collapse="${item.id}" aria-label="Collapse item">⌄</button>
+      </div>
+    </div>
+    <div class="ka-item-body">
+      <div class="ka-item-meta-line meta-right">
+        <span>Qty: ${qty}${unit ? ` ${unit}` : ''}</span>
+        ${sku ? `<span class="ka-item-meta-dot">•</span><span>SKU: ${sku}</span>` : ''}
+        ${vendorName ? `<span class="ka-item-meta-dot">•</span><span>Vendor: ${vendorName}</span>` : ''}
+      </div>
+      <div class="ka-item-divider"></div>
+
       <div class="ka-item-status-group" data-ka-status-buttons="${item.id}">
         ${statuses
           .map(
@@ -4368,41 +4660,35 @@ function kaRenderItemRow(item, shipmentId) {
           )
           .join('')}
       </div>
-    </div>
 
-    <div class="ka-item-meta">
-      <span class="ka-item-chip">Qty: ${qty}${unit ? ` ${unit}` : ''}</span>
-      ${sku ? `<span class="ka-item-chip">SKU: ${sku}</span>` : ''}
-      ${vendorName ? `<span class="ka-item-chip">Vendor: ${vendorName}</span>` : ''}
-    </div>
-
-    <div class="ka-item-note-toggle">
-      <button type="button" class="ka-note-toggle-btn" data-ka-toggle-notes="${item.id}">
-        <span class="ka-note-label">${hasNotesOpen ? 'Hide notes' : 'Notes & storage'}</span>
-        <span class="ka-note-chevron">${hasNotesOpen ? '▴' : '▾'}</span>
-      </button>
-    </div>
-
-    <div class="ka-item-row-notes ${hasNotesOpen ? 'open' : ''}" data-ka-notes="${item.id}">
-      <label>
-        <span>Notes</span>
-        <textarea rows="2" data-ship-item-notes-id="${item.id}">${notes}</textarea>
-      </label>
-      <label>
-        <span>Storage details</span>
-        <textarea rows="2" data-ship-item-storage-id="${item.id}">${storage}</textarea>
-      </label>
-    </div>
-
-    <div class="ka-item-row-footer">
-      <div class="ka-item-last">
-        <span class="ka-item-unsaved-dot ${kaShipmentItemsDirty.has(Number(item.id)) ? '' : 'hidden'}" aria-hidden="true">●</span>
-        <span class="ka-item-last-meta">${
-          lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : 'Not verified yet'
-        }</span>
+      <div class="ka-item-note-toggle">
+        <button type="button" class="ka-note-toggle-btn" data-ka-toggle-notes="${item.id}">
+          <span class="ka-note-label">${hasNotesOpen ? 'Hide notes' : 'Notes & storage'}</span>
+          <span class="ka-note-chevron">${hasNotesOpen ? '▴' : '▾'}</span>
+        </button>
       </div>
-      <div class="ka-item-row-actions">
-        <button type="button" class="btn secondary btn-sm" data-ka-save-item="${item.id}">Save now</button>
+
+      <div class="ka-item-row-notes ${hasNotesOpen ? 'open' : ''}" data-ka-notes="${item.id}">
+        <label>
+          <span>Notes</span>
+          <textarea rows="2" data-ship-item-notes-id="${item.id}">${notes}</textarea>
+        </label>
+        <label>
+          <span>Storage details</span>
+          <textarea rows="2" data-ship-item-storage-id="${item.id}">${storage}</textarea>
+        </label>
+      </div>
+
+      <div class="ka-item-row-footer">
+        <div class="ka-item-last">
+          <span class="ka-item-unsaved-dot ${kaShipmentItemsDirty.has(Number(item.id)) ? '' : 'hidden'}" aria-hidden="true">●</span>
+          <span class="ka-item-last-meta">${
+            lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : 'Not verified yet'
+          }</span>
+        </div>
+        <div class="ka-item-row-actions">
+          <button type="button" class="btn secondary btn-sm" data-ka-save-item="${item.id}">Save now</button>
+        </div>
       </div>
     </div>
   `;
@@ -4413,6 +4699,8 @@ function kaRenderItemRow(item, shipmentId) {
   const toggleBtn = row.querySelector(`[data-ka-toggle-notes="${item.id}"]`);
   const saveBtn = row.querySelector(`[data-ka-save-item="${item.id}"]`);
   const notesWrap = row.querySelector(`[data-ka-notes="${item.id}"]`);
+  const statusChip = row.querySelector('.ka-item-status-chip');
+  const collapseBtn = row.querySelector(`[data-ka-collapse="${item.id}"]`);
   const unsavedDot = row.querySelector('.ka-item-unsaved-dot');
   const lastMeta = row.querySelector('.ka-item-last-meta');
 
@@ -4428,6 +4716,7 @@ function kaRenderItemRow(item, shipmentId) {
       btn.classList.toggle('active', match);
     });
     applyStatusStyle(val);
+    if (statusChip) statusChip.textContent = kaItemStatusLabel(val);
   };
 
   const buildPayload = (statusOverride = null) => {
@@ -4482,6 +4771,7 @@ function kaRenderItemRow(item, shipmentId) {
     kaUpdateItemsSavebar();
     kaUpdateItemsSummaryUI();
     refreshUnsavedState(true);
+    if (statusChip) statusChip.textContent = kaItemStatusLabel(payload.status || '');
 
     if (lastMeta) {
       lastMeta.textContent = `${payload.verified_by || ''}${
@@ -4519,6 +4809,13 @@ function kaRenderItemRow(item, shipmentId) {
       markDirty(null, { skipAuto: true });
       const ok = await kaSaveShipmentVerificationFor(shipmentId, { onlyItemId: itemIdNum });
       if (ok) refreshUnsavedState(false);
+    });
+  }
+
+  if (collapseBtn) {
+    collapseBtn.addEventListener('click', () => {
+      const collapsed = row.classList.toggle('collapsed');
+      // arrow stays the same; rotation handled in CSS when collapsed
     });
   }
 
@@ -4589,6 +4886,26 @@ async function kaSaveShipmentVerificationFor(shipmentId, opts = {}) {
     return true;
   } catch (err) {
     console.error('Failed to save shipment verification', err);
+    const offlineLikely =
+      !navigator.onLine ||
+      (err && typeof err.status === 'number' && err.status === 0);
+
+    if (offlineLikely) {
+      kaQueueShipmentVerification(shipmentId, items);
+      items.forEach(row => {
+        kaShipmentItemsDirty.delete(Number(row.shipment_item_id));
+        kaUpdateLocalItemVerification(row.shipment_item_id, row.verification || {});
+        kaSetItemSavedUI(row.shipment_item_id);
+      });
+      kaUpdateItemsSavebar();
+      kaUpdateItemsSummaryUI();
+
+      if (!silent) {
+        kaShowInlineAlert('Offline: verification saved locally and will sync when online.', 'error', 6000);
+      }
+      return true;
+    }
+
     if (!silent) {
       const msg = err && err.message ? err.message : 'Failed to save verification.';
       kaShowInlineAlert(msg, 'error', 8000);
@@ -5988,3 +6305,6 @@ async function kaLoadTimeEntries() {
     }
   }
 }
+    if (metaEl) {
+      metaEl.textContent = '';
+    }

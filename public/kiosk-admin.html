@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <title>Avian Time – Kiosk Admin</title>
-  <link rel="stylesheet" href="/kiosk-admin.css?v=20241211g" />
+  <link rel="stylesheet" href="/kiosk-admin.css?v=20241211m" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#10b981" />
 
@@ -31,6 +31,7 @@
 
   </header>
 <p id="ka-kiosk-status" class="ka-status"></p>
+<div id="ka-modal-toast" class="ka-modal-toast hidden"></div>
 <div id="ka-clockin-prompt" class="ka-sticky-prompt" role="alert">
   <div class="ka-prompt-text" id="ka-clockin-prompt-text"></div>
   <select id="ka-clockin-project-select" class="ka-select-arrow" style="display:none;"></select>
@@ -156,9 +157,6 @@
         <button id="ka-shipments-refresh" class="btn secondary btn-sm ka-ship-refresh" type="button">
           Refresh
         </button>
-        <button id="ka-notify-open" class="ka-icon-btn" type="button" aria-label="Shipment notifications">
-          <img src="/icons/notifications.svg" alt="" aria-hidden="true" width="26" height="26" />
-        </button>
       </div>
     </div>
 
@@ -196,69 +194,6 @@
     </div>
   </div>
 </section> <!-- ✅ CLOSE SHIPMENTS VIEW HERE -->
-
-<!-- Notifications modal -->
-<div id="ka-notify-backdrop" class="ka-modal-backdrop hidden"></div>
-<div id="ka-notify-modal" class="ka-modal hidden">
-  <div class="ka-modal-header">
-    <h3>Shipment Notifications</h3>
-    <button id="ka-notify-close" class="ka-icon-btn" type="button" aria-label="Close">✕</button>
-  </div>
-  <p class="ka-muted">
-    Alerts show on this device for the admin logged in. Pick statuses, optional time, and optional specific shipments.
-  </p>
-
-  <div class="ka-modal-body ka-ship-notify-grid">
-    <div class="ka-notify-enable-row">
-      <label class="ka-toggle">
-        <input type="checkbox" id="ka-notify-enabled" />
-        <span>Enable notifications</span>
-      </label>
-    </div>
-
-    <div id="ka-notify-fields">
-      <div class="ka-notify-group ka-notify-reminders">
-        <div class="ka-inline-header">
-          <div class="ka-inline-field">
-            <label for="ka-notify-every-days">Reminder every…</label>
-            <div class="ka-inline">
-              <input type="number" id="ka-notify-every-days" min="1" step="1" value="1" style="max-width: 90px;" />
-              <span class="ka-muted">day(s)</span>
-            </div>
-          </div>
-          <div class="ka-inline-field">
-            <label for="ka-notify-time">Reminder time</label>
-            <input type="time" id="ka-notify-time" value="09:00" />
-          </div>
-        </div>
-      </div>
-
-      <div class="ka-notify-group">
-        <label>Status filters</label>
-        <button id="ka-notify-statuses-btn" class="ka-notify-select" type="button">
-          <span id="ka-notify-statuses-label" class="placeholder">All statuses</span>
-          <span class="ka-caret">▾</span>
-        </button>
-        <div id="ka-notify-statuses-menu" class="ka-notify-menu hidden"></div>
-      </div>
-      <div class="ka-notify-group">
-        <label for="ka-notify-projects">Projects (optional)</label>
-        <button id="ka-notify-projects-btn" class="ka-notify-select" type="button">
-          <span id="ka-notify-projects-label" class="placeholder">All projects</span>
-          <span class="ka-caret">▾</span>
-        </button>
-        <div id="ka-notify-projects-menu" class="ka-notify-menu hidden"></div>
-        <p class="ka-muted small">Leave empty to include all projects.</p>
-      </div>
-    </div>
-  </div>
-
-  <div class="ka-ship-notify-actions">
-    <button class="btn secondary btn-sm" id="ka-notify-test" type="button">Test notification</button>
-    <button class="btn primary btn-sm" id="ka-notify-save" type="button">Save notification settings</button>
-    <span id="ka-notify-msg" class="ka-status"></span>
-  </div>
-</div>
 
     <!-- ============================
        VIEW: TIME ENTRIES
@@ -378,6 +313,72 @@
   <div class="card-body">
 
     <div id="ka-admin-settings-block" class="ka-settings-grid">
+      <div class="ka-settings-tile collapsed" data-settings-section="notifications" id="ka-notify-settings-tile">
+        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-notify">
+          <div>
+            <div class="ka-settings-title">Shipment notifications</div>
+            <p class="ka-settings-sub">Get kiosk alerts for shipments this admin cares about.</p>
+          </div>
+          <span class="ka-settings-chevron" aria-hidden="true"></span>
+        </button>
+        <div class="ka-settings-content" id="ka-settings-notify">
+          <p class="ka-muted">
+            Alerts show on this device for the admin currently logged in. Pick statuses, optional time, and optional projects.
+          </p>
+
+          <div class="ka-ship-notify-grid">
+            <div class="ka-notify-enable-row">
+              <label class="ka-toggle">
+                <input type="checkbox" id="ka-notify-enabled" />
+                <span>Enable notifications</span>
+              </label>
+            </div>
+
+            <div id="ka-notify-fields">
+              <div class="ka-notify-group ka-notify-reminders">
+                <div class="ka-inline-header">
+                  <div class="ka-inline-field">
+                    <label for="ka-notify-every-days">Reminder every…</label>
+                    <div class="ka-inline">
+                      <input type="number" id="ka-notify-every-days" min="1" step="1" value="1" style="max-width: 90px;" />
+                      <span class="ka-muted">day(s)</span>
+                    </div>
+                  </div>
+                  <div class="ka-inline-field">
+                    <label for="ka-notify-time">Reminder time</label>
+                    <input type="time" id="ka-notify-time" value="09:00" />
+                  </div>
+                </div>
+              </div>
+
+              <div class="ka-notify-group">
+                <label>Status filters</label>
+                <button id="ka-notify-statuses-btn" class="ka-notify-select" type="button">
+                  <span id="ka-notify-statuses-label" class="placeholder">All statuses</span>
+                  <span class="ka-caret">▾</span>
+                </button>
+                <div id="ka-notify-statuses-menu" class="ka-notify-menu hidden"></div>
+              </div>
+              <div class="ka-notify-group">
+                <label for="ka-notify-projects">Projects (optional)</label>
+                <button id="ka-notify-projects-btn" class="ka-notify-select" type="button">
+                  <span id="ka-notify-projects-label" class="placeholder">All projects</span>
+                  <span class="ka-caret">▾</span>
+                </button>
+                <div id="ka-notify-projects-menu" class="ka-notify-menu hidden"></div>
+                <p class="ka-muted small">Leave empty to include all projects.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="ka-ship-notify-actions">
+            <button class="btn secondary btn-sm" id="ka-notify-test" type="button">Test notification</button>
+            <button class="btn primary btn-sm" id="ka-notify-save" type="button">Save notification settings</button>
+            <span id="ka-notify-msg" class="ka-status"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="ka-settings-tile collapsed" data-settings-section="language">
         <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-language">
           <div>
@@ -532,7 +533,7 @@
 </nav>
 
 <script src="/js/utils.js"></script>
-<script src="/kiosk-admin.js?v=20241211g"></script>
+<script src="/kiosk-admin.js?v=20241211m"></script>
 <!-- Items modal -->
 <div id="ka-items-modal" class="hidden">
   <div class="ka-items-modal-content">
@@ -541,12 +542,13 @@
         <div class="ka-items-modal-title" id="ka-items-modal-title">Verify items</div>
         <div class="ka-items-modal-sub" id="ka-items-modal-sub"></div>
       </div>
-      <button type="button" class="ka-items-modal-close" id="ka-items-modal-close">×</button>
-    </div>
-
-    <div class="ka-items-tabs" role="tablist">
-      <button type="button" class="ka-items-tab-btn active" data-ka-items-tab="overview">Overview</button>
-      <button type="button" class="ka-items-tab-btn" data-ka-items-tab="items">Items</button>
+      <div class="ka-items-modal-actions">
+        <div class="ka-items-tabs" role="tablist">
+          <button type="button" class="ka-items-tab-btn active" data-ka-items-tab="overview">Overview</button>
+          <button type="button" class="ka-items-tab-btn" data-ka-items-tab="items">Items</button>
+        </div>
+        <button type="button" class="ka-items-modal-close" id="ka-items-modal-close">×</button>
+      </div>
     </div>
 
     <div class="ka-items-modal-body">

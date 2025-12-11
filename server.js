@@ -112,6 +112,159 @@ function dbRun(sql, params = []) {
   });
 }
 
+// ───────── Payroll attempt helpers ─────────
+async function recordPayrollAttempt({ payrollRunId = null, start, end, qbResult }) {
+  const okFlag = (() => {
+    if (!qbResult) return 0;
+    const hasErrors =
+      Array.isArray(qbResult.results) && qbResult.results.some(r => r && r.ok === false);
+    return qbResult.fatalQboError || hasErrors ? 0 : 1;
+  })();
+
+  const attempt = await dbRun(
+    `
+      INSERT INTO payroll_run_attempts (
+        payroll_run_id, start_date, end_date, ok, fatal_error
+      ) VALUES (?, ?, ?, ?, ?)
+    `,
+    [payrollRunId || null, start, end, okFlag, qbResult?.fatalQboError || null]
+  );
+
+  const attemptId = attempt.lastID;
+  const results = Array.isArray(qbResult?.results) ? qbResult.results : [];
+  for (const r of results) {
+    await dbRun(
+      `
+        INSERT INTO payroll_attempt_results (
+          attempt_id,
+          employee_id,
+          employee_name,
+          total_hours,
+          total_pay,
+          ok,
+          error,
+          warning_codes,
+          qbo_txn_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        attemptId,
+        r?.employeeId || null,
+        r?.employeeName || null,
+        r ? Number(r.totalHours || 0) : null,
+        r ? Number(r.totalPay || 0) : null,
+        r && r.ok === false ? 0 : 1,
+        r?.error || null,
+        r?.warningCodes ? JSON.stringify(r.warningCodes) : null,
+        r?.qboTxnId || null
+      ]
+    );
+  }
+
+  return attemptId;
+}
+
+async function updateAttemptRunId(attemptId, payrollRunId) {
+  if (!attemptId || !payrollRunId) return;
+  await dbRun(
+    `
+      UPDATE payroll_run_attempts
+      SET payroll_run_id = ?
+      WHERE id = ? AND payroll_run_id IS NULL
+    `,
+    [payrollRunId, attemptId]
+  );
+}
+
+async function getFailedEmployeeIdsForAttempt(attemptId) {
+  if (!attemptId) return [];
+  const rows = await dbAll(
+    `
+      SELECT DISTINCT employee_id
+      FROM payroll_attempt_results
+      WHERE attempt_id = ?
+        AND IFNULL(ok, 0) = 0
+        AND employee_id IS NOT NULL
+    `,
+    [attemptId]
+  );
+  return rows.map(r => Number(r.employee_id)).filter(n => Number.isFinite(n));
+}
+
+// ───────── Name on checks retry queue ─────────
+async function enqueueNameOnChecksRetry({ employeeId, desiredName, payeeRef, lastError }) {
+  if (!employeeId || !desiredName || !payeeRef || !payeeRef.value) return;
+  await dbRun(
+    `
+      INSERT INTO name_on_checks_queue (
+        employee_id, desired_name, payee_type, payee_id, last_error, attempts, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+      ON CONFLICT(employee_id) DO UPDATE SET
+        desired_name = excluded.desired_name,
+        payee_type   = excluded.payee_type,
+        payee_id     = excluded.payee_id,
+        last_error   = excluded.last_error,
+        attempts     = name_on_checks_queue.attempts,
+        updated_at   = datetime('now')
+    `,
+    [employeeId, desiredName, payeeRef.type || null, String(payeeRef.value || ''), lastError || null]
+  );
+}
+
+async function clearNameOnChecksRetry(employeeId) {
+  if (!employeeId) return;
+  await dbRun('DELETE FROM name_on_checks_queue WHERE employee_id = ?', [employeeId]);
+}
+
+async function processNameOnChecksQueue() {
+  try {
+    const rows = await dbAll(
+      `
+        SELECT id, employee_id, desired_name, payee_type, payee_id, attempts
+        FROM name_on_checks_queue
+        ORDER BY updated_at ASC
+        LIMIT 10
+      `
+    );
+    if (!rows.length) return;
+
+    for (const row of rows) {
+      const payeeRef = row.payee_id
+        ? { value: row.payee_id, type: row.payee_type || 'Employee' }
+        : null;
+
+      if (!payeeRef || !row.desired_name) {
+        await dbRun('DELETE FROM name_on_checks_queue WHERE id = ?', [row.id]);
+        continue;
+      }
+
+      const res = await setPrintOnCheckName(payeeRef, row.desired_name);
+      if (res?.ok || res?.skipped) {
+        await dbRun(
+          'UPDATE employees SET name_on_checks_qbo_updated_at = datetime(\'now\') WHERE id = ?',
+          [row.employee_id]
+        );
+        await dbRun('DELETE FROM name_on_checks_queue WHERE id = ?', [row.id]);
+      } else {
+        await dbRun(
+          `
+            UPDATE name_on_checks_queue
+            SET attempts = attempts + 1,
+                last_error = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+          `,
+          [res?.error || 'Unknown error', row.id]
+        );
+      }
+    }
+  } catch (err) {
+    console.error('Name-on-checks retry queue error:', err);
+  }
+}
+
+setInterval(processNameOnChecksQueue, 2 * 60 * 1000); // retry every 2 minutes
+
 // Central access-control defaults for admins (settings.access_admins)
 const ACCESS_DEFAULTS = {
   see_shipments: true,
@@ -1184,11 +1337,11 @@ app.get('/api/payroll-summary', requireAuth, async (req, res) => {
     )
     SELECT
       e.id AS employee_id,
-      e.name AS employee_name,
+      COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
       e.vendor_qbo_id AS employee_vendor_qbo_id,
       e.employee_qbo_id AS employee_employee_qbo_id,
       p.id AS project_id,
-      COALESCE(p.name, '(No project)') AS project_name,
+      COALESCE(p.name, t.project_name_snapshot, '(No project)') AS project_name,
       p.qbo_id AS project_qbo_id,
       p.customer_name AS project_customer_name,
       p.name AS project_name_raw,
@@ -1199,11 +1352,11 @@ app.get('/api/payroll-summary', requireAuth, async (req, res) => {
       SUM(t.hours)     AS project_hours,
       SUM(t.total_pay) AS project_pay
     FROM eligible_entries t
-    JOIN employees e ON t.employee_id = e.id
+    LEFT JOIN employees e ON t.employee_id = e.id
     LEFT JOIN projects p ON t.project_id = p.id
     GROUP BY
-      e.id, e.name,
-      p.id, p.name
+      e.id, e.name, t.employee_name_snapshot,
+      p.id, p.name, t.project_name_snapshot
     ORDER BY
       e.name,
       project_name
@@ -1569,7 +1722,8 @@ app.post('/api/payroll/create-checks', requireAuth, async (req, res) => {
     excludeEmployeeIds = [],
     isRetry = false,
     originalPayrollRunId = null,
-    onlyEmployeeIds = []
+    onlyEmployeeIds = [],
+    fromAttemptId = null
   } = req.body || {};
 
   // 🔒 Simple in-memory mutex: block concurrent payroll runs in this Node process
@@ -1682,6 +1836,19 @@ app.post('/api/payroll/create-checks', requireAuth, async (req, res) => {
     }
 
     // 2) Call QuickBooks helper to actually build & create checks.
+    if (fromAttemptId && (!onlyEmployeeIds || !onlyEmployeeIds.length)) {
+      try {
+        const failedIds = await getFailedEmployeeIdsForAttempt(Number(fromAttemptId));
+        if (failedIds.length) {
+          onlyEmployeeIds = failedIds;
+          isRetry = true;
+        }
+      } catch (errAttempt) {
+        console.warn('Could not load failed employees for attempt', fromAttemptId, errAttempt);
+      }
+    }
+
+    // 2) Call QuickBooks helper to actually build & create checks.
     const qbResult = await createChecksForPeriod(start, end, {
       bankAccountName,
       expenseAccountName,
@@ -1709,6 +1876,13 @@ app.post('/api/payroll/create-checks', requireAuth, async (req, res) => {
       payroll_run_id: payrollRunId
     });
 
+    const attemptId = await recordPayrollAttempt({
+      payrollRunId,
+      start,
+      end,
+      qbResult
+    });
+
     if (!qbResult || qbResult.ok === false) {
       const errorMsg =
         qbResult?.error ||
@@ -1730,7 +1904,8 @@ app.post('/api/payroll/create-checks', requireAuth, async (req, res) => {
       return res.status(500).json({
         ok: false,
         error: errorMsg,
-        results: qbResult?.results || []
+        results: qbResult?.results || [],
+        attempt_id: attemptId
       });
     }
 
@@ -1765,6 +1940,7 @@ app.post('/api/payroll/create-checks', requireAuth, async (req, res) => {
           [start, end]
         );
         payrollRunId = runInsert.lastID;
+        await updateAttemptRunId(attemptId, payrollRunId);
       } else if (!payrollRunId) {
         // Safety fallback: retry requested but somehow no run id yet
         const existing = await dbGet(
@@ -1780,6 +1956,7 @@ app.post('/api/payroll/create-checks', requireAuth, async (req, res) => {
           throw new Error('Retry requested but no existing payroll_run found for this period.');
         }
         payrollRunId = existing.id;
+        await updateAttemptRunId(attemptId, payrollRunId);
       }
 
       // When retrying, delete all existing check rows for that employee in this run
@@ -1914,16 +2091,17 @@ app.post('/api/payroll/create-checks', requireAuth, async (req, res) => {
       });
     }
 
-    // 5) Respond with full details so the UI can show a summary and allow retry-later logic
-    return res.json({
-      ok: true,
-      payrollRunId,
-      start,
-      end,
-      totalHours: batchHours,  // just this batch, final totals are in payroll_runs table
-      totalPay: batchPay,
-      results
-    });
+  // 5) Respond with full details so the UI can show a summary and allow retry-later logic
+  return res.json({
+    ok: true,
+    payrollRunId,
+    start,
+    end,
+    totalHours: batchHours,  // just this batch, final totals are in payroll_runs table
+    totalPay: batchPay,
+    results,
+    attempt_id: attemptId
+  });
 
   } catch (err) {
     console.error('Create checks error:', err);
@@ -2568,6 +2746,12 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
           payeeRef,
           error: qboWarning
         });
+        await enqueueNameOnChecksRetry({
+          employeeId: id,
+          desiredName: normalized,
+          payeeRef,
+          lastError: qboWarning
+        });
       } else if (qboRes?.ok && !qboRes.skipped) {
         await dbRun(
           `
@@ -2577,6 +2761,7 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
           `,
           [id]
         );
+        await clearNameOnChecksRetry(id);
       }
     }
 
@@ -3034,14 +3219,14 @@ app.get('/api/time-exceptions', requireAuth, async (req, res) => {
         tp.exception_reviewed_at,
         tp.geo_violation,
 
-        e.name AS employee_name,
-        p.name AS project_name,
+        COALESCE(e.name, tp.employee_name_snapshot) AS employee_name,
+        COALESCE(p.name, tp.project_name_snapshot) AS project_name,
         p.customer_name,
         p.geo_lat,
         p.geo_lng,
         p.geo_radius
       FROM time_punches tp
-      JOIN employees e ON tp.employee_id = e.id
+      LEFT JOIN employees e ON tp.employee_id = e.id
       LEFT JOIN projects p ON tp.project_id = p.id
       ${where}
       ORDER BY tp.clock_in_ts ASC
@@ -3345,8 +3530,8 @@ app.get('/api/time-exceptions', requireAuth, async (req, res) => {
         t.resolved_at,
         t.resolved_by,
 
-        e.name AS employee_name,
-        p.name AS project_name,
+        COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
+        COALESCE(p.name, t.project_name_snapshot) AS project_name,
         p.customer_name,
 
         COUNT(tp.id) AS punch_count,
@@ -3381,7 +3566,9 @@ app.get('/api/time-exceptions', requireAuth, async (req, res) => {
         t.resolved_by,
         employee_name,
         project_name,
-        customer_name
+        customer_name,
+        t.employee_name_snapshot,
+        t.project_name_snapshot
     `;
 
     const entryRows = await dbAll(entrySql, entryParams);
@@ -3945,17 +4132,17 @@ app.post('/api/time-exceptions/:id/resolve', requireAuth, async (req, res) => {
 });
 
 app.get('/api/time-punches/open', requireAuth, (req, res) => {
-  const sql = `
+    const sql = `
     SELECT
       tp.id,
       tp.employee_id,
-      e.name AS employee_name,
+      COALESCE(e.name, tp.employee_name_snapshot) AS employee_name,
       tp.project_id,
-      p.name AS project_name,
+      COALESCE(p.name, tp.project_name_snapshot) AS project_name,
       p.customer_name,
       tp.clock_in_ts
     FROM time_punches tp
-    JOIN employees e ON tp.employee_id = e.id
+    LEFT JOIN employees e ON tp.employee_id = e.id
     LEFT JOIN projects p ON tp.project_id = p.id
     WHERE tp.clock_out_ts IS NULL
     ORDER BY tp.clock_in_ts ASC
@@ -4028,8 +4215,8 @@ app.get('/api/time-entries', requireAuth, (req, res) => {
       t.resolved,
       t.resolved_at,
       t.resolved_by,
-      e.name AS employee_name,
-      p.name AS project_name,
+      COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
+      COALESCE(p.name, t.project_name_snapshot) AS project_name,
 
       -- Exception / flag info aggregated from punches
       COALESCE(MAX(tp.geo_violation), 0)      AS has_geo_violation,
@@ -4085,7 +4272,9 @@ app.get('/api/time-entries', requireAuth, (req, res) => {
       t.resolved_at,
       t.resolved_by,
       e.name,
-      p.name
+      p.name,
+      t.employee_name_snapshot,
+      t.project_name_snapshot
     ORDER BY t.start_date DESC, t.id DESC
     LIMIT 200
   `;
@@ -4100,8 +4289,8 @@ app.get('/api/time-entries', requireAuth, (req, res) => {
 });
 
 
-app.post('/api/time-entries', requireAuth, (req, res) => {
-  const { employee_id, project_id, start_date, end_date, start_time, end_time, hours } = req.body;
+app.post('/api/time-entries', requireAuth, async (req, res) => {
+  const { employee_id, project_id, start_date, end_date, start_time, end_time, hours } = req.body || {};
 
   // Trim string inputs to block empty/whitespace-only dates/times
   const startDate = (start_date || '').trim();
@@ -4116,42 +4305,49 @@ app.post('/api/time-entries', requireAuth, (req, res) => {
     });
   }
 
-
   const parsedHours = parseFloat(hours);
   if (isNaN(parsedHours)) {
     return res.status(400).json({ error: 'Hours must be a number.' });
   }
 
-  // Look up the employee's rate to compute total_pay
-  db.get(
-    'SELECT rate FROM employees WHERE id = ?',
-    [employee_id],
-    (err, row) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!row) {
-        return res.status(400).json({ error: 'Invalid employee_id.' });
-      }
-
-      const rate = parseFloat(row.rate || 0);
-      const total_pay = rate * parsedHours;
-
-db.run(
-  `
-  INSERT INTO time_entries
-    (employee_id, project_id, start_date, end_date, start_time, end_time, hours, total_pay)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `,
-  [employee_id, project_id, startDate, endDate, startTime, endTime, parsedHours, total_pay],
-  function (err2) {
-          if (err2) return res.status(500).json({ error: err2.message });
-          res.json({ ok: true, id: this.lastID, total_pay });
-        }
-      );
+  try {
+    const empRow = await dbGet('SELECT rate, name FROM employees WHERE id = ?', [employee_id]);
+    if (!empRow) {
+      return res.status(400).json({ error: 'Invalid employee_id.' });
     }
-  );
+    const projRow = await dbGet('SELECT name FROM projects WHERE id = ?', [project_id]);
+
+    const rate = parseFloat(empRow.rate || 0);
+    const total_pay = rate * parsedHours;
+
+    const insert = await dbRun(
+      `
+        INSERT INTO time_entries
+          (employee_id, project_id, start_date, end_date, start_time, end_time, hours, total_pay, employee_name_snapshot, project_name_snapshot)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        employee_id,
+        project_id,
+        startDate,
+        endDate,
+        startTime,
+        endTime,
+        parsedHours,
+        total_pay,
+        empRow?.name || null,
+        projRow?.name || null
+      ]
+    );
+
+    res.json({ ok: true, id: insert.lastID, total_pay });
+  } catch (err) {
+    console.error('Error inserting time entry:', err);
+    return res.status(500).json({ error: err.message || 'Failed to insert time entry.' });
+  }
 });
 
-app.post('/api/time-entries/:id', requireAuth, (req, res) => {
+app.post('/api/time-entries/:id', requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   const {
     employee_id,
@@ -4187,105 +4383,83 @@ app.post('/api/time-entries/:id', requireAuth, (req, res) => {
     });
   }
 
-  // 🔒 NEW: Block edits if this time entry is already paid
-  db.get(
-    'SELECT paid FROM time_entries WHERE id = ?',
-    [id],
-    (errExisting, existingRow) => {
-      if (errExisting) {
-        console.error('Error checking time entry paid status:', errExisting);
-        return res.status(500).json({ error: errExisting.message });
-      }
-
-      if (!existingRow) {
-        return res.status(404).json({ error: 'Time entry not found.' });
-      }
-
-      if (existingRow.paid) {
-        return res.status(409).json({
-          error:
-            'This time entry has already been paid as part of a payroll run and cannot be edited. ' +
-            'To correct it, create a new manual time entry that adjusts the hours or pay.'
-        });
-      }
-
-      // 🔁 If it is NOT paid, proceed as before: recalc pay from employee rate
-      db.get(
-        'SELECT rate FROM employees WHERE id = ?',
-        [empIdNum],
-        async (err, row) => {
-          if (err) {
-            console.error('Error fetching employee rate:', err.message);
-            return res.status(500).json({ error: err.message });
-          }
-          if (!row) {
-            return res.status(400).json({ error: 'Employee not found.' });
-          }
-
-          const rate = Number(row.rate) || 0;
-          const totalPay = rate * hoursNum;
-          const noteVal = typeof note === 'string' ? note.trim() : '';
-
-          const sql = `
-            UPDATE time_entries
-            SET
-              employee_id = ?,
-              project_id = ?,
-              start_date = ?,
-              end_date = ?,
-              start_time = ?,
-              end_time = ?,
-              hours = ?,
-              total_pay = ?,
-              resolved_note = ?
-            WHERE id = ?
-          `;
-
-          try {
-            const beforeRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
-            const params = [
-              empIdNum,
-              projIdNum,
-              startDate,
-              endDate,
-              startTime,
-              endTime,
-              hoursNum,
-              totalPay,
-              noteVal || (beforeRow ? beforeRow.resolved_note : null) || null,
-              id
-            ];
-            db.run(sql, params, async function (err2) {
-              if (err2) {
-                console.error('Error updating time entry:', err2.message);
-                return res.status(500).json({ error: err2.message });
-              }
-
-              if (this.changes === 0) {
-                // Should be rare since we already checked existence, but keep as extra guard
-                return res.status(404).json({ error: 'Time entry not found.' });
-              }
-
-              const afterRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
-              logTimeEntryAudit({
-                entryId: id,
-                action: 'modify',
-                before: beforeRow,
-                after: afterRow,
-                note: note || null,
-                req
-              });
-
-              res.json({ ok: true, id, total_pay: totalPay });
-            });
-          } catch (auditErr) {
-            console.error('Error auditing time entry update:', auditErr);
-            res.json({ ok: true, id, total_pay: totalPay });
-          }
-        }
-      );
+  try {
+    const existingRow = await dbGet('SELECT paid FROM time_entries WHERE id = ?', [id]);
+    if (!existingRow) {
+      return res.status(404).json({ error: 'Time entry not found.' });
     }
-  );
+
+    if (existingRow.paid) {
+      return res.status(409).json({
+        error:
+          'This time entry has already been paid as part of a payroll run and cannot be edited. ' +
+          'To correct it, create a new manual time entry that adjusts the hours or pay.'
+      });
+    }
+
+    const empRow = await dbGet('SELECT rate, name FROM employees WHERE id = ?', [empIdNum]);
+    if (!empRow) {
+      return res.status(400).json({ error: 'Employee not found.' });
+    }
+    const projRow = await dbGet('SELECT name FROM projects WHERE id = ?', [projIdNum]);
+
+    const rate = Number(empRow.rate) || 0;
+    const totalPay = rate * hoursNum;
+    const noteVal = typeof note === 'string' ? note.trim() : '';
+
+    const beforeRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+    const sql = `
+      UPDATE time_entries
+      SET
+        employee_id = ?,
+        project_id = ?,
+        start_date = ?,
+        end_date = ?,
+        start_time = ?,
+        end_time = ?,
+        hours = ?,
+        total_pay = ?,
+        resolved_note = ?,
+        employee_name_snapshot = ?,
+        project_name_snapshot  = ?
+      WHERE id = ?
+    `;
+
+    const params = [
+      empIdNum,
+      projIdNum,
+      startDate,
+      endDate,
+      startTime,
+      endTime,
+      hoursNum,
+      totalPay,
+      noteVal || (beforeRow ? beforeRow.resolved_note : null) || null,
+      empRow?.name || null,
+      projRow?.name || null,
+      id
+    ];
+
+    const updateRes = await dbRun(sql, params);
+    if (!updateRes || updateRes.changes === 0) {
+      return res.status(404).json({ error: 'Time entry not found.' });
+    }
+
+    const afterRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+    logTimeEntryAudit({
+      entryId: id,
+      action: 'modify',
+      before: beforeRow,
+      after: afterRow,
+      note: note || null,
+      req
+    });
+
+    res.json({ ok: true, id, total_pay: totalPay });
+  } catch (err) {
+    console.error('Error updating time entry:', err);
+    return res.status(500).json({ error: err.message || 'Failed to update time entry.' });
+  }
 });
 
 // Mark a time entry as "accuracy verified" (or clear verification)
@@ -4510,19 +4684,25 @@ app.post('/api/kiosk/punch', (req, res) => {
                   }
 
                   const insertSql = `
-                    INSERT INTO time_punches
-                      (client_id,
-                       employee_id,
-                       project_id,
-                       clock_in_ts,
-                       clock_in_lat,
-                       clock_in_lng,
-                       clock_in_photo,
-                       device_id,
-                       foreman_employee_id,
-                       geo_distance_m,
-                       geo_violation)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   INSERT INTO time_punches
+                     (client_id,
+                      employee_id,
+                      project_id,
+                      clock_in_ts,
+                      clock_in_lat,
+                      clock_in_lng,
+                      clock_in_photo,
+                      device_id,
+                      foreman_employee_id,
+                      geo_distance_m,
+                       geo_violation,
+                       employee_name_snapshot,
+                       project_name_snapshot)
+                    VALUES (
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      (SELECT name FROM employees WHERE id = ?),
+                      (SELECT name FROM projects  WHERE id = ?)
+                    )
                  `;
 
                   db.run(
@@ -4538,7 +4718,9 @@ app.post('/api/kiosk/punch', (req, res) => {
                       device_id || null,
                       foremanId || null,
                       geoDistance,
-                      geoViolation
+                      geoViolation,
+                      employee_id,
+                      project_id || null
                     ],
                     function (err3) {
                       if (err3) {
@@ -4691,8 +4873,12 @@ app.post('/api/kiosk/punch', (req, res) => {
 
                   const timeEntrySql = `
                     INSERT INTO time_entries
-                      (employee_id, project_id, start_date, end_date, hours, total_pay, foreman_employee_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                      (employee_id, project_id, start_date, end_date, hours, total_pay, foreman_employee_id, employee_name_snapshot, project_name_snapshot)
+                    VALUES (
+                      ?, ?, ?, ?, ?, ?, ?,
+                      (SELECT name FROM employees WHERE id = ?),
+                      (SELECT name FROM projects  WHERE id = ?)
+                    )
                   `;
 
                   const finalProjectId =
@@ -4708,7 +4894,9 @@ app.post('/api/kiosk/punch', (req, res) => {
                       endDate,
                       hours,
                       total_pay,
-                      foremanId
+                      foremanId,
+                      employee_id,
+                      finalProjectId || null
                     ],
                     function (err5) {
                       if (err5) {
@@ -5003,14 +5191,14 @@ app.get('/api/kiosks/:id/open-punches', (req, res) => {
         SELECT
           tp.id,
           tp.employee_id,
-          e.name AS employee_name,
+          COALESCE(e.name, tp.employee_name_snapshot) AS employee_name,
           tp.project_id,
-          p.name AS project_name,
+          COALESCE(p.name, tp.project_name_snapshot) AS project_name,
           p.customer_name,
           tp.clock_in_ts,
           tp.clock_out_ts
         FROM time_punches tp
-        JOIN employees e ON tp.employee_id = e.id
+        LEFT JOIN employees e ON tp.employee_id = e.id
         LEFT JOIN projects p ON tp.project_id = p.id
         WHERE date(tp.clock_in_ts) = ?
           AND (
@@ -5361,21 +5549,21 @@ app.get('/api/kiosk-sessions/today', (req, res) => {
     const list = sessions || [];
 
     // Grab all open punches for today and attach to matching sessions
-    const punchesSql = `
-      SELECT
-        tp.id,
-        tp.employee_id,
-        tp.project_id,
-        tp.device_id,
-        tp.clock_in_ts,
-        e.name AS employee_name,
-        k.id AS kiosk_id
-      FROM time_punches tp
-      JOIN kiosks k ON k.device_id = tp.device_id
-      LEFT JOIN employees e ON e.id = tp.employee_id
-      WHERE tp.clock_out_ts IS NULL
-        AND date(tp.clock_in_ts) = ?
-    `;
+      const punchesSql = `
+        SELECT
+          tp.id,
+          tp.employee_id,
+          tp.project_id,
+          tp.device_id,
+          tp.clock_in_ts,
+          COALESCE(e.name, tp.employee_name_snapshot) AS employee_name,
+          k.id AS kiosk_id
+        FROM time_punches tp
+        JOIN kiosks k ON k.device_id = tp.device_id
+        LEFT JOIN employees e ON e.id = tp.employee_id
+        WHERE tp.clock_out_ts IS NULL
+          AND date(tp.clock_in_ts) = ?
+      `;
 
     db.all(punchesSql, [date], (err2, punches) => {
       if (err2) return res.status(500).json({ error: err2.message });
@@ -5882,6 +6070,17 @@ app.post('/api/shipments', requireAuth, async (req, res) => {
 // Compute auto items_verified from line items
 const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
 
+    // Snapshot project/vendor names so shipments stay readable if QBO sync is unavailable
+    const projectRow = project_id
+      ? await dbGet('SELECT name FROM projects WHERE id = ? LIMIT 1', [project_id])
+      : null;
+    const projectNameSnapshot = projectRow?.name || null;
+
+    let finalVendorName = vendor_name || null;
+    if (!finalVendorName && vendor_id) {
+      const vendorRow = await dbGet('SELECT name FROM vendors WHERE id = ? LIMIT 1', [vendor_id]);
+      finalVendorName = vendorRow?.name || null;
+    }
 
 
 
@@ -5915,6 +6114,7 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         vendor_id,
         destination,
         project_id,
+        project_name_snapshot,
         sku,
         vendor_name,
         freight_forwarder,
@@ -5957,8 +6157,9 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         vendor_id || null,
         destination || null,
         project_id || null,
+        projectNameSnapshot || null,
         sku || null,
-        vendor_name || null,
+        finalVendorName || null,
         freight_forwarder || null,
         quantity || null,
         total_price || null,
@@ -6118,7 +6319,7 @@ app.get('/api/shipments', requireAuth, async (req, res) => {
       SELECT
         s.*,
         COALESCE(s.vendor_name, v.name) AS vendor_name,
-        p.name AS project_name,
+        COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name
       FROM shipments s
       LEFT JOIN vendors  v ON v.id = s.vendor_id
@@ -6177,7 +6378,7 @@ app.get('/api/shipments/board', requireAuth, async (req, res) => {
       SELECT
         s.*,
         COALESCE(s.vendor_name, v.name) AS vendor_name,
-        p.name AS project_name,
+        COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name
       FROM shipments s
       LEFT JOIN vendors  v ON v.id = s.vendor_id
@@ -6270,6 +6471,21 @@ app.put('/api/shipments/:id', requireAuth, async (req, res) => {  try {
       return res.status(400).json({ error: 'Project is required.' });
     }
 
+    // Snapshot project/vendor names to keep shipment readable when QBO data is unavailable
+    const projectRow = project_id
+      ? await dbGet('SELECT name FROM projects WHERE id = ? LIMIT 1', [project_id])
+      : null;
+    const projectNameSnapshot =
+      projectRow?.name || existing.project_name_snapshot || null;
+
+    let finalVendorName = vendor_name || null;
+    if (!finalVendorName && vendor_id) {
+      const vendorRow = await dbGet('SELECT name FROM vendors WHERE id = ? LIMIT 1', [vendor_id]);
+      finalVendorName = vendorRow?.name || existing.vendor_name || null;
+    } else if (!finalVendorName) {
+      finalVendorName = existing.vendor_name || null;
+    }
+
     // ───────── STATUS NORMALIZATION ─────────
     const oldStatus = existing.status || null;
 
@@ -6306,6 +6522,7 @@ if (items_verified !== undefined && items_verified !== null) {
           vendor_id             = ?,
           destination           = ?,
           project_id            = ?,
+          project_name_snapshot = ?,
           sku                   = ?,
           vendor_name           = ?,
           freight_forwarder     = ?,
@@ -6344,8 +6561,9 @@ if (items_verified !== undefined && items_verified !== null) {
         vendor_id || null,
         destination || null,
         project_id || null,
+        projectNameSnapshot || null,
         sku || null,
-        vendor_name || null,
+        finalVendorName || null,
         freight_forwarder || null,
         quantity != null ? quantity : null,
         total_price != null ? total_price : null,
@@ -6487,7 +6705,7 @@ if (items_verified !== undefined && items_verified !== null) {
     const row = await dbGet(
       `SELECT s.*,
         COALESCE(s.vendor_name, v.name) AS vendor_name,
-        p.name AS project_name,
+        COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name
        FROM shipments s
        LEFT JOIN vendors  v ON v.id = s.vendor_id
@@ -6541,7 +6759,7 @@ app.get('/api/shipments/:id', requireAuth, async (req, res) => {
     const row = await dbGet(
       `SELECT s.*,
         COALESCE(s.vendor_name, v.name) AS vendor_name,
-        p.name AS project_name,
+        COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name
        FROM shipments s
        LEFT JOIN vendors v ON v.id = s.vendor_id
@@ -7017,7 +7235,7 @@ app.post('/api/shipments/:id/storage', async (req, res) => {
     const row = await dbGet(
       `SELECT s.*,
         COALESCE(s.vendor_name, v.name) AS vendor_name,
-        p.name AS project_name,
+        COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name
        FROM shipments s
        LEFT JOIN vendors  v ON v.id = s.vendor_id
@@ -7149,8 +7367,8 @@ app.get('/api/time-entries/export/:format', requireAuth, (req, res) => {
       t.total_pay,
       t.paid,
       t.paid_date,
-      e.name AS employee_name,
-      p.name AS project_name,
+      COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
+      COALESCE(p.name, t.project_name_snapshot) AS project_name,
       COALESCE(MAX(tp.geo_violation), 0)  AS has_geo_violation,
       COALESCE(MAX(tp.auto_clock_out), 0) AS has_auto_clock_out
     FROM time_entries t
@@ -7194,7 +7412,9 @@ app.get('/api/time-entries/export/:format', requireAuth, (req, res) => {
       t.paid,
       t.paid_date,
       e.name,
-      p.name
+      p.name,
+      t.employee_name_snapshot,
+      t.project_name_snapshot
     ORDER BY t.start_date ASC, t.start_time ASC, t.id ASC
   `;
 
@@ -7394,13 +7614,13 @@ app.get('/api/reports/payroll-runs/:id', requireAuth, (req, res) => {
   const sql = `
     SELECT
       pc.id,
-      e.name AS employee_name,
+      COALESCE(e.name, '(Unknown employee)') AS employee_name,
       pc.total_hours,
       pc.total_pay,
       pc.check_number,
       pc.paid
     FROM payroll_checks pc
-    JOIN employees e ON pc.employee_id = e.id
+    LEFT JOIN employees e ON pc.employee_id = e.id
     WHERE pc.payroll_run_id = ?
     ORDER BY e.name
   `;
@@ -7517,7 +7737,7 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
       const shipment = await dbGet(
         `SELECT s.*,
                 COALESCE(s.vendor_name, v.name) AS vendor_name,
-                p.name AS project_name,
+                COALESCE(s.project_name_snapshot, p.name) AS project_name,
                 p.customer_name
            FROM shipments s
       LEFT JOIN vendors  v ON v.id = s.vendor_id
@@ -7655,7 +7875,7 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
           s.freight_forwarder,
           s.status,
           s.project_id,
-          p.name AS project_name,
+          COALESCE(s.project_name_snapshot, p.name) AS project_name,
           p.customer_name,
           s.items_verified,
           (
@@ -7675,6 +7895,8 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
           ) AS items_verified_count,
           s.picked_up_by,
           s.picked_up_date,
+          s.picked_up_updated_by,
+          s.picked_up_updated_at,
           s.verified_by,
           s.expected_arrival_date,
           s.storage_due_date,
@@ -7791,8 +8013,14 @@ const insertEntry = await dbRun(
        end_date,
        hours,
        total_pay,
-       foreman_employee_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+       foreman_employee_id,
+       employee_name_snapshot,
+       project_name_snapshot)
+    VALUES (
+      ?, ?, ?, ?, ?, ?, ?,
+      (SELECT name FROM employees WHERE id = ?),
+      (SELECT name FROM projects  WHERE id = ?)
+    )
   `,
   [
     p.employee_id,
@@ -7801,7 +8029,9 @@ const insertEntry = await dbRun(
     endDate,
     hours,
     totalPay,
-    p.foreman_employee_id || null
+    p.foreman_employee_id || null,
+    p.employee_id,
+    p.project_id || null
   ]
 );
 

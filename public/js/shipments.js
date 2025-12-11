@@ -542,8 +542,58 @@ function updateVerifierTagForRow(row) {
   span.classList.toggle('has-initials', !!initials);
 }
 
+function normalizeItemVerification(raw, fallbackNotes = '') {
+  let v = raw;
+
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      v = null;
+    }
+  }
+
+  if (!v || typeof v !== 'object' || Array.isArray(v)) {
+    v = {};
+  }
+
+  return {
+    status: v.status || '',
+    verified_by: v.verified_by ?? v.verifiedBy ?? null,
+    verified_at: v.verified_at ?? v.verifiedAt ?? '',
+    storage_override: v.storage_override ?? v.storage ?? '',
+    notes: v.notes ?? fallbackNotes ?? '',
+    issue_type: v.issue_type ?? v.issueType ?? '',
+    history: Array.isArray(v.history) ? v.history : []
+  };
+}
+
+function extractItemVerification(initial = {}) {
+  if (!initial) return normalizeItemVerification({});
+
+  if (initial.verification) {
+    return normalizeItemVerification(initial.verification, initial.notes);
+  }
+
+  if (initial.verification_json || initial.verificationJson) {
+    return normalizeItemVerification(
+      initial.verification_json || initial.verificationJson,
+      initial.notes
+    );
+  }
+
+  return normalizeItemVerification(
+    {
+      status: initial.verified ? 'verified' : '',
+      notes: initial.notes || ''
+    },
+    initial.notes
+  );
+}
+
 function rowStatusCellHtml(verification) {
-  const status = (verification && verification.status) || '';
+  const v = normalizeItemVerification(verification);
+  const status = v.status || '';
   const selected = (val) => (status === val ? ' selected' : '');
 
   return `
@@ -671,6 +721,29 @@ function getCurrentVerifierInfo() {
   return { id, name };
 }
 
+async function saveSingleItemVerification(shipmentId, itemId, verification) {
+  const sid = Number(shipmentId);
+  const iid = Number(itemId);
+  if (!sid || !iid || !verification) return;
+
+  try {
+    await fetchJSON(`/api/shipments/${sid}/verify-items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [
+          {
+            shipment_item_id: iid,
+            verification
+          }
+        ]
+      })
+    });
+  } catch (err) {
+    console.error('Error saving item verification inline:', err);
+  }
+}
+
 
 
 // Auto-fill the top-level "Shipment verified by" if it's empty
@@ -739,7 +812,7 @@ function setupItemVerificationModal() {
   }
 
   if (saveBtn) {
-    saveBtn.addEventListener('click', () => {
+    saveBtn.addEventListener('click', async () => {
       if (!currentVerificationRow) {
         closeItemVerificationModal();
         return;
@@ -826,6 +899,12 @@ v.history.push({
       // Update initials tag for this row based on verification meta
       updateVerifierTagForRow(currentVerificationRow);
 
+      // Persist inline so kiosk/admin stay in sync without requiring full Save
+      const shipmentIdInput = document.getElementById('shipment-id');
+      const shipmentId = shipmentIdInput ? shipmentIdInput.value : null;
+      const itemId = currentVerificationRow.dataset.itemId || currentVerificationRow.dataset.id;
+      saveSingleItemVerification(shipmentId, itemId, v);
+
       // After save, re-lock fields and reset edit button
       setVerificationInputsDisabled(false);
       const inlineSaveBtn = document.getElementById('item-verification-edit-status');
@@ -904,6 +983,8 @@ function openItemVerificationModal(row) {
 
   const desc = row.querySelector('.shipment-item-desc')?.value || '';
   const sku  = row.querySelector('.shipment-item-sku')?.value || '';
+  const normalizedVerification = normalizeItemVerification(row._verification);
+  row._verification = normalizedVerification;
 
   const header = document.getElementById('item-verification-header');
   if (header) {
@@ -1307,6 +1388,7 @@ function addShipmentItemRow(initial) {
     initial && typeof initial.line_total === 'number'
       ? initial.line_total
       : 0;
+  const baseVerification = extractItemVerification(initial);
 
   // Figure out default vendor for this row (header vendor + "apply to all")
   const vendorSelect   = document.getElementById('shipment-vendor');
@@ -1372,7 +1454,7 @@ function addShipmentItemRow(initial) {
     <span class="shipment-item-total">${formatMoney(lineTotal)}</span>
   </div>
   <div class="shipment-item-status-cell">
-    ${rowStatusCellHtml(initial && initial.verification)}
+    ${rowStatusCellHtml(baseVerification)}
   </div>
   <div class="shipment-item-actions">
     <button
@@ -1395,10 +1477,6 @@ function addShipmentItemRow(initial) {
   const deleteBtn    = row.querySelector('.shipment-item-delete');
 
   // Verification meta
-  const baseVerification = (initial && initial.verification) || {};
-  if (!Array.isArray(baseVerification.history)) {
-    baseVerification.history = [];
-  }
   row._verification = baseVerification;
 
   // Initialize initials tag from existing verification (if any)
@@ -2995,22 +3073,24 @@ if (customsPaidAmt)
     rowsContainer.innerHTML = '';
 
     if (Array.isArray(items) && items.length > 0) {
-  items.forEach(it => {
-    addShipmentItemRow({
-      description: it.description,
-      sku: it.sku,
-      quantity: it.quantity,
-      unit_price: it.unit_price != null ? Number(it.unit_price) : '',
-      vendor_name: it.vendor_name || '',
-      verification: it.verification || {
-        status: it.verified ? 'verified' : '',
-        notes: it.notes || null
-      }
-    });
-  });
-} else {
-  addShipmentItemRow();
-}
+      items.forEach(it => {
+        addShipmentItemRow({
+          id: it.id,
+          description: it.description,
+          sku: it.sku,
+          quantity: it.quantity,
+          unit_price: it.unit_price != null ? Number(it.unit_price) : '',
+          line_total: it.line_total != null ? Number(it.line_total) : 0,
+          vendor_name: it.vendor_name || '',
+          notes: it.notes,
+          verified: it.verified,
+          verification: it.verification,
+          verification_json: it.verification_json
+        });
+      });
+    } else {
+      addShipmentItemRow();
+    }
   }
 
   // Sync apply-all checkbox based on existing items/vendors

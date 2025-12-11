@@ -217,6 +217,8 @@ db.run(`
       client_id             TEXT UNIQUE,          -- offline queue id from kiosk
       employee_id           INTEGER NOT NULL,
       project_id            INTEGER,
+      employee_name_snapshot TEXT,
+      project_name_snapshot  TEXT,
       clock_in_ts           TEXT NOT NULL,       -- ISO timestamp
       clock_out_ts          TEXT,                -- ISO timestamp
       clock_out_project_id  INTEGER,             -- project selected at clock-out (may differ)
@@ -258,6 +260,54 @@ db.run(
   err => {
     if (err && !/duplicate column name/i.test(err.message)) {
       console.error('Error adding time_punches.time_entry_id column:', err.message);
+    }
+  }
+);
+
+db.run(
+  `ALTER TABLE time_punches ADD COLUMN employee_name_snapshot TEXT`,
+  err => {
+    if (err && !/duplicate column name/i.test(err.message)) {
+      console.error('Error adding time_punches.employee_name_snapshot column:', err.message);
+    }
+  }
+);
+
+db.run(
+  `ALTER TABLE time_punches ADD COLUMN project_name_snapshot TEXT`,
+  err => {
+    if (err && !/duplicate column name/i.test(err.message)) {
+      console.error('Error adding time_punches.project_name_snapshot column:', err.message);
+    }
+  }
+);
+
+db.run(
+  `
+    UPDATE time_punches
+    SET employee_name_snapshot = (
+      SELECT name FROM employees WHERE employees.id = time_punches.employee_id
+    )
+    WHERE employee_name_snapshot IS NULL
+  `,
+  err => {
+    if (err && !/no such column|ambiguous column/i.test(err.message)) {
+      console.error('Error backfilling time_punches.employee_name_snapshot:', err.message);
+    }
+  }
+);
+
+db.run(
+  `
+    UPDATE time_punches
+    SET project_name_snapshot = (
+      SELECT name FROM projects WHERE projects.id = time_punches.project_id
+    )
+    WHERE project_name_snapshot IS NULL
+  `,
+  err => {
+    if (err && !/no such column|ambiguous column/i.test(err.message)) {
+      console.error('Error backfilling time_punches.project_name_snapshot:', err.message);
     }
   }
 );
@@ -352,6 +402,8 @@ CREATE TABLE IF NOT EXISTS time_entries (
   id                  INTEGER PRIMARY KEY,
   employee_id         INTEGER,
   project_id          INTEGER,
+  employee_name_snapshot TEXT,
+  project_name_snapshot  TEXT,
   start_date          TEXT,  -- 'YYYY-MM-DD'
   end_date            TEXT,  -- 'YYYY-MM-DD'
   start_time          TEXT,  -- 'HH:MM' (optional / manual entries)
@@ -416,6 +468,54 @@ CREATE TABLE IF NOT EXISTS time_entries (
     err => {
       if (err && !/duplicate column name/i.test(err.message)) {
         console.error('Error adding time_entries.resolved_note column:', err.message);
+      }
+    }
+  );
+
+  db.run(
+    `ALTER TABLE time_entries ADD COLUMN employee_name_snapshot TEXT`,
+    err => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('Error adding time_entries.employee_name_snapshot column:', err.message);
+      }
+    }
+  );
+
+  db.run(
+    `ALTER TABLE time_entries ADD COLUMN project_name_snapshot TEXT`,
+    err => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('Error adding time_entries.project_name_snapshot column:', err.message);
+      }
+    }
+  );
+
+  db.run(
+    `
+      UPDATE time_entries
+      SET employee_name_snapshot = (
+        SELECT name FROM employees WHERE employees.id = time_entries.employee_id
+      )
+      WHERE employee_name_snapshot IS NULL
+    `,
+    err => {
+      if (err && !/no such column|ambiguous column/i.test(err.message)) {
+        console.error('Error backfilling time_entries.employee_name_snapshot:', err.message);
+      }
+    }
+  );
+
+  db.run(
+    `
+      UPDATE time_entries
+      SET project_name_snapshot = (
+        SELECT name FROM projects WHERE projects.id = time_entries.project_id
+      )
+      WHERE project_name_snapshot IS NULL
+    `,
+    err => {
+      if (err && !/no such column|ambiguous column/i.test(err.message)) {
+        console.error('Error backfilling time_entries.project_name_snapshot:', err.message);
       }
     }
   );
@@ -502,6 +602,54 @@ CREATE TABLE IF NOT EXISTS time_entries (
     )
   `);
 
+  // Track each QuickBooks payroll attempt and per-employee outcomes
+  db.run(`
+    CREATE TABLE IF NOT EXISTS payroll_run_attempts (
+      id             INTEGER PRIMARY KEY,
+      payroll_run_id INTEGER,
+      start_date     TEXT NOT NULL,
+      end_date       TEXT NOT NULL,
+      ok             INTEGER NOT NULL DEFAULT 0,
+      fatal_error    TEXT,
+      created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (payroll_run_id) REFERENCES payroll_runs(id)
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS payroll_attempt_results (
+      id                INTEGER PRIMARY KEY,
+      attempt_id        INTEGER NOT NULL,
+      employee_id       INTEGER,
+      employee_name     TEXT,
+      total_hours       REAL,
+      total_pay         REAL,
+      ok                INTEGER NOT NULL DEFAULT 0,
+      error             TEXT,
+      warning_codes     TEXT,
+      qbo_txn_id        TEXT,
+      created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (attempt_id) REFERENCES payroll_run_attempts(id),
+      FOREIGN KEY (employee_id) REFERENCES employees(id)
+    )
+  `);
+
+  // Queue for retrying failed setPrintOnCheckName calls
+  db.run(`
+    CREATE TABLE IF NOT EXISTS name_on_checks_queue (
+      id              INTEGER PRIMARY KEY,
+      employee_id     INTEGER UNIQUE,
+      desired_name    TEXT,
+      payee_type      TEXT, -- Vendor | Employee
+      payee_id        TEXT,
+      last_error      TEXT,
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (employee_id) REFERENCES employees(id)
+    )
+  `);
+
   // Payroll settings (bank/expense account, default memo, etc.)
   db.run(`
     CREATE TABLE IF NOT EXISTS payroll_settings (
@@ -544,6 +692,7 @@ CREATE TABLE IF NOT EXISTS time_entries (
       freight_forwarder   TEXT,
       destination         TEXT,
       project_id          INTEGER,
+      project_name_snapshot TEXT,
       sku                 TEXT,
       quantity            REAL,
       total_price         REAL,
@@ -608,6 +757,49 @@ CREATE TABLE IF NOT EXISTS time_entries (
     err => {
       if (err && !/duplicate column name/i.test(err.message)) {
         console.error('Error adding shipments.storage_daily_late_fee column:', err.message);
+      }
+    }
+  );
+
+  // Snapshot of project name so shipment cards still show context if QBO/project sync fails
+  db.run(
+    `ALTER TABLE shipments ADD COLUMN project_name_snapshot TEXT`,
+    err => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('Error adding shipments.project_name_snapshot column:', err.message);
+      }
+    }
+  );
+
+  // Backfill snapshot for existing shipments using the current project table
+  db.run(
+    `
+      UPDATE shipments
+      SET project_name_snapshot = (
+        SELECT name FROM projects WHERE projects.id = shipments.project_id
+      )
+      WHERE project_name_snapshot IS NULL
+        AND project_id IS NOT NULL
+    `,
+    err => {
+      if (err) {
+        console.error('Error backfilling shipments.project_name_snapshot:', err.message);
+      }
+    }
+  );
+
+  db.run(
+    `
+      UPDATE shipments
+      SET vendor_name = (
+        SELECT name FROM vendors WHERE vendors.id = shipments.vendor_id
+      )
+      WHERE (vendor_name IS NULL OR vendor_name = '')
+        AND vendor_id IS NOT NULL
+    `,
+    err => {
+      if (err) {
+        console.error('Error backfilling shipments.vendor_name:', err.message);
       }
     }
   );
