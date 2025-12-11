@@ -6945,6 +6945,8 @@ app.post('/api/shipments/:id/storage', async (req, res) => {
       storage_details,
       picked_up_by,
       picked_up_date,
+      picked_up_updated_by,
+      picked_up_updated_at,
       employee_id
     } = req.body || {};
 
@@ -6976,6 +6978,15 @@ app.post('/api/shipments/:id/storage', async (req, res) => {
     const feeValNum = feeValStr === '' ? null : Number(feeValStr);
     const feeVal = Number.isFinite(feeValNum) ? feeValNum : null;
 
+    let updaterName = null;
+    if (employee_id) {
+      const emp = await dbGet(
+        `SELECT nickname, name FROM employees WHERE id = ?`,
+        [employee_id]
+      );
+      if (emp) updaterName = emp.nickname || emp.name || null;
+    }
+
     await dbRun(
       `
         UPDATE shipments
@@ -6987,6 +6998,8 @@ app.post('/api/shipments/:id/storage', async (req, res) => {
           storage_details = ?,
           picked_up_by = ?,
           picked_up_date = ?,
+          picked_up_updated_by = ?,
+          picked_up_updated_at = datetime('now'),
           updated_at = datetime('now')
         WHERE id = ?
       `,
@@ -6998,6 +7011,7 @@ app.post('/api/shipments/:id/storage', async (req, res) => {
         normalizeText(storage_details),
         normalizeText(picked_up_by),
         normalizeText(picked_up_date),
+        updaterName,
         shipmentId
       ]
     );
