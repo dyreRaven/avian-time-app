@@ -5931,6 +5931,8 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         storage_daily_late_fee,
         picked_up_by,
         picked_up_date,
+        picked_up_updated_by,
+        picked_up_updated_at,
         vendor_paid,
         vendor_paid_amount,
         shipper_paid,
@@ -5945,7 +5947,7 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         notes,
         status
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
 
       `,
@@ -5971,6 +5973,8 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         storage_daily_late_fee != null ? storage_daily_late_fee : null,
         picked_up_by || null,
         picked_up_date || null,
+        null,
+        null,
         vendor_paid ? 1 : 0,
         vendor_paid_amount != null ? vendor_paid_amount : null,
         shipper_paid ? 1 : 0,
