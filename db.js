@@ -561,6 +561,8 @@ CREATE TABLE IF NOT EXISTS time_entries (
       storage_daily_late_fee REAL,
       picked_up_by       TEXT,
       picked_up_date     TEXT,
+      picked_up_updated_by TEXT,
+      picked_up_updated_at TEXT,
 
       -- SIMPLE PAYMENT FLAGS + AMOUNTS
       vendor_paid         INTEGER NOT NULL DEFAULT 0,
@@ -606,6 +608,24 @@ CREATE TABLE IF NOT EXISTS time_entries (
     err => {
       if (err && !/duplicate column name/i.test(err.message)) {
         console.error('Error adding shipments.storage_daily_late_fee column:', err.message);
+      }
+    }
+  );
+
+  db.run(
+    `ALTER TABLE shipments ADD COLUMN picked_up_updated_by TEXT`,
+    err => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('Error adding shipments.picked_up_updated_by column:', err.message);
+      }
+    }
+  );
+
+  db.run(
+    `ALTER TABLE shipments ADD COLUMN picked_up_updated_at TEXT`,
+    err => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('Error adding shipments.picked_up_updated_at column:', err.message);
       }
     }
   );

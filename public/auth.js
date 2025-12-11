@@ -24,6 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const toggleText = document.getElementById('auth-toggle-text');
   const loginPasswordInput = document.getElementById('login-password');
   const passwordToggleBtn = document.getElementById('password-toggle');
+  const urlParams = new URLSearchParams(window.location.search);
 
   // Confirm modal elements
   const confirmModal = document.getElementById('register-confirm-modal');
@@ -34,6 +35,30 @@ document.addEventListener('DOMContentLoaded', () => {
   let mode = 'login'; // or 'register'
   let pendingUserId = null;
   let pendingEmployee = null;
+
+  function getRedirectTarget() {
+    const nextRaw = urlParams.get('next');
+    if (nextRaw) {
+      try {
+        const nextUrl = new URL(nextRaw, window.location.origin);
+        if (nextUrl.origin === window.location.origin) {
+          return nextUrl.pathname + nextUrl.search + nextUrl.hash;
+        }
+      } catch (e) {
+        console.warn('Ignoring invalid redirect target:', nextRaw);
+      }
+    }
+
+    const prefersTouch =
+      (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+      /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent || '');
+
+    return prefersTouch ? '/kiosk' : '/';
+  }
+
+  function redirectAfterAuth() {
+    window.location.href = getRedirectTarget();
+  }
 
   function setMode(newMode) {
     mode = newMode;
@@ -123,7 +148,7 @@ function openConfirmModal(userId, employee) {
       msgEl.textContent = 'Signed in. Redirecting...';
       msgEl.style.color = 'green';
 
-      window.location.href = '/';
+      redirectAfterAuth();
     } catch (err) {
       console.error('Login error:', err);
       msgEl.textContent = err.message || 'Failed to sign in.';
@@ -171,7 +196,7 @@ function openConfirmModal(userId, employee) {
             'Please speak with whoever manages QuickBooks for your company.';
           msgEl.style.color = 'orange';
           // Still let them into the app
-          window.location.href = '/';
+          redirectAfterAuth();
         }
       } catch (err) {
         console.error('Register error:', err);
@@ -208,7 +233,7 @@ function openConfirmModal(userId, employee) {
 
         if (confirmModal) confirmModal.classList.add('hidden');
 
-        window.location.href = '/';
+        redirectAfterAuth();
       } catch (err) {
         console.error('Link employee error:', err);
         msgEl.textContent =

@@ -6582,18 +6582,23 @@ const normalizedItems = items.map(it => {
     }
   }
 
-  const isEmptyObject =
+  const isObj =
     verification &&
     typeof verification === 'object' &&
-    !Array.isArray(verification) &&
-    Object.keys(verification).length === 0;
+    !Array.isArray(verification);
+  const isEmptyObject = isObj && Object.keys(verification).length === 0;
 
-  // fallback to legacy columns if nothing meaningful
-  if (!verification || isEmptyObject) {
+  // fallback to legacy columns if nothing meaningful or bad type
+  if (!isObj || isEmptyObject) {
     verification = {
       status: it.verified ? 'verified' : '',
-      notes: it.notes || ''
+      notes: it.notes || '',
+      storage_override: ''
     };
+  }
+
+  if (!verification.storage_override) {
+    verification.storage_override = verification.storage_override || '';
   }
 
   return {
@@ -7038,7 +7043,8 @@ app.post('/api/shipments/:id/verify-items', async (req, res) => {
         '$.status', ?,
         '$.notes', ?,
         '$.verified_at', ?,
-        '$.verified_by', ?
+        '$.verified_by', ?,
+        '$.storage_override', ?
       )
       WHERE id = ?
         AND shipment_id = ?
@@ -7056,6 +7062,7 @@ app.post('/api/shipments/:id/verify-items', async (req, res) => {
         v.notes || '',
         verifiedAt,
         v.verified_by || null,
+        v.storage_override || '',
         vid,
         shipmentId
       );
@@ -7517,6 +7524,7 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
             quantity,
             unit_price,
             line_total,
+            vendor_name,
             verified,
             notes,
             verification_json
@@ -7544,10 +7552,16 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
           !Array.isArray(verification) &&
           Object.keys(verification).length === 0;
 
-        if (!verification || isEmptyObject) {
+        const isObj =
+          verification &&
+          typeof verification === 'object' &&
+          !Array.isArray(verification);
+
+        if (!isObj || isEmptyObject) {
           verification = {
             status: it.verified ? 'verified' : '',
             notes: it.notes || '',
+            storage_override: '',
             history: []
           };
         } else {
@@ -7555,6 +7569,10 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
           if (!Array.isArray(verification.history)) {
             verification.history = [];
           }
+        }
+
+        if (!verification.storage_override) {
+          verification.storage_override = verification.storage_override || '';
         }
 
         return {
