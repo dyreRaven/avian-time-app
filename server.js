@@ -6945,8 +6945,6 @@ app.post('/api/shipments/:id/storage', async (req, res) => {
       storage_details,
       picked_up_by,
       picked_up_date,
-      picked_up_updated_by,
-      picked_up_updated_at,
       employee_id
     } = req.body || {};
 

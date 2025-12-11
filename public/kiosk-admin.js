@@ -3858,6 +3858,20 @@ function kaBindPickupControls(shipment) {
       return;
     }
 
+    const existingName = (shipment && shipment.picked_up_by) ? String(shipment.picked_up_by).trim() : '';
+    const existingDate = shipment && shipment.picked_up_date ? shipment.picked_up_date.slice(0, 10) : '';
+    const lastBy = shipment && shipment.picked_up_updated_by ? shipment.picked_up_updated_by : '';
+    const lastAt = shipment && shipment.picked_up_updated_at ? shipment.picked_up_updated_at : '';
+    const changingExisting =
+      (existingName && existingName !== pickedVal) ||
+      (existingDate && existingDate !== pickedDate);
+
+    if (changingExisting && (lastBy || lastAt)) {
+      const confirmMsg = `Pickup info was last set by ${lastBy || 'someone'}${lastAt ? ` on ${lastAt}` : ''}.\nDo you want to overwrite it with your changes?`;
+      const ok = await kaShowConfirmDialog(confirmMsg, { okLabel: 'Overwrite', cancelLabel: 'Cancel', title: 'Update pickup' });
+      if (!ok) return;
+    }
+
     if (statusEl) {
       statusEl.textContent = 'Saving pickup…';
       statusEl.className = 'ka-status';
@@ -4328,7 +4342,7 @@ function kaRenderItemRow(item, shipmentId) {
   const row = document.createElement('div');
   row.className = 'ka-item-row';
   row.dataset.itemId = item.id;
-  if (status) row.classList.add(`status-${status}`);
+  row.classList.add(status ? `status-${status}` : 'status-unverified');
   if (kaShipmentItemsDirty.has(Number(item.id))) row.classList.add('is-unsaved');
 
   const statuses = [
@@ -4342,40 +4356,29 @@ function kaRenderItemRow(item, shipmentId) {
   const hasNotesOpen = !!notes || !!storage;
 
   row.innerHTML = `
-    <div class="ka-item-row-head">
-      <div class="ka-item-head-left">
+    <div class="ka-item-row-main">
+      <div class="ka-item-desc">
         <div class="ka-item-title">${item.description || '(No description)'}</div>
-        <div class="ka-item-meta-bar">
-          <span class="ka-item-meta-chip">Qty: ${qty}${unit ? ` ${unit}` : ''}</span>
-          ${sku ? `<span class="ka-item-meta-chip">SKU: ${sku}</span>` : ''}
-          ${vendorName ? `<span class="ka-item-meta-chip">Vendor: ${vendorName}</span>` : ''}
-        </div>
-        <div class="ka-item-verify-meta">
-          <span class="ka-item-unsaved-dot ${kaShipmentItemsDirty.has(Number(item.id)) ? '' : 'hidden'}" aria-hidden="true">●</span>
-          <span class="ka-item-last-meta">${
-            lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : 'Not verified yet'
-          }</span>
+        <div class="ka-item-meta">
+          <span class="ka-item-chip">Qty: ${qty}${unit ? ` ${unit}` : ''}</span>
+          ${sku ? `<span class="ka-item-chip">SKU: ${sku}</span>` : ''}
+          ${vendorName ? `<span class="ka-item-chip">Vendor: ${vendorName}</span>` : ''}
         </div>
       </div>
-      <div class="ka-item-head-right">
-        <div class="ka-item-status-group" data-ka-status-buttons="${item.id}">
-          ${statuses
-            .map(
-              s => `<button type="button"
-                class="ka-item-status-btn ${status === s.val ? 'active' : ''} status-${s.val || 'unverified'}"
-                data-ka-item-status="${s.val}">${s.label}</button>`
-            )
-            .join('')}
-        </div>
-        <button type="button" class="btn secondary btn-sm ka-item-save-inline" data-ka-save-item="${item.id}">Save now</button>
+      <div class="ka-item-status-group" data-ka-status-buttons="${item.id}">
+        ${statuses
+          .map(
+            s => `<button type="button"
+              class="ka-item-status-btn ${status === s.val ? 'active' : ''} status-${s.val || 'unverified'}"
+              data-ka-item-status="${s.val}">${s.label}</button>`
+          )
+          .join('')}
       </div>
-    </div>
-
-    <div class="ka-item-note-toggle">
-      <button type="button" class="ka-note-toggle-btn" data-ka-toggle-notes="${item.id}">
-        <span class="ka-note-label">${hasNotesOpen ? 'Hide notes' : 'Notes & storage'}</span>
-        <span class="ka-note-chevron">${hasNotesOpen ? '▴' : '▾'}</span>
-      </button>
+      <div class="ka-item-note-toggle">
+        <button type="button" class="ka-note-toggle-btn" data-ka-toggle-notes="${item.id}">
+          ${hasNotesOpen ? 'Hide notes' : 'Notes & storage'}
+        </button>
+      </div>
     </div>
 
     <div class="ka-item-row-notes ${hasNotesOpen ? 'open' : ''}" data-ka-notes="${item.id}">
@@ -4387,6 +4390,18 @@ function kaRenderItemRow(item, shipmentId) {
         <span>Storage details</span>
         <textarea rows="2" data-ship-item-storage-id="${item.id}">${storage}</textarea>
       </label>
+    </div>
+
+    <div class="ka-item-row-footer">
+      <div class="ka-item-last">
+        <span class="ka-item-unsaved-dot ${kaShipmentItemsDirty.has(Number(item.id)) ? '' : 'hidden'}" aria-hidden="true">●</span>
+        <span class="ka-item-last-meta">${
+          lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : 'Not verified yet'
+        }</span>
+      </div>
+      <div class="ka-item-row-actions">
+        <button type="button" class="btn secondary btn-sm" data-ka-save-item="${item.id}">Save now</button>
+      </div>
     </div>
   `;
 
@@ -4400,11 +4415,9 @@ function kaRenderItemRow(item, shipmentId) {
   const lastMeta = row.querySelector('.ka-item-last-meta');
 
   const applyStatusStyle = (val) => {
-    const allStatuses = ['verified', 'missing', 'damaged', 'wrong_item'];
+    const allStatuses = ['verified', 'missing', 'damaged', 'wrong_item', 'unverified'];
     allStatuses.forEach(s => row.classList.remove(`status-${s}`));
-    if (val) {
-      row.classList.add(`status-${val}`);
-    }
+    row.classList.add(`status-${val || 'unverified'}`);
   };
 
   const setActiveStatus = (val) => {
@@ -4491,10 +4504,7 @@ function kaRenderItemRow(item, shipmentId) {
   if (toggleBtn && notesWrap) {
     toggleBtn.addEventListener('click', () => {
       const nowOpen = notesWrap.classList.toggle('open');
-      const chevron = toggleBtn.querySelector('.ka-note-chevron');
-      const label = toggleBtn.querySelector('.ka-note-label');
-      if (label) label.textContent = nowOpen ? 'Hide notes' : 'Notes & storage';
-      if (chevron) chevron.textContent = nowOpen ? '▴' : '▾';
+      toggleBtn.textContent = nowOpen ? 'Hide notes' : 'Notes & storage';
     });
   }
 
