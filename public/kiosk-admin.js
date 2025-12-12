@@ -161,19 +161,6 @@ function kaShowSessionFlash(message, variant = 'error', duration = 10000) {
   }, duration);
 }
 
-function kaSessionDeleteLockMessage(session) {
-  if (!session) return null;
-  const open = Number(session.device_open_count ?? session.open_count ?? 0) > 0;
-  const entries = Number(session.device_entry_count ?? session.entry_count ?? 0) > 0;
-  if (open) {
-    return 'Cannot delete this timesheet while workers are clocked in. Clock them out first.';
-  }
-  if (entries) {
-    return 'Cannot delete this timesheet because it has time entries. Delete the entries from the desktop admin first.';
-  }
-  return null;
-}
-
 function kaNotifySessionDeleteBlocked(message, row = null) {
   const msg = message || 'Cannot delete this timesheet.';
   if (row) kaShowSessionDelete(row);
