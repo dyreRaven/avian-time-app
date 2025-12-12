@@ -1781,8 +1781,9 @@ async function loadShipmentDocuments(shipmentId) {
         evt.preventDefault();
         evt.stopPropagation();
 
-        const ok = window.confirm(
-          'Delete this document? This cannot be undone and the file will be removed.'
+        const ok = await showYesNoPrompt(
+          'Delete this document? This cannot be undone and the file will be removed.',
+          { yesLabel: 'Delete document', noLabel: 'Nevermind, keep it', tone: 'danger' }
         );
         if (!ok) return;
 
@@ -1792,6 +1793,7 @@ async function loadShipmentDocuments(shipmentId) {
             { method: 'DELETE' }
           );
           await loadShipmentDocuments(shipmentId);
+          await maybePromptUnpaidAfterDocDelete(doc);
         } catch (err) {
           console.error('Error deleting shipment document:', err);
           alert('Error deleting document: ' + err.message);
@@ -1818,6 +1820,256 @@ async function loadShipmentDocuments(shipmentId) {
     listEl.innerHTML =
       '<li class="shipment-docs-empty small-muted" style="color: crimson;">Error loading documents.</li>';
   }
+}
+
+function docTextForPaymentDetection(doc = {}) {
+  return [
+    doc.doc_type,
+    doc.doc_label,
+    doc.title,
+    doc.original_name,
+    doc.category
+  ]
+    .map(v => (v || '').toString().toLowerCase())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function docIsFreightPayment(doc = {}) {
+  const text = docTextForPaymentDetection(doc);
+  if (!text) return false;
+  const paymenty =
+    text.includes('payment') ||
+    text.includes('paid') ||
+    text.includes('receipt');
+  const freighty =
+    text.includes('freight') ||
+    text.includes('forwarder') ||
+    text.includes('shipper') ||
+    text.includes('shipping') ||
+    text.includes('ff');
+  return paymenty && freighty;
+}
+
+function docIsClearingPayment(doc = {}) {
+  const text = docTextForPaymentDetection(doc);
+  if (!text) return false;
+  const paymenty =
+    text.includes('payment') ||
+    text.includes('paid') ||
+    text.includes('receipt');
+  const clearingy =
+    text.includes('customs') ||
+    text.includes('clearing') ||
+    text.includes('broker') ||
+    text.includes('duty') ||
+    text.includes('duties');
+  return paymenty && clearingy;
+}
+
+function detectPaymentTypeFromDoc(doc = {}) {
+  if (docIsFreightPayment(doc)) return 'shipper';
+  if (docIsClearingPayment(doc)) return 'customs';
+  return null;
+}
+
+function ensureShipConfirmStyles() {
+  if (document.getElementById('ship-confirm-style')) return;
+  const style = document.createElement('style');
+  style.id = 'ship-confirm-style';
+  style.textContent = `
+    .ship-confirm-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+    .ship-confirm-card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 16px;
+      width: min(440px, 92vw);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
+      color: #0f172a;
+      font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    .ship-confirm-card p {
+      margin: 0 0 12px;
+      line-height: 1.4;
+    }
+    .ship-confirm-actions {
+      margin-top: 12px;
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .ship-confirm-btn {
+      border: 1px solid #d1d5db;
+      background: #f8fafc;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      color: #0f172a;
+      transition: background 120ms ease, transform 120ms ease;
+    }
+    .ship-confirm-btn:hover {
+      background: #e5e7eb;
+    }
+    .ship-confirm-btn:active {
+      transform: translateY(1px);
+    }
+    .ship-confirm-btn.primary {
+      background: #0ea5e9;
+      border-color: #0284c7;
+      color: #fff;
+    }
+    .ship-confirm-btn.primary:hover {
+      background: #0284c7;
+    }
+    .ship-confirm-btn.danger {
+      background: #ef4444;
+      border-color: #dc2626;
+      color: #fff;
+    }
+    .ship-confirm-btn.danger:hover {
+      background: #dc2626;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function showYesNoPrompt(message, opts = {}) {
+  ensureShipConfirmStyles();
+  const {
+    yesLabel = 'Yes',
+    noLabel = 'No',
+    tone = 'neutral'
+  } = opts;
+
+  return new Promise(resolve => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'ship-confirm-backdrop';
+
+    const card = document.createElement('div');
+    card.className = 'ship-confirm-card';
+
+    const msg = document.createElement('p');
+    msg.textContent = message || 'Are you sure?';
+    card.appendChild(msg);
+
+    const actions = document.createElement('div');
+    actions.className = 'ship-confirm-actions';
+
+    const noBtn = document.createElement('button');
+    noBtn.type = 'button';
+    noBtn.className = 'ship-confirm-btn';
+    noBtn.textContent = noLabel || 'No';
+
+    const yesBtn = document.createElement('button');
+    yesBtn.type = 'button';
+    yesBtn.className = 'ship-confirm-btn primary';
+    if (tone === 'danger') yesBtn.classList.add('danger');
+    yesBtn.textContent = yesLabel || 'Yes';
+
+    actions.appendChild(noBtn);
+    actions.appendChild(yesBtn);
+    card.appendChild(actions);
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+
+    const cleanup = (value) => {
+      document.body.removeChild(backdrop);
+      document.removeEventListener('keydown', onKey);
+      resolve(value);
+    };
+
+    noBtn.addEventListener('click', () => cleanup(false));
+    yesBtn.addEventListener('click', () => cleanup(true));
+
+    backdrop.addEventListener('click', (evt) => {
+      if (evt.target === backdrop) {
+        cleanup(false);
+      }
+    });
+
+    const onKey = (evt) => {
+      if (evt.key === 'Escape') {
+        evt.preventDefault();
+        cleanup(false);
+      } else if (evt.key === 'Enter') {
+        evt.preventDefault();
+        cleanup(true);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+  });
+}
+
+function setPaymentFlagFromDoc(type, paid, reason = '') {
+  const mapping = {
+    shipper: {
+      chk: 'shipment-shipper-paid',
+      amt: 'shipment-shipper-paid-amount',
+      label: 'Freight Forwarder'
+    },
+    customs: {
+      chk: 'shipment-customs-paid',
+      amt: 'shipment-customs-paid-amount',
+      label: 'Customs / Clearing'
+    }
+  };
+
+  const entry = mapping[type];
+  if (!entry) return;
+
+  const chk = document.getElementById(entry.chk);
+  const amt = document.getElementById(entry.amt);
+  const msgEl = document.getElementById('shipment-create-status');
+
+  if (chk) {
+    chk.checked = !!paid;
+    applyPaymentCheckboxState(chk, amt, chk.checked);
+    updateShipmentTotalPaid();
+  }
+
+  if (msgEl) {
+    const verb = paid ? 'marked as paid' : 'marked as NOT paid';
+    const suffix = reason ? ` (${reason})` : '';
+    msgEl.textContent = `${entry.label} ${verb}${suffix}. Remember to save the shipment.`;
+    msgEl.style.color = paid ? '#065f46' : '#b45309';
+  }
+}
+
+async function maybePromptUnpaidAfterDocDelete(doc = {}) {
+  const type = detectPaymentTypeFromDoc(doc);
+  if (!type) return;
+
+  const label = type === 'shipper'
+    ? 'Freight forwarder'
+    : 'Customs / clearing';
+
+  const ok = await showYesNoPrompt(
+    `Mark ${label} as NOT paid now that the proof of payment was deleted?`,
+    { yesLabel: 'Yes, mark as unpaid', noLabel: 'No, leave as paid' }
+  );
+  if (ok) {
+    setPaymentFlagFromDoc(type, false, 'Proof of payment removed');
+  }
+}
+
+function maybeMarkPaidAfterUpload(meta = {}) {
+  const type = detectPaymentTypeFromDoc(meta);
+  if (!type) return;
+
+  const label = type === 'shipper'
+    ? 'Freight forwarder'
+    : 'Customs / clearing';
+
+  setPaymentFlagFromDoc(type, true, `${label} proof uploaded`);
 }
 
 // ───────── OFFLINE SUPPORT FOR SHIPMENTS (LIGHTWEIGHT) ─────────
@@ -3216,6 +3468,7 @@ async function uploadShipmentDocumentsFromModal() {
     }
 
     await uploadShipmentDocuments(shipmentId);
+    maybeMarkPaidAfterUpload({ doc_type: docType, doc_label: docLabel });
 
     // Refresh the list so new files appear immediately
     if (typeof loadShipmentDocuments === 'function') {

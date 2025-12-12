@@ -31,6 +31,7 @@ const KA_ITEMS_AUTO_SAVE_ENABLED = false; // keep items from autosaving/reorderi
 let kaTimeRangeMode = 'today';
 let kaTimeActionEntry = null;
 let kaTimeActionMode = null;
+const kaOpenDetailEntries = new Set();
 let kaAccessPerms = {
   see_shipments: true,
   modify_time: true,
@@ -161,6 +162,12 @@ function kaShowSessionFlash(message, variant = 'error', duration = 10000) {
   }, duration);
 }
 
+function kaSessionCounts(session) {
+  const openCount = Number(session && (session.device_open_count ?? session.open_count ?? 0));
+  const entryCount = Number(session && (session.device_entry_count ?? session.entry_count ?? 0));
+  return { openCount, entryCount };
+}
+
 function kaNotifySessionDeleteBlocked(message, row = null) {
   const msg = message || 'Cannot delete this timesheet.';
   if (row) kaShowSessionDelete(row);
@@ -268,8 +275,10 @@ function kaShowConfirmDialog(message, { okLabel = 'Yes', cancelLabel = 'Cancel',
 }
 
 function kaCurrentLiveProjectId() {
-  const overridePid = Number(kaLiveProjectOverride);
-  if (Number.isFinite(overridePid)) return overridePid;
+  if (kaLiveProjectOverride !== null && kaLiveProjectOverride !== undefined) {
+    const overridePid = Number(kaLiveProjectOverride);
+    if (Number.isFinite(overridePid)) return overridePid;
+  }
 
   const activeSession = kaComputeActiveSession(kaSessions || []);
   if (activeSession && activeSession.project_id !== undefined && activeSession.project_id !== null) {
@@ -2427,17 +2436,24 @@ async function kaLoadLiveWorkers() {
 
   const tbody = document.getElementById('ka-live-body');
   const tag = document.getElementById('ka-live-count-tag');
+  const card = document.getElementById('ka-live-card');
   if (!tbody) return;
 
+  const hasContent = tbody.dataset.hasContent === '1';
+
   // Loading row (4 columns: Employee | Clock In | Time on Clock | Clock Out)
-  tbody.innerHTML = `
-    <tr><td colspan="4" class="ka-muted">(loading…)</td></tr>
-  `;
+  if (!hasContent) {
+    tbody.innerHTML = `
+      <tr data-ka-placeholder="1"><td colspan="4" class="ka-muted">(loading…)</td></tr>
+    `;
+  }
+  if (card) card.classList.add('ka-refreshing');
+  tbody.dataset.refreshing = '1';
 
   try {
     const rows = await fetchJSON(`/api/kiosks/${kaKiosk.id}/open-punches`);
     const punchRows = Array.isArray(rows) ? rows : [];
-    tbody.innerHTML = '';
+    const fragment = document.createDocumentFragment();
 
     const hasOverride = kaLiveProjectOverride !== null && kaLiveProjectOverride !== undefined;
     const overrideProjectId = hasOverride ? Number(kaLiveProjectOverride) : null;
@@ -2510,13 +2526,18 @@ async function kaLoadLiveWorkers() {
 
     // ----- No workers currently clocked in/out today -----
     if (!punchRows.length || filteredRows.length === 0) {
-      tbody.innerHTML = `
-        <tr><td colspan="4" class="ka-muted">(${liveProjectId !== null ? 'no punches today on this project' : 'no punches today on this kiosk'})</td></tr>
+      const row = document.createElement('tr');
+      row.dataset.kaPlaceholder = '1';
+      row.innerHTML = `
+        <td colspan="4" class="ka-muted">(${liveProjectId !== null ? 'no punches today on this project' : 'no punches today on this kiosk'})</td>
       `;
+      fragment.appendChild(row);
       if (tag) {
         tag.textContent = '0 Active workers';
         tag.className = 'ka-tag gray';
       }
+      tbody.replaceChildren(fragment);
+      tbody.dataset.hasContent = '1';
       return;
     }
 
@@ -2583,7 +2604,7 @@ async function kaLoadLiveWorkers() {
         <td>${clockOutLabel}</td>
       `;
 
-      tbody.appendChild(tr);
+      fragment.appendChild(tr);
     });
 
     // Update active count tag with live data (no extra refresh required)
@@ -2592,6 +2613,9 @@ async function kaLoadLiveWorkers() {
       tag.textContent = `${count} Active worker${count === 1 ? '' : 's'}`;
       tag.className = `ka-tag ${count > 0 ? 'green' : 'gray'}`;
     }
+
+    tbody.replaceChildren(fragment);
+    tbody.dataset.hasContent = '1';
 
     // Optional warning about previous-day open punches
     const status = document.getElementById('ka-kiosk-status');
@@ -2609,13 +2633,19 @@ async function kaLoadLiveWorkers() {
     }
   } catch (err) {
     console.error('Error loading live workers:', err);
-    tbody.innerHTML = `
-      <tr><td colspan="4" class="ka-muted">(error loading live workers)</td></tr>
-    `;
+    if (!hasContent) {
+      tbody.innerHTML = `
+        <tr data-ka-placeholder="1"><td colspan="4" class="ka-muted">(error loading live workers)</td></tr>
+      `;
+      tbody.dataset.hasContent = '1';
+    }
     if (tag) {
       tag.textContent = 'Error';
       tag.className = 'ka-tag orange';
     }
+  } finally {
+    delete tbody.dataset.refreshing;
+    if (card) card.classList.remove('ka-refreshing');
   }
 }
 
@@ -3377,7 +3407,24 @@ async function kaDeleteSession(sessionId, row = null) {
   if (!kaKiosk || !kaKiosk.id || !sessionId || !kaCurrentAdmin) return;
   const status = document.getElementById('ka-session-status');
   const session = kaSessions.find(s => Number(s.id) === Number(sessionId));
+  const { openCount, entryCount } = kaSessionCounts(session);
   let pin = '';
+
+  if (openCount > 0) {
+    kaNotifySessionDeleteBlocked('Cannot delete this timesheet while workers are clocked in. Clock them out first.', row);
+    return;
+  }
+
+  if (entryCount > 0) {
+    kaNotifySessionDeleteBlocked('Cannot delete a timesheet with time entries.', row);
+    return;
+  }
+
+  const confirmed = await kaShowConfirmDialog(
+    'Are you sure you want to delete this timesheet?',
+    { okLabel: 'Delete', cancelLabel: 'Cancel', title: 'Delete timesheet' }
+  );
+  if (!confirmed) return;
 
   if (status) {
     status.textContent = 'Deleting timesheet…';
@@ -3419,6 +3466,10 @@ function kaHandleSessionTouchStart(e) {
   const row = e.target.closest('.ka-session-row');
   if (!row || !e.touches || !e.touches.length) return;
   row.dataset.touchStartX = String(e.touches[0].clientX);
+  const target = e.target.closest('[data-ka-delete-session]') ? 'delete'
+    : e.target.closest('[data-ka-session-workers]') ? 'workers'
+    : 'row';
+  row.dataset.touchStartTarget = target;
 }
 
 function kaHandleSessionTouchEnd(e) {
@@ -3427,10 +3478,16 @@ function kaHandleSessionTouchEnd(e) {
   const startX = Number(row.dataset.touchStartX || 0);
   const endX = e.changedTouches && e.changedTouches.length ? e.changedTouches[0].clientX : startX;
   const delta = endX - startX;
+  const startTarget = row.dataset.touchStartTarget || 'row';
   if (delta < -40) {
     kaShowSessionDelete(row);
-  } else if (delta > 40 || Math.abs(delta) < 10) {
+  } else if (delta > 40) {
     kaHideSessionDelete(row);
+  } else if (Math.abs(delta) < 10) {
+    // For taps: only auto-hide if the tap wasn't on the delete/workers buttons
+    if (startTarget === 'row') {
+      kaHideSessionDelete(row);
+    }
   }
 }
 
@@ -6426,7 +6483,7 @@ function kaEntryDetailMeta(entry) {
 
   return meta.length
     ? `<div class="ka-detail-row">${meta.join(' • ')}</div>`
-    : '<div class="ka-detail-row ka-muted">No additional notes</div>';
+    : '';
 }
 
 function kaReviewerName(raw) {
@@ -6508,19 +6565,29 @@ async function kaLoadTimeEntries() {
   const showApproved = showActions;
   const payEnabled = showPay && kaShowPayUI;
   const actionsEnabled = showActions && kaShowApprovalsUI;
-  const colCount = 8;
+  const colCount = 6 + (actionsEnabled ? 2 : 0);
+  const hasContent = tbody && tbody.dataset.hasContent === '1';
+
+  if (!payEnabled) {
+    kaOpenDetailEntries.clear();
+  }
 
   if (!tbody || !startInput || !endInput) return;
 
   // Pay columns are rendered inside detail rows; nothing to toggle here.
+  const viewTime = document.getElementById('ka-view-time');
+  if (viewTime) {
+    viewTime.classList.toggle('ka-hide-approvals', !actionsEnabled);
+  }
 
   if (!kaCanViewTimeReports()) {
     tbody.innerHTML =
-      `<tr><td colspan="${colCount}" class="ka-muted">(no access to time entries)</td></tr>`;
+      `<tr data-ka-placeholder="1"><td colspan="${colCount}" class="ka-muted">(no access to time entries)</td></tr>`;
     if (status) {
       status.textContent = 'You do not have access to Time Entries.';
       status.className = 'ka-status ka-status-error';
     }
+    tbody.dataset.hasContent = '1';
     return;
   }
 
@@ -6529,12 +6596,15 @@ async function kaLoadTimeEntries() {
   const employeeId = empFilter ? empFilter.value : '';
   const projectId = projFilter ? projFilter.value : '';
 
-  tbody.innerHTML =
-    `<tr><td colspan="${colCount}" class="ka-muted">(loading time entries…)</td></tr>`;
-  if (status) {
-    status.textContent = '';
-    status.className = 'ka-status';
+  if (!hasContent) {
+    tbody.innerHTML =
+      `<tr data-ka-placeholder="1"><td colspan="${colCount}" class="ka-muted">(loading time entries…)</td></tr>`;
   }
+  if (status) {
+    status.textContent = hasContent ? status.textContent : '';
+    status.className = status.className || 'ka-status';
+  }
+  tbody.dataset.refreshing = '1';
 
   try {
     const params = new URLSearchParams();
@@ -6565,8 +6635,6 @@ async function kaLoadTimeEntries() {
         console.warn('Could not load open punches for kiosk', err);
       }
     }
-
-    tbody.innerHTML = '';
 
     const hideResolved = hideResolvedEl && hideResolvedEl.checked;
     const filtered = (entries || []).filter(t => {
@@ -6633,89 +6701,105 @@ async function kaLoadTimeEntries() {
       if (!combinedMap.has(key)) combinedMap.set(key, e);
     });
 
-      const combined = Array.from(combinedMap.values());
+    const combined = Array.from(combinedMap.values());
+    const fragment = document.createDocumentFragment();
+    const seenKeys = new Set();
 
-      if (!combined.length) {
-        tbody.innerHTML =
-        `<tr><td colspan="${colCount || 8}" class="ka-muted">(no time entries for this date range)</td></tr>`;
-        return;
-      }
+    if (!combined.length) {
+      const emptyRow = document.createElement('tr');
+      emptyRow.dataset.kaPlaceholder = '1';
+      emptyRow.innerHTML =
+        `<td colspan="${colCount || 8}" class="ka-muted">(no time entries for this date range)</td>`;
+      fragment.appendChild(emptyRow);
+      tbody.replaceChildren(fragment);
+      tbody.dataset.hasContent = '1';
+      return;
+    }
 
-    combined.forEach(t => {
-    const isOffline = !!t._offline;
-    const isOpen = !!t._open;
+    combined.forEach((t, idx) => {
+      const isOffline = !!t._offline;
+      const isOpen = !!t._open;
       const tr = document.createElement('tr');
       tr.dataset.entryId = t.id;
       tr.dataset.verified = t.verified ? '1' : '0';
       tr._entry = t; // stash full row for actions
+      const rowKey = tr.dataset.entryId ? String(tr.dataset.entryId) : `row-${idx}`;
+      seenKeys.add(rowKey);
 
-    const emp = t.employee_name || '(Unknown)';
-    const proj = t.project_name || '(No project)';
-    const dateLabel = t.start_date || t.end_date || '';
-    const startLabel = t.start_time || '—';
-    const endLabel = t.end_time || '—';
-    const hours = t.hours != null ? Number(t.hours).toFixed(2) : '0.00';
-    const rawRate = (() => {
-      if (t.rate != null) return Number(t.rate);
-      if (t.hourly_rate != null) return Number(t.hourly_rate);
-      if (t.pay_rate != null) return Number(t.pay_rate);
-      if (t.employee_rate != null) return Number(t.employee_rate);
-      const hrsNum = Number(t.hours);
-      const payNum = Number(t.total_pay);
-      if (!Number.isNaN(hrsNum) && hrsNum > 0 && !Number.isNaN(payNum)) {
-        return payNum / hrsNum;
+      const emp = t.employee_name || '(Unknown)';
+      const proj = t.project_name || '(No project)';
+      const dateLabel = t.start_date || t.end_date || '';
+      const startLabel = t.start_time || '—';
+      const endLabel = t.end_time || '—';
+      const hours = t.hours != null ? Number(t.hours).toFixed(2) : '0.00';
+      const rawRate = (() => {
+        if (t.rate != null) return Number(t.rate);
+        if (t.hourly_rate != null) return Number(t.hourly_rate);
+        if (t.pay_rate != null) return Number(t.pay_rate);
+        if (t.employee_rate != null) return Number(t.employee_rate);
+        const hrsNum = Number(t.hours);
+        const payNum = Number(t.total_pay);
+        if (!Number.isNaN(hrsNum) && hrsNum > 0 && !Number.isNaN(payNum)) {
+          return payNum / hrsNum;
+        }
+        return null;
+      })();
+      const rateDisplay = payEnabled
+        ? (kaRatesUnlockedAll || kaUnlockedRates.has(t.id)
+            ? (rawRate != null ? `$${rawRate.toFixed(2)}` : '—')
+            : '••••')
+        : '';
+      let payVal = t.total_pay != null ? Number(t.total_pay) : null;
+      if (payVal == null && rawRate != null && !Number.isNaN(Number(hours))) {
+        payVal = rawRate * Number(hours);
       }
-      return null;
-    })();
-    const rateDisplay = payEnabled
-      ? (kaRatesUnlockedAll || kaUnlockedRates.has(t.id)
-          ? (rawRate != null ? `$${rawRate.toFixed(2)}` : '—')
-          : '••••')
-      : '';
-    const pay = t.total_pay != null ? Number(t.total_pay).toFixed(2) : (isOpen ? '—' : '0.00');
-    const paidLabel = isOpen ? 'In progress' : (t.paid ? 'Paid' : 'Unpaid');
-    const payTagClass = isOpen ? 'gray' : (t.paid ? 'green' : 'orange');
-    const detailMeta = kaEntryDetailMeta(t);
-    const payDetail = payEnabled
-      ? `
-        <div class="ka-detail-row">
-          <strong>Pay:</strong> $${pay}
-          ${` • <strong>Rate:</strong> <span class="ka-rate-chip" data-rate-entry="${t.id}">${rateDisplay || '••••'}</span>`}
-          • <span class="ka-tag ${payTagClass}">${paidLabel}</span>
+      const pay = payVal != null && !Number.isNaN(payVal) ? payVal.toFixed(2) : (isOpen ? '—' : '0.00');
+      const detailMeta = kaEntryDetailMeta(t);
+      const payDetail = payEnabled
+        ? `
+        <div class="ka-pay-inline">
+          <div class="ka-pay-col ka-pay-left">
+            <span class="ka-pay-label">Rate:</span>
+            <span class="ka-pay-value"><span class="ka-rate-chip" data-rate-entry="${t.id}">${rateDisplay || '••••'}</span></span>
+          </div>
+          <div class="ka-pay-col ka-pay-right">
+            <span class="ka-pay-label">Total Pay:</span>
+            <span class="ka-pay-value">$${pay}</span>
+          </div>
         </div>
       `
-      : '';
-    const flagged = !!(t.has_geo_violation || t.has_auto_clock_out);
-    const resolved = !!t.resolved;
-    const isApproved = resolved && !!t.verified;
-    const isRejected = resolved && !t.verified;
-    const statusLabel = (() => {
-      if (isOpen) return '<span class="ka-tag gray">In progress</span>';
-      if (isRejected) return '<span class="ka-tag orange">Rejected</span>';
-      if (isApproved && flagged) return '<span class="ka-tag green">Approved</span>';
-      if (isApproved && !flagged) return '<span class="ka-tag green">Approved as-is</span>';
-      if (flagged) return '<span class="ka-tag orange">Pending review</span>';
-      return '<span class="ka-tag gray">Pending review</span>';
-    })();
-    const approvedBy = kaReviewerName(
-      t.resolved_by || t.verified_by || t.verified_by_employee_id
-    );
-    let actionLabel = 'Actions ▾';
-    let actionClass = '';
-    if (isRejected) {
-      actionLabel = 'Rejected ▾';
-      actionClass = 'rejected';
-    } else if (isApproved && flagged) {
-      actionLabel = 'Approved ▾';
-      actionClass = 'approved';
-    } else if (isApproved && !flagged) {
-      actionLabel = 'Approved as-is ▾';
-      actionClass = 'approved-asis';
-    }
-    const actionsCell = (() => {
-      // Always show status; add a small menu trigger when allowed and not offline/open.
-      if (isOffline || isOpen || !showActions) return statusLabel;
-      return `
+        : '';
+      const flagged = !!(t.has_geo_violation || t.has_auto_clock_out);
+      const resolved = !!t.resolved;
+      const isApproved = resolved && !!t.verified;
+      const isRejected = resolved && !t.verified;
+      const statusLabel = (() => {
+        if (isOpen) return '<span class="ka-tag gray">In progress</span>';
+        if (isRejected) return '<span class="ka-tag orange">Rejected</span>';
+        if (isApproved && flagged) return '<span class="ka-tag green">Approved</span>';
+        if (isApproved && !flagged) return '<span class="ka-tag green">Approved as-is</span>';
+        if (flagged) return '<span class="ka-tag orange">Pending review</span>';
+        return '<span class="ka-tag gray">Pending review</span>';
+      })();
+      const approvedBy = kaReviewerName(
+        t.resolved_by || t.verified_by || t.verified_by_employee_id
+      );
+      let actionLabel = 'Actions ▾';
+      let actionClass = '';
+      if (isRejected) {
+        actionLabel = 'Rejected ▾';
+        actionClass = 'rejected';
+      } else if (isApproved && flagged) {
+        actionLabel = 'Approved ▾';
+        actionClass = 'approved';
+      } else if (isApproved && !flagged) {
+        actionLabel = 'Approved as-is ▾';
+        actionClass = 'approved-asis';
+      }
+      const actionsCell = (() => {
+        // Always show status; add a small menu trigger when allowed and not offline/open.
+        if (isOffline || isOpen || !showActions) return statusLabel;
+        return `
         <div class="ka-status-actions">
           ${statusLabel}
           <div class="ka-time-row-actions dropdown">
@@ -6728,9 +6812,9 @@ async function kaLoadTimeEntries() {
           </div>
         </div>
       `;
-    })();
+      })();
 
-    let rowHtml = `
+      let rowHtml = `
       <td>${emp}</td>
       <td>${proj}</td>
       <td>${dateLabel}</td>
@@ -6738,38 +6822,45 @@ async function kaLoadTimeEntries() {
       <td>${endLabel}</td>
       <td class="ka-right">${hours}</td>
     `;
-    rowHtml += `
+      rowHtml += `
       <td class="ka-actions-cell ka-actions-col">${actionsCell}</td>
       <td class="ka-approve-col">${approvedBy}</td>
     `;
 
-    tr.innerHTML = rowHtml;
+      tr.innerHTML = rowHtml;
+      fragment.appendChild(tr);
 
-  tbody.appendChild(tr);
+      // Detail row (hidden until the main row is clicked)
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'ka-time-detail-row hidden';
+      detailTr.innerHTML = `
+        <td colspan="${colCount}" class="ka-time-detail">
+          <div class="ka-time-detail-grid">
+            ${detailMeta}
+            ${payDetail}
+          </div>
+        </td>
+      `;
+      if (payEnabled && kaOpenDetailEntries.has(rowKey)) {
+        detailTr.classList.remove('hidden');
+      }
+      fragment.appendChild(detailTr);
 
-    // Detail row (hidden until the main row is clicked)
-  const detailTr = document.createElement('tr');
-    detailTr.className = 'ka-time-detail-row hidden';
-    detailTr.innerHTML = `
-      <td colspan="${colCount}" class="ka-time-detail">
-        ${detailMeta}
-        ${payDetail}
-      </td>
-    `;
-      tbody.appendChild(detailTr);
-
-    if (payEnabled) {
-      detailTr.querySelectorAll('[data-rate-entry]').forEach(cell => {
-        cell.style.cursor = 'pointer';
-        cell.addEventListener('click', () => {
-          if (tr._entry && tr._entry._open) return;
-          const id = Number(cell.getAttribute('data-rate-entry'));
-          if (Number.isNaN(id)) return;
-          kaOpenRateModal(id);
+      if (payEnabled) {
+        detailTr.querySelectorAll('[data-rate-entry]').forEach(cell => {
+          cell.style.cursor = 'pointer';
+          cell.addEventListener('click', () => {
+            if (tr._entry && tr._entry._open) return;
+            const id = Number(cell.getAttribute('data-rate-entry'));
+            if (Number.isNaN(id)) return;
+            kaOpenRateModal(id);
+          });
         });
-      });
-    }
+      }
     });
+
+    tbody.replaceChildren(fragment);
+    tbody.dataset.hasContent = '1';
 
     // Wire up per-row actions
     tbody.querySelectorAll('[data-ka-time-action]').forEach(btn => {
@@ -6795,26 +6886,48 @@ async function kaLoadTimeEntries() {
     // Row click to toggle details
     const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => !r.classList.contains('ka-time-detail-row'));
     rows.forEach((row, idx) => {
+      const key = row.dataset.entryId ? String(row.dataset.entryId) : `row-${idx}`;
       row.addEventListener('click', (e) => {
         if (e.target.closest('.ka-actions-toggle') || e.target.closest('.ka-actions-menu')) return;
+        if (!payEnabled) return;
         const detail = tbody.querySelectorAll('.ka-time-detail-row')[idx];
         if (detail) detail.classList.toggle('hidden');
+        if (detail) {
+          if (detail.classList.contains('hidden')) {
+            kaOpenDetailEntries.delete(key);
+          } else {
+            kaOpenDetailEntries.add(key);
+          }
+        }
       });
     });
     // Close any open menus when clicking outside table
-    document.addEventListener('click', (e) => {
-      if (!tbody.contains(e.target)) {
-        tbody.querySelectorAll('.ka-actions-menu').forEach(m => m.classList.add('hidden'));
-      }
+    if (!tbody._kaOutsideClickBound) {
+      document.addEventListener('click', (e) => {
+        if (!tbody.contains(e.target)) {
+          tbody.querySelectorAll('.ka-actions-menu').forEach(m => m.classList.add('hidden'));
+        }
+      });
+      tbody._kaOutsideClickBound = true;
+    }
+
+    // Prune any stale open-detail keys
+    Array.from(kaOpenDetailEntries).forEach(k => {
+      if (!seenKeys.has(k)) kaOpenDetailEntries.delete(k);
     });
   } catch (err) {
     console.error('Error loading time entries:', err);
-    tbody.innerHTML =
-      `<tr><td colspan="${colCount}" class="ka-muted">(error loading time entries)</td></tr>`;
+    if (!hasContent) {
+      tbody.innerHTML =
+        `<tr data-ka-placeholder="1"><td colspan="${colCount}" class="ka-muted">(error loading time entries)</td></tr>`;
+      tbody.dataset.hasContent = '1';
+    }
     if (status) {
       status.textContent = 'Error loading time entries.';
       status.className = 'ka-status ka-status-error';
     }
+  } finally {
+    delete tbody.dataset.refreshing;
   }
 }
     if (metaEl) {

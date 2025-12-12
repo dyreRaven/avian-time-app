@@ -5318,7 +5318,10 @@ app.get('/api/kiosks/:id/open-punches', (req, res) => {
         FROM time_punches tp
         LEFT JOIN employees e ON tp.employee_id = e.id
         LEFT JOIN projects p ON tp.project_id = p.id
-        WHERE date(tp.clock_in_ts) = ?
+        WHERE (
+          tp.clock_out_ts IS NULL
+          OR date(tp.clock_in_ts) = ?
+        )
           AND (
             (tp.device_id IS NULL AND ? IS NULL)
             OR tp.device_id = ?
@@ -5568,7 +5571,7 @@ app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
 
     if (entryCount > 0) {
       return res.status(409).json({
-        error: 'Cannot delete this timesheet because it has time entries. Delete the entries from the desktop admin first.'
+        error: 'Cannot delete a timesheet with time entries.'
       });
     }
 
