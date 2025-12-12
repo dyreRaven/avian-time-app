@@ -4294,7 +4294,7 @@ body {
 
 @media (max-width: 1100px) {
   #ka-view-time .ka-table {
-    min-width: 900px;
+    min-width: 1100px;
   }
   #ka-view-time .ka-table th,
   #ka-view-time .ka-table td {
