@@ -2869,7 +2869,6 @@ function kaRenderSessions() {
     const isActive = isSessionActive(s);
     const projIdNum = Number(s.project_id);
     const showWorkersBtn = Number.isFinite(projIdNum);
-    const lockMsg = kaSessionDeleteLockMessage(s);
     const openCount = Number(s.device_open_count ?? s.open_count ?? 0);
     const entryCount = Number(s.device_entry_count ?? s.entry_count ?? 0);
     const row = document.createElement('div');
@@ -2911,11 +2910,7 @@ function kaRenderSessions() {
     del.className = 'ka-session-delete';
     del.dataset.kaDeleteSession = s.id;
     del.type = 'button';
-    del.textContent = lockMsg ? 'Locked' : 'Delete';
-    if (lockMsg) {
-      del.dataset.lockReason = lockMsg;
-      del.classList.add('locked');
-    }
+    del.textContent = 'Delete';
 
     swipe.appendChild(main);
     swipe.appendChild(del);
@@ -3382,13 +3377,7 @@ async function kaDeleteSession(sessionId, row = null) {
   if (!kaKiosk || !kaKiosk.id || !sessionId || !kaCurrentAdmin) return;
   const status = document.getElementById('ka-session-status');
   const session = kaSessions.find(s => Number(s.id) === Number(sessionId));
-  const lockMsg = kaSessionDeleteLockMessage(session);
   let pin = '';
-
-  if (lockMsg) {
-    kaNotifySessionDeleteBlocked(lockMsg, row);
-    return;
-  }
 
   if (status) {
     status.textContent = 'Deleting timesheet…';
@@ -3807,20 +3796,19 @@ async function kaInit() {
     sessionList.addEventListener('click', async (e) => {
       const deleteBtn = e.target.closest('[data-ka-delete-session]');
       if (deleteBtn) {
+        e.stopPropagation();
+        e.preventDefault();
         const id = Number(deleteBtn.dataset.kaDeleteSession);
         if (id) {
           const row = deleteBtn.closest('.ka-session-row');
-          const reason = deleteBtn.dataset.lockReason;
-          if (reason) {
-            kaNotifySessionDeleteBlocked(reason, row);
-            return;
-          }
           kaDeleteSession(id, row);
         }
         return;
       }
       const workersBtn = e.target.closest('[data-ka-session-workers]');
       if (workersBtn) {
+        e.stopPropagation();
+        e.preventDefault();
         const projectId = Number(workersBtn.dataset.kaSessionWorkers);
         if (Number.isFinite(projectId)) {
           kaLiveProjectOverride = projectId;
