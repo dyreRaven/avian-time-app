@@ -4288,6 +4288,124 @@ app.get('/api/time-entries', requireAuth, (req, res) => {
   });
 });
 
+// Kiosk-friendly time entries (device_secret auth instead of user session)
+app.get('/api/kiosk/time-entries', async (req, res) => {
+  try {
+    const access = await ensureKioskDevice(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 401)
+        .json({ error: access.error || 'Not authenticated' });
+    }
+
+    let { start, end, employee_id, project_id } = req.query;
+
+    if (!start && !end && !employee_id && !project_id) {
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      const today = `${yyyy}-${mm}-${dd}`;
+      start = today;
+      end = today;
+    }
+
+    let sql = `
+      SELECT
+        t.id,
+        t.employee_id,
+        t.project_id,
+        t.start_date,
+        t.end_date,
+        t.start_time,
+        t.end_time,
+        t.hours,
+        t.total_pay,
+        t.paid,
+        t.paid_date,
+        t.verified,
+        t.verified_at,
+        t.verified_by_employee_id,
+        t.resolved,
+        t.resolved_at,
+        t.resolved_by,
+        COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
+        COALESCE(p.name, t.project_name_snapshot) AS project_name,
+
+        -- Exception / flag info aggregated from punches
+        COALESCE(MAX(tp.geo_violation), 0)      AS has_geo_violation,
+        COALESCE(MAX(tp.auto_clock_out), 0)     AS has_auto_clock_out,
+        COALESCE(MAX(tp.exception_resolved), 0) AS punch_exception_resolved
+      FROM time_entries t
+      LEFT JOIN employees e ON t.employee_id = e.id
+      LEFT JOIN projects  p ON t.project_id = p.id
+      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
+    `;
+
+    const where = [];
+    const params = [];
+
+    if (start) {
+      where.push('t.start_date >= ?');
+      params.push(start);
+    }
+    if (end) {
+      where.push('t.end_date <= ?');
+      params.push(end);
+    }
+    if (employee_id) {
+      where.push('t.employee_id = ?');
+      params.push(employee_id);
+    }
+    if (project_id) {
+      where.push('t.project_id = ?');
+      params.push(project_id);
+    }
+
+    if (where.length) {
+      sql += ' WHERE ' + where.join(' AND ');
+    }
+
+    sql += `
+      GROUP BY
+        t.id,
+        t.employee_id,
+        t.project_id,
+        t.start_date,
+        t.end_date,
+        t.start_time,
+        t.end_time,
+        t.hours,
+        t.total_pay,
+        t.paid,
+        t.paid_date,
+        t.verified,
+        t.verified_at,
+        t.verified_by_employee_id,
+        t.resolved,
+        t.resolved_at,
+        t.resolved_by,
+        e.name,
+        p.name,
+        t.employee_name_snapshot,
+        t.project_name_snapshot
+      ORDER BY t.start_date DESC, t.id DESC
+      LIMIT 200
+    `;
+
+    db.all(sql, params, (err, rows) => {
+      if (err) {
+        console.error('Error fetching kiosk time entries:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+      res.json(rows || []);
+    });
+  } catch (err) {
+    console.error('Error fetching kiosk time entries:', err);
+    res.status(500).json({ error: 'Error fetching time entries.' });
+  }
+});
+
 
 app.post('/api/time-entries', requireAuth, async (req, res) => {
   const { employee_id, project_id, start_date, end_date, start_time, end_time, hours } = req.body || {};
@@ -5252,6 +5370,28 @@ app.get('/api/kiosks/:id/sessions', (req, res) => {
             AND tp.project_id = ks.project_id
             AND substr(tp.clock_in_ts, 1, 10) = ks.date
         ), 0) AS open_count
+        ,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM time_punches tp
+          WHERE tp.project_id = ks.project_id
+            AND substr(tp.clock_in_ts, 1, 10) = ks.date
+            AND (
+              (ks.device_id IS NULL AND tp.device_id IS NULL)
+              OR tp.device_id = ks.device_id
+            )
+        ), 0) AS device_entry_count,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM time_punches tp
+          WHERE tp.clock_out_ts IS NULL
+            AND tp.project_id = ks.project_id
+            AND substr(tp.clock_in_ts, 1, 10) = ks.date
+            AND (
+              (ks.device_id IS NULL AND tp.device_id IS NULL)
+              OR tp.device_id = ks.device_id
+            )
+        ), 0) AS device_open_count
       FROM kiosk_sessions ks
       LEFT JOIN kiosks k ON k.id = ks.kiosk_id
       LEFT JOIN projects p ON p.id = ks.project_id
@@ -5427,20 +5567,9 @@ app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
     }
 
     if (entryCount > 0) {
-      if (!perms.modify_time) {
-        return res.status(403).json({ error: 'You do not have permission to modify time entries.' });
-      }
-
-      const currentPin = (admin.pin || '').trim();
-      if (!currentPin) {
-        return res.status(403).json({ error: 'A PIN is required to delete a timesheet with entries.' });
-      }
-      if (!pin) {
-        return res.status(401).json({ error: 'PIN is required to delete this timesheet.' });
-      }
-      if (pin !== currentPin) {
-        return res.status(401).json({ error: 'Incorrect PIN.' });
-      }
+      return res.status(409).json({
+        error: 'Cannot delete this timesheet because it has time entries. Delete the entries from the desktop admin first.'
+      });
     }
 
     const delRes = await dbRun(
@@ -5830,6 +5959,55 @@ async function ensureShipmentAccess(req) {
   }
 
   return { ok: true, employee: emp, kiosk: kioskRow, via: 'kiosk' };
+}
+
+async function ensureKioskDevice(req) {
+  // Allow any established admin/user session to proceed
+  if (req.session && (req.session.userId || req.session.employeeId)) {
+    return { ok: true, via: 'session' };
+  }
+
+  const deviceId = (
+    (req.body && req.body.device_id) ||
+    (req.query && req.query.device_id) ||
+    ''
+  ).trim();
+  const deviceSecret = (
+    (req.body && req.body.device_secret) ||
+    (req.query && req.query.device_secret) ||
+    ''
+  ).trim();
+
+  if (!deviceId || !deviceSecret) {
+    return { ok: false, status: 401, error: 'Not authenticated' };
+  }
+
+  const kioskRow = await dbGet(
+    'SELECT id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
+    [deviceId]
+  );
+  if (!kioskRow) {
+    return { ok: false, status: 403, error: 'Not authorized' };
+  }
+
+  let expectedSecret = kioskRow.device_secret || '';
+  if (!expectedSecret && deviceSecret) {
+    expectedSecret = deviceSecret;
+    try {
+      await dbRun(
+        'UPDATE kiosks SET device_secret = ? WHERE id = ?',
+        [deviceSecret, kioskRow.id]
+      );
+    } catch (err) {
+      console.error('Failed to backfill kiosk device_secret:', err);
+    }
+  }
+
+  if (!expectedSecret || expectedSecret !== deviceSecret) {
+    return { ok: false, status: 403, error: 'Not authorized' };
+  }
+
+  return { ok: true, kiosk: kioskRow, via: 'kiosk' };
 }
 
 function normalizeNotificationStatuses(rawStatuses) {
@@ -7279,7 +7457,8 @@ app.post('/api/shipments/:id/verify-items', async (req, res) => {
         '$.verified_at', ?,
         '$.verified_by', ?,
         '$.storage_override', ?
-      )
+      ),
+      verified = ?
       WHERE id = ?
         AND shipment_id = ?
     `);
@@ -7291,12 +7470,16 @@ app.post('/api/shipments/:id/verify-items', async (req, res) => {
       const v = row.verification || {};
       const verifiedAt = v.verified_at || nowIso;
 
+      const normalizedStatus = (v.status || '').toLowerCase().trim();
+      const verifiedFlag = normalizedStatus && normalizedStatus !== 'unverified' ? 1 : 0;
+
       stmt.run(
         v.status || '',
         v.notes || '',
         verifiedAt,
         v.verified_by || null,
         v.storage_override || '',
+        verifiedFlag,
         vid,
         shipmentId
       );
@@ -7304,13 +7487,13 @@ app.post('/api/shipments/:id/verify-items', async (req, res) => {
 
     stmt.finalize();
 
-// Recompute items_verified flag (all items have a non-empty status)
+// Recompute items_verified flag (all items have a status other than empty/unverified)
 const uncheckedRow = await dbGet(
   `
     SELECT COUNT(*) AS cnt
     FROM shipment_items
     WHERE shipment_id = ?
-      AND COALESCE(json_extract(verification_json, '$.status'), '') = ''
+      AND LOWER(TRIM(COALESCE(json_extract(verification_json, '$.status'), ''))) IN ('', 'unverified')
   `,
   [shipmentId]
 );
@@ -7887,11 +8070,13 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
             FROM shipment_items si
             WHERE si.shipment_id = s.id
               AND LOWER(
-                COALESCE(
-                  NULLIF(json_extract(si.verification_json, '$.status'), ''),
-                  CASE WHEN IFNULL(si.verified, 0) = 1 THEN 'verified' ELSE '' END
+                TRIM(
+                  COALESCE(
+                    json_extract(si.verification_json, '$.status'),
+                    ''
+                  )
                 )
-              ) = 'verified'
+              ) NOT IN ('', 'unverified')
           ) AS items_verified_count,
           s.picked_up_by,
           s.picked_up_date,

@@ -18,10 +18,16 @@ let kaSessionRangeStart = null;
 let kaSessionRangeEnd = null;
 let kaShipmentItemsDirty = new Map(); // shipment_item_id -> verification payload
 let kaShipmentDetail = null;
+let kaShipmentDetailDocs = [];
 let kaItemsModalShipmentId = null;
+let kaShipmentsLoading = false;
+let kaShipmentsReloadPending = false;
 let kaItemsFilterUnverifiedFirst = true;
 let kaItemsFilterTerm = '';
 const kaItemAutoSaveTimers = new Map();
+const kaSavedItemStatuses = new Map();
+const kaCollapsedItems = new Set();
+const KA_ITEMS_AUTO_SAVE_ENABLED = false; // keep items from autosaving/reordering mid-edit
 let kaTimeRangeMode = 'today';
 let kaTimeActionEntry = null;
 let kaTimeActionMode = null;
@@ -61,17 +67,25 @@ const KA_SHIPMENT_STATUSES = [
   'Archived'
 ];
 const KA_NOTIFY_DEFAULT = {
-  enabled: false,
+  enabled: false, // legacy flag for shipments alerts
+  shipments_enabled: false,
   statuses: ['Cleared - Ready for Release'],
   project_ids: [],
   remind_every_days: 1,
-  remind_time: '09:00'
+  remind_time: '19:00',
+  clockout_enabled: false,
+  clockout_time: '19:00',
+  notify_phone: '',
+  notify_phone_enabled: false,
+  notify_email: '',
+  notify_email_enabled: false
 };
 let kaNotifyPref = { ...KA_NOTIFY_DEFAULT };
 let kaNotifyTimer = null;
 let kaNotifyLastKey = '';
 let kaNotifiedShipments = new Set();
 let kaReminderTimestamps = {};
+let kaClockoutAlertedDay = '';
 let kaStatusLockUntil = 0;
 let kaAdminOpenPunch = null;
 let kaClockInPromptActive = false;
@@ -80,6 +94,7 @@ let kaLiveRefreshInFlight = false;
 let kaSessionRefreshInFlight = false;
 let kaLiveProjectOverride = null;
 let kaDialogsOverridden = false;
+let kaTimeOrientationListenerBound = false;
 
 
 // --- Small helpers ---
@@ -99,6 +114,79 @@ function kaShowStatusMessage(message, variant = 'ok', lockMs = 0) {
 
 function kaShowInlineAlert(message, variant = 'error', lockMs = 8000) {
   kaShowStatusMessage(message, variant, lockMs);
+}
+
+function kaShowSessionInlineMessage(row, message, variant = 'error', duration = 7000) {
+  if (!row) return;
+  let msgEl = row.querySelector('.ka-session-inline-msg');
+  if (!msgEl) {
+    msgEl = document.createElement('div');
+    msgEl.className = 'ka-session-inline-msg';
+    msgEl.setAttribute('role', 'alert');
+    row.appendChild(msgEl);
+  }
+  msgEl.textContent = message || 'Notice';
+  if (variant === 'error') {
+    msgEl.classList.add('error');
+  } else {
+    msgEl.classList.remove('error');
+  }
+  msgEl.classList.remove('hidden');
+  if (msgEl._kaHideTimer) {
+    clearTimeout(msgEl._kaHideTimer);
+  }
+  msgEl._kaHideTimer = setTimeout(() => {
+    msgEl.classList.add('hidden');
+  }, duration);
+}
+
+function kaShowSessionFlash(message, variant = 'error', duration = 10000) {
+  const list = document.getElementById('ka-session-list');
+  if (!list) return;
+  let flash = document.getElementById('ka-session-flash');
+  if (!flash) {
+    flash = document.createElement('div');
+    flash.id = 'ka-session-flash';
+    flash.className = 'ka-session-flash';
+    list.parentElement?.insertBefore(flash, list);
+  }
+  flash.textContent = message || 'Notice';
+  flash.classList.toggle('error', variant === 'error');
+  flash.classList.remove('hidden');
+  flash.setAttribute('role', 'alert');
+  flash.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (flash._kaHideTimer) clearTimeout(flash._kaHideTimer);
+  flash._kaHideTimer = setTimeout(() => {
+    flash.classList.add('hidden');
+  }, duration);
+}
+
+function kaSessionDeleteLockMessage(session) {
+  if (!session) return null;
+  const open = Number(session.device_open_count ?? session.open_count ?? 0) > 0;
+  const entries = Number(session.device_entry_count ?? session.entry_count ?? 0) > 0;
+  if (open) {
+    return 'Cannot delete this timesheet while workers are clocked in. Clock them out first.';
+  }
+  if (entries) {
+    return 'Cannot delete this timesheet because it has time entries. Delete the entries from the desktop admin first.';
+  }
+  return null;
+}
+
+function kaNotifySessionDeleteBlocked(message, row = null) {
+  const msg = message || 'Cannot delete this timesheet.';
+  if (row) kaShowSessionDelete(row);
+  // Surface a single clear dialog so it is impossible to miss
+  kaShowConfirmDialog(msg, {
+    okLabel: 'OK',
+    cancelLabel: 'Close',
+    title: 'Cannot delete timesheet'
+  }).then(() => {
+    if (row) {
+      kaHideSessionDelete(row);
+    }
+  });
 }
 
 function kaOverrideNativeDialogs() {
@@ -746,12 +834,39 @@ function kaNotifyStorageKey() {
   return `avian_kiosk_ship_notify_${adminPart}_${devicePart}`;
 }
 
+function kaFormatPhoneValue(val) {
+  const digits = String(val || '').replace(/\D/g, '').slice(0, 10);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
 function kaLoadNotifyPrefFromStorage() {
   if (!kaCurrentAdmin || !kaCurrentAdmin.id) return { ...KA_NOTIFY_DEFAULT };
   try {
     const raw = localStorage.getItem(kaNotifyStorageKey());
     if (!raw) return { ...KA_NOTIFY_DEFAULT };
     const parsed = JSON.parse(raw);
+
+    const shipmentsEnabled =
+      parsed.shipments_enabled !== undefined
+        ? parsed.shipments_enabled
+        : (parsed.enabled !== undefined ? parsed.enabled : KA_NOTIFY_DEFAULT.shipments_enabled);
+    const clockoutEnabled =
+      parsed.clockout_enabled !== undefined
+        ? parsed.clockout_enabled
+        : KA_NOTIFY_DEFAULT.clockout_enabled;
+    const clockoutTime = parsed.clockout_time || KA_NOTIFY_DEFAULT.clockout_time;
+    const notifyPhone = typeof parsed.notify_phone === 'string' ? parsed.notify_phone : '';
+    const notifyPhoneEnabled =
+      parsed.notify_phone_enabled !== undefined
+        ? !!parsed.notify_phone_enabled
+        : !!notifyPhone;
+    const notifyEmail = typeof parsed.notify_email === 'string' ? parsed.notify_email : '';
+    const notifyEmailEnabled =
+      parsed.notify_email_enabled !== undefined
+        ? !!parsed.notify_email_enabled
+        : !!notifyEmail;
 
     // Migrate old frequency/day to every_days if present
     let migratedEvery = parsed.remind_every_days;
@@ -767,7 +882,15 @@ function kaLoadNotifyPrefFromStorage() {
       statuses: Array.isArray(parsed.statuses) ? parsed.statuses : [],
       project_ids: Array.isArray(parsed.project_ids) ? parsed.project_ids : [],
       remind_every_days: Number(migratedEvery || parsed.remind_every_days || KA_NOTIFY_DEFAULT.remind_every_days),
-      remind_time: parsed.remind_time || KA_NOTIFY_DEFAULT.remind_time
+      remind_time: parsed.remind_time || KA_NOTIFY_DEFAULT.remind_time,
+      shipments_enabled: !!shipmentsEnabled,
+      enabled: !!shipmentsEnabled,
+      clockout_enabled: !!clockoutEnabled,
+      clockout_time: clockoutTime,
+      notify_phone: notifyPhone,
+      notify_phone_enabled: notifyPhoneEnabled,
+      notify_email: notifyEmail,
+      notify_email_enabled: notifyEmailEnabled
     };
   } catch {
     return { ...KA_NOTIFY_DEFAULT };
@@ -891,25 +1014,92 @@ function kaRefreshNotifyProjectSelect() {
 }
 
 function kaApplyNotifyPrefToUI(pref, statusesList) {
+  const alertTime =
+    pref?.remind_time ||
+    pref?.clockout_time ||
+    KA_NOTIFY_DEFAULT.remind_time;
+
   kaNotifyPref = {
     ...KA_NOTIFY_DEFAULT,
     ...pref,
     statuses: Array.isArray(pref?.statuses) ? pref.statuses : [],
     project_ids: Array.isArray(pref?.project_ids) ? pref.project_ids : [],
     remind_every_days: Number(pref?.remind_every_days) || KA_NOTIFY_DEFAULT.remind_every_days,
-    remind_time: pref?.remind_time || KA_NOTIFY_DEFAULT.remind_time
+    remind_time: alertTime,
+    shipments_enabled:
+      pref?.shipments_enabled !== undefined
+        ? pref.shipments_enabled
+        : (pref?.enabled !== undefined ? pref.enabled : KA_NOTIFY_DEFAULT.shipments_enabled),
+    clockout_enabled: pref?.clockout_enabled !== undefined ? pref.clockout_enabled : KA_NOTIFY_DEFAULT.clockout_enabled,
+    clockout_time: alertTime,
+    notify_phone: pref?.notify_phone || '',
+    notify_phone_enabled: !!pref?.notify_phone_enabled,
+    notify_email: pref?.notify_email || '',
+    notify_email_enabled: !!pref?.notify_email_enabled,
+    enabled:
+      pref?.shipments_enabled !== undefined
+        ? pref.shipments_enabled
+        : (pref?.enabled !== undefined ? pref.enabled : KA_NOTIFY_DEFAULT.shipments_enabled)
   };
 
-  const enabledEl = document.getElementById('ka-notify-enabled');
-  if (enabledEl) enabledEl.checked = !!kaNotifyPref.enabled;
-  kaToggleNotifyFields(!!kaNotifyPref.enabled);
+  const shipToggle = document.getElementById('ka-notify-shipments-enabled');
+  if (shipToggle) shipToggle.checked = !!kaNotifyPref.shipments_enabled;
+  kaToggleShipmentFields(!!kaNotifyPref.shipments_enabled);
+
+  const clockToggle = document.getElementById('ka-notify-clockout-enabled');
+  if (clockToggle) clockToggle.checked = !!kaNotifyPref.clockout_enabled;
+  const clockBody = document.getElementById('ka-notify-clockout-body');
+  if (clockBody) clockBody.classList.toggle('hidden', !kaNotifyPref.clockout_enabled);
+
   const everyEl = document.getElementById('ka-notify-every-days');
   if (everyEl) {
     everyEl.value = Number(kaNotifyPref.remind_every_days) || 1;
   }
-  const timeEl = document.getElementById('ka-notify-time');
-  if (timeEl) {
-    timeEl.value = kaNotifyPref.remind_time || '09:00';
+  const alertTimeEl = document.getElementById('ka-notify-alert-time');
+  if (alertTimeEl) {
+    alertTimeEl.value = kaNotifyPref.remind_time || KA_NOTIFY_DEFAULT.remind_time;
+  }
+  const phoneEl = document.getElementById('ka-notify-phone');
+  const phoneToggle = document.getElementById('ka-notify-phone-enabled');
+  if (phoneToggle) {
+    phoneToggle.checked = !!kaNotifyPref.notify_phone_enabled;
+    phoneToggle.addEventListener('change', () => {
+      kaNotifyPref.notify_phone_enabled = phoneToggle.checked;
+      if (!phoneToggle.checked) kaNotifyPref.notify_phone = '';
+      if (phoneEl) {
+        phoneEl.classList.toggle('hidden', !phoneToggle.checked);
+        if (!phoneToggle.checked) phoneEl.value = '';
+      }
+      kaSaveNotifyPref(kaNotifyPref);
+    });
+  }
+  if (phoneEl) {
+    phoneEl.value = kaFormatPhoneValue(kaNotifyPref.notify_phone || '');
+    phoneEl.classList.toggle('hidden', !kaNotifyPref.notify_phone_enabled);
+    phoneEl.addEventListener('input', () => {
+      const formatted = kaFormatPhoneValue(phoneEl.value);
+      phoneEl.value = formatted;
+      kaNotifyPref.notify_phone = formatted;
+      kaSaveNotifyPref(kaNotifyPref);
+    });
+  }
+  const emailEl = document.getElementById('ka-notify-email');
+  const emailToggle = document.getElementById('ka-notify-email-enabled');
+  if (emailToggle) {
+    emailToggle.checked = !!kaNotifyPref.notify_email_enabled;
+    emailToggle.addEventListener('change', () => {
+      kaNotifyPref.notify_email_enabled = emailToggle.checked;
+      if (!emailToggle.checked) kaNotifyPref.notify_email = '';
+      if (emailEl) {
+        emailEl.classList.toggle('hidden', !emailToggle.checked);
+        if (!emailToggle.checked) emailEl.value = '';
+      }
+      kaSaveNotifyPref(kaNotifyPref);
+    });
+  }
+  if (emailEl) {
+    emailEl.value = kaNotifyPref.notify_email || '';
+    emailEl.classList.toggle('hidden', !kaNotifyPref.notify_email_enabled);
   }
 
   kaRenderNotifyStatuses(statusesList || kaNotifyStatusesSource());
@@ -917,9 +1107,14 @@ function kaApplyNotifyPrefToUI(pref, statusesList) {
 }
 
 function kaCollectNotifyForm() {
-  const enabled = document.getElementById('ka-notify-enabled')?.checked || false;
+  const shipmentsEnabled = document.getElementById('ka-notify-shipments-enabled')?.checked || false;
+  const clockoutEnabled = document.getElementById('ka-notify-clockout-enabled')?.checked || false;
   const everyVal = Number(document.getElementById('ka-notify-every-days')?.value || 1);
-  const timeVal = document.getElementById('ka-notify-time')?.value || '09:00';
+  const alertTimeVal = document.getElementById('ka-notify-alert-time')?.value || KA_NOTIFY_DEFAULT.remind_time;
+  const phoneVal = (document.getElementById('ka-notify-phone')?.value || '').trim();
+  const phoneEnabled = document.getElementById('ka-notify-phone-enabled')?.checked || false;
+  const emailVal = (document.getElementById('ka-notify-email')?.value || '').trim();
+  const emailEnabled = document.getElementById('ka-notify-email-enabled')?.checked || false;
 
   const statuses = Array.from(
     document.querySelectorAll('#ka-notify-statuses-menu input[type="checkbox"]:checked')
@@ -930,15 +1125,22 @@ function kaCollectNotifyForm() {
   ).map(cb => Number(cb.value)).filter(n => Number.isFinite(n));
 
   return {
-    enabled,
+    enabled: shipmentsEnabled, // legacy
+    shipments_enabled: shipmentsEnabled,
+    clockout_enabled: clockoutEnabled,
+    clockout_time: alertTimeVal,
+    notify_phone: phoneEnabled ? phoneVal : '',
+    notify_phone_enabled: phoneEnabled,
+    notify_email: emailEnabled ? emailVal : '',
+    notify_email_enabled: emailEnabled,
     statuses,
     project_ids: projectIds,
     remind_every_days: everyVal > 0 ? everyVal : 1,
-    remind_time: timeVal
+    remind_time: alertTimeVal
   };
 }
 
-function kaToggleNotifyFields(enabled) {
+function kaToggleShipmentFields(enabled) {
   const body = document.getElementById('ka-notify-fields');
   if (body) body.classList.toggle('hidden', !enabled);
 }
@@ -1179,13 +1381,20 @@ function kaRenderShipmentsList(list) {
   }
 }
 
-async function kaLoadShipments() {
+async function kaLoadShipments(opts = {}) {
+  const { forceFresh = false } = opts || {};
+  if (kaShipmentsLoading) {
+    kaShipmentsReloadPending = kaShipmentsReloadPending || forceFresh;
+    return;
+  }
+  kaShipmentsLoading = true;
   const listEl = document.getElementById('ka-shipments-list');
   const statusSel = document.getElementById('ka-shipments-filter');
   const projSel = document.getElementById('ka-shipments-project');
 
   if (!kaCanViewShipments()) {
     if (listEl) listEl.innerHTML = '<div class="ka-ship-muted">You do not have shipments access.</div>';
+    kaShipmentsLoading = false;
     return;
   }
 
@@ -1204,21 +1413,21 @@ async function kaLoadShipments() {
 
   const projVal = projSel ? projSel.value : '';
   if (projVal) params.set('project_id', projVal);
+  params.set('_', Date.now()); // cache buster to avoid stale responses
 
-  const useCache = !navigator.onLine;
-
-  if (useCache) {
-    const cached = kaLoadShipmentsCache();
-    if (cached) {
-      kaShipments = cached.shipments || [];
+  const cached = kaLoadShipmentsCache();
+  const offline = !navigator.onLine;
+  if (offline) {
+    if (cached && Array.isArray(cached.shipments) && cached.shipments.length) {
+      kaShipments = cached.shipments;
       kaRenderShipmentsList(kaShipments);
-      kaProcessNewShipmentsForAlert();
-      kaStartNotifyTimer(true);
-      if (listEl) {
-        listEl.innerHTML = `<div class="ka-ship-muted">Offline – showing last downloaded shipments.</div>`;
-      }
+      if (listEl) listEl.innerHTML = `<div class="ka-ship-muted">Offline – showing last downloaded shipments.</div>`;
+      kaShipmentsLoading = false;
       return;
     }
+    if (listEl) listEl.innerHTML = `<div class="ka-ship-muted">Offline and no cached shipments available.</div>`;
+    kaShipmentsLoading = false;
+    return;
   }
 
   try {
@@ -1231,17 +1440,23 @@ async function kaLoadShipments() {
     kaStartNotifyTimer(true);
   } catch (err) {
     console.error('Error loading shipments:', err);
-    const cached = kaLoadShipmentsCache();
     if (cached && Array.isArray(cached.shipments) && cached.shipments.length) {
       kaShipments = cached.shipments;
       kaRenderShipmentsList(kaShipments);
       kaProcessNewShipmentsForAlert();
       kaStartNotifyTimer(true);
       if (listEl) {
-        listEl.innerHTML = `<div class="ka-ship-muted">Offline – showing last downloaded shipments (may be stale).</div>`;
+        listEl.innerHTML = `<div class="ka-ship-muted">Showing cached shipments (may be stale).</div>`;
       }
     } else if (listEl) {
       listEl.innerHTML = `<div class="ka-ship-muted">Error loading shipments: ${err.message || err}</div>`;
+    }
+  } finally {
+    kaShipmentsLoading = false;
+    if (kaShipmentsReloadPending) {
+      kaShipmentsReloadPending = false;
+      // Ensure the queued refresh uses fresh data
+      kaLoadShipments({ forceFresh: true });
     }
   }
 }
@@ -1320,13 +1535,13 @@ async function kaTriggerShipmentNotification(force = false) {
 }
 
 async function kaCheckNotifyWindow(forceNow = false) {
-  if (!kaNotifyPref.enabled) return;
+  if (!kaNotifyPref.shipments_enabled) return;
 
   await kaTriggerShipmentNotification(forceNow);
 }
 
 function kaProcessNewShipmentsForAlert() {
-  if (!kaNotifyPref.enabled) return;
+  if (!kaNotifyPref.shipments_enabled) return;
   const matches = kaShipmentsMatchingNotify(kaNotifyPref);
   const newOnes = matches.filter(sh => !kaNotifiedShipments.has(sh.id));
   if (!newOnes.length) return;
@@ -1353,7 +1568,7 @@ function kaProcessNewShipmentsForAlert() {
 }
 
 async function kaReminderCheck(forceNow = false) {
-  if (!kaNotifyPref.enabled) return;
+  if (!kaNotifyPref.shipments_enabled) return;
   const now = Date.now();
   const matches = kaShipmentsMatchingNotify(kaNotifyPref);
 
@@ -1364,9 +1579,9 @@ async function kaReminderCheck(forceNow = false) {
 
   const everyDays = Math.max(Number(kaNotifyPref.remind_every_days) || 1, 1);
   const today = new Date();
-  const targetTime = (kaNotifyPref.remind_time || '09:00').match(/^(\d{2}):(\d{2})$/)
+  const targetTime = (kaNotifyPref.remind_time || KA_NOTIFY_DEFAULT.remind_time).match(/^(\d{2}):(\d{2})$/)
     ? kaNotifyPref.remind_time
-    : '09:00';
+    : KA_NOTIFY_DEFAULT.remind_time;
 
   const [hh, mm] = targetTime.split(':').map(n => Number(n));
   const targetDate = new Date(today);
@@ -1411,17 +1626,72 @@ async function kaReminderCheck(forceNow = false) {
   });
 }
 
+async function kaClockoutAlertCheck(forceNow = false) {
+  if (!kaNotifyPref.clockout_enabled || !kaKiosk) return;
+
+  const timeStr =
+    (kaNotifyPref.clockout_time || KA_NOTIFY_DEFAULT.clockout_time).match(/^(\d{2}):(\d{2})$/)
+      ? kaNotifyPref.clockout_time
+      : KA_NOTIFY_DEFAULT.clockout_time;
+
+  const [hh, mm] = timeStr.split(':').map(n => Number(n));
+  const target = new Date();
+  target.setHours(hh, mm, 0, 0);
+  const now = new Date();
+  const todayKey = kaTodayIso();
+
+  if (!forceNow) {
+    if (now.getTime() < target.getTime()) return;
+    if (kaClockoutAlertedDay === todayKey) return;
+  }
+
+  let rows = [];
+  try {
+    const res = await fetchJSON(`/api/kiosks/${kaKiosk.id}/open-punches`);
+    rows = Array.isArray(res) ? res : [];
+  } catch (err) {
+    console.warn('Clock-out alert fetch failed:', err);
+    return;
+  }
+
+  const open = rows.filter(r => !r.clock_out_ts);
+  if (!open.length) {
+    if (forceNow) {
+      kaSetNotifyMsg('No workers currently on the clock for clock-out alert.', '#0f172a');
+    }
+    return;
+  }
+
+  const names = open.slice(0, 5).map(r => r.employee_name || 'Worker');
+  const extra = open.length > 5 ? ` + ${open.length - 5} more` : '';
+  const body = `${names.join(', ')}${extra}`;
+
+  const ok = await kaEnsureNotifyPermission();
+  if (ok) {
+    try {
+      new Notification('Workers still clocked in', {
+        body: `Still on the clock past ${timeStr} — ${body}`
+      });
+    } catch (err) {
+      console.warn('Kiosk clock-out notification failed:', err);
+    }
+  }
+
+  kaSetNotifyMsg(`Clock-out alert sent for workers still on the clock past ${timeStr}.`, '#0f172a');
+  kaClockoutAlertedDay = todayKey;
+}
+
 async function kaStartNotifyTimer(forcePing = false) {
   if (kaNotifyTimer) {
     clearInterval(kaNotifyTimer);
     kaNotifyTimer = null;
   }
 
-  if (!kaNotifyPref.enabled) return;
+  if (!kaNotifyPref.shipments_enabled && !kaNotifyPref.clockout_enabled) return;
 
   const perm = await kaEnsureNotifyPermission();
   if (!perm) {
-    kaSetNotifyMsg('Allow browser notifications to receive shipment alerts.', '#b45309');
+    kaSetNotifyMsg('Allow browser notifications to receive alerts.', '#b45309');
     return;
   }
 
@@ -1429,11 +1699,17 @@ async function kaStartNotifyTimer(forcePing = false) {
     kaReminderCheck(false).catch(err => {
       console.warn('Kiosk notify tick failed:', err);
     });
+    kaClockoutAlertCheck(false).catch(err => {
+      console.warn('Kiosk clock-out alert failed:', err);
+    });
   }, 30 * 60 * 1000); // check every 30 minutes
 
   if (forcePing) {
     kaReminderCheck(true).catch(err => {
       console.warn('Kiosk notify check failed:', err);
+    });
+    kaClockoutAlertCheck(true).catch(err => {
+      console.warn('Kiosk clock-out check failed:', err);
     });
   }
 }
@@ -1443,6 +1719,7 @@ function kaInitNotifyPanel() {
 
   kaNotifiedShipments = new Set();
   kaReminderTimestamps = {};
+  kaClockoutAlertedDay = '';
   if (kaNotifyTimer) {
     clearInterval(kaNotifyTimer);
     kaNotifyTimer = null;
@@ -1479,11 +1756,26 @@ function kaInitNotifyPanel() {
     });
   }
 
-  const enableEl = document.getElementById('ka-notify-enabled');
-  if (enableEl) {
-    enableEl.addEventListener('change', () => {
-      kaNotifyPref.enabled = enableEl.checked;
-      kaToggleNotifyFields(enableEl.checked);
+  const shipToggle = document.getElementById('ka-notify-shipments-enabled');
+  if (shipToggle) {
+    shipToggle.addEventListener('change', () => {
+      kaNotifyPref.shipments_enabled = shipToggle.checked;
+      kaNotifyPref.enabled = shipToggle.checked; // legacy
+      kaToggleShipmentFields(shipToggle.checked);
+      kaReminderTimestamps = {};
+      kaNotifiedShipments = new Set();
+      kaSaveNotifyPref(kaNotifyPref);
+      kaStartNotifyTimer(true);
+    });
+  }
+
+  const clockToggle = document.getElementById('ka-notify-clockout-enabled');
+  if (clockToggle) {
+    clockToggle.addEventListener('change', () => {
+      kaNotifyPref.clockout_enabled = clockToggle.checked;
+      kaClockoutAlertedDay = '';
+      const clockBody = document.getElementById('ka-notify-clockout-body');
+      if (clockBody) clockBody.classList.toggle('hidden', !clockToggle.checked);
       kaSaveNotifyPref(kaNotifyPref);
       kaStartNotifyTimer(true);
     });
@@ -1500,12 +1792,16 @@ function kaInitNotifyPanel() {
     });
   }
 
-  const timeEl = document.getElementById('ka-notify-time');
-  if (timeEl) {
-    timeEl.addEventListener('change', () => {
-      kaNotifyPref.remind_time = timeEl.value || '09:00';
-      kaSaveNotifyPref(kaNotifyPref);
+  const alertTimeEl = document.getElementById('ka-notify-alert-time');
+  if (alertTimeEl) {
+    alertTimeEl.addEventListener('change', () => {
+      const val = alertTimeEl.value || KA_NOTIFY_DEFAULT.remind_time;
+      kaNotifyPref.remind_time = val;
+      kaNotifyPref.clockout_time = val;
+      kaClockoutAlertedDay = '';
       kaReminderTimestamps = {};
+      kaSaveNotifyPref(kaNotifyPref);
+      kaStartNotifyTimer(true);
     });
   }
 
@@ -1518,23 +1814,32 @@ function kaInitNotifyPanel() {
       await kaStartNotifyTimer(true);
       kaReminderTimestamps = {};
       kaNotifiedShipments = new Set();
+      kaClockoutAlertedDay = '';
       kaSetNotifyMsg('Notification settings saved for this kiosk.', 'green');
 
       const statusMenu = document.getElementById('ka-notify-statuses-menu');
       if (statusMenu) statusMenu.classList.add('hidden');
       const projMenu = document.getElementById('ka-notify-projects-menu');
       if (projMenu) projMenu.classList.add('hidden');
-      kaToggleNotifyFields(!!pref.enabled);
+      kaToggleShipmentFields(!!pref.shipments_enabled);
     });
   }
 
   const testBtn = document.getElementById('ka-notify-test');
   if (testBtn) {
     testBtn.addEventListener('click', () => {
-      kaTriggerShipmentNotification(true);
+      const tests = [];
+      if (kaNotifyPref.shipments_enabled) tests.push(kaTriggerShipmentNotification(true));
+      if (kaNotifyPref.clockout_enabled) tests.push(kaClockoutAlertCheck(true));
+      if (!tests.length) {
+        kaSetNotifyMsg('Enable a notification type to send a test.', '#b45309');
+        return;
+      }
+      Promise.allSettled(tests);
     });
   }
 
+  kaStartNotifyTimer(true);
 }
 
 function kaPerm(key) {
@@ -1583,12 +1888,6 @@ function kaApplyAccessUI() {
 
   const payCols = document.querySelectorAll('.ka-pay-col');
   payCols.forEach(col => col.classList.toggle('hidden', !kaCanViewPayroll()));
-
-  const approveCols = document.querySelectorAll('.ka-approve-col');
-  approveCols.forEach(col => col.classList.toggle('hidden', !kaCanModifyTime()));
-
-  const actionCols = document.querySelectorAll('.ka-actions-col');
-  actionCols.forEach(col => col.classList.toggle('hidden', !kaCanModifyTime()));
 
   const ratesBlock = document.getElementById('ka-rates-block');
   const ratesEditor = document.getElementById('ka-rates-editor');
@@ -2342,6 +2641,21 @@ function kaUpdateTimesheetHeading() {
   heading.textContent = `Current Timesheet — ${label.replace(/^Active /, '').replace(/[()]/g, '')}`;
 }
 
+function kaSyncTimeOrientationHint() {
+  const orientation = document.getElementById('ka-time-orientation');
+  if (!orientation) return;
+  const isLandscape = window.innerWidth > window.innerHeight;
+  orientation.style.display = isLandscape ? 'none' : 'block';
+}
+
+function kaBindTimeOrientationListener() {
+  if (kaTimeOrientationListenerBound) return;
+  const handler = () => kaSyncTimeOrientationHint();
+  window.addEventListener('resize', handler);
+  window.addEventListener('orientationchange', handler);
+  kaTimeOrientationListenerBound = true;
+}
+
 // --- Timesheet helpers (sessions per kiosk) ---
 
 function kaShowView(view) {
@@ -2357,11 +2671,12 @@ function kaShowView(view) {
   });
 
   if (view === 'time') {
-    const orientation = document.getElementById('ka-time-orientation');
-    if (orientation) {
-      const isLandscape = window.innerWidth > window.innerHeight;
-      orientation.style.display = isLandscape ? 'none' : 'block';
-    }
+    kaBindTimeOrientationListener();
+    kaSyncTimeOrientationHint();
+  }
+
+  if (view === 'shipments' && kaCanViewShipments()) {
+    kaLoadShipments({ forceFresh: true });
   }
 }
 
@@ -2567,6 +2882,9 @@ function kaRenderSessions() {
     const isActive = isSessionActive(s);
     const projIdNum = Number(s.project_id);
     const showWorkersBtn = Number.isFinite(projIdNum);
+    const lockMsg = kaSessionDeleteLockMessage(s);
+    const openCount = Number(s.device_open_count ?? s.open_count ?? 0);
+    const entryCount = Number(s.device_entry_count ?? s.entry_count ?? 0);
     const row = document.createElement('div');
     row.className = 'ka-session-row';
     row.dataset.sessionId = s.id;
@@ -2588,8 +2906,8 @@ function kaRenderSessions() {
         </div>
       </div>
       <div class="ka-session-meta ka-session-meta-right">
-        <span class="ka-session-tag">Open punches: ${s.open_count || 0}</span>
-        <span class="ka-session-tag">Entries today: ${s.entry_count || 0}</span>
+        <span class="ka-session-tag">Open punches: ${openCount}</span>
+        <span class="ka-session-tag">Entries today: ${entryCount}</span>
         ${
           showWorkersBtn
             ? `<button type="button" class="ka-session-workers-btn" data-ka-session-workers="${projIdNum}" aria-label="View workers" title="View workers">
@@ -2606,7 +2924,11 @@ function kaRenderSessions() {
     del.className = 'ka-session-delete';
     del.dataset.kaDeleteSession = s.id;
     del.type = 'button';
-    del.textContent = 'Delete';
+    del.textContent = lockMsg ? 'Locked' : 'Delete';
+    if (lockMsg) {
+      del.dataset.lockReason = lockMsg;
+      del.classList.add('locked');
+    }
 
     swipe.appendChild(main);
     swipe.appendChild(del);
@@ -3069,15 +3391,16 @@ function kaHideSessionDelete(row) {
   row.classList.remove('show-delete');
 }
 
-async function kaDeleteSession(sessionId) {
+async function kaDeleteSession(sessionId, row = null) {
   if (!kaKiosk || !kaKiosk.id || !sessionId || !kaCurrentAdmin) return;
   const status = document.getElementById('ka-session-status');
   const session = kaSessions.find(s => Number(s.id) === Number(sessionId));
+  const lockMsg = kaSessionDeleteLockMessage(session);
   let pin = '';
 
-  if (session && Number(session.entry_count || 0) > 0) {
-    pin = window.prompt('Enter your admin PIN to delete this timesheet (entries exist):') || '';
-    if (!pin) return;
+  if (lockMsg) {
+    kaNotifySessionDeleteBlocked(lockMsg, row);
+    return;
   }
 
   if (status) {
@@ -3107,10 +3430,12 @@ async function kaDeleteSession(sessionId) {
     }
   } catch (err) {
     console.error('Error deleting timesheet:', err);
+    const message = err && err.message ? err.message : 'Error deleting timesheet.';
     if (status) {
-      status.textContent = err && err.message ? err.message : 'Error deleting timesheet.';
+      status.textContent = message;
       status.className = 'ka-status ka-status-error';
     }
+    kaNotifySessionDeleteBlocked(message, row);
   }
 }
 
@@ -3128,7 +3453,7 @@ function kaHandleSessionTouchEnd(e) {
   const delta = endX - startX;
   if (delta < -40) {
     kaShowSessionDelete(row);
-  } else if (Math.abs(delta) < 10) {
+  } else if (delta > 40 || Math.abs(delta) < 10) {
     kaHideSessionDelete(row);
   }
 }
@@ -3384,15 +3709,15 @@ async function kaInit() {
   // 🔹 Shipments tab: refresh list
   document
     .getElementById('ka-shipments-refresh')
-    ?.addEventListener('click', () => kaLoadShipments());
+    ?.addEventListener('click', () => kaLoadShipments({ forceFresh: true }));
 
       // 🔹 Shipments filter: change mode (ready vs all)
   document
     .getElementById('ka-shipments-filter')
-    ?.addEventListener('change', () => kaLoadShipments());
+    ?.addEventListener('change', () => kaLoadShipments({ forceFresh: true }));
   document
     .getElementById('ka-shipments-project')
-    ?.addEventListener('change', () => kaLoadShipments());
+    ?.addEventListener('change', () => kaLoadShipments({ forceFresh: true }));
 
 
   // 🔹 Bottom nav click handler
@@ -3496,7 +3821,15 @@ async function kaInit() {
       const deleteBtn = e.target.closest('[data-ka-delete-session]');
       if (deleteBtn) {
         const id = Number(deleteBtn.dataset.kaDeleteSession);
-        if (id) kaDeleteSession(id);
+        if (id) {
+          const row = deleteBtn.closest('.ka-session-row');
+          const reason = deleteBtn.dataset.lockReason;
+          if (reason) {
+            kaNotifySessionDeleteBlocked(reason, row);
+            return;
+          }
+          kaDeleteSession(id, row);
+        }
         return;
       }
       const workersBtn = e.target.closest('[data-ka-session-workers]');
@@ -3624,7 +3957,7 @@ async function kaInit() {
 
     // 🔹 Initial shipments load (so the tab isn't empty) – only if allowed
     if (kaCanViewShipments()) {
-      await kaLoadShipments();
+      await kaLoadShipments({ forceFresh: true });
     }
 
     // Try to sync any offline PIN updates now that we are loaded
@@ -3696,6 +4029,12 @@ async function kaCloseItemsModal(opts = {}) {
   kaItemsFilterTerm = '';
   kaItemsFilterUnverifiedFirst = true;
   kaItemsModalShipmentId = null;
+  kaShipmentDetailDocs = [];
+  kaCollapsedItems.clear();
+  kaSavedItemStatuses.clear();
+  if (kaCanViewShipments()) {
+    kaLoadShipments({ forceFresh: true });
+  }
 }
 
 function kaClearItemAutoSaves() {
@@ -3740,6 +4079,51 @@ function kaItemStatusLabel(status) {
     '': 'Unverified'
   };
   return map[status] || map[''];
+}
+function kaCountVerifiedFromItems(items = []) {
+  const total = Array.isArray(items) ? items.length : 0;
+  let verified = 0;
+  (items || []).forEach(it => {
+    const current = kaCurrentItemState(it);
+    const st = (current?.verification?.status || '').toLowerCase().trim();
+    if (st && st !== 'unverified') {
+      verified += 1;
+    }
+  });
+  const allVerified = total > 0 && verified === total;
+  return { total, verified, allVerified };
+}
+
+function kaRefreshShipmentProgress(shipmentId) {
+  if (!shipmentId || !kaShipmentDetail || !kaShipmentDetail.items) return;
+  const counts = kaCountVerifiedFromItems(kaShipmentDetail.items);
+
+  // Update detail cache
+  kaShipmentDetail.shipment = kaShipmentDetail.shipment || {};
+  kaShipmentDetail.shipment.items_total = counts.total;
+  kaShipmentDetail.shipment.items_verified_count = counts.verified;
+  kaShipmentDetail.shipment.items_verified = counts.allVerified ? 1 : 0;
+
+  // Update overview in modal
+  const overviewEl = document.getElementById('ka-items-overview');
+  if (overviewEl) {
+    overviewEl.innerHTML = kaRenderShipmentOverview(
+      kaShipmentDetail.shipment,
+      kaShipmentDetailDocs || [],
+      kaShipmentDetail.items || []
+    );
+  }
+
+  // Update list cache + re-render shipments list
+  const match = Array.isArray(kaShipments)
+    ? kaShipments.find(s => Number(s.id) === Number(shipmentId))
+    : null;
+  if (match) {
+    match.items_total = counts.total;
+    match.items_verified_count = counts.verified;
+    match.items_verified = counts.allVerified ? 1 : 0;
+    kaRenderShipmentsList(kaShipments);
+  }
 }
 
 function kaFindShipmentItem(itemId) {
@@ -3797,6 +4181,37 @@ function kaUpdateLocalItemVerification(itemId, verification) {
   const existing = kaShipmentDetail.items[idx];
   const base = existing.verification || {};
   kaShipmentDetail.items[idx] = { ...existing, verification: { ...base, ...verification } };
+}
+
+function kaNormalizeItemStatus(status) {
+  return (status || '').toLowerCase().trim();
+}
+
+function kaSetSavedItemStatus(itemId, status) {
+  const normalized = kaNormalizeItemStatus(status);
+  const idNum = Number(itemId);
+  kaSavedItemStatuses.set(idNum, normalized);
+  if (normalized && normalized !== 'unverified') {
+    kaCollapsedItems.add(idNum);
+  } else {
+    kaCollapsedItems.delete(idNum);
+  }
+}
+
+function kaGetSavedItemStatus(itemId, fallback = '') {
+  const idNum = Number(itemId);
+  if (kaSavedItemStatuses.has(idNum)) {
+    return kaSavedItemStatuses.get(idNum);
+  }
+  return kaNormalizeItemStatus(fallback);
+}
+
+function kaSeedSavedItemStatuses(items = []) {
+  kaSavedItemStatuses.clear();
+  kaCollapsedItems.clear();
+  (items || []).forEach(it => {
+    kaSetSavedItemStatus(it.id, it?.verification?.status || '');
+  });
 }
 
 function kaComputeItemSummary(items = []) {
@@ -4391,6 +4806,8 @@ async function kaOpenItemsModal(shipmentId) {
   kaClearItemAutoSaves();
   kaItemsModalShipmentId = shipmentId;
   kaSetItemsTab('items');
+  kaShipmentDetailDocs = [];
+  kaCollapsedItems.clear();
 
   if (!modal.dataset.tabsBound) {
     const tabBtns = modal.querySelectorAll('[data-ka-items-tab]');
@@ -4435,6 +4852,9 @@ async function kaOpenItemsModal(shipmentId) {
   }
 
   kaShipmentDetail = { shipment, items, documents };
+  kaShipmentDetailDocs = documents;
+
+  kaSeedSavedItemStatuses(items);
 
   const bolDoc = kaFindDocByType(documents, 'bol');
   kaSetBolLink(shipmentId, bolDoc);
@@ -4573,20 +4993,20 @@ function kaRenderItemsList(shipmentId) {
       return hay.includes(term);
     });
 
+  const statusForSort = (it) => kaGetSavedItemStatus(it.id, it.verification?.status || '');
   if (kaItemsFilterUnverifiedFirst) {
-    const order = {
-      '': 0,
-      unverified: 0,
-      missing: 1,
-      damaged: 2,
-      wrong_item: 3,
-      verified: 4
-    };
     items.sort((a, b) => {
-      const aStatus = (a.verification.status || '').toLowerCase();
-      const bStatus = (b.verification.status || '').toLowerCase();
-      const aRank = order[aStatus] ?? 99;
-      const bRank = order[bStatus] ?? 99;
+      const aStatus = statusForSort(a);
+      const bStatus = statusForSort(b);
+      const aCollapsed = aStatus && aStatus !== 'unverified' && kaCollapsedItems.has(Number(a.id));
+      const bCollapsed = bStatus && bStatus !== 'unverified' && kaCollapsedItems.has(Number(b.id));
+      // unverified first, then others; within that, keep collapsed items lower
+      const rank = (st, collapsed) => {
+        if (!st || st === 'unverified') return collapsed ? 1 : 0;
+        return collapsed ? 3 : 2;
+      };
+      const aRank = rank(aStatus, aCollapsed);
+      const bRank = rank(bStatus, bCollapsed);
       if (aRank !== bRank) return aRank - bRank;
       return Number(a.id) - Number(b.id);
     });
@@ -4726,6 +5146,11 @@ function kaRenderItemRow(item, shipmentId) {
     });
     applyStatusStyle(val);
     if (statusChip) statusChip.textContent = kaItemStatusLabel(val);
+    const normalized = kaNormalizeItemStatus(val);
+    if (!normalized || normalized === 'unverified') {
+      kaCollapsedItems.delete(Number(item.id));
+      row.classList.remove('collapsed');
+    }
   };
 
   const buildPayload = (statusOverride = null) => {
@@ -4788,14 +5213,21 @@ function kaRenderItemRow(item, shipmentId) {
       }`;
     }
 
-    if (!skipAuto) scheduleAutoSave();
+    if (!skipAuto && KA_ITEMS_AUTO_SAVE_ENABLED) scheduleAutoSave();
+  };
+
+  const currentStatusValue = () => {
+    const activeBtn = statusButtons.find(btn => btn.classList.contains('active'));
+    const active = activeBtn ? activeBtn.dataset.kaItemStatus || '' : '';
+    const saved = kaGetSavedItemStatus(item.id, status);
+    return kaNormalizeItemStatus(active || saved);
   };
 
   statusButtons.forEach(btn => {
     btn.addEventListener('click', () => {
       const val = btn.dataset.kaItemStatus || '';
       setActiveStatus(val);
-      markDirty(val);
+      markDirty(val, { skipAuto: true });
     });
   });
 
@@ -4819,16 +5251,39 @@ function kaRenderItemRow(item, shipmentId) {
       const ok = await kaSaveShipmentVerificationFor(shipmentId, { onlyItemId: itemIdNum });
       if (ok) {
         refreshUnsavedState(false);
-        row.classList.add('collapsed');
+        const current = kaCurrentItemState(item);
+        const statusNow = (current?.verification?.status || '').toLowerCase();
+        if (statusNow && statusNow !== 'unverified') {
+          kaCollapsedItems.add(itemIdNum);
+          kaRenderItemsList(shipmentId);
+        }
       }
     });
   }
 
   if (collapseBtn) {
     collapseBtn.addEventListener('click', () => {
+      const currentStatus = currentStatusValue();
+      if (!currentStatus || currentStatus === 'unverified') {
+        row.classList.remove('collapsed');
+        kaCollapsedItems.delete(Number(item.id));
+        return;
+      }
+
       const collapsed = row.classList.toggle('collapsed');
-      // arrow stays the same; rotation handled in CSS when collapsed
+      if (collapsed) {
+        kaCollapsedItems.add(Number(item.id));
+      } else {
+        kaCollapsedItems.delete(Number(item.id));
+      }
     });
+  }
+
+  const savedStatus = currentStatusValue();
+  if (savedStatus && savedStatus !== 'unverified' && kaCollapsedItems.has(Number(item.id))) {
+    row.classList.add('collapsed');
+  } else if (!savedStatus || savedStatus === 'unverified') {
+    kaCollapsedItems.delete(Number(item.id));
   }
 
   return row;
@@ -4895,6 +5350,17 @@ async function kaSaveShipmentVerificationFor(shipmentId, opts = {}) {
       if (match) match.items_verified = 1;
     }
 
+    // Refresh progress counts locally
+    kaRefreshShipmentProgress(shipmentId);
+    if (shipmentId === kaItemsModalShipmentId) {
+      kaRenderItemsList(shipmentId);
+    }
+
+    // Also refresh the shipments summary list from the server so progress bars stay in sync
+    if (kaCanViewShipments()) {
+      kaLoadShipments({ forceFresh: true });
+    }
+
     return true;
   } catch (err) {
     console.error('Failed to save shipment verification', err);
@@ -4911,6 +5377,10 @@ async function kaSaveShipmentVerificationFor(shipmentId, opts = {}) {
       });
       kaUpdateItemsSavebar();
       kaUpdateItemsSummaryUI();
+      kaRefreshShipmentProgress(shipmentId);
+      if (shipmentId === kaItemsModalShipmentId) {
+        kaRenderItemsList(shipmentId);
+      }
 
       if (!silent) {
         kaShowInlineAlert('Offline: verification saved locally and will sync when online.', 'error', 6000);
@@ -4931,6 +5401,7 @@ function kaSetItemSavedUI(itemId) {
   const item = kaFindShipmentItem(itemId);
   const current = kaCurrentItemState(item);
   const status = current && current.verification ? (current.verification.status || '').toLowerCase() : '';
+  kaSetSavedItemStatus(itemId, status);
 
   if (row) {
     row.classList.remove('is-unsaved');
@@ -6062,28 +6533,11 @@ async function kaLoadTimeEntries() {
   const showApproved = showActions;
   const payEnabled = showPay && kaShowPayUI;
   const actionsEnabled = showActions && kaShowApprovalsUI;
-  const colCount = 6 + (payEnabled ? 3 : 0) + (actionsEnabled ? 3 : 0);
+  const colCount = 8;
 
   if (!tbody || !startInput || !endInput) return;
 
-  document.querySelectorAll('.ka-pay-col').forEach(el => {
-    el.classList.toggle('ka-col-hidden', !payEnabled);
-  });
-  document.querySelectorAll('.ka-paystatus-col').forEach(el => {
-    el.classList.toggle('ka-col-hidden', !payEnabled);
-  });
-  document.querySelectorAll('.ka-rate-col').forEach(el => {
-    el.classList.toggle('ka-col-hidden', !payEnabled);
-  });
-  document.querySelectorAll('.ka-approve-col').forEach(el => {
-    el.classList.toggle('ka-col-hidden', !actionsEnabled);
-  });
-  document.querySelectorAll('.ka-actions-col').forEach(el => {
-    el.classList.toggle('ka-col-hidden', !actionsEnabled);
-  });
-  document.querySelectorAll('.ka-status-col').forEach(el => {
-    el.classList.toggle('ka-col-hidden', !actionsEnabled);
-  });
+  // Pay columns are rendered inside detail rows; nothing to toggle here.
 
   if (!kaCanViewTimeReports()) {
     tbody.innerHTML =
@@ -6114,7 +6568,28 @@ async function kaLoadTimeEntries() {
     if (employeeId) params.set('employee_id', employeeId);
     if (projectId) params.set('project_id', projectId);
 
-    const entries = await fetchJSON(`/api/time-entries?${params.toString()}`);
+    const deviceSecret = kaGetDeviceSecret();
+    const useKioskAuth = kaDeviceId && deviceSecret;
+    if (useKioskAuth) {
+      params.set('device_id', kaDeviceId);
+      params.set('device_secret', deviceSecret);
+    }
+
+    const endpoint = useKioskAuth
+      ? `/api/kiosk/time-entries?${params.toString()}`
+      : `/api/time-entries?${params.toString()}`;
+
+    const entries = await fetchJSON(endpoint);
+
+    // Fetch any open punches for this kiosk so they show as "in progress" rows
+    let openPunches = [];
+    if (kaKiosk && kaKiosk.id) {
+      try {
+        openPunches = await fetchJSON(`/api/kiosks/${kaKiosk.id}/open-punches`);
+      } catch (err) {
+        console.warn('Could not load open punches for kiosk', err);
+      }
+    }
 
     tbody.innerHTML = '';
 
@@ -6134,6 +6609,40 @@ async function kaLoadTimeEntries() {
     });
     const offlineEntries = offlinePunches.map(kaOfflinePunchToEntry);
 
+    // Merge in open punches for this kiosk as "in progress" rows
+    const openEntries = (openPunches || []).filter(p => {
+      const d = p.clock_in_ts ? p.clock_in_ts.slice(0, 10) : '';
+      if (!d || d < start || d > end) return false;
+      if (employeeId && String(p.employee_id) !== String(employeeId)) return false;
+      if (projectId && String(p.project_id) !== String(projectId)) return false;
+      return true;
+    }).map(p => {
+      const startIso = p.clock_in_ts;
+      const startDt = startIso ? new Date(startIso) : null;
+      const hours = startDt ? Math.max(0, (Date.now() - startDt.getTime()) / 3600000) : 0;
+      return {
+        _open: true,
+        id: `open-${p.id}`,
+        employee_id: p.employee_id,
+        employee_name: p.employee_name || '(Unknown)',
+        project_id: p.project_id,
+        project_name: p.project_name || '(No project)',
+        start_date: startIso ? startIso.slice(0, 10) : '',
+        end_date: startIso ? startIso.slice(0, 10) : '',
+        start_time: startDt
+          ? startDt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : '—',
+        end_time: 'In progress',
+        hours,
+        total_pay: null,
+        paid: false,
+        verified: false,
+        resolved: false,
+        has_geo_violation: false,
+        has_auto_clock_out: false
+      };
+    });
+
     const combinedMap = new Map();
     filtered.forEach(e => {
       const key = e.id ? `srv-${e.id}` : JSON.stringify(e);
@@ -6144,16 +6653,22 @@ async function kaLoadTimeEntries() {
       if (!combinedMap.has(key)) combinedMap.set(key, e);
     });
 
-    const combined = Array.from(combinedMap.values());
+    openEntries.forEach(e => {
+      const key = e.id ? `open-${e.id}` : JSON.stringify(e);
+      if (!combinedMap.has(key)) combinedMap.set(key, e);
+    });
 
-    if (!combined.length) {
-      tbody.innerHTML =
-        `<tr><td colspan="${colCount || 6}" class="ka-muted">(no time entries for this date range)</td></tr>`;
-      return;
-    }
+      const combined = Array.from(combinedMap.values());
+
+      if (!combined.length) {
+        tbody.innerHTML =
+        `<tr><td colspan="${colCount || 8}" class="ka-muted">(no time entries for this date range)</td></tr>`;
+        return;
+      }
 
     combined.forEach(t => {
-      const isOffline = !!t._offline;
+    const isOffline = !!t._offline;
+    const isOpen = !!t._open;
       const tr = document.createElement('tr');
       tr.dataset.entryId = t.id;
       tr.dataset.verified = t.verified ? '1' : '0';
@@ -6162,6 +6677,8 @@ async function kaLoadTimeEntries() {
     const emp = t.employee_name || '(Unknown)';
     const proj = t.project_name || '(No project)';
     const dateLabel = t.start_date || t.end_date || '';
+    const startLabel = t.start_time || '—';
+    const endLabel = t.end_time || '—';
     const hours = t.hours != null ? Number(t.hours).toFixed(2) : '0.00';
     const rawRate = (() => {
       if (t.rate != null) return Number(t.rate);
@@ -6180,16 +6697,25 @@ async function kaLoadTimeEntries() {
           ? (rawRate != null ? `$${rawRate.toFixed(2)}` : '—')
           : '••••')
       : '';
-    const pay = t.total_pay != null ? Number(t.total_pay).toFixed(2) : '0.00';
-    const paid = t.paid ? 'Paid' : 'Unpaid';
-    const payTagClass = t.paid ? 'green' : 'orange';
+    const pay = t.total_pay != null ? Number(t.total_pay).toFixed(2) : (isOpen ? '—' : '0.00');
+    const paidLabel = isOpen ? 'In progress' : (t.paid ? 'Paid' : 'Unpaid');
+    const payTagClass = isOpen ? 'gray' : (t.paid ? 'green' : 'orange');
     const detailMeta = kaEntryDetailMeta(t);
+    const payDetail = payEnabled
+      ? `
+        <div class="ka-detail-row">
+          <strong>Pay:</strong> $${pay}
+          ${` • <strong>Rate:</strong> <span class="ka-rate-chip" data-rate-entry="${t.id}">${rateDisplay || '••••'}</span>`}
+          • <span class="ka-tag ${payTagClass}">${paidLabel}</span>
+        </div>
+      `
+      : '';
     const flagged = !!(t.has_geo_violation || t.has_auto_clock_out);
     const resolved = !!t.resolved;
     const isApproved = resolved && !!t.verified;
     const isRejected = resolved && !t.verified;
     const statusLabel = (() => {
-      if (!showActions) return '';
+      if (isOpen) return '<span class="ka-tag gray">In progress</span>';
       if (isRejected) return '<span class="ka-tag orange">Rejected</span>';
       if (isApproved && flagged) return '<span class="ka-tag green">Approved</span>';
       if (isApproved && !flagged) return '<span class="ka-tag green">Approved as-is</span>';
@@ -6211,54 +6737,40 @@ async function kaLoadTimeEntries() {
       actionLabel = 'Approved as-is ▾';
       actionClass = 'approved-asis';
     }
-    const actionsCell = !showActions
-      ? '<span class="ka-muted">View only</span>'
-      : isOffline
-        ? '<span class="ka-muted">Pending sync</span>'
-        : `
-            <div class="ka-time-row-actions dropdown">
-              <button class="btn secondary btn-sm ka-actions-toggle ${actionClass || (!flagged ? 'ka-muted' : '')}" data-ka-time-menu>${actionLabel}</button>
-              <div class="ka-actions-menu hidden">
-                <button class="ka-actions-item" data-ka-time-action="approve">Approve</button>
-                <button class="ka-actions-item" data-ka-time-action="modify">Modify</button>
-                <button class="ka-actions-item" data-ka-time-action="reject">Reject</button>
-              </div>
+    const actionsCell = (() => {
+      // Always show status; add a small menu trigger when allowed and not offline/open.
+      if (isOffline || isOpen || !showActions) return statusLabel;
+      return `
+        <div class="ka-status-actions">
+          ${statusLabel}
+          <div class="ka-time-row-actions dropdown">
+            <button class="btn secondary btn-icon ka-actions-toggle ${actionClass || (!flagged ? 'ka-muted' : '')}" data-ka-time-menu aria-label="More actions">&#8942;</button>
+            <div class="ka-actions-menu hidden">
+              <button class="ka-actions-item" data-ka-time-action="approve">Approve</button>
+              <button class="ka-actions-item" data-ka-time-action="modify">Modify</button>
+              <button class="ka-actions-item" data-ka-time-action="reject">Reject</button>
             </div>
-          `;
+          </div>
+        </div>
+      `;
+    })();
 
     let rowHtml = `
       <td>${emp}</td>
       <td>${proj}</td>
       <td>${dateLabel}</td>
-      <td>${t.start_time || '—'}</td>
-      <td>${t.end_time || '—'}</td>
+      <td>${startLabel}</td>
+      <td>${endLabel}</td>
       <td class="ka-right">${hours}</td>
     `;
     rowHtml += `
-      <td class="ka-right ka-pay-col ka-rate-col ${payEnabled ? '' : 'ka-col-hidden'}" data-rate-entry="${t.id}">${payEnabled ? rateDisplay : ''}</td>
-      <td class="ka-right ka-pay-col ${payEnabled ? '' : 'ka-col-hidden'}">${payEnabled ? `$${pay}` : ''}</td>
-      <td class="ka-right ka-pay-col ka-paystatus-col ${payEnabled ? '' : 'ka-col-hidden'}">
-        ${payEnabled ? `<span class="ka-tag ${payTagClass}">${paid}</span>` : ''}
-      </td>
-      <td class="ka-actions-cell ${actionsEnabled ? '' : 'ka-col-hidden'}">${actionsEnabled ? statusLabel : ''}</td>
-      <td class="ka-approve-col ${actionsEnabled ? '' : 'ka-col-hidden'}">${actionsEnabled ? approvedBy : ''}</td>
-      <td class="ka-actions-cell ka-actions-col ${actionsEnabled ? '' : 'ka-col-hidden'}">${actionsEnabled ? actionsCell : ''}</td>
+      <td class="ka-actions-cell ka-actions-col">${actionsCell}</td>
+      <td class="ka-approve-col">${approvedBy}</td>
     `;
 
     tr.innerHTML = rowHtml;
 
   tbody.appendChild(tr);
-
-    // Attach rate click handler for masking/unlocking
-    if (payEnabled) {
-      tr.querySelectorAll('[data-rate-entry]').forEach(cell => {
-        cell.style.cursor = 'pointer';
-        cell.addEventListener('click', () => {
-          const id = Number(cell.getAttribute('data-rate-entry'));
-          kaOpenRateModal(id);
-        });
-      });
-    }
 
     // Detail row (hidden until the main row is clicked)
   const detailTr = document.createElement('tr');
@@ -6266,9 +6778,22 @@ async function kaLoadTimeEntries() {
     detailTr.innerHTML = `
       <td colspan="${colCount}" class="ka-time-detail">
         ${detailMeta}
+        ${payDetail}
       </td>
     `;
       tbody.appendChild(detailTr);
+
+    if (payEnabled) {
+      detailTr.querySelectorAll('[data-rate-entry]').forEach(cell => {
+        cell.style.cursor = 'pointer';
+        cell.addEventListener('click', () => {
+          if (tr._entry && tr._entry._open) return;
+          const id = Number(cell.getAttribute('data-rate-entry'));
+          if (Number.isNaN(id)) return;
+          kaOpenRateModal(id);
+        });
+      });
+    }
     });
 
     // Wire up per-row actions

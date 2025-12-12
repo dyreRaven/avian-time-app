@@ -279,20 +279,16 @@
               <th>Employee</th>
               <th>Project</th>
                 <th>Date</th>
-                <th>Start</th>
-                <th>End</th>
-                <th class="ka-right">Total Hours</th>
-              <th class="ka-right ka-pay-col ka-rate-col">Rate</th>
-              <th class="ka-right ka-pay-col">Total Pay</th>
-              <th class="ka-right ka-pay-col ka-paystatus-col">Pay Status</th>
-              <th class="ka-status-col">Status</th>
-              <th class="ka-approve-col">Approved By</th>
-              <th class="ka-actions-col">Actions</th>
+                <th>Clock In</th>
+                <th>Clock Out</th>
+                <th class="ka-right">Hours</th>
+              <th class="ka-actions-col">Status</th>
+              <th class="ka-approve-col">Reviewed By</th>
             </tr>
           </thead>
           <tbody id="ka-time-body">
             <tr>
-              <td colspan="9" class="ka-muted">(loading…)</td>
+              <td colspan="8" class="ka-muted">(loading…)</td>
             </tr>
           </tbody>
         </table>
@@ -313,72 +309,6 @@
   <div class="card-body">
 
     <div id="ka-admin-settings-block" class="ka-settings-grid">
-      <div class="ka-settings-tile collapsed" data-settings-section="notifications" id="ka-notify-settings-tile">
-        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-notify">
-          <div>
-            <div class="ka-settings-title">Shipment notifications</div>
-            <p class="ka-settings-sub">Get kiosk alerts for shipments this admin cares about.</p>
-          </div>
-          <span class="ka-settings-chevron" aria-hidden="true"></span>
-        </button>
-        <div class="ka-settings-content" id="ka-settings-notify">
-          <p class="ka-muted">
-            Alerts show on this device for the admin currently logged in. Pick statuses, optional time, and optional projects.
-          </p>
-
-          <div class="ka-ship-notify-grid">
-            <div class="ka-notify-enable-row">
-              <label class="ka-toggle">
-                <input type="checkbox" id="ka-notify-enabled" />
-                <span>Enable notifications</span>
-              </label>
-            </div>
-
-            <div id="ka-notify-fields">
-              <div class="ka-notify-group ka-notify-reminders">
-                <div class="ka-inline-header">
-                  <div class="ka-inline-field">
-                    <label for="ka-notify-every-days">Reminder every…</label>
-                    <div class="ka-inline">
-                      <input type="number" id="ka-notify-every-days" min="1" step="1" value="1" style="max-width: 90px;" />
-                      <span class="ka-muted">day(s)</span>
-                    </div>
-                  </div>
-                  <div class="ka-inline-field">
-                    <label for="ka-notify-time">Reminder time</label>
-                    <input type="time" id="ka-notify-time" value="09:00" />
-                  </div>
-                </div>
-              </div>
-
-              <div class="ka-notify-group">
-                <label>Status filters</label>
-                <button id="ka-notify-statuses-btn" class="ka-notify-select" type="button">
-                  <span id="ka-notify-statuses-label" class="placeholder">All statuses</span>
-                  <span class="ka-caret">▾</span>
-                </button>
-                <div id="ka-notify-statuses-menu" class="ka-notify-menu hidden"></div>
-              </div>
-              <div class="ka-notify-group">
-                <label for="ka-notify-projects">Projects (optional)</label>
-                <button id="ka-notify-projects-btn" class="ka-notify-select" type="button">
-                  <span id="ka-notify-projects-label" class="placeholder">All projects</span>
-                  <span class="ka-caret">▾</span>
-                </button>
-                <div id="ka-notify-projects-menu" class="ka-notify-menu hidden"></div>
-                <p class="ka-muted small">Leave empty to include all projects.</p>
-              </div>
-            </div>
-          </div>
-
-          <div class="ka-ship-notify-actions">
-            <button class="btn secondary btn-sm" id="ka-notify-test" type="button">Test notification</button>
-            <button class="btn primary btn-sm" id="ka-notify-save" type="button">Save notification settings</button>
-            <span id="ka-notify-msg" class="ka-status"></span>
-          </div>
-        </div>
-      </div>
-
       <div class="ka-settings-tile collapsed" data-settings-section="language">
         <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-language">
           <div>
@@ -496,6 +426,109 @@
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ka-settings-tile collapsed" data-settings-section="notifications" id="ka-notify-settings-tile">
+        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-notify">
+          <div>
+            <div class="ka-settings-title">Notifications</div>
+            <p class="ka-settings-sub">Set up notifications for the admin currently logged in.</p>
+          </div>
+          <span class="ka-settings-chevron" aria-hidden="true"></span>
+        </button>
+        <div class="ka-settings-content" id="ka-settings-notify">
+          <div class="ka-ship-notify-grid">
+            <div class="ka-notify-section">
+              <div class="ka-settings-title" style="margin-bottom:6px;">General notification preferences</div>
+              <div class="ka-notify-section-body">
+                <div class="ka-notify-general-row">
+                  <label class="ka-toggle">
+                    <input type="checkbox" id="ka-notify-phone-enabled" />
+                    <span>Send SMS</span>
+                  </label>
+                  <input type="tel" id="ka-notify-phone" class="hidden" placeholder="Phone number" />
+                </div>
+                <div class="ka-notify-general-row">
+                  <label class="ka-toggle">
+                    <input type="checkbox" id="ka-notify-email-enabled" />
+                    <span>Send email</span>
+                  </label>
+                  <input type="email" id="ka-notify-email" class="hidden" placeholder="Email address" />
+                </div>
+                <div class="ka-notify-general-row">
+                  <div class="ka-notify-question">What time would you like to receive notifications?</div>
+                  <div class="ka-inline" style="justify-content:flex-end;">
+                    <input type="time" id="ka-notify-alert-time" value="19:00" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="ka-notify-section">
+              <div class="ka-notify-enable-row">
+                <div>
+                  <div class="ka-settings-title">Shipment Notifications</div>
+                  <p class="ka-settings-sub">Alerts when shipments reach the statuses and projects you choose.</p>
+                </div>
+                <label class="ka-toggle">
+                  <input type="checkbox" id="ka-notify-shipments-enabled" />
+                  <span>Enable</span>
+                </label>
+              </div>
+
+              <div id="ka-notify-fields" class="ka-notify-section-body hidden">
+                <div class="ka-notify-group">
+                  <label>Status filters</label>
+                  <button id="ka-notify-statuses-btn" class="ka-notify-select" type="button">
+                    <span id="ka-notify-statuses-label" class="placeholder">All statuses</span>
+                    <span class="ka-caret">▾</span>
+                  </button>
+                  <div id="ka-notify-statuses-menu" class="ka-notify-menu hidden"></div>
+                </div>
+                <div class="ka-notify-group">
+                  <label for="ka-notify-projects">Project filters</label>
+                  <button id="ka-notify-projects-btn" class="ka-notify-select" type="button">
+                    <span id="ka-notify-projects-label" class="placeholder">All projects</span>
+                    <span class="ka-caret">▾</span>
+                  </button>
+                  <div id="ka-notify-projects-menu" class="ka-notify-menu hidden"></div>
+                </div>
+                <div class="ka-notify-group ka-notify-inline-row">
+                  <label for="ka-notify-every-days">Reminder every</label>
+                  <div class="ka-inline">
+                    <input type="number" id="ka-notify-every-days" min="1" step="1" value="1" style="max-width: 90px;" />
+                    <span class="ka-muted">day(s)</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="ka-notify-section">
+              <div class="ka-notify-enable-row">
+                <div>
+                  <div class="ka-settings-title">Workers still clocked in</div>
+                  <p class="ka-settings-sub">Daily alert if anyone is still on the clock past your cutoff time.</p>
+                </div>
+                <label class="ka-toggle">
+                  <input type="checkbox" id="ka-notify-clockout-enabled" />
+                  <span>Enable</span>
+                </label>
+              </div>
+              <div class="ka-notify-group ka-notify-inline-row hidden" id="ka-notify-clockout-body">
+                <label for="ka-notify-alert-time">Alert me when workers are still clocked in past</label>
+                <div class="ka-inline">
+                  <input type="time" id="ka-notify-alert-time" value="19:00" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ka-ship-notify-actions">
+            <button class="btn secondary btn-sm" id="ka-notify-test" type="button">Test alerts</button>
+            <button class="btn primary btn-sm" id="ka-notify-save" type="button">Save notification settings</button>
+            <span id="ka-notify-msg" class="ka-status"></span>
           </div>
         </div>
       </div>
