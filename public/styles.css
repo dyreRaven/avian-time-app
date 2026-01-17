@@ -247,6 +247,11 @@ body {
     0 0 0 1px rgba(148, 163, 184, 0.26);
 }
 
+.card-warn {
+  border: 1px solid #f59e0b;
+  background: #fff7ed;
+}
+
 .qb-card {
   border-left: 4px solid var(--emerald-500);
   position: relative;
@@ -641,6 +646,10 @@ tbody tr:nth-child(even) {
 .clickable-rows tbody tr:hover {
   background: var(--emerald-50);
   cursor: pointer;
+}
+
+.clickable-rows tbody tr.is-selected {
+  background: var(--emerald-100);
 }
 
 /* Checkbox column helper for employees / vendors tables */
@@ -6893,6 +6902,30 @@ body {
   opacity: 0.8;
 }
 
+/* Generic pills for inline status */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  border: 1px solid transparent;
+}
+
+.pill-good {
+  background: #ecfdf3;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+.pill-warn {
+  background: #fef3c7;
+  color: #b45309;
+  border-color: #fcd34d;
+}
+
 /* Payroll tag chips */
 .tag-palette {
   display: flex;
@@ -6917,6 +6950,16 @@ body {
 .tag-chip:active {
   cursor: grabbing;
   background: #e5e7eb;
+}
+
+.pending-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pending-actions input {
+  min-width: 130px;
 }
 
 /* Payroll settings spacing and smaller text */

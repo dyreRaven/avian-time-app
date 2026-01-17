@@ -1,0 +1,87 @@
+# Decisions Log
+
+- 2025-01-XX: Admin console access is only for designated admins.
+- 2025-01-XX: Super Admin can grant/revoke permissions and access toggles.
+- 2025-01-XX: Kiosk admin is a separate role; access can be desktop, kiosk, or both.
+- 2025-01-XX: Permissions remain the legacy set (see_shipments, modify_time, view_time_reports, view_payroll, modify_pay_rates).
+- 2025-01-XX: Legacy kiosk_can_view_shipments flag is merged into see_shipments + kiosk_admin_access in the rebuild.
+- 2025-01-XX: Full QuickBooks flow is required.
+- 2025-01-XX: Kiosk must be offline-capable with sync on reconnect.
+- 2025-01-XX: PINs are per employee; multiple admins can share a device.
+- 2025-01-XX: Shipments remain a first-class module.
+- 2025-01-XX: Payroll requires full system with edits and audit.
+- 2025-01-XX: Notifications: Web Push enabled; email via Google Workspace at launch; SMS disabled.
+- 2025-01-XX: Admin Home includes to-do overview and quick access.
+- 2025-01-XX: Employees cannot self-register; super admins can self-register only for bootstrap.
+- 2025-01-XX: Bootstrap creates the initial org and captures org name + timezone.
+- 2025-01-XX: Pay period and overtime rules configurable per org; default overtime is off; when enabled default weekly 40h/daily 8h.
+- 2025-01-XX: pay_period_start_weekday default is Monday (1) when length_days == 7.
+- 2025-01-XX: Clock-in photos retained for 30 days.
+- 2025-01-XX: Multi-tenant-ready from the start (org_id scoping).
+- 2025-01-XX: Multi-org membership uses a global user account with per-org membership and an org switcher at login.
+- 2025-01-XX: Kiosk registration uses an org enrollment code for self-register.
+- 2025-01-XX: `device_id` is globally unique across orgs.
+- 2025-01-XX: No additional time-exception rules beyond the legacy set.
+- 2025-01-XX: Rebuild settings are stored in org_settings (not app_settings).
+- 2025-01-XX: Deprecate `/api/payroll/preview-checks`; use `/api/payroll/preflight-checks` for previews.
+- 2025-01-XX: QBO linking uses searchable pickers with manual ID fallback and suggested matches; block duplicate QBO ID links.
+- 2025-01-XX: QBO linking is disabled unless the org is connected to QuickBooks.
+- 2025-01-XX: QBO sync is manual (on-demand); QBO-owned fields are updated while local fields (rates, access, geofences) are preserved.
+- 2025-01-XX: QBO sync is single-flight per org; upstream 429/5xx errors are retryable with backoff and no automatic looped retries.
+- 2025-01-XX: QBO linking blocks duplicate IDs; admins can unlink QBO IDs to resolve conflicts (unlink sets needs_qbo_sync=1).
+- 2025-01-XX: Auto clock-out runs at org-local midnight with hourly catch-up; it closes prior-day open punches and tags reasons as midnight_auto/catch_up_auto.
+- 2025-01-XX: Super admins can set auto clock-out thresholds (daily/weekly max hours) or leave them unset; thresholds also flag discrepancies.
+- 2025-01-XX: Weekly time entry approval is required before payroll; approvals happen in Time Entry Report with per-row and bulk approve for clean entries.
+- 2025-01-XX: Payroll is blocked until all entries in the period are approved; approvals reset on edits and are fully audited.
+- 2025-01-XX: Retention defaults: clock-in photos 30 days; audit logs 1 year; notifications 90 days; idempotency keys 30 days; ID images and shipment docs require manual delete.
+- 2025-01-XX: Backups run daily (optional), include DB + uploads, and retain 30 daily + 12 monthly snapshots by default.
+- 2025-01-XX: Backups are full restores only; verify monthly with a test restore + integrity check.
+- 2025-01-XX: Clock-in photo purge runs daily and removes files older than 30 days.
+- 2025-01-XX: ID document delete clears id_document_* fields even if the file is missing; shipment documents stay with archived shipments and missing files return 404 on download.
+- 2025-01-XX: QBO name_on_checks retries use staged backoff and pause on auth failures until reconnect.
+- 2025-01-XX: Payroll retries are manual (no background job); retries use originalPayrollRunId and target failed employees via fromAttemptId or onlyEmployeeIds.
+- 2025-01-XX: Admin shipment search includes tracking number (partial match).
+- 2025-01-XX: Kiosk admins can add helper workers with ID images; super admins review in pending list and link to QBO before payroll.
+- 2025-01-XX: Payroll preflight must alert on missing QBO links; missing links remain unpaid until linked and retried.
+- 2025-01-XX: company_email is an org setting (branding + email sender); storage_daily_late_fee_default replaces legacy daily_fee.
+- 2025-01-XX: Legacy workers_see_shipments/workers_see_time are removed in favor of permissions; kiosk_require_photo is replaced by clock_in_photo_required.
+- 2025-01-XX: Kiosk enrollment requires the org enrollment code; no placeholder kiosk creation for unknown device_id; device_secret mismatches return the canonical secret for re-sync.
+- 2025-01-XX: Kiosk enrollment is code-only (no location required); kiosk name/location can be set later by super admin; kiosk ID is shown only in kiosk Settings and in admin kiosk detail for super admins.
+- 2025-01-XX: Kiosk Start Day supports "clock me in"; if no active timesheet and a kiosk admin attempts to clock in, route to Start Day. Only one active timesheet per kiosk for new punches; multiple open timesheets can exist; workers never choose project.
+- 2025-01-XX: QuickBooks OAuth is per-org with state validation; only super admins can connect/disconnect; disconnect clears tokens but preserves linked QBO IDs.
+- 2025-01-XX: Kiosk admin onboarding captures an ID image (driver’s license or passport) and a manually entered name; no parsing required.
+- 2025-01-XX: Vendor timekeeping is not supported; `uses_timekeeping` remains legacy-only and disabled.
+- 2025-01-XX: Overtime affects payroll totals when enabled; super admins set per-org overtime rules and multiplier.
+- 2025-01-XX: Overtime calculation uses daily overtime first, then weekly overtime on remaining regular hours; no double-time by default.
+- 2025-01-XX: Double-time is an optional org payroll setting (daily threshold + multiplier).
+- 2025-01-XX: Payroll runs include a per-run include_overtime flag (default on) that is hashed into preflight/create-checks.
+- 2025-01-XX: Payroll Reports "paid" toggle updates payroll_checks + time_entries and recalculates run totals (paid_date set/cleared).
+- 2025-01-XX: Shipment templates include optional line items (header fields + items).
+- 2025-01-XX: ID images are retained until manually deleted (no auto-purge on deactivation).
+- 2025-01-XX: Shipment item verification history is stored in verification_json.history[] only (no separate audit log/report).
+- 2025-01-XX: Shipment payments ledger entries do not auto-update shipment paid flags/amounts; summary fields remain the canonical report values.
+- 2025-01-XX: Shipment payment-related documents are hidden from users without view_payroll.
+- 2025-01-XX: Shipment comments can be queued offline for kiosk admins and synced on reconnect.
+- 2025-01-XX: Shipment comments are soft-deletable (inactive) with is_deleted metadata.
+- 2025-01-XX: Shipment notifications are per-admin with status/project/shipment filters, daily summary time, and reminders for selected statuses (repeat every N days; picked_up_by required for Cleared - Ready for Release).
+- 2025-01-XX: In-app notifications are always on; push/email are opt-in per admin via notification_prefs.
+- 2025-01-XX: Time/payroll notification filters use explicit event_types with default selections for exceptions and payroll failures/due.
+- 2025-01-XX: Offline sync uses client_id idempotency keys and if_match_updated_at for conflict detection on queued updates.
+- 2025-01-XX: Shipment timeline includes an entry when a line item storage location is added for the first time.
+- 2025-01-XX: Shipment storage location is per line item (verification.storage_override); shipment-level storage_room/storage_details are removed.
+- 2025-01-XX: Shipments board uses GET /api/shipments only; /api/shipments/board is removed from the rebuild.
+- 2025-01-XX: Shipment verification report defaults to last 30 days; ready-for-pickup filter is off by default.
+- 2025-01-XX: QBO sync is manual (admin "Sync Now" only); no scheduled syncs.
+- 2025-01-XX: Local employees can be created without QBO IDs and linked later; admins can optionally create the QBO employee from the app when connected.
+- 2025-01-XX: Bootstrap collects admin first/last name to create the initial admin employee.
+- 2025-01-XX: QBO create requires given_name and family_name (display_name optional).
+- 2025-01-XX: QBO sync UX: show last synced, gate link/create until Sync Now; pending list includes reason tags + actions.
+- 2025-01-XX: Kiosk UX: show Active Project banner; highlight active timesheet; confirmation on switch; offline Start Day requires online.
+- 2025-01-XX: Notifications preferences live on a single Settings screen with shared channel toggles.
+- 2025-01-XX: /api/status exposes lastSync timestamps for QBO entities (employees/vendors/projects/payroll accounts).
+- 2025-01-XX: QBO create is blocked unless employees sync has run; duplicate matches (email or exact name) must be linked instead of created.
+- 2025-01-XX: Shipment storage migration: move shipment-level storage_room/storage_details into per-item verification.storage_override; drop shipment-level fields.
+- 2025-01-XX: Shipment total_price defaults to line item sum but can be manually overridden; overrides do not change line items.
+- 2025-01-XX: Bootstrap admin employee defaults worker_timekeeping=true (kiosk admins can clock in).
+- 2025-01-XX: Org timezone is stored on orgs (single source); org_settings does not duplicate timezone.
+- 2025-01-XX: storage_daily_late_fee_default is null/0 by default; late fees are disabled until set by admin.

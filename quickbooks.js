@@ -2,12 +2,14 @@
 // Handles QuickBooks OAuth2 and basic query/sync helpers.
 
 const db = require('./db');
+const crypto = require('crypto');
 
 const EXPENSE_ACCOUNT_NAME = '5000 - Direct Job Costs:5010 - Direct Labor';
 const BANK_ACCOUNT_NAME = '1000 - Bank Accounts:1010 - Checking (Operating)';
 
 require('dotenv').config();
 const axios = require('axios');
+const { normalizePayrollRules, applyOvertimeAllocations, roundCurrency } = require('./lib/payroll-utils');
 
 const {
   QBO_CLIENT_ID,
@@ -20,6 +22,44 @@ const AUTH_BASE = 'https://appcenter.intuit.com/connect/oauth2';
 const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 const API_BASE = 'https://sandbox-quickbooks.api.intuit.com/v3/company';
 let refreshPromise = null; // serialize refresh attempts so we don't race/overwrite
+
+const deriveEncKey = () => {
+  const raw =
+    process.env.SESSION_ENCRYPTION_KEY ||
+    process.env.SESSION_SECRET;
+  if (!raw) return null;
+  return crypto.createHash('sha256').update(String(raw)).digest();
+};
+
+const ENC_PREFIX = 'enc:v1:';
+function encryptValue(str) {
+  const key = deriveEncKey();
+  if (!key) return str;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  let enc = cipher.update(String(str), 'utf8', 'base64');
+  enc += cipher.final('base64');
+  const tag = cipher.getAuthTag();
+  return `${ENC_PREFIX}${iv.toString('base64')}:${tag.toString('base64')}:${enc}`;
+}
+
+function decryptValue(str) {
+  const key = deriveEncKey();
+  if (!key || !str || !str.startsWith(ENC_PREFIX)) return str;
+  try {
+    const body = str.slice(ENC_PREFIX.length);
+    const [ivB64, tagB64, dataB64] = body.split(':');
+    const iv = Buffer.from(ivB64, 'base64');
+    const tag = Buffer.from(tagB64, 'base64');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    let dec = decipher.update(dataB64, 'base64', 'utf8');
+    dec += decipher.final('utf8');
+    return dec;
+  } catch {
+    return null;
+  }
+}
 
 // Ensure Name-on-Checks timestamp columns exist
 async function ensureNameOnChecksColumns() {
@@ -60,6 +100,24 @@ function loadExceptionRulesMap() {
     db.get(
       'SELECT value FROM app_settings WHERE key = ?',
       ['time_exception_rules'],
+      (err, row) => {
+        if (err || !row || !row.value) return resolve(null);
+        try {
+          const parsed = JSON.parse(row.value);
+          resolve(parsed && typeof parsed === 'object' ? parsed : null);
+        } catch {
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+function loadPayrollRulesMap() {
+  return new Promise(resolve => {
+    db.get(
+      'SELECT value FROM app_settings WHERE key = ?',
+      ['payroll_rules'],
       (err, row) => {
         if (err || !row || !row.value) return resolve(null);
         try {
@@ -173,6 +231,9 @@ function saveTokens({ access_token, refresh_token, expires_in }) {
   // expires_in = seconds from now
   const expiresAt = Date.now() + (expires_in - 60) * 1000; // minus 60s for safety
 
+  const encAccess = encryptValue(access_token);
+  const encRefresh = encryptValue(refresh_token);
+
   db.run(
     `
       INSERT INTO qbo_tokens (id, access_token, refresh_token, expires_at)
@@ -182,7 +243,7 @@ function saveTokens({ access_token, refresh_token, expires_in }) {
         refresh_token = excluded.refresh_token,
         expires_at    = excluded.expires_at
     `,
-    [access_token, refresh_token, expiresAt]
+    [encAccess, encRefresh, expiresAt]
   );
 }
 
@@ -190,7 +251,10 @@ function getTokensFromDb() {
   return new Promise((resolve, reject) => {
     db.get('SELECT * FROM qbo_tokens LIMIT 1', (err, row) => {
       if (err) return reject(err);
-      resolve(row || null);
+      if (!row) return resolve(null);
+      const access = decryptValue(row.access_token) || row.access_token;
+      const refresh = decryptValue(row.refresh_token) || row.refresh_token;
+      resolve({ ...row, access_token: access, refresh_token: refresh });
     });
   });
 }
@@ -824,11 +888,32 @@ function buildLineDescription(template, row, start, end) {
     .replace('{end}', endUS);
 }
 
+function appendPayrollPrivateNote(baseMemo, runContext = {}) {
+  const parts = [];
+  if (runContext.payrollRunId) {
+    parts.push(`Run ${runContext.payrollRunId}`);
+  }
+  if (runContext.runType === 'adjustment') {
+    parts.push('Adjustment');
+  }
+  if (runContext.adjustmentReason) {
+    const trimmed = String(runContext.adjustmentReason).trim().slice(0, 120);
+    if (trimmed) parts.push(`Reason: ${trimmed}`);
+  }
+  if (runContext.idempotencyKey) {
+    parts.push(`Key ${runContext.idempotencyKey}`);
+  }
+  if (!parts.length) return baseMemo;
+  return `${baseMemo} | ${parts.join(' | ')}`;
+}
+
 /* ───────── 13. BUILD DRAFTS FROM time_entries (DB ONLY) ───────── */
 
 async function buildCheckDrafts(start, end, options = {}) {
-  const { excludeEmployeeIds = [] } = options;
+  const { excludeEmployeeIds = [], includeOvertime = true } = options;
   const HOURS_EPSILON = 0.1; // keep in sync with payroll/time-entries endpoint
+  const payrollRulesRaw = await loadPayrollRulesMap();
+  const payrollRules = normalizePayrollRules(payrollRulesRaw);
 
   const rulesMap = await loadExceptionRulesMap();
   const isRuleEnabled = makeRuleChecker(rulesMap);
@@ -923,6 +1008,8 @@ async function buildCheckDrafts(start, end, options = {}) {
           t.id,
           t.employee_id,
           t.project_id,
+          t.employee_name_snapshot,
+          t.project_name_snapshot,
           t.start_date,
           t.end_date,
           t.hours,
@@ -946,6 +1033,8 @@ async function buildCheckDrafts(start, end, options = {}) {
           t.id,
           t.employee_id,
           t.project_id,
+          t.employee_name_snapshot,
+          t.project_name_snapshot,
           t.start_date,
           t.end_date,
           t.hours,
@@ -953,17 +1042,24 @@ async function buildCheckDrafts(start, end, options = {}) {
           t.resolved_status
       )
       SELECT
-        e.id AS employee_id,
+        f.id AS time_entry_id,
+        f.employee_id,
+        f.project_id,
+        f.employee_name_snapshot,
+        f.project_name_snapshot,
+        f.start_date,
+        f.end_date,
+        f.hours,
+        f.total_pay,
         e.name AS employee_name,
         e.name_on_checks AS employee_name_on_checks,
+        e.rate AS employee_rate,
         e.vendor_qbo_id,
         e.employee_qbo_id,
-        p.id AS project_id,
-        COALESCE(p.name, '(No project)') AS project_name,
+        COALESCE(p.name, f.project_name_snapshot, '(No project)') AS project_name,
+        COALESCE(p.name, f.project_name_snapshot, '(No project)') AS project_name_raw,
         p.qbo_id AS project_qbo_id,
-        p.customer_name AS project_customer_name,
-        SUM(f.hours)     AS project_hours,
-        SUM(f.total_pay) AS project_pay
+        p.customer_name AS project_customer_name
       FROM entry_flags f
       JOIN employees e ON f.employee_id = e.id
       LEFT JOIN projects p ON f.project_id = p.id
@@ -989,12 +1085,11 @@ async function buildCheckDrafts(start, end, options = {}) {
   }
 
   sql += `
-      GROUP BY
-        e.id, e.name, e.name_on_checks, e.vendor_qbo_id,
-        p.id, p.name
       ORDER BY
-        e.name,
-        project_name
+        employee_name,
+        project_name,
+        f.start_date,
+        f.id
     `;
 
   const rows = await new Promise((resolve, reject) => {
@@ -1004,45 +1099,138 @@ async function buildCheckDrafts(start, end, options = {}) {
     });
   });
 
-  // Group rows by employee to build one draft per employee
-  const byEmployee = new Map();
-
+  const entriesByEmployee = new Map();
   for (const r of rows) {
-    let draft = byEmployee.get(r.employee_id);
-    if (!draft) {
-      const displayName = r.employee_name_on_checks || r.employee_name;
-      draft = {
-        employee_id: r.employee_id,
-        employee_name: displayName,
-        employee_name_raw: r.employee_name,
-        name_on_checks: r.employee_name_on_checks || null,
-        vendor_qbo_id: r.vendor_qbo_id,
-        employee_qbo_id: r.employee_qbo_id,
-        total_hours: 0,
-        total_pay: 0,
-        lines: []
-      };
-      byEmployee.set(r.employee_id, draft);
-    }
-
-    const projectHours = Number(r.project_hours || 0);
-    const projectPay = Number(r.project_pay || 0);
-
-    draft.total_hours += projectHours;
-    draft.total_pay += projectPay;
-
-    draft.lines.push({
+    const hours = Number(r.hours || 0);
+    const totalPay = Number(r.total_pay || 0);
+    const employeeRate = Number(r.employee_rate || 0);
+    const baseRate =
+      hours > 0 && Number.isFinite(totalPay) && totalPay > 0
+        ? totalPay / hours
+        : employeeRate;
+    const entry = {
+      time_entry_id: r.time_entry_id,
+      employee_id: r.employee_id,
+      employee_name: r.employee_name || r.employee_name_snapshot,
+      employee_name_raw: r.employee_name,
+      name_on_checks: r.employee_name_on_checks || null,
+      vendor_qbo_id: r.vendor_qbo_id,
+      employee_qbo_id: r.employee_qbo_id,
       project_id: r.project_id,
       project_name: r.project_name,
+      project_name_raw: r.project_name_raw,
       project_qbo_id: r.project_qbo_id,
       project_customer_name: r.project_customer_name,
-      project_hours: projectHours,
-      project_pay: projectPay
-      // later we can add project_qbo_customer_id, class_qbo_id, etc.
-    });
+      entry_date: r.start_date,
+      hours,
+      total_pay: totalPay,
+      base_rate: Number.isFinite(baseRate) ? baseRate : 0,
+      employee_rate: employeeRate
+    };
+    if (!entriesByEmployee.has(r.employee_id)) {
+      entriesByEmployee.set(r.employee_id, []);
+    }
+    entriesByEmployee.get(r.employee_id).push(entry);
   }
 
-  return Array.from(byEmployee.values());
+  const byEmployee = new Map();
+  entriesByEmployee.forEach(entries => {
+    applyOvertimeAllocations(entries, payrollRules, includeOvertime);
+    entries.forEach(entry => {
+      let draft = byEmployee.get(entry.employee_id);
+      if (!draft) {
+        const displayName = entry.name_on_checks || entry.employee_name;
+        draft = {
+          employee_id: entry.employee_id,
+          employee_name: displayName,
+          employee_name_raw: entry.employee_name,
+          name_on_checks: entry.name_on_checks || null,
+          vendor_qbo_id: entry.vendor_qbo_id,
+          employee_qbo_id: entry.employee_qbo_id,
+          total_hours: 0,
+          total_pay: 0,
+          lines: [],
+          _lineMap: new Map()
+        };
+        byEmployee.set(entry.employee_id, draft);
+      }
+      draft.total_hours += Number(entry.hours || 0);
+      draft.total_pay += Number(entry.adjusted_pay || 0);
+
+      const lineKey = entry.project_id || 'none';
+      if (!draft._lineMap.has(lineKey)) {
+        draft._lineMap.set(lineKey, {
+          project_id: entry.project_id,
+          project_name: entry.project_name,
+          project_name_raw: entry.project_name_raw,
+          project_qbo_id: entry.project_qbo_id,
+          project_customer_name: entry.project_customer_name,
+          project_hours: 0,
+          project_pay: 0
+        });
+      }
+      const line = draft._lineMap.get(lineKey);
+      line.project_hours += Number(entry.hours || 0);
+      line.project_pay += Number(entry.adjusted_pay || 0);
+    });
+  });
+
+  const drafts = [];
+  for (const draft of byEmployee.values()) {
+    draft.lines = Array.from(draft._lineMap.values()).map(line => ({
+      ...line,
+      project_hours: roundCurrency(line.project_hours),
+      project_pay: roundCurrency(line.project_pay)
+    }));
+    draft.total_hours = roundCurrency(draft.total_hours);
+    draft.total_pay = roundCurrency(draft.total_pay);
+    delete draft._lineMap;
+    drafts.push(draft);
+  }
+
+  return drafts;
+}
+
+async function computePayrollDraftsSnapshot(start, end, options = {}) {
+  const excludeEmployeeIds = Array.isArray(options.excludeEmployeeIds)
+    ? options.excludeEmployeeIds
+    : [];
+  const onlyEmployeeIds = Array.isArray(options.onlyEmployeeIds)
+    ? options.onlyEmployeeIds.map(Number).filter(Number.isFinite)
+    : [];
+  const includeOvertime =
+    typeof options.includeOvertime === 'boolean' ? options.includeOvertime : true;
+  const drafts = await buildCheckDrafts(start, end, { excludeEmployeeIds, includeOvertime });
+
+  let finalDrafts = drafts;
+  if (onlyEmployeeIds.length) {
+    const idSet = new Set(onlyEmployeeIds);
+    finalDrafts = drafts.filter(d => idSet.has(Number(d.employee_id)));
+  }
+
+  const normalizeAmount = value => Number(value || 0).toFixed(4);
+  const snapshot = finalDrafts
+    .map(d => ({
+      employee_id: Number(d.employee_id),
+      total_hours: normalizeAmount(d.total_hours),
+      total_pay: normalizeAmount(d.total_pay),
+      lines: (Array.isArray(d.lines) ? d.lines : [])
+        .map(l => ({
+          project_id: l.project_id,
+          project_hours: normalizeAmount(l.project_hours),
+          project_pay: normalizeAmount(l.project_pay)
+        }))
+        .sort((a, b) => String(a.project_id).localeCompare(String(b.project_id)))
+    }))
+    .sort((a, b) => a.employee_id - b.employee_id);
+
+  const payload = JSON.stringify(snapshot);
+  const digest = crypto.createHash('sha256').update(payload).digest('hex');
+
+  return {
+    snapshot_hash: `sha256:${digest}`,
+    snapshot_count: snapshot.length
+  };
 }
 
 /* ───────── 14. CREATE CHECKS FOR A PAY PERIOD ───────── */
@@ -1056,6 +1244,10 @@ async function createChecksForPeriod(start, end, options = {}) {
   const settings = await getPayrollSettings();
   const startUS = formatDateUS(start);
   const endUS = formatDateUS(end);
+  const previewOnly = options.previewOnly === true;
+  const runContext = options.runContext || {};
+  const includeOvertime =
+    typeof options.includeOvertime === 'boolean' ? options.includeOvertime : true;
 
   const bankName =
     options.bankAccountName || settings.bank_account_name || settings.bankAccountName || BANK_ACCOUNT_NAME;
@@ -1129,7 +1321,7 @@ async function createChecksForPeriod(start, end, options = {}) {
      (used by /api/payroll/preview-checks)
   ──────────────────────────────────────────────── */
   if (!accessToken || !realmId) {
-    const drafts = await buildCheckDrafts(start, end, { excludeEmployeeIds });
+    const drafts = await buildCheckDrafts(start, end, { excludeEmployeeIds, includeOvertime });
 
     drafts.forEach(draft => {
       const extras = customLinesByEmployee.get(draft.employee_id) || [];
@@ -1227,7 +1419,7 @@ async function createChecksForPeriod(start, end, options = {}) {
     return id;
   }
 
-  const drafts = await buildCheckDrafts(start, end, { excludeEmployeeIds });
+  const drafts = await buildCheckDrafts(start, end, { excludeEmployeeIds, includeOvertime });
 
   // Attach any custom lines (UI-added)
   for (const draft of drafts) {
@@ -1293,9 +1485,13 @@ async function createChecksForPeriod(start, end, options = {}) {
       continue;
     }
 
-    const expenseAccountId = await getExpenseAccountIdForName(
-      effectiveExpenseName
-    );
+    const payeeRef = draft.vendor_qbo_id
+      ? { value: draft.vendor_qbo_id, type: 'Vendor' }
+      : (draft.employee_qbo_id ? { value: draft.employee_qbo_id, type: 'Employee' } : null);
+    const previewIssues = [];
+    if (!payeeRef || !payeeRef.value) {
+      previewIssues.push('No QuickBooks payee linked (vendor/employee ID missing).');
+    }
 
     const lineItems = [];
     const classIdCache = {};
@@ -1306,12 +1502,17 @@ async function createChecksForPeriod(start, end, options = {}) {
       classIdCache[name] = id;
       return id;
     }
+    const lineErrors = [];
 
     for (const line of draft.lines) {
       const lineKey = `${draft.employee_id}:${String(line.project_id)}`;
       const lineOv = overrideByLine.get(lineKey);
       const expenseNameForLine = lineOv?.expenseAccountName || effectiveExpenseName;
       const expenseIdForLine = await getExpenseAccountIdForName(expenseNameForLine);
+      if (!expenseIdForLine) {
+        lineErrors.push(`Expense account "${expenseNameForLine}" not found in QuickBooks.`);
+        continue;
+      }
       const classNameForLine =
         lineOv?.className ||
         line.class_name ||
@@ -1319,6 +1520,10 @@ async function createChecksForPeriod(start, end, options = {}) {
         line.project_name ||
         null;
       const classId = classNameForLine ? await getClassIdForName(classNameForLine) : null;
+      if (classNameForLine && !classId) {
+        lineErrors.push(`Class "${classNameForLine}" not found in QuickBooks.`);
+        continue;
+      }
       const description =
         lineOv?.description ||
         line.description_override ||
@@ -1345,21 +1550,50 @@ async function createChecksForPeriod(start, end, options = {}) {
 
       lineItems.push({
         DetailType: 'AccountBasedExpenseLineDetail',
-        Amount: Number(line.project_pay || 0),
+        Amount: roundCurrency(line.project_pay || 0),
         Description: description,
         AccountBasedExpenseLineDetail: detail
       });
     }
 
-    const memoText = effectiveMemoTemplate
+    const baseMemoText = effectiveMemoTemplate
       .replace('{employee}', draft.employee_name || '')
       .replace('{start}', startUS)
       .replace('{end}', endUS)
       .replace('{dateRange}', `${startUS} – ${endUS}`);
 
-    const payeeRef = draft.vendor_qbo_id
-      ? { value: draft.vendor_qbo_id, type: 'Vendor' }
-      : (draft.employee_qbo_id ? { value: draft.employee_qbo_id, type: 'Employee' } : null);
+    const issues = [...previewIssues, ...lineErrors];
+    if (!lineItems.length) {
+      issues.push('No payable lines for this employee.');
+    }
+
+    if (previewOnly) {
+      const ok = issues.length === 0;
+      results.push({
+        employeeId: draft.employee_id,
+        employeeName: draft.employee_name,
+        totalHours: Number(draft.total_hours || 0),
+        totalPay: Number(draft.total_pay || 0),
+        ok,
+        error: ok ? null : issues.join(' '),
+        warnings: [],
+        warningCodes: [],
+        previewOnly: true
+      });
+      continue;
+    }
+
+    if (issues.length) {
+      results.push({
+        employeeId: draft.employee_id,
+        employeeName: draft.employee_name,
+        totalHours: Number(draft.total_hours || 0),
+        totalPay: Number(draft.total_pay || 0),
+        ok: false,
+        error: issues.join(' ')
+      });
+      continue;
+    }
 
     const desiredPrintName = draft.name_on_checks || draft.employee_name || '';
     let nameWarning = null;
@@ -1370,112 +1604,14 @@ async function createChecksForPeriod(start, end, options = {}) {
       }
     }
 
-    // See if a check for this payee is already queued to print; if so, append lines to it
-    const existingQueuedCheck = await findExistingQueuedCheck(
-      payeeRef,
-      accessToken,
-      realmId
-    );
-    const canMergeExisting =
-      existingQueuedCheck &&
-      existingQueuedCheck.Id &&
-      typeof existingQueuedCheck.SyncToken !== 'undefined';
-
     const url = `${API_BASE}/${realmId}/purchase`;
-
-    // If we found a queued check, update it with new line items instead of creating another check
-    if (canMergeExisting) {
-      const existingLines = Array.isArray(existingQueuedCheck.Line)
-        ? existingQueuedCheck.Line
-        : [];
-      const mergedLines = existingLines.concat(lineItems);
-
-      const updatePayload = {
-        sparse: true, // only updating lines; keep other fields intact
-        Id: existingQueuedCheck.Id,
-        SyncToken: existingQueuedCheck.SyncToken,
-        Line: mergedLines,
-        EntityRef: existingQueuedCheck.EntityRef || payeeRef,
-        AccountRef: existingQueuedCheck.AccountRef || { value: bankAccountId },
-        PaymentType: 'Check',
-        PrintStatus: existingQueuedCheck.PrintStatus || 'NeedToPrint'
-      };
-
-      try {
-        const updateRes = await axios.post(url, updatePayload, {
-          params: { minorversion: 62, operation: 'update' },
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Accept: 'application/json',
-            'Content-Type': 'application/json'
-          }
-        });
-
-        const updatedPurchase = updateRes?.data?.Purchase || null;
-        const qboTxnId =
-          (updatedPurchase && updatedPurchase.Id) || existingQueuedCheck.Id || null;
-
-        draft._ok = true;
-        draft.qbo_txn_id = qboTxnId;
-
-        results.push({
-          employeeId: draft.employee_id,
-          employeeName: draft.employee_name,
-        totalHours: Number(draft.total_hours || 0),
-        totalPay: Number(draft.total_pay || 0),
-        ok: true,
-        qboTxnId,
-        mergedExisting: true,
-        warnings: nameWarning ? [nameWarning] : [],
-        warningCodes: nameWarning ? ['print_name_sync_failed'] : []
-      });
-        continue; // move to next employee
-      } catch (err) {
-        let friendly = err.response ? `HTTP ${err.response.status}` : err.message;
-        if (err.response && err.response.data) {
-          const fault = err.response.data.Fault;
-          const firstError =
-            fault && Array.isArray(fault.Error) && fault.Error[0]
-              ? fault.Error[0]
-              : null;
-          if (firstError) {
-            if (firstError.Message) friendly = firstError.Message;
-            if (firstError.Detail) friendly += ' – ' + firstError.Detail;
-          }
-        }
-
-        draft._ok = false;
-        draft.qbo_txn_id = null;
-
-        results.push({
-          employeeId: draft.employee_id,
-          employeeName: draft.employee_name,
-          totalHours: Number(draft.total_hours || 0),
-          totalPay: Number(draft.total_pay || 0),
-          ok: false,
-          error: friendly,
-          warnings: nameWarning ? [nameWarning] : []
-        });
-
-        const status = err.response ? err.response.status : null;
-        const isNetworkLevel = !err.response;
-        const isServerError = status && status >= 500;
-        const isAuthOrRateLimit =
-          status === 401 || status === 403 || status === 429;
-
-        if (isNetworkLevel || isServerError || isAuthOrRateLimit) {
-          fatalQboError = friendly;
-        }
-        continue; // if merge failed for this employee, skip creating duplicate
-      }
-    }
 
     const payload = {
       PaymentType: 'Check',
       AccountRef: { value: bankAccountId },
       EntityRef: payeeRef,
       TxnDate: end,
-      PrivateNote: memoText,
+      PrivateNote: appendPayrollPrivateNote(baseMemoText, runContext),
       PrintStatus: 'NeedToPrint',
       Line: lineItems
     };
@@ -1587,6 +1723,7 @@ module.exports = {
   syncVendors,
   syncProjects,
   createChecksForPeriod,
+  computePayrollDraftsSnapshot,
   syncEmployeesFromQuickBooks,
   listPayrollAccounts,
   listClasses,

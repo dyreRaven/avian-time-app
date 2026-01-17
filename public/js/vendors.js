@@ -94,7 +94,6 @@ tr.innerHTML = `
   </td>
   <td>${name}</td>
 `;
-o90
 
 
     // still clickable → opens vendor PIN/settings modal

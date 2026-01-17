@@ -1847,6 +1847,9 @@ function docIsFreightPayment(doc = {}) {
     text.includes('forwarder') ||
     text.includes('shipper') ||
     text.includes('shipping') ||
+    text.includes('logistics') ||
+    text.includes('transport') ||
+    text.includes('cargo') ||
     text.includes('ff');
   return paymenty && freighty;
 }
@@ -2292,14 +2295,20 @@ const forwarderSelect = document.getElementById('shipment-forwarder');
       placeholder.textContent = 'Select forwarder…';
       forwarderSelect.appendChild(placeholder);
 
-      vendors
-        .filter(v => v.is_freight_forwarder)
-        .forEach(v => {
-          const opt = document.createElement('option');
-          opt.value = v.name; // store name as text
-          opt.textContent = v.name;
-          forwarderSelect.appendChild(opt);
-        });
+      const forwarderCandidates = vendors.filter(v => {
+        if (v.is_freight_forwarder === 1 || v.is_freight_forwarder === true) {
+          return true;
+        }
+        const name = (v.name || '').toLowerCase();
+        return name && docIsFreightPayment({ subject: name, body: name });
+      });
+
+      forwarderCandidates.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.name; // store name as text
+        opt.textContent = v.name;
+        forwarderSelect.appendChild(opt);
+      });
     }
   } catch (err) {
     console.error('Error loading shipment filters:', err);

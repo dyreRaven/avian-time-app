@@ -1,7 +1,7 @@
 // bootstrap-admin.js
 // One-time script to create the first admin user
 
-const bcrypt = require('bcryptjs');       // same lib used in server.js
+const bcrypt = require('bcrypt');        // same lib used in server.js
 const db = require('./db');              // same SQLite db as the app
 
 // TODO: change these to whatever you want

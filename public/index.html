@@ -238,11 +238,14 @@
         <div>
           <h2>Employees &amp; Rates</h2>
           <p class="card-sub">
-            These employees are imported from QuickBooks when you click “Sync Employees”.
+            Add employees here for timekeeping; link them to QuickBooks later so payroll can sync cleanly.
           </p>
         </div>
 
         <div class="employee-header-actions">
+          <button id="employee-show-create" class="btn secondary btn-sm">
+            + New employee
+          </button>
           <input
             id="employees-search"
             type="text"
@@ -261,6 +264,34 @@
         </div>
       </div>
 
+      <div id="pending-employees-card" class="card card-warn hidden" style="margin-bottom:12px;">
+        <div class="card-header">
+          <div>
+            <h3>Needs QuickBooks link <span id="pending-employees-count"></span></h3>
+            <p class="card-sub">
+              These employees can clock in now. Link them to a QuickBooks Employee/Vendor before sending payroll.
+            </p>
+          </div>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Rate</th>
+                <th>Nickname</th>
+                <th>Name on checks</th>
+                <th>QuickBooks IDs</th>
+              </tr>
+            </thead>
+            <tbody id="pending-employees-body">
+              <tr><td colspan="5">(loading)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p id="pending-employees-message" class="message"></p>
+      </div>
+
       <div class="table-wrapper">
         <table class="clickable-rows">
           <thead>
@@ -270,11 +301,12 @@
               <th>Nickname</th>
               <th>Name on checks</th>
               <th>Rate</th>
+              <th>QuickBooks</th>
             </tr>
           </thead>
           <tbody id="employees-table-body">
             <tr>
-              <td colspan="5">(no employees yet)</td>
+              <td colspan="6">(no employees yet)</td>
             </tr>
           </tbody>
         </table>
@@ -697,11 +729,12 @@
                         <th>Modify/approve/reject time</th>
                         <th>View time reports</th>
                         <th>View payroll info</th>
+                        <th>Modify payroll</th>
                         <th>Modify pay rates</th>
                       </tr>
                     </thead>
                     <tbody id="settings-access-body">
-                      <tr><td colspan="6">(loading admins…)</td></tr>
+                      <tr><td colspan="7">(loading admins…)</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -1139,6 +1172,21 @@
                     <input id="payroll-include-paid" type="checkbox" />
                     Show paid entries in summary
                   </label>
+                  <label class="checkbox-inline" style="margin-top: 8px;">
+                    <input id="payroll-include-overtime" type="checkbox" checked />
+                    Include overtime in pay
+                  </label>
+                  <label class="checkbox-inline" style="margin-top: 8px;">
+                    <input id="payroll-adjustment-toggle" type="checkbox" />
+                    Adjustment run
+                  </label>
+                  <input
+                    id="payroll-adjustment-reason"
+                    class="hidden"
+                    type="text"
+                    placeholder="Adjustment reason (required)"
+                    style="margin-top: 8px;"
+                  >
                 </div>
 
                 <div class="form-field form-field-button payroll-create-action">
@@ -1187,19 +1235,22 @@
 
     <h3>Payroll Runs</h3>
     <div class="table-wrapper">
-      <table>
+      <table class="clickable-rows">
         <thead>
           <tr>
             <th>Pay Period</th>
+            <th>Status</th>
+            <th>Type</th>
             <th>Created</th>
             <th>Total Hours</th>
             <th>Total Pay</th>
             <th>Checks (Paid / Total)</th>
+            <th>Error</th>
           </tr>
         </thead>
         <tbody id="reports-runs-body">
           <tr>
-            <td colspan="5">(no payroll runs yet)</td>
+            <td colspan="8">(no payroll runs yet)</td>
           </tr>
         </tbody>
       </table>
@@ -1221,12 +1272,13 @@
             <th>Hours</th>
             <th>Total Pay</th>
             <th>Check #</th>
+            <th>Paid Date</th>
             <th>Paid</th>
           </tr>
         </thead>
         <tbody id="reports-details-body">
           <tr>
-            <td colspan="5">(select a payroll run above)</td>
+            <td colspan="6">(select a payroll run above)</td>
           </tr>
         </tbody>
       </table>

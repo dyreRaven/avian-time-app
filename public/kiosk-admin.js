@@ -200,6 +200,38 @@ kaOverrideNativeDialogs();
 
 async function fetchJSON(url, options = {}) {
   const opts = Object.assign({ credentials: 'include' }, options);
+  const method = (opts.method || 'GET').toUpperCase();
+
+  // Auto-attach kiosk device auth for kiosk endpoints when no session is present.
+  const needsDeviceAuth =
+    url.startsWith('/api/kiosk') || url.startsWith('/api/kiosks');
+  const deviceId = kaDeviceId || null;
+  const deviceSecret = kaGetDeviceSecret();
+
+  if (needsDeviceAuth && deviceId && deviceSecret) {
+    if (method === 'GET') {
+      const u = new URL(url, window.location.origin);
+      if (!u.searchParams.get('device_id')) u.searchParams.set('device_id', deviceId);
+      if (!u.searchParams.get('device_secret')) u.searchParams.set('device_secret', deviceSecret);
+      url = u.pathname + u.search;
+    } else {
+      const isJson = opts.headers && /application\\/json/i.test(opts.headers['Content-Type'] || opts.headers['content-type'] || '');
+      if (isJson) {
+        let body = {};
+        if (opts.body) {
+          try {
+            body = JSON.parse(opts.body);
+          } catch {
+            body = {};
+          }
+        }
+        if (!body.device_id) body.device_id = deviceId;
+        if (!body.device_secret) body.device_secret = deviceSecret;
+        opts.body = JSON.stringify(body);
+      }
+    }
+  }
+
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -3892,7 +3924,7 @@ async function kaInit() {
   try {
     const [kiosks, projects, employees] = await Promise.all([
       fetchJSON('/api/kiosks'),
-      fetchJSON('/api/projects'),
+      fetchJSON('/api/kiosk/projects'),
       fetchJSON('/api/kiosk/employees'),
     ]);
 

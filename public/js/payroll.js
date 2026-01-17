@@ -21,7 +21,15 @@ let additionalLinesByEmployee = {}; // { empId: [ { id, description, amount, exp
 let payrollExpandedRows = new Set(); // track expanded rows so rerenders don't collapse
 let lastPayrollResults = null;
 let lastPayrollRunId = null;
+let lastPayrollRunStatus = null;
+let lastPayrollPreflightId = null;
+let lastPayrollPayloadHash = null;
+let lastPayrollRunType = 'standard';
+let lastPayrollAdjustmentReason = null;
 let lastTimeEntriesContext = null;
+let payrollReportRuns = [];
+let payrollReportDetailsCache = {};
+let currentPayrollReportRunId = null;
 
 function collectPayrollWarnings(results) {
   if (!Array.isArray(results)) return [];
@@ -39,6 +47,41 @@ function collectPayrollWarnings(results) {
     });
   });
   return list;
+}
+
+function canModifyPayrollReports() {
+  const perms = window.CURRENT_ACCESS_PERMS || {};
+  if (typeof perms.modify_payroll === 'undefined') return true;
+  return perms.modify_payroll === true || perms.modify_payroll === 'true';
+}
+
+function setReportsMessage(text, isError = false) {
+  const msgEl = document.getElementById('reports-message');
+  if (!msgEl) return;
+  msgEl.textContent = text || '';
+  msgEl.style.color = isError ? '#b91c1c' : '';
+}
+
+function formatPayrollRunStatus(status) {
+  if (!status) return '';
+  return String(status).toUpperCase();
+}
+
+function formatPayrollRunType(runType, adjustmentReason) {
+  if (!runType || runType === 'standard') return 'Standard';
+  if (runType === 'adjustment') {
+    return adjustmentReason ? `Adjustment - ${adjustmentReason}` : 'Adjustment';
+  }
+  const trimmed = String(runType).trim();
+  if (!trimmed) return '';
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function formatPayrollRunError(errorText, maxLen = 80) {
+  const raw = (errorText || '').toString().trim();
+  if (!raw) return '';
+  if (raw.length <= maxLen) return raw;
+  return raw.slice(0, maxLen - 3) + '...';
 }
 
 // Utils
@@ -114,6 +157,114 @@ function validatePayrollDates(start, end) {
     return false;
   }
   return true;
+}
+
+async function runPayrollPreflightWithConfirm(payload, options) {
+  const {
+    mode,
+    start,
+    end,
+    runType,
+    adjustmentReason,
+    failedEmployeeIds = []
+  } = options || {};
+
+  let preflightData = null;
+  try {
+    showPayrollLoading();
+    const res = await fetch('/api/payroll/preflight-checks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, previewOnly: true })
+    });
+    preflightData = await res.json();
+    if (!res.ok) {
+      throw new Error(preflightData?.error || preflightData?.reason || `Server responded ${res.status}`);
+    }
+  } catch (err) {
+    console.error('Error preflighting checks:', err);
+    const prefix = mode === 'retry' ? 'Could not prepare retry' : 'Could not prepare checks';
+    alert(prefix + ':\n\n' + (err.message || err));
+    hidePayrollLoading();
+    return null;
+  }
+  hidePayrollLoading();
+
+  if (!preflightData || preflightData.ok === false) {
+    const msg = preflightData?.error || preflightData?.reason || 'Preflight failed.';
+    const prefix = mode === 'retry' ? 'Retry preflight failed' : 'Preflight failed';
+    alert(prefix + ':\n\n' + msg);
+    return null;
+  }
+
+  if (!preflightData.preflight_id || !preflightData.payload_hash) {
+    const prefix = mode === 'retry' ? 'Retry preflight did not return a token.' : 'Preflight did not return a token.';
+    alert(prefix + ' Please retry.');
+    return null;
+  }
+
+  lastPayrollPreflightId = preflightData.preflight_id;
+  lastPayrollPayloadHash = preflightData.payload_hash;
+
+  const previewFailures = Array.isArray(preflightData.results)
+    ? preflightData.results.filter(r => r && r.ok === false)
+    : [];
+
+  if (previewFailures.length) {
+    const failureText = previewFailures
+      .map(f => `• ${f.employeeName || 'Employee'} – ${f.error || 'Unknown error'}`)
+      .join('\n');
+    const prompt = mode === 'retry'
+      ? 'The following retry checks still look like they will fail:\n\n' +
+        failureText +
+        '\n\nSend the rest to QuickBooks and leave these in the queue?'
+      : 'The following checks look like they will fail:\n\n' +
+        failureText +
+        '\n\nSend the rest to QuickBooks and leave these in the queue?';
+    if (!confirm(prompt)) {
+      return null;
+    }
+  } else {
+    let confirmText = '';
+    if (mode === 'retry') {
+      const failedCount = Array.isArray(failedEmployeeIds) ? failedEmployeeIds.length : 0;
+      confirmText = `Retry QuickBooks checks for ${failedCount} failed employees?`;
+    } else if (runType === 'adjustment') {
+      confirmText = `Create an adjustment payroll run for ${start} to ${end}?` +
+        (adjustmentReason ? `\nReason: ${adjustmentReason}` : '');
+    } else {
+      confirmText = `Create QuickBooks checks for the period ${start} to ${end}?`;
+    }
+    if (!confirm(confirmText)) {
+      return null;
+    }
+  }
+
+  return preflightData;
+}
+
+function getPayrollAdjustmentSettings() {
+  const toggle = document.getElementById('payroll-adjustment-toggle');
+  const reasonInput = document.getElementById('payroll-adjustment-reason');
+  const enabled = !!(toggle && toggle.checked);
+  const reason = reasonInput ? reasonInput.value.trim() : '';
+  return { enabled, reason, reasonInput };
+}
+
+function getPayrollOvertimeSetting() {
+  const toggle = document.getElementById('payroll-include-overtime');
+  return toggle ? toggle.checked : true;
+}
+
+function updatePayrollAdjustmentUI() {
+  const { enabled, reasonInput } = getPayrollAdjustmentSettings();
+  if (!reasonInput) return;
+  if (enabled) {
+    reasonInput.classList.remove('hidden');
+  } else {
+    reasonInput.classList.add('hidden');
+    reasonInput.value = '';
+  }
 }
 
 async function loadPayrollSettings() {
@@ -607,6 +758,7 @@ function renderPayrollSummaryTable() {
         total_hours: 0,
         total_pay: 0,
         any_paid: false,
+        payroll_run_id: row.payroll_run_id || null,
         projects: []
       });
     }
@@ -614,6 +766,7 @@ function renderPayrollSummaryTable() {
     agg.total_hours += Number(row.project_hours || 0);
     agg.total_pay += Number(row.project_pay || 0);
     agg.any_paid = agg.any_paid || !!row.any_paid;
+    if (row.payroll_run_id) agg.payroll_run_id = row.payroll_run_id;
     agg.projects.push({
       project_id: row.project_id,
       project_name: row.project_name,
@@ -634,7 +787,7 @@ function renderPayrollSummaryTable() {
     const customTotal = customLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
     const displayTotalPay = agg.total_pay + customTotal;
     const unpayButtonHtml = agg.any_paid
-      ? `<button type="button" class="btn tertiary btn-compact btn-unpay" data-employee-id="${agg.employee_id}">Mark unpaid</button>`
+      ? `<button type="button" class="btn tertiary btn-compact btn-unpay" data-employee-id="${agg.employee_id}" data-payroll-run-id="${agg.payroll_run_id || ''}">Mark unpaid</button>`
       : '';
     const tr = document.createElement('tr');
     tr.classList.add('payroll-row');
@@ -877,7 +1030,8 @@ async function loadPayrollSummary() {
   payrollOverrides = {};
   const includePaidCheckbox = document.getElementById('payroll-include-paid');
   const includePaid = includePaidCheckbox?.checked ? '1' : '0';
-  const params = new URLSearchParams({ start, end, includePaid });
+  const includeOvertime = getPayrollOvertimeSetting() ? '1' : '0';
+  const params = new URLSearchParams({ start, end, includePaid, includeOvertime });
   const url = `/api/payroll-summary?${params.toString()}`;
   try {
     const res = await fetch(url);
@@ -935,6 +1089,11 @@ function setupCustomLineButtons() {
 async function createChecksForCurrentRange() {
   const { start, end } = currentPayrollRange || {};
   if (!validatePayrollDates(start, end)) return;
+  const adjustmentSettings = getPayrollAdjustmentSettings();
+  if (adjustmentSettings.enabled && !adjustmentSettings.reason) {
+    alert('Adjustment reason is required for an adjustment payroll run.');
+    return;
+  }
   // refresh in-memory settings from inputs
   const bankSelect = document.getElementById('payroll-bank-account');
   const expenseSelect = document.getElementById('payroll-expense-account');
@@ -989,24 +1148,7 @@ async function createChecksForCurrentRange() {
     .filter(n => Number.isFinite(n));
   // Basic pre-flight validation
   const errors = [];
-  const missingVendors = [];
   const classNames = new Set((payrollClasses || []).map(c => c.fullName || c.name).filter(Boolean));
-  const employeeById = new Map();
-currentPayrollRows.forEach(r => {
-  employeeById.set(Number(r.employee_id), {
-    name: r.employee_name,
-    vendor_qbo_id: r.employee_vendor_qbo_id || null,
-    employee_qbo_id: r.employee_employee_qbo_id || null
-  });
-});
-  employeeById.forEach((info, id) => {
-    if (!info.vendor_qbo_id && !info.employee_qbo_id) {
-      missingVendors.push(`${info.name || 'Employee ' + id}`);
-    }
-  });
-  if (missingVendors.length) {
-    errors.push('Missing QuickBooks payee for:\n' + missingVendors.join('\n'));
-  }
   if (!currentPayrollSettings.bank_account_name) {
     errors.push('Bank account is not selected in payroll settings.');
   }
@@ -1072,8 +1214,9 @@ currentPayrollRows.forEach(r => {
   }
 
   // All good → show loading
-  showPayrollLoading();
-
+  const runType = adjustmentSettings.enabled ? 'adjustment' : 'standard';
+  const adjustmentReason = adjustmentSettings.enabled ? adjustmentSettings.reason : null;
+  const includeOvertime = getPayrollOvertimeSetting();
   const payload = {
     start,
     end,
@@ -1081,75 +1224,164 @@ currentPayrollRows.forEach(r => {
     expenseAccountName: currentPayrollSettings.expense_account_name || null,
     memo: currentPayrollSettings.default_memo || null,
     lineDescriptionTemplate: currentPayrollSettings.line_description_template || null,
+    includeOvertime,
     overrides: overridesArray,
     customLines,
     lineOverrides,
     excludeEmployeeIds: unchecked,
     isRetry: false,
     originalPayrollRunId: null,
-    onlyEmployeeIds: []
+    onlyEmployeeIds: [],
+    run_type: runType,
+    adjustment_reason: adjustmentReason
   };
   const createBtn = document.getElementById('payroll-create-checks');
   const retryBtn = document.getElementById('payroll-retry-failed');
   if (createBtn) createBtn.disabled = true;
   if (retryBtn) retryBtn.disabled = true;
-  try {
-    if (!confirm(`Create QuickBooks checks for the period ${start} to ${end}?`)) return;
-    const res = await fetch('/api/payroll/create-checks', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+
+  const preflightData = await runPayrollPreflightWithConfirm(payload, {
+    mode: 'create',
+    start,
+    end,
+    runType,
+    adjustmentReason
+  });
+  if (!preflightData) {
+    if (createBtn) createBtn.disabled = false;
+    if (retryBtn) retryBtn.disabled = false;
+    return;
+  }
+
+  const basePayload = { ...payload };
+  let createPayload = {
+    ...payload,
+    preflight_id: preflightData.preflight_id,
+    payload_hash: preflightData.payload_hash
+  };
+  let conflictAttempts = 0;
+
+  while (true) {
+    let res = null;
+    let data = null;
+    try {
+      showPayrollLoading();
+      res = await fetch('/api/payroll/create-checks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createPayload)
+      });
+      data = await res.json();
+    } catch (err) {
+      console.error('Error calling /api/payroll/create-checks:', err);
+      alert('There was a problem contacting the server while creating checks.\n\n' + (err.message || err));
+      if (retryBtn) retryBtn.disabled = false;
+      if (createBtn) createBtn.disabled = false;
+      return;
+    } finally {
+      hidePayrollLoading();
+    }
+
+    if (res && res.status === 409 && data && data.snapshot_hash && conflictAttempts < 1) {
+      const retryPreflight = confirm(
+        'Time entries changed since preflight. Re-run preflight and try again?'
+      );
+      if (!retryPreflight) {
+        if (createBtn) createBtn.disabled = false;
+        if (retryBtn) retryBtn.disabled = false;
+        return;
+      }
+
+      const refreshed = await runPayrollPreflightWithConfirm(basePayload, {
+        mode: 'create',
+        start,
+        end,
+        runType,
+        adjustmentReason
+      });
+      if (!refreshed) {
+        if (createBtn) createBtn.disabled = false;
+        if (retryBtn) retryBtn.disabled = false;
+        return;
+      }
+      createPayload = {
+        ...basePayload,
+        preflight_id: refreshed.preflight_id,
+        payload_hash: refreshed.payload_hash
+      };
+      conflictAttempts += 1;
+      continue;
+    }
+
     lastPayrollResults = data.results || null;
     lastPayrollRunId = data.payrollRunId || null;
+    lastPayrollRunStatus = data.status || null;
+    lastPayrollRunType = runType;
+    lastPayrollAdjustmentReason = adjustmentReason;
     if (!data.ok) {
       let msg = data.error || data.reason || 'Unknown error creating checks.';
+      if (data.fatal_qbo_error) {
+        msg += `\n\nFatal QuickBooks error:\n${data.fatal_qbo_error}`;
+      }
       if (Array.isArray(data.results) && data.results.length) {
         const failed = data.results.filter(r => r && r.ok === false);
         if (failed.length) msg += '\n\nFailed:\n' + failed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
       }
       alert('Could not create checks:\n\n' + msg);
       if (retryBtn) retryBtn.disabled = !(data.results || []).some(r => r && r.ok === false);
-      return;
+      break;
     }
     const results = Array.isArray(data.results) ? data.results : [];
     const failed = results.filter(r => r && r.ok === false);
     const okList = results.filter(r => r && r.ok !== false);
     const warnings = collectPayrollWarnings(results);
+    const statusLabel = data.status ? String(data.status).toUpperCase() : null;
     let msg = `Checks created successfully.\nPayroll run ID: ${data.payrollRunId || '(none)'}`;
+    if (statusLabel) msg += `\nStatus: ${statusLabel}`;
     if (results.length) msg += `\n\nSummary: ${okList.length} succeeded, ${failed.length} failed.`;
     if (failed.length) msg += '\n\nFailed:\n' + failed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
     if (warnings.length) {
       msg += '\n\nDiscrepancies:\n' + warnings.map(w => `• ${w.employee} – ${w.message}`).join('\n');
     }
+    if (data.fatal_qbo_error) {
+      msg += `\n\nFatal QuickBooks error (run stopped early):\n${data.fatal_qbo_error}`;
+    }
     alert(msg);
     if (retryBtn) retryBtn.disabled = !failed.length;
     if (typeof loadPayrollSummary === 'function') loadPayrollSummary();
-  } catch (err) {
-    console.error('Error calling /api/payroll/create-checks:', err);
-    alert('There was a problem contacting the server while creating checks.\n\n' + (err.message || err));
-  } finally {
-    hidePayrollLoading();
-    if (createBtn) createBtn.disabled = false;
+    break;
   }
+
+  if (createBtn) createBtn.disabled = false;
 }
 
 async function retryFailedChecksForCurrentRun() {
   const { start, end } = currentPayrollRange || {};
   if (!validatePayrollDates(start, end)) return;
-  showPayrollLoading();
   if (!Array.isArray(lastPayrollResults) || !lastPayrollResults.length) {
     alert('There is no previous payroll run to retry.');
-    hidePayrollLoading();
     return;
   }
   if (!lastPayrollRunId) {
     alert('Cannot retry: no original payroll run ID is available.');
-    hidePayrollLoading();
     return;
   }
   const failed = lastPayrollResults.filter(r => r && r.ok === false && r.employeeId);
   if (!failed.length) {
     alert('There are no failed employees to retry.');
+    return;
+  }
+  const adjustmentSettings = getPayrollAdjustmentSettings();
+  const runType =
+    lastPayrollRunType ||
+    (adjustmentSettings.enabled ? 'adjustment' : 'standard');
+  const adjustmentReason =
+    runType === 'adjustment'
+      ? (lastPayrollAdjustmentReason || adjustmentSettings.reason)
+      : null;
+  const includeOvertime = getPayrollOvertimeSetting();
+  if (runType === 'adjustment' && !adjustmentReason) {
+    alert('Adjustment reason is required for an adjustment payroll retry.');
     return;
   }
   const failedEmployeeIds = [...new Set(failed.map(f => Number(f.employeeId)).filter(Number.isFinite))];
@@ -1168,53 +1400,134 @@ async function retryFailedChecksForCurrentRun() {
     expenseAccountName: currentPayrollSettings.expense_account_name || null,
     memo: currentPayrollSettings.default_memo || null,
     lineDescriptionTemplate: currentPayrollSettings.line_description_template || null,
+    includeOvertime,
     overrides: overridesArray,
     isRetry: true,
     originalPayrollRunId: lastPayrollRunId,
-    onlyEmployeeIds: failedEmployeeIds
+    onlyEmployeeIds: failedEmployeeIds,
+    run_type: runType,
+    adjustment_reason: adjustmentReason
   };
-  if (!confirm(`Retry QuickBooks checks for ${failedEmployeeIds.length} failed employees?`)) return;
   const createBtn = document.getElementById('payroll-create-checks');
   const retryBtn = document.getElementById('payroll-retry-failed');
   if (createBtn) createBtn.disabled = true;
   if (retryBtn) retryBtn.disabled = true;
-  try {
-    const res = await fetch('/api/payroll/create-checks', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+
+  const preflightData = await runPayrollPreflightWithConfirm(payload, {
+    mode: 'retry',
+    start,
+    end,
+    runType,
+    adjustmentReason,
+    failedEmployeeIds
+  });
+  if (!preflightData) {
+    if (createBtn) createBtn.disabled = false;
+    if (retryBtn) retryBtn.disabled = false;
+    return;
+  }
+
+  const basePayload = { ...payload };
+  let createPayload = {
+    ...payload,
+    preflight_id: preflightData.preflight_id,
+    payload_hash: preflightData.payload_hash
+  };
+  let conflictAttempts = 0;
+
+  while (true) {
+    let res = null;
+    let data = null;
+    try {
+      showPayrollLoading();
+      res = await fetch('/api/payroll/create-checks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createPayload)
+      });
+      data = await res.json();
+    } catch (err) {
+      console.error('Error calling /api/payroll/create-checks (retry):', err);
+      alert('There was a problem contacting the server while retrying failed checks.\n\n' + (err.message || err));
+      if (retryBtn) retryBtn.disabled = false;
+      if (createBtn) createBtn.disabled = false;
+      return;
+    } finally {
+      hidePayrollLoading();
+    }
+
+    if (res && res.status === 409 && data && data.snapshot_hash && conflictAttempts < 1) {
+      const retryPreflight = confirm(
+        'Time entries changed since preflight. Re-run preflight and try again?'
+      );
+      if (!retryPreflight) {
+        if (createBtn) createBtn.disabled = false;
+        if (retryBtn) retryBtn.disabled = false;
+        return;
+      }
+
+      const refreshed = await runPayrollPreflightWithConfirm(basePayload, {
+        mode: 'retry',
+        start,
+        end,
+        runType,
+        adjustmentReason,
+        failedEmployeeIds
+      });
+      if (!refreshed) {
+        if (createBtn) createBtn.disabled = false;
+        if (retryBtn) retryBtn.disabled = false;
+        return;
+      }
+      createPayload = {
+        ...basePayload,
+        preflight_id: refreshed.preflight_id,
+        payload_hash: refreshed.payload_hash
+      };
+      conflictAttempts += 1;
+      continue;
+    }
+
     lastPayrollResults = data.results || null;
     lastPayrollRunId = data.payrollRunId || lastPayrollRunId;
+    lastPayrollRunStatus = data.status || null;
+    lastPayrollRunType = runType;
+    lastPayrollAdjustmentReason = adjustmentReason;
     if (!data.ok) {
       let msg = data.error || data.reason || 'Unknown error.';
+      if (data.fatal_qbo_error) {
+        msg += `\n\nFatal QuickBooks error:\n${data.fatal_qbo_error}`;
+      }
       if (Array.isArray(data.results) && data.results.length) {
         const stillFailed = data.results.filter(r => r && r.ok === false);
         if (stillFailed.length) msg += '\n\nStill failing:\n' + stillFailed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
       }
       alert('Could not retry checks:\n\n' + msg);
       if (retryBtn) retryBtn.disabled = !(data.results || []).some(r => r && r.ok === false);
-      return;
+      break;
     }
     const results = Array.isArray(data.results) ? data.results : [];
     const failedAgain = results.filter(r => r && r.ok === false);
     const succeeded = results.filter(r => r && r.ok !== false);
     const warnings = collectPayrollWarnings(results);
+    const statusLabel = data.status ? String(data.status).toUpperCase() : null;
     let msg = `Retry complete.\nPayroll run ID: ${data.payrollRunId || lastPayrollRunId || '(none)'}`;
+    if (statusLabel) msg += `\nStatus: ${statusLabel}`;
     if (results.length) msg += `\n\nSummary: ${succeeded.length} succeeded, ${failedAgain.length} failed.`;
     if (failedAgain.length) msg += '\n\nStill failing:\n' + failedAgain.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
     if (warnings.length) {
       msg += '\n\nDiscrepancies:\n' + warnings.map(w => `• ${w.employee} – ${w.message}`).join('\n');
     }
+    if (data.fatal_qbo_error) {
+      msg += `\n\nFatal QuickBooks error (run stopped early):\n${data.fatal_qbo_error}`;
+    }
     alert(msg);
     if (retryBtn) retryBtn.disabled = !failedAgain.length;
     if (typeof loadPayrollSummary === 'function') loadPayrollSummary();
-  } catch (err) {
-    console.error('Error calling /api/payroll/create-checks (retry):', err);
-    alert('There was a problem contacting the server while retrying failed checks.\n\n' + (err.message || err));
-  } finally {
-    hidePayrollLoading();
-    if (createBtn) createBtn.disabled = false;
+    break;
   }
+
+  if (createBtn) createBtn.disabled = false;
 }
 
 function setupPayrollActions() {
@@ -1229,9 +1542,9 @@ function setupPayrollActions() {
       if (!btn) return;
       e.stopPropagation();
       const empId = Number(btn.dataset.employeeId);
-      const { start, end } = currentPayrollRange || {};
-      if (!empId || !start || !end) {
-        alert('Select a date range and employee before marking unpaid.');
+      const payrollRunId = Number(btn.dataset.payrollRunId) || lastPayrollRunId || null;
+      if (!empId || !payrollRunId) {
+        alert('Select a payroll run before marking unpaid.');
         return;
       }
       const reason = prompt('Reason for marking unpaid (optional):', 'manual unpay');
@@ -1240,7 +1553,7 @@ function setupPayrollActions() {
         const res = await fetch('/api/payroll/unpay', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ employeeId: empId, start, end, reason })
+          body: JSON.stringify({ payrollRunId, employeeId: empId, reason })
         });
         const data = await res.json();
         if (!res.ok || data.ok === false) {
@@ -1268,6 +1581,11 @@ function initPayrollUiTab() {
   if (settingsSaveBtn) settingsSaveBtn.addEventListener('click', savePayrollSettings);
   const refreshBtn = document.getElementById('payroll-refresh');
   if (refreshBtn) refreshBtn.addEventListener('click', loadPayrollSummary);
+  const adjustmentToggle = document.getElementById('payroll-adjustment-toggle');
+  if (adjustmentToggle) {
+    adjustmentToggle.addEventListener('change', updatePayrollAdjustmentUI);
+    updatePayrollAdjustmentUI();
+  }
   setDefaultBillingCycleDates();
   loadPayrollSettings();
   setupPayrollActions();
@@ -1295,4 +1613,317 @@ function showPayrollLoading() {
 function hidePayrollLoading() {
   const overlay = document.getElementById('payroll-loading');
   if (overlay) overlay.classList.add('hidden');
+}
+
+function updatePayrollRunDetailsCache(runId, checkId, updates = {}) {
+  const list = payrollRunDetailsCache[runId];
+  if (!Array.isArray(list)) return;
+  const target = list.find(row => Number(row.id) === Number(checkId));
+  if (!target) return;
+  if (Object.prototype.hasOwnProperty.call(updates, 'check_number')) {
+    target.check_number = updates.check_number;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, 'paid')) {
+    target.paid = updates.paid ? 1 : 0;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, 'paid_date')) {
+    target.paid_date = updates.paid_date;
+  }
+}
+
+async function patchPayrollCheck(checkId, updates) {
+  const res = await fetch(`/api/reports/checks/${checkId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || data.message || 'Failed to update check.');
+  }
+  return data;
+}
+
+function buildPayrollRunSummary(run) {
+  if (!run) return '';
+  const period = `${formatDateUS(run.start_date)} - ${formatDateUS(run.end_date)}`;
+  const status = formatPayrollRunStatus(run.status);
+  const type = formatPayrollRunType(run.run_type, run.adjustment_reason);
+  let text = `Selected run: ${period}.`;
+  if (status) text += ` Status: ${status}.`;
+  if (type) text += ` Type: ${type}.`;
+  if (run.last_error) text += ` Last error: ${run.last_error}`;
+  return text;
+}
+
+async function loadPayrollRuns() {
+  const tbody = document.getElementById('reports-runs-body');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="8">(loading payroll runs...)</td></tr>';
+  try {
+    const runs = await fetchJSON('/api/reports/payroll-runs');
+    payrollReportRuns = Array.isArray(runs) ? runs : [];
+    if (!payrollReportRuns.length) {
+      tbody.innerHTML = '<tr><td colspan="8">(no payroll runs yet)</td></tr>';
+      return;
+    }
+    tbody.innerHTML = '';
+    payrollReportRuns.forEach(run => {
+      const payPeriod = `${formatDateUS(run.start_date)} - ${formatDateUS(run.end_date)}`;
+      const status = formatPayrollRunStatus(run.status) || '-';
+      const typeLabel = formatPayrollRunType(run.run_type, run.adjustment_reason) || '-';
+      const created = formatDateTimeLocal(run.created_at) || '';
+      const hours = Number(run.total_hours || 0).toFixed(2);
+      const totalPay = formatMoney(Number(run.total_pay || 0));
+      const paidChecks = Number(run.paid_checks || 0);
+      const totalChecks = Number(run.check_count || 0);
+      const errorFull = run.last_error || '';
+      const errorShort = formatPayrollRunError(errorFull);
+
+      const tr = document.createElement('tr');
+      tr.dataset.runId = run.id;
+      if (currentPayrollReportRunId && Number(currentPayrollReportRunId) === Number(run.id)) {
+        tr.classList.add('is-selected');
+      }
+      tr.innerHTML = `
+        <td>${escapeHTML(payPeriod)}</td>
+        <td>${escapeHTML(status)}</td>
+        <td>${escapeHTML(typeLabel)}</td>
+        <td>${escapeHTML(created)}</td>
+        <td>${escapeHTML(hours)}</td>
+        <td>${escapeHTML(totalPay)}</td>
+        <td>${escapeHTML(`${paidChecks} / ${totalChecks}`)}</td>
+        <td title="${escapeHTML(errorFull)}">${escapeHTML(errorShort)}</td>
+      `;
+      tr.addEventListener('click', () => {
+        document.querySelectorAll('#reports-runs-body tr').forEach(row => {
+          row.classList.remove('is-selected');
+        });
+        tr.classList.add('is-selected');
+        currentPayrollReportRunId = run.id;
+        loadPayrollRunDetails(run.id, run);
+      });
+      tbody.appendChild(tr);
+    });
+  } catch (err) {
+    console.error('Error loading payroll runs:', err);
+    tbody.innerHTML = '<tr><td colspan="8">(error loading payroll runs)</td></tr>';
+    setReportsMessage('Failed to load payroll runs.', true);
+  }
+}
+
+async function loadPayrollRunDetails(runId, runMeta = null) {
+  const tbody = document.getElementById('reports-details-body');
+  const downloadBtn = document.getElementById('reports-download');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="6">(loading run details...)</td></tr>';
+  if (downloadBtn) {
+    downloadBtn.disabled = true;
+    downloadBtn.dataset.runId = runId;
+  }
+
+  const runInfo =
+    runMeta ||
+    (Array.isArray(payrollReportRuns)
+      ? payrollReportRuns.find(r => Number(r.id) === Number(runId))
+      : null);
+  if (runInfo) {
+    setReportsMessage(buildPayrollRunSummary(runInfo), !!runInfo.last_error);
+  }
+
+  try {
+    const rows = await fetchJSON(`/api/reports/payroll-runs/${runId}`);
+    const list = Array.isArray(rows) ? rows : [];
+    payrollRunDetailsCache[runId] = list;
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="6">(no checks found for this run)</td></tr>';
+      return;
+    }
+    const canEdit = canModifyPayrollReports();
+    tbody.innerHTML = '';
+    list.forEach(row => {
+      const tr = document.createElement('tr');
+      const paidValue = row.paid === 1 || row.paid === true;
+      const paidDateLabel = row.paid_date ? formatDateUS(row.paid_date) : '';
+      if (canEdit) {
+        tr.innerHTML = `
+          <td>${escapeHTML(row.employee_name || '')}</td>
+          <td>${escapeHTML(Number(row.total_hours || 0).toFixed(2))}</td>
+          <td>${escapeHTML(formatMoney(Number(row.total_pay || 0)))}</td>
+          <td>
+            <input type="text" class="reports-check-input" value="${escapeHTML(row.check_number || '')}" />
+          </td>
+          <td>${escapeHTML(paidDateLabel)}</td>
+          <td>
+            <input type="checkbox" class="reports-paid-toggle" ${paidValue ? 'checked' : ''} />
+          </td>
+        `;
+
+        const checkInput = tr.querySelector('.reports-check-input');
+        const paidToggle = tr.querySelector('.reports-paid-toggle');
+        if (checkInput) {
+          checkInput.dataset.original = row.check_number || '';
+          checkInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') checkInput.blur();
+          });
+          checkInput.addEventListener('change', async () => {
+            const nextValue = checkInput.value.trim();
+            const original = checkInput.dataset.original || '';
+            if (nextValue === original) return;
+            checkInput.disabled = true;
+            try {
+              await patchPayrollCheck(row.id, { check_number: nextValue || null });
+              checkInput.dataset.original = nextValue;
+              row.check_number = nextValue || null;
+              updatePayrollRunDetailsCache(runId, row.id, { check_number: nextValue || null });
+              setReportsMessage('Check number updated.');
+            } catch (err) {
+              console.error('Failed updating check number:', err);
+              checkInput.value = original;
+              setReportsMessage('Failed to update check number: ' + (err.message || err), true);
+            } finally {
+              checkInput.disabled = false;
+            }
+          });
+        }
+
+        if (paidToggle) {
+          paidToggle.dataset.original = paidValue ? '1' : '0';
+          paidToggle.addEventListener('change', async () => {
+            const original = paidToggle.dataset.original === '1';
+            if (paidToggle.checked === original) return;
+            paidToggle.disabled = true;
+            try {
+              const result = await patchPayrollCheck(row.id, { paid: paidToggle.checked });
+              paidToggle.dataset.original = paidToggle.checked ? '1' : '0';
+              row.paid = paidToggle.checked ? 1 : 0;
+              const nextPaidDate =
+                Object.prototype.hasOwnProperty.call(result, 'paid_date') ? result.paid_date : null;
+              row.paid_date = nextPaidDate;
+              const dateCell = tr.querySelector('td:nth-child(5)');
+              if (dateCell) {
+                dateCell.textContent = nextPaidDate ? formatDateUS(nextPaidDate) : '';
+              }
+              updatePayrollRunDetailsCache(runId, row.id, {
+                paid: paidToggle.checked,
+                paid_date: nextPaidDate
+              });
+              setReportsMessage('Check updated.');
+            } catch (err) {
+              console.error('Failed updating paid status:', err);
+              paidToggle.checked = original;
+              setReportsMessage('Failed to update paid status: ' + (err.message || err), true);
+            } finally {
+              paidToggle.disabled = false;
+            }
+          });
+        }
+      } else {
+        tr.innerHTML = `
+          <td>${escapeHTML(row.employee_name || '')}</td>
+          <td>${escapeHTML(Number(row.total_hours || 0).toFixed(2))}</td>
+          <td>${escapeHTML(formatMoney(Number(row.total_pay || 0)))}</td>
+          <td>${escapeHTML(row.check_number || '')}</td>
+          <td>${escapeHTML(paidDateLabel)}</td>
+          <td>${paidValue ? 'Yes' : 'No'}</td>
+        `;
+      }
+      tbody.appendChild(tr);
+    });
+
+    if (downloadBtn) {
+      downloadBtn.disabled = false;
+    }
+  } catch (err) {
+    console.error('Error loading payroll run details:', err);
+    tbody.innerHTML = '<tr><td colspan="6">(error loading run details)</td></tr>';
+    setReportsMessage('Failed to load payroll run details.', true);
+  }
+}
+
+async function loadPayrollAuditLog() {
+  const tbody = document.getElementById('reports-audit-body');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="4">(loading audit log...)</td></tr>';
+  try {
+    const rows = await fetchJSON('/api/reports/payroll-audit?limit=50');
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="4">(no audit events yet)</td></tr>';
+      return;
+    }
+    tbody.innerHTML = '';
+    list.forEach(row => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${escapeHTML(formatDateTimeLocal(row.created_at) || '')}</td>
+        <td>${escapeHTML(row.event_type || '')}</td>
+        <td>${escapeHTML(row.message || '')}</td>
+        <td>${escapeHTML(row.payroll_run_id || '')}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (err) {
+    console.error('Error loading payroll audit log:', err);
+    tbody.innerHTML = '<tr><td colspan="4">(error loading audit log)</td></tr>';
+  }
+}
+
+function csvEscape(value) {
+  const str = value == null ? '' : String(value);
+  if (/[",\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function buildPayrollRunCsv(rows) {
+  const header = ['Employee', 'Hours', 'Total Pay', 'Check #', 'Paid Date', 'Paid'];
+  const lines = [header.map(csvEscape).join(',')];
+  (rows || []).forEach(row => {
+    const line = [
+      row.employee_name || '',
+      Number(row.total_hours || 0).toFixed(2),
+      Number(row.total_pay || 0).toFixed(2),
+      row.check_number || '',
+      row.paid_date || '',
+      row.paid ? 'Yes' : 'No'
+    ];
+    lines.push(line.map(csvEscape).join(','));
+  });
+  return lines.join('\n');
+}
+
+function setupReportsDownload() {
+  const btn = document.getElementById('reports-download');
+  if (!btn || btn.dataset.bound) return;
+  btn.dataset.bound = '1';
+  btn.addEventListener('click', async () => {
+    const runId = Number(btn.dataset.runId || currentPayrollReportRunId);
+    if (!runId) {
+      alert('Select a payroll run to download.');
+      return;
+    }
+    let rows = payrollRunDetailsCache[runId];
+    if (!Array.isArray(rows)) {
+      try {
+        rows = await fetchJSON(`/api/reports/payroll-runs/${runId}`);
+        payrollRunDetailsCache[runId] = rows;
+      } catch (err) {
+        console.error('Error loading payroll run details for CSV:', err);
+        alert('Failed to load payroll run details for download.');
+        return;
+      }
+    }
+    const csv = buildPayrollRunCsv(rows);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `payroll_run_${runId}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  });
 }

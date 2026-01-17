@@ -6,6 +6,7 @@ let currentEmployeeIsActive = true;
 let employeeListStatus = 'active'; // 'active' or 'inactive'
 let employeesTableData = [];
 let editingEmployeeOriginalRate = null;
+let pendingEmployees = [];
 
 // Track current admin access that may be injected by app.js after settings load
 window.CURRENT_ACCESS_PERMS = window.CURRENT_ACCESS_PERMS || {};
@@ -55,7 +56,7 @@ function hideCreateCard() {
 
   if (employeeShowCreateBtn) {
     employeeShowCreateBtn.classList.remove('hidden');
-    employeeShowCreateBtn.textContent = 'Add employee manually';
+    employeeShowCreateBtn.textContent = 'New employee';
   }
   if (employeeHideCreateBtn) {
     employeeHideCreateBtn.classList.add('hidden');
@@ -100,8 +101,8 @@ async function loadEmployeesTable() {
 
   tbody.innerHTML =
     employeeListStatus === 'active'
-      ? '<tr><td colspan="5">Loading active employees...</td></tr>'
-      : '<tr><td colspan="5">Loading inactive employees...</td></tr>';
+      ? '<tr><td colspan="6">Loading active employees...</td></tr>'
+      : '<tr><td colspan="6">Loading inactive employees...</td></tr>';
 
   try {
     const employees = await fetchJSON(
@@ -117,8 +118,11 @@ async function loadEmployeesTable() {
     console.error('Error loading employees:', err.message);
     employeesTableData = [];
     tbody.innerHTML =
-      '<tr><td colspan="5">Error loading employees</td></tr>';
+      '<tr><td colspan="6">Error loading employees</td></tr>';
   }
+
+  // Refresh pending list alongside the main table
+  loadPendingEmployees();
 }
 
 function renderEmployeesTable(filterTerm = '') {
@@ -147,7 +151,7 @@ function renderEmployeesTable(filterTerm = '') {
         ? `(no ${employeeListStatus} employees)`
         : '(no matching employees)';
 
-    tbody.innerHTML = `<tr><td colspan="5">${label}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6">${label}</td></tr>`;
     return;
   }
 
@@ -157,6 +161,7 @@ function renderEmployeesTable(filterTerm = '') {
 
     const nickname = emp.nickname || '';
     const nameOnChecks = emp.name_on_checks || '';
+    const qboStatus = emp.employee_qbo_id || emp.vendor_qbo_id ? 'Linked' : 'Needs link';
 
     // default off if undefined/null (same as in the modal)
 const usesTimekeeping = !!emp.uses_timekeeping; // default false
@@ -180,7 +185,12 @@ tr.innerHTML = `
   <td>${emp.name}</td>
   <td>${nickname}</td>
   <td>${nameOnChecks}</td>
-  <td>$${Number(emp.rate).toFixed(2)}</td>
+  <td>$${Number(emp.rate || 0).toFixed(2)}</td>
+  <td>
+    <span class="${qboStatus === 'Linked' ? 'pill pill-good' : 'pill pill-warn'}">
+      ${qboStatus}
+    </span>
+  </td>
 `;
 
 
@@ -189,6 +199,65 @@ tr.innerHTML = `
     });
 
     tbody.appendChild(tr);
+  });
+}
+
+async function loadPendingEmployees() {
+  const card = document.getElementById('pending-employees-card');
+  const body = document.getElementById('pending-employees-body');
+  const message = document.getElementById('pending-employees-message');
+  const badge = document.getElementById('pending-employees-count');
+  if (!card || !body) return;
+
+  body.innerHTML = '<tr><td colspan="5">Loading…</td></tr>';
+  try {
+    const res = await fetchJSON('/api/employees?status=pending');
+    pendingEmployees = Array.isArray(res) ? res : [];
+    renderPendingEmployees();
+
+    if (badge) {
+      badge.textContent = pendingEmployees.length ? `(${pendingEmployees.length})` : '';
+    }
+    if (pendingEmployees.length) {
+      card.classList.remove('hidden');
+    } else {
+      card.classList.add('hidden');
+    }
+    if (message) message.textContent = '';
+  } catch (err) {
+    console.error('Error loading pending employees:', err);
+    if (body) body.innerHTML = '<tr><td colspan="5">Failed to load pending employees.</td></tr>';
+    if (message) {
+      message.textContent = 'Could not load pending employees.';
+      message.style.color = 'red';
+    }
+  }
+}
+
+function renderPendingEmployees() {
+  const body = document.getElementById('pending-employees-body');
+  if (!body) return;
+
+  if (!pendingEmployees.length) {
+    body.innerHTML = '<tr><td colspan="5">(no pending employees)</td></tr>';
+    return;
+  }
+
+  body.innerHTML = '';
+  pendingEmployees.forEach(emp => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${emp.name || '(no name)'}</td>
+      <td>$${Number(emp.rate || 0).toFixed(2)}</td>
+      <td>${emp.nickname || ''}</td>
+      <td>${emp.name_on_checks || ''}</td>
+      <td class="pending-actions">
+        <input type="text" placeholder="QBO Employee ID" data-emp-id="${emp.id}" class="pending-qbo-emp" />
+        <input type="text" placeholder="QBO Vendor ID (optional)" data-emp-id="${emp.id}" class="pending-qbo-vendor" />
+        <button class="btn primary btn-sm pending-link-btn" data-emp-id="${emp.id}">Mark linked</button>
+      </td>
+    `;
+    body.appendChild(tr);
   });
 }
 
@@ -212,7 +281,7 @@ async function loadEmployeesForSelect() {
       if (teEmployeeSelect) {
         const opt = document.createElement('option');
         opt.value = emp.id;
-        opt.textContent = `${emp.name} ($${Number(emp.rate).toFixed(2)}/hr)`;
+        opt.textContent = `${emp.name} ($${Number(emp.rate || 0).toFixed(2)}/hr)`;
         teEmployeeSelect.appendChild(opt);
       }
 
@@ -277,6 +346,7 @@ async function saveEmployee() {
 
     await loadEmployeesTable();
     await loadEmployeesForSelect();
+    await loadPendingEmployees();
   } catch (err) {
     msgEl.textContent = 'Error: ' + err.message;
     msgEl.style.color = 'red';
@@ -296,7 +366,7 @@ function clearEmployeeForm() {
   if (nicknameInput) nicknameInput.value = '';
   if (nameOnChecksInput) nameOnChecksInput.value = '';
   if (rateInput) rateInput.value = '';
-  if (usesTimeCheckbox) usesTimeCheckbox.checked = false;  // default OFF
+  if (usesTimeCheckbox) usesTimeCheckbox.checked = true;  // default ON
   if (adminCheckbox) adminCheckbox.checked = false;       // default OFF
   if (msgEl) msgEl.textContent = '';
 }
@@ -854,5 +924,55 @@ const employeesSearchInput = document.getElementById('employees-search');
 if (employeesSearchInput) {
   employeesSearchInput.addEventListener('input', () => {
     renderEmployeesTable(employeesSearchInput.value);
+  });
+}
+
+const pendingCard = document.getElementById('pending-employees-card');
+if (pendingCard) {
+  pendingCard.addEventListener('click', async e => {
+    const btn = e.target.closest('.pending-link-btn');
+    if (!btn) return;
+    const empId = btn.dataset.empId;
+    const row = btn.closest('tr');
+    const empInput = row ? row.querySelector('.pending-qbo-emp') : null;
+    const vendorInput = row ? row.querySelector('.pending-qbo-vendor') : null;
+    const qboEmpId = empInput ? empInput.value.trim() : '';
+    const qboVendorId = vendorInput ? vendorInput.value.trim() : '';
+    const msg = document.getElementById('pending-employees-message');
+
+    if (!empId) return;
+    if (!qboEmpId && !qboVendorId) {
+      if (msg) {
+        msg.textContent = 'Enter a QuickBooks Employee or Vendor ID.';
+        msg.style.color = 'red';
+      }
+      return;
+    }
+
+    try {
+      btn.disabled = true;
+      await fetchJSON(`/api/employees/${empId}/link-qbo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          employee_qbo_id: qboEmpId || null,
+          vendor_qbo_id: qboVendorId || null
+        })
+      });
+      if (msg) {
+        msg.textContent = 'Linked to QuickBooks. Pending list updated.';
+        msg.style.color = 'green';
+      }
+      await loadPendingEmployees();
+      await loadEmployeesTable();
+    } catch (err) {
+      console.error('Link QBO error:', err);
+      if (msg) {
+        msg.textContent = 'Failed to link: ' + (err.message || err);
+        msg.style.color = 'red';
+      }
+    } finally {
+      btn.disabled = false;
+    }
   });
 }

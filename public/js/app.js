@@ -1988,13 +1988,18 @@ if (connectBtn) {
   }
 
   function deriveCurrentAdminAccess(accessMap = {}) {
-    const defaults = { modify_pay_rates: false };
+    const defaults = { modify_pay_rates: false, modify_payroll: false };
     const emp = typeof CURRENT_EMPLOYEE !== 'undefined' ? CURRENT_EMPLOYEE : null;
     if (!emp || !emp.id) return defaults;
     const perms = accessMap[emp.id] || accessMap[String(emp.id)] || {};
+    const fallbackModifyPayroll =
+      typeof perms.modify_payroll === 'undefined'
+        ? (perms.view_payroll === true || perms.view_payroll === 'true')
+        : (perms.modify_payroll === true || perms.modify_payroll === 'true');
     return {
       ...defaults,
-      modify_pay_rates: perms.modify_pay_rates === true || perms.modify_pay_rates === 'true'
+      modify_pay_rates: perms.modify_pay_rates === true || perms.modify_pay_rates === 'true',
+      modify_payroll: fallbackModifyPayroll
     };
   }
 
@@ -2042,18 +2047,22 @@ if (connectBtn) {
     const tbody = document.getElementById('settings-access-body');
     if (!tbody) return;
 
-    tbody.innerHTML = '<tr><td colspan="6">(loading admins…)</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7">(loading admins…)</td></tr>';
     try {
       const employees = await fetchJSON('/api/employees');
       const admins = (employees || []).filter(e => e.is_admin);
       if (!admins.length) {
-        tbody.innerHTML = '<tr><td colspan="6">(no admins found)</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7">(no admins found)</td></tr>';
         return;
       }
 
       tbody.innerHTML = '';
       admins.forEach(admin => {
         const perms = accessMap[admin.id] || {};
+        const canModifyPayroll =
+          typeof perms.modify_payroll === 'undefined'
+            ? (perms.view_payroll === true || perms.view_payroll === 'true')
+            : (perms.modify_payroll === true || perms.modify_payroll === 'true');
         const tr = document.createElement('tr');
         tr.dataset.adminId = admin.id;
         tr.innerHTML = `
@@ -2062,13 +2071,14 @@ if (connectBtn) {
           <td class="center"><input type="checkbox" data-perm="modify_time" ${perms.modify_time ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="view_time_reports" ${perms.view_time_reports ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="view_payroll" ${perms.view_payroll ? 'checked' : ''}></td>
+          <td class="center"><input type="checkbox" data-perm="modify_payroll" ${canModifyPayroll ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="modify_pay_rates" ${perms.modify_pay_rates ? 'checked' : ''}></td>
         `;
         tbody.appendChild(tr);
       });
     } catch (err) {
       console.error('Error loading admins for access control', err);
-      tbody.innerHTML = '<tr><td colspan="6">(error loading admins)</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7">(error loading admins)</td></tr>';
     }
   }
 
@@ -2121,6 +2131,7 @@ if (connectBtn) {
         modify_time: row.querySelector('input[data-perm="modify_time"]')?.checked || false,
         view_time_reports: row.querySelector('input[data-perm="view_time_reports"]')?.checked || false,
         view_payroll: row.querySelector('input[data-perm="view_payroll"]')?.checked || false,
+        modify_payroll: row.querySelector('input[data-perm="modify_payroll"]')?.checked || false,
         modify_pay_rates: row.querySelector('input[data-perm="modify_pay_rates"]')?.checked || false
       };
     });

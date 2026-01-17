@@ -720,42 +720,49 @@ async function loadEmployeesAndProjects() {
 
   status.textContent = 'Loading…';
 
-  try {
-    const [emps, projs] = await Promise.all([
-      fetchJSON('/api/kiosk/employees'),
-      fetchJSON('/api/projects')
-    ]);
+  const deviceId = kioskDeviceId || getOrCreateDeviceId();
+  const deviceSecret = getOrCreateDeviceSecret();
+  const projectUrl =
+    `/api/kiosk/projects?device_id=${encodeURIComponent(deviceId)}` +
+    `&device_secret=${encodeURIComponent(deviceSecret)}`;
 
+  const [empRes, projRes] = await Promise.allSettled([
+    fetchJSON('/api/kiosk/employees'),
+    fetchJSON(projectUrl)
+  ]);
+
+  let hadNetwork = false;
+
+  if (empRes.status === 'fulfilled') {
+    hadNetwork = true;
+    const emps = empRes.value || [];
     // normalize ids
-    employeesCache = (emps || []).map(e => ({
+    employeesCache = emps.map(e => ({
       ...e,
       id: Number(e.id)
     }));
-    // Only keep active project jobs (exclude top-level customers)
-    projectsCache = (projs || []).filter(p => p.customer_name);
-
-    fillEmployeeSelect(empSel, employeesCache);
-
     saveCache(CACHE_EMP_KEY, employeesCache);
+  } else {
+    employeesCache = loadCache(CACHE_EMP_KEY) || [];
+  }
+
+  if (projRes.status === 'fulfilled') {
+    hadNetwork = true;
+    const projs = projRes.value || [];
+    // Only keep active project jobs (exclude top-level customers)
+    projectsCache = projs.filter(p => p.customer_name);
     saveCache(CACHE_PROJ_KEY, projectsCache);
+  } else {
+    projectsCache = loadCache(CACHE_PROJ_KEY) || [];
+  }
 
-    updateProjectChip();
-    status.textContent = '';
-  } catch {
-    const emps = loadCache(CACHE_EMP_KEY) || [];
-    const projs = loadCache(CACHE_PROJ_KEY) || [];
+  fillEmployeeSelect(empSel, employeesCache);
+  updateProjectChip();
 
-    employeesCache = emps;
-    projectsCache = projs;
-
-    fillEmployeeSelect(empSel, emps);
-    updateProjectChip();
-
-    if (emps.length || projs.length) {
-      status.textContent = 'Offline lists loaded.';
-    } else {
-      status.textContent = 'Error: No data cached.';
-    }
+  if (employeesCache.length || projectsCache.length) {
+    status.textContent = hadNetwork ? '' : 'Offline lists loaded.';
+  } else {
+    status.textContent = 'Error: No data cached.';
   }
 }
 
@@ -1184,8 +1191,7 @@ async function submitPin() {
     }
 
     // Admins should be routed to the kiosk-admin flow when no active timesheet is available
-    // (no session today and we have up-to-date session data).
-    const needsTimesheet = employee.is_admin && kioskSessionsLoaded && !hasTimesheetToday;
+    const needsTimesheet = employee.is_admin && !hasTimesheetToday;
 
     if (needsTimesheet) {
       hidePinModal();
@@ -1270,7 +1276,7 @@ async function submitPin() {
   }
 
   const needsTimesheet =
-    employee.is_admin && kioskSessionsLoaded && !hasTodayTimesheet();
+    employee.is_admin && !hasTodayTimesheet();
   if (needsTimesheet) {
     hidePinModal();
     openAdminDashboard(employee.id, { skipPin: true, forceStart: true });
@@ -1294,13 +1300,24 @@ async function submitPin() {
 
 async function performPunch(employee_id) {
   const status = document.getElementById('kiosk-status');
+  const employee = (employeesCache || []).find(
+    e => String(e.id) === String(employee_id)
+  );
+  const isAdmin = !!(employee && employee.is_admin);
 
   const project_id = kioskConfig && kioskConfig.project_id
     ? parseInt(kioskConfig.project_id, 10)
     : null;
   if (!project_id) {
-    status.textContent =
-      getCopy('projectNotSet');
+    if (isAdmin) {
+      // Route admins to start-of-day/timesheet setup instead of hard-blocking
+      status.textContent = getCopy('timesheetNotSet');
+      status.className = 'glass-status kiosk-status kiosk-status-error';
+      openAdminDashboard(employee_id, { skipPin: true, forceStart: true });
+      return;
+    }
+
+    status.textContent = getCopy('projectNotSet');
     status.className = 'glass-status kiosk-status kiosk-status-error';
     return;
   }
@@ -1317,7 +1334,8 @@ async function performPunch(employee_id) {
     lng: pos?.lng || null,
     device_timestamp: new Date().toISOString(),
     photo_base64: currentPhotoBase64 || null,
-    device_id: kioskDeviceId || null
+    device_id: kioskDeviceId || null,
+    device_secret: getOrCreateDeviceSecret()
   };
 
   if (!navigator.onLine) {
@@ -1376,7 +1394,7 @@ async function performPunch(employee_id) {
   } catch (err) {
     console.error('Error syncing punch', err);
     const msg = err && err.message ? String(err.message) : '';
-    const projectMsg = getCopy('projectNotSet');
+    const projectMsg = getCopy(isAdmin ? 'timesheetNotSet' : 'projectNotSet');
     const showProjectMsg = /project|timesheet/i.test(msg);
     const offlineIssue = isConnectionIssue(err, msg);
 
@@ -1675,9 +1693,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setLanguage(currentLanguage);
   hideStep2Sub();
 
-  // Load data, then fetch kiosk config so default project can be applied
-  await loadEmployeesAndProjects();
+  // Register the kiosk first so device auth is ready for kiosk endpoints
   await initKioskConfig();
+  await loadEmployeesAndProjects();
 
   // Sync any offline stuff
   await syncOfflineData('init');

@@ -1,0 +1,121 @@
+# Change Log
+
+- 2025-01-XX: Created rebuild workspace and spec docs.
+- 2025-01-XX: Expanded rebuild spec with full scope and legacy defaults.
+- 2025-01-XX: Updated spec to match legacy permission toggles and multi-tenant plan.
+- 2025-01-XX: Added legacy feature details (QuickBooks sync, shipments, kiosk, notifications).
+- 2025-01-XX: Added audit logging, payroll template tokens, and security notes to spec.
+- 2025-01-XX: Added auth/account flows, kiosk device details, and notification storage notes.
+- 2025-01-XX: Added exception/verification separation, late-fee auto-calc, and routing notes.
+- 2025-01-XX: Added rebuild architecture docs (overview, data model, API contracts).
+- 2025-01-XX: Added detailed API contracts with request/response payloads.
+- 2025-01-XX: Added initial SQLite schema draft for rebuild.
+- 2025-01-XX: Added missing legacy fields to rebuild schema and expanded API detail coverage.
+- 2025-01-XX: Expanded detailed API contracts for timekeeping and reporting endpoints.
+- 2025-01-XX: Added payroll endpoint details, offline sync queues, and payroll schema field alignment.
+- 2025-01-XX: Added kiosk employees endpoint, corrected auth/vendor payloads, and aligned kiosk session schema fields.
+- 2025-01-XX: Filled in detailed shipment endpoints in API contracts.
+- 2025-01-XX: Clarified org bootstrap + org_settings usage and refreshed open questions.
+- 2025-01-XX: Added multi-org membership decision, enrollment-based kiosk registration, and device_id uniqueness.
+- 2025-01-XX: Updated data model and API auth/kiosk registration contracts for org membership + enrollment flow.
+- 2025-01-XX: Dropped payroll preview-checks endpoint in favor of preflight-only preview.
+- 2025-01-XX: Clarified auth bootstrap/login flows, org selection, and membership details.
+- 2025-01-XX: Documented session cookie policy and CSRF handling.
+- 2025-01-XX: Documented route gating for UI, APIs, and QuickBooks OAuth.
+- 2025-01-XX: Added admin console navigation structure and gating notes.
+- 2025-01-XX: Detailed Admin Home dashboard tile definitions and gating.
+- 2025-01-XX: Documented global QuickBooks status card visibility and actions.
+- 2025-01-XX: Expanded employee profile details (identity, access, permissions, kiosk settings, QBO).
+- 2025-01-XX: Documented PIN rules (4-digit, override behavior) and offline PIN queue details.
+- 2025-01-XX: Clarified pay-rate editing rules and kiosk rate unlock behavior.
+- 2025-01-XX: Documented language defaults, allowed codes, and kiosk override behavior.
+- 2025-01-XX: Clarified name-on-checks edit flow and QBO retry behavior.
+- 2025-01-XX: Documented QBO linking rules and pending list criteria.
+- 2025-01-XX: Added QBO linking UI decision details and duplicate-link blocking.
+- 2025-01-XX: Recorded QBO linking requires an active connection.
+- 2025-01-XX: Added kiosk admin onboarding for ID image capture and updated data model/API docs.
+- 2025-01-XX: Expanded vendor flag/PIN semantics and added vendors/projects to the data model.
+- 2025-01-XX: Clarified vendor timekeeping is unsupported and reserved for legacy.
+- 2025-01-XX: Documented project geofence validation and default radius in API detail.
+- 2025-01-XX: Documented project timezone defaults and QBO-owned fields for projects.
+- 2025-01-XX: Expanded kiosk worker clock-in/out flow and punch endpoint notes.
+- 2025-01-XX: Documented kiosk PIN create/validate and photo capture requirements.
+- 2025-01-XX: Moved clock-in photo requirement to org-level setting; removed per-employee/kiosk photo flags from docs/schema.
+- 2025-01-XX: Clarified kiosk worker language defaults and manual override behavior.
+- 2025-01-XX: Documented kiosk device registration flow and enrollment/refresh semantics.
+- 2025-01-XX: Standardized kiosk admin wording to "timesheets" (kiosk_sessions).
+- 2025-01-XX: Documented foreman-of-day and live workers behavior for kiosk admin.
+- 2025-01-XX: Expanded kiosk rate unlock behavior and constraints.
+- 2025-01-XX: Updated kiosk rate editor to include all active employees.
+- 2025-01-XX: Clarified manual time entry edits and time exception review rules.
+- 2025-01-XX: Required notes for manual time entry creation.
+- 2025-01-XX: Clarified verify/resolve behavior for time entries and exceptions.
+- 2025-01-XX: Required notes for unverify and resolve actions; required notes for all exception review actions.
+- 2025-01-XX: Scoped note requirements to modify_time actions only.
+- 2025-01-XX: Documented time entry audit trail storage and actions.
+- 2025-01-XX: Expanded time entry export details (columns + pay gating).
+- 2025-01-XX: Clarified that pay fields are omitted from exports without view_payroll.
+- 2025-01-XX: Expanded payroll reports details (runs, run details, CSV, audit log limits).
+- 2025-01-XX: Added paid_date to payroll reports run details and CSV export.
+- 2025-01-XX: Expanded shipment verification report filters, columns, and API details.
+- 2025-01-XX: Clarified shipment report archived filter behavior and deduped freight forwarder paid column.
+- 2025-01-XX: Documented payroll report audit log event types and fields.
+- 2025-01-XX: Expanded payroll rules/settings (pay period config, overtime fields) and documented payroll_rules in settings API.
+- 2025-01-XX: Confirmed overtime affects pay and added overtime_multiplier to payroll rules.
+- 2025-01-XX: Set overtime calculation order (daily first, weekly on remaining hours) and noted no double-time by default.
+- 2025-01-XX: Added optional double-time payroll rules (threshold + multiplier).
+- 2025-01-XX: Expanded payroll preflight/create checks behavior and deprecated preview-checks in the API docs.
+- 2025-01-XX: Documented payroll unpay side effects on checks, time entries, and run totals.
+- 2025-01-XX: Documented weekly time entry approval requirement and payroll block on unapproved entries.
+- 2025-01-XX: Added auto clock-out daily/weekly thresholds and approval note rules to the time exceptions spec.
+- 2025-01-XX: Added includeOvertime flag to payroll summary/preflight/create-checks and documented payroll_run include_overtime storage.
+- 2025-01-XX: Updated payroll reports paid toggle behavior to sync time_entries and recalc run totals.
+- 2025-01-XX: Clarified payroll audit log limits and raw vs parsed views.
+- 2025-01-XX: Expanded shipments core board/list/detail behavior and API notes (archiving, filters, ordering).
+- 2025-01-XX: Updated shipments board/list to include archived rows when status=Archived is selected.
+- 2025-01-XX: Added shipments templates scope and API endpoints to the spec.
+- 2025-01-XX: Templates now include optional line items and a shipment_template_items table in the schema.
+- 2025-01-XX: Set ID image retention to manual delete only (no auto-purge).
+- 2025-01-XX: Documented shipments storage/pickup update behavior.
+- 2025-01-XX: Documented shipments verification update behavior and API details.
+- 2025-01-XX: Added verification history log notes for shipment item status changes.
+- 2025-01-XX: Confirmed shipment verification history is stored in verification_json only (no separate audit log/report).
+- 2025-01-XX: Documented shipment payments summary fields and payment ledger behavior.
+- 2025-01-XX: Documented shipment document upload/download constraints and payment-doc visibility rules.
+- 2025-01-XX: Documented shipment timeline/comment behavior and ordering.
+- 2025-01-XX: Added offline queue guidance for shipment comments (kiosk admin sync).
+- 2025-01-XX: Added soft-delete behavior for shipment comments (inactive flag + metadata).
+- 2025-01-XX: Documented shipment notification filters, schedule, and configurable reminder statuses.
+- 2025-01-XX: Expanded notifications system docs (in-app feed, push/email prefs, subscriptions).
+- 2025-01-XX: Added time/payroll notification event types and default rules.
+- 2025-01-XX: Expanded offline sync spec (cache TTL, queues, idempotency, conflicts).
+- 2025-01-XX: Expanded QuickBooks OAuth flow (state validation, per-org tokens) and added disconnect endpoint details.
+- 2025-01-XX: Documented QuickBooks sync behavior (field ownership, active/inactive handling, defaults).
+- 2025-01-XX: Added QuickBooks sync error handling and retry/backoff expectations.
+- 2025-01-XX: Documented QBO linking edge cases (pending list rules, unlink behavior, conflict details).
+- 2025-01-XX: Documented auto clock-out job behavior (timezone, reason codes, time entry creation).
+- 2025-01-XX: Expanded retention defaults and backup schedule/retention policy.
+- 2025-01-XX: Added backup restore/testing expectations (monthly restore verification).
+- 2025-01-XX: Documented clock-in photo purge job (daily delete after 30 days).
+- 2025-01-XX: Clarified ID image and shipment document retention edge cases and added ID document delete endpoint.
+- 2025-01-XX: Documented QBO name_on_checks retry backoff and stop conditions.
+- 2025-01-XX: Documented payroll retry handling (manual retry, scoping to failed employees, auth errors).
+- 2025-01-XX: Added shipment search by tracking number, kiosk helper onboarding, and payroll preflight alerts for missing QBO links.
+- 2025-01-XX: Documented org settings for company_email/storage daily fee, legacy setting removals, and kiosk enrollment strictness; updated API summary list.
+- 2025-01-XX: Updated kiosk enrollment to code-only and clarified kiosk ID visibility (Settings only; admin detail for super admins).
+- 2025-01-XX: Documented kiosk Start Day + "clock me in" flow and active-timesheet behavior (one active, many open; workers locked to active).
+- 2025-01-XX: Added timeline entry for initial shipment storage location set.
+- 2025-01-XX: Clarified shipment create/edit fields (PO number, expected ship date, freight forwarder selection) and line-item totals behavior.
+- 2025-01-XX: Documented shipment total_price manual override (default sum of line items).
+- 2025-01-XX: Documented shipment create/edit defaults and validation (vendor/QBO, storage fee default, items behavior).
+- 2025-01-XX: Moved shipment storage location to per-line item verification (removed shipment-level storage_room/storage_details) and dropped /api/shipments/board.
+- 2025-01-XX: Finalized shipment verification report filters (date range, status, project, ready-for-pickup) and column picker behavior.
+- 2025-01-XX: Set shipment report defaults (last 30 days; ready-for-pickup off).
+- 2025-01-XX: Documented manual QBO sync (Sync Now only), optional QBO employee creation from app, and bootstrap admin name.
+- 2025-01-XX: Required admin first/last name at bootstrap and required given/family name for QBO create.
+- 2025-01-XX: Added QBO sync UX clarifications (last synced, sync gating), pending employee actions, kiosk active-timesheet clarity, offline Start Day messaging, and unified notifications preferences.
+- 2025-01-XX: Added QBO last-sync timestamps in /api/status and sync endpoint responses.
+- 2025-01-XX: Documented shipment storage migration to per-item verification.storage_override and removal of shipment-level storage fields.
+- 2025-01-XX: Clarified QBO create behavior (sync required, duplicate-match blocking).
+- 2025-01-XX: Clarified org timezone single source (orgs), storage_daily_late_fee_default default null/0, and bootstrap admin worker_timekeeping default.
+- 2025-01-XX: Added migration scaffolding (schema_migrations + 0001 foundations), seed script defaults, and DB_PATH config doc updates.
