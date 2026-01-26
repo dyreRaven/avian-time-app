@@ -1,3 +1,14 @@
 node_modules
 .env
-
+.DS_Store
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+backups/
+secure_uploads/
+uploads/
+public/uploads/
+tmp-*
+cookies-*.txt

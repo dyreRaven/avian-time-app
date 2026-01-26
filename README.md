@@ -5,3 +5,14 @@
 - **APNs key**: Keep the `.p8` file outside the repo (e.g., `/Users/dyreraven/secrets/...`) and set `APNS_KEY_PATH`, `APNS_KEY_ID`, `APNS_TEAM_ID`, and `APNS_BUNDLE_ID` in `.env`.
 - **Git history**: History was rewritten to remove keys/DBs. If others consume this repo, they must re-clone or hard-reset to the current `main`.
 - **Admin gating**: UI routes are gated by access toggles (desktop_access, kiosk_admin_access); API routes are gated by permissions listed in `rebuild/architecture/API_CONTRACTS.md`.
+
+## Backups
+
+- Run a one-off backup with `node scripts/backup-once.js`.
+- Restore from `backups/daily/YYYY-MM-DD` or `backups/monthly/YYYY-MM` using `node scripts/restore.js --date YYYY-MM-DD` (add `--force` to overwrite).
+- Stop the server before restoring to avoid file locks.
+
+## Scripts
+
+- `npm run lint` (placeholder; no lint configured yet).
+- `npm test` (placeholder; no tests configured yet).

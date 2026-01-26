@@ -731,6 +731,77 @@ table.vendors-table th:first-child {
   margin-top: 6px;
 }
 
+/* ───────── NOTIFICATIONS ───────── */
+
+.notifications-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.notification-item {
+  border: 1px solid var(--slate-200);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: #ffffff;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.notification-item.unread {
+  border-color: var(--emerald-400);
+  box-shadow: 0 10px 24px rgba(16, 185, 129, 0.18);
+}
+
+.notification-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--slate-800);
+}
+
+.notification-type {
+  margin-top: 4px;
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--slate-500);
+}
+
+.notification-body {
+  margin-top: 6px;
+  font-size: 0.86rem;
+  color: var(--slate-600);
+}
+
+.notification-meta {
+  margin-top: 8px;
+  font-size: 0.74rem;
+  color: var(--slate-500);
+}
+
+.notification-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.notifications-footer {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.notification-push-actions {
+  margin-top: 6px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* Shipments verification report layout */
 .shipments-report-form {
   display: flex;
@@ -1309,6 +1380,12 @@ table.vendors-table th:first-child {
   color: var(--slate-800);
 }
 
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .icon-button {
   border: none;
   background: transparent;
@@ -1584,6 +1661,20 @@ table.vendors-table th:first-child {
 .shipment-items-footer span:last-child {
   min-width: 80px;
   text-align: right;
+}
+
+.shipment-items-override {
+  justify-content: flex-start;
+  font-weight: 500;
+}
+
+.shipment-items-override label {
+  font-size: 0.82rem;
+  color: var(--slate-600);
+}
+
+.shipment-items-override input {
+  width: 160px;
 }
 
 .btn-small {
@@ -2189,6 +2280,126 @@ table.vendors-table th:first-child {
 
 .shipment-docs-view .shipment-docs-list-item a {
   text-decoration: underline;
+}
+
+.ship-detail-items h4 {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.95rem;
+  color: var(--slate-700);
+}
+
+.ship-detail-table th,
+.ship-detail-table td {
+  font-size: 0.82rem;
+  padding: 6px 8px;
+  vertical-align: top;
+}
+
+.ship-detail-table th.num,
+.ship-detail-table td.num {
+  text-align: right;
+}
+
+.ship-detail-meta {
+  font-size: 0.75rem;
+  color: var(--slate-500);
+}
+
+.ship-detail-note {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: var(--slate-700);
+}
+
+.ship-detail-timeline-list,
+.ship-detail-payment-list,
+.ship-detail-comment-list,
+.ship-detail-docs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ship-detail-timeline-item {
+  padding: 8px 10px;
+  border: 1px solid var(--slate-200);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.ship-detail-timeline-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ship-detail-doc-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--slate-200);
+}
+
+.ship-detail-doc-row:last-child {
+  border-bottom: none;
+}
+
+.ship-detail-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  font-size: 0.7rem;
+  color: var(--slate-600);
+}
+
+.ship-detail-pay-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+
+.ship-detail-form {
+  margin: 10px 0;
+}
+
+.ship-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ship-detail-payment-row,
+.ship-detail-comment-row {
+  padding: 8px 10px;
+  border: 1px solid var(--slate-200);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.ship-detail-comment-row.pending {
+  opacity: 0.7;
+}
+
+.ship-detail-comment-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: var(--slate-500);
+  flex-wrap: wrap;
+}
+
+.ship-detail-comment-body {
+  margin-top: 4px;
+  font-size: 0.85rem;
+  color: var(--slate-700);
 }
 
 
@@ -3180,7 +3391,9 @@ select:focus {
 
 /* Inputs on auth card */
 .auth-card input[type="email"],
-.auth-card input[type="password"] {
+.auth-card input[type="password"],
+.auth-card input[type="text"],
+.auth-card select {
   background: #f8fafc;
   border: 1px solid var(--slate-300);
   padding: 10px 14px;
@@ -3190,7 +3403,9 @@ select:focus {
 }
 
 .auth-card input[type="email"]:focus,
-.auth-card input[type="password"]:focus {
+.auth-card input[type="password"]:focus,
+.auth-card input[type="text"]:focus,
+.auth-card select:focus {
   background: #ffffff;
   border-color: var(--emerald-500);
   box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.25);
@@ -3375,6 +3590,22 @@ select:focus {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* ───────── ORG SELECTION ───────── */
+
+.auth-org-select {
+  border-radius: 10px;
+  border: 1px solid var(--slate-200);
+  background: #f9fafb;
+  padding: 12px;
+  font-size: 0.9rem;
+}
+
+.auth-org-title {
+  font-weight: 600;
+  color: var(--slate-800);
+  margin-bottom: 8px;
 }
 
 .sidebar {
@@ -6960,6 +7191,20 @@ body {
 
 .pending-actions input {
   min-width: 130px;
+}
+
+.pending-sub {
+  font-size: 0.78rem;
+  color: var(--slate-500);
+  margin-top: 2px;
+}
+
+.pending-id-link {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: var(--slate-600);
+  text-decoration: underline;
 }
 
 /* Payroll settings spacing and smaller text */

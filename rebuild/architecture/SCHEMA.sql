@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS orgs (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
   timezone TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS org_settings (
@@ -35,8 +37,10 @@ CREATE TABLE IF NOT EXISTS employees (
   active INTEGER NOT NULL DEFAULT 1,
   pin_hash TEXT,
   language TEXT DEFAULT 'en',
-  qbo_employee_id TEXT,
-  qbo_vendor_id TEXT,
+  role_title TEXT,
+  permission_template_id INTEGER,
+  employee_qbo_id TEXT,
+  vendor_qbo_id TEXT,
   needs_qbo_sync INTEGER NOT NULL DEFAULT 0,
   name_on_checks_updated_at TEXT,
   name_on_checks_qbo_updated_at TEXT,
@@ -58,6 +62,7 @@ CREATE TABLE IF NOT EXISTS user_orgs (
   org_id INTEGER NOT NULL,
   employee_id INTEGER,
   is_super_admin INTEGER NOT NULL DEFAULT 0,
+  login_enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now')),
   UNIQUE (user_id, org_id),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -71,9 +76,25 @@ CREATE TABLE IF NOT EXISTS employee_permissions (
   modify_time INTEGER NOT NULL DEFAULT 0,
   view_time_reports INTEGER NOT NULL DEFAULT 0,
   view_payroll INTEGER NOT NULL DEFAULT 0,
+  modify_payroll INTEGER NOT NULL DEFAULT 0,
   modify_pay_rates INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS permission_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  role_title TEXT,
+  access_json TEXT,
+  permissions_json TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT,
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_permission_templates_org
+  ON permission_templates (org_id);
 
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +133,10 @@ CREATE TABLE IF NOT EXISTS kiosk_sessions (
   project_id INTEGER NOT NULL,
   date TEXT NOT NULL,
   created_by_employee_id INTEGER,
+  geo_lat REAL,
+  geo_lng REAL,
+  geo_distance_m REAL,
+  geo_violation INTEGER NOT NULL DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now')),
   ended_at TEXT,
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
@@ -137,11 +162,13 @@ CREATE TABLE IF NOT EXISTS kiosk_foreman_days (
 CREATE TABLE IF NOT EXISTS time_punches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   org_id INTEGER NOT NULL,
-  client_id TEXT UNIQUE,
+  client_id TEXT,
   employee_id INTEGER NOT NULL,
   project_id INTEGER,
   clock_in_ts TEXT NOT NULL,
+  clock_in_local_date TEXT,
   clock_out_ts TEXT,
+  clock_out_local_date TEXT,
   clock_out_project_id INTEGER,
   clock_in_lat REAL,
   clock_in_lng REAL,
@@ -151,6 +178,7 @@ CREATE TABLE IF NOT EXISTS time_punches (
   geo_violation INTEGER NOT NULL DEFAULT 0,
   clock_in_photo_path TEXT,
   device_id TEXT,
+  kiosk_session_id INTEGER,
   foreman_employee_id INTEGER,
   auto_clock_out INTEGER NOT NULL DEFAULT 0,
   auto_clock_out_reason TEXT,
@@ -165,6 +193,8 @@ CREATE TABLE IF NOT EXISTS time_punches (
   project_name_snapshot TEXT,
   time_entry_id INTEGER,
   created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT,
+  UNIQUE (org_id, client_id),
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
   FOREIGN KEY (employee_id) REFERENCES employees(id),
   FOREIGN KEY (project_id) REFERENCES projects(id)
@@ -184,6 +214,12 @@ CREATE TABLE IF NOT EXISTS time_entries (
   foreman_employee_id INTEGER,
   paid INTEGER NOT NULL DEFAULT 0,
   paid_date TEXT,
+  payroll_run_id INTEGER,
+  payroll_check_id INTEGER,
+  approval_status TEXT DEFAULT 'pending',
+  approved_at TEXT,
+  approved_by_employee_id INTEGER,
+  approval_note TEXT,
   resolved INTEGER NOT NULL DEFAULT 0,
   resolved_status TEXT DEFAULT 'open',
   resolved_note TEXT,
@@ -194,6 +230,7 @@ CREATE TABLE IF NOT EXISTS time_entries (
   verified_by_employee_id INTEGER,
   employee_name_snapshot TEXT,
   project_name_snapshot TEXT,
+  updated_at TEXT,
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
   FOREIGN KEY (employee_id) REFERENCES employees(id),
   FOREIGN KEY (project_id) REFERENCES projects(id)
@@ -263,6 +300,9 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
   total_hours REAL DEFAULT 0,
   total_pay REAL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'pending',
+  include_overtime INTEGER NOT NULL DEFAULT 0,
+  run_type TEXT DEFAULT 'standard',
+  adjustment_reason TEXT,
   idempotency_key TEXT,
   last_attempt_id INTEGER,
   last_error TEXT,
@@ -326,12 +366,33 @@ CREATE TABLE IF NOT EXISTS payroll_audit_log (
 );
 
 CREATE TABLE IF NOT EXISTS payroll_lock (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  org_id INTEGER NOT NULL,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id INTEGER NOT NULL UNIQUE,
   locked_by TEXT,
   locked_at TEXT,
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS auto_clockout_lock (
+  org_id INTEGER PRIMARY KEY,
+  locked_by TEXT,
+  locked_at INTEGER,
+  locked_until INTEGER,
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auto_clockout_lock_until
+  ON auto_clockout_lock (locked_until);
+
+CREATE TABLE IF NOT EXISTS job_locks (
+  job_key TEXT PRIMARY KEY,
+  locked_by TEXT,
+  locked_at INTEGER,
+  locked_until INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_locks_until
+  ON job_locks (locked_until);
 
 CREATE TABLE IF NOT EXISTS name_on_checks_queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -344,6 +405,22 @@ CREATE TABLE IF NOT EXISTS name_on_checks_queue (
   attempts INTEGER NOT NULL DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS payroll_preflights (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id INTEGER NOT NULL,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  run_type TEXT DEFAULT 'standard',
+  payload_hash TEXT NOT NULL,
+  snapshot_hash TEXT,
+  snapshot_count INTEGER,
+  payload_json TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_by_employee_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
 );
 
@@ -390,8 +467,11 @@ CREATE TABLE IF NOT EXISTS shipments (
   archived_at TEXT,
   created_by INTEGER,
   created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT,
-  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
+  FOREIGN KEY (vendor_id) REFERENCES vendors(id),
+  FOREIGN KEY (project_id) REFERENCES projects(id),
+  FOREIGN KEY (created_by) REFERENCES employees(id)
 );
 
 CREATE TABLE IF NOT EXISTS shipment_items (
@@ -408,7 +488,8 @@ CREATE TABLE IF NOT EXISTS shipment_items (
   notes TEXT,
   verification_json TEXT,
   created_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
+  FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS shipment_status_history (
@@ -416,7 +497,7 @@ CREATE TABLE IF NOT EXISTS shipment_status_history (
   org_id INTEGER NOT NULL,
   shipment_id INTEGER NOT NULL,
   old_status TEXT,
-  new_status TEXT NOT NULL,
+  new_status TEXT,
   note TEXT,
   changed_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
@@ -457,11 +538,11 @@ CREATE TABLE IF NOT EXISTS shipment_documents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   org_id INTEGER NOT NULL,
   shipment_id INTEGER NOT NULL,
-  title TEXT NOT NULL,
+  title TEXT,
   category TEXT,
   doc_type TEXT,
   doc_label TEXT,
-  file_path TEXT NOT NULL,
+  file_path TEXT,
   uploaded_by INTEGER,
   uploaded_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
@@ -497,6 +578,7 @@ CREATE TABLE IF NOT EXISTS shipment_templates (
   notes TEXT,
   created_by INTEGER,
   created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
 );
 
@@ -527,7 +609,7 @@ CREATE TABLE IF NOT EXISTS shipment_notification_prefs (
   remind_every_days INTEGER,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT,
+  updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
 );
 
@@ -539,6 +621,16 @@ CREATE TABLE IF NOT EXISTS qbo_tokens (
   refresh_token TEXT,
   expires_at INTEGER,
   realm_id TEXT,
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS qbo_oauth_states (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
 );
 
@@ -607,3 +699,15 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   UNIQUE (org_id, scope, key),
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vendors_org_qbo_id
+  ON vendors(org_id, qbo_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_org_qbo_id
+  ON projects(org_id, qbo_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_org_employee_qbo_id
+  ON employees(org_id, employee_qbo_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_org_vendor_qbo_id
+  ON employees(org_id, vendor_qbo_id);

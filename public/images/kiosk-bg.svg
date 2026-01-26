@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1400" preserveAspectRatio="xMinYMid slice">
+  <rect width="100%" height="100%" fill="#f9fbfb" />
+
+  <defs>
+    <clipPath id="left-clip">
+      <rect x="0" y="0" width="620" height="1400" />
+    </clipPath>
+  </defs>
+
+  <!-- Left-only diagonal bands (half-diamond look) -->
+  <g clip-path="url(#left-clip)">
+    <g transform="translate(-360 120) rotate(-35)">
+      <rect x="0" y="0" width="1600" height="260" rx="26" fill="#0f766e" />
+    </g>
+    <g transform="translate(-260 860) rotate(-35)">
+      <rect x="0" y="0" width="1600" height="260" rx="26" fill="#0f766e" />
+    </g>
+
+    <g transform="translate(-320 190) rotate(-35)">
+      <rect x="0" y="0" width="1600" height="140" rx="22" fill="#10b981" fill-opacity="0.22" />
+    </g>
+    <g transform="translate(-220 930) rotate(-35)">
+      <rect x="0" y="0" width="1600" height="140" rx="22" fill="#10b981" fill-opacity="0.18" />
+    </g>
+  </g>
+</svg>

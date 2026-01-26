@@ -3,13 +3,17 @@
   "version": "1.0.0",
   "description": "Avian Group Time + Payroll App",
   "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
     "backup": "node scripts/backup-once.js",
     "migrate": "node scripts/migrate.js",
-    "seed": "node scripts/seed.js",
-    "setup": "node scripts/migrate.js && node scripts/seed.js"
+    "setup": "node scripts/migrate.js",
+    "lint": "echo \"No lint configured.\"",
+    "test": "echo \"No tests configured.\""
   },
   "dependencies": {
     "axios": "^1.13.2",
@@ -18,8 +22,10 @@
     "express": "^4.19.0",
     "express-session": "^1.18.2",
     "multer": "^2.0.2",
+    "nodemailer": "^7.0.12",
     "pdfkit": "^0.13.0",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

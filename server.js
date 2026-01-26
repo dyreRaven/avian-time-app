@@ -6,8 +6,11 @@
 
 require('dotenv').config();
 const express = require('express');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const webpush = require('web-push');
+const nodemailer = require('nodemailer');
 
 const db = require('./db'); // ensure DB initializes
 const PDFDocument = require('pdfkit'); // PDF export for time-entries
@@ -15,9 +18,42 @@ const PDFDocument = require('pdfkit'); // PDF export for time-entries
 const fs = require('fs');
 const fsp = require('fs').promises;
 
-const { DB_PATH } = require('./lib/config');
+const {
+  DB_PATH,
+  SESSION_DB_PATH,
+  APP_TIMEZONE,
+  NODE_ENV,
+  SESSION_SECRET,
+  SESSION_ENCRYPTION_KEY,
+  COOKIE_SECURE,
+  COOKIE_SAMESITE,
+  ENABLE_IN_PROCESS_BACKUPS,
+  PORT,
+  QBO_CLIENT_ID,
+  QBO_CLIENT_SECRET,
+  QBO_REDIRECT_URI,
+  APNS_KEY_PATH,
+  APNS_KEY_ID,
+  APNS_TEAM_ID,
+  APNS_BUNDLE_ID,
+  VAPID_PUBLIC_KEY,
+  VAPID_PRIVATE_KEY,
+  VAPID_SUBJECT,
+  SMTP_HOST,
+  SMTP_PORT,
+  SMTP_USER,
+  SMTP_PASS,
+  SMTP_FROM,
+  NOTIFICATION_RETENTION_DAYS: NOTIFICATION_RETENTION_DAYS_ENV,
+  PHOTO_RETENTION_DAYS: PHOTO_RETENTION_DAYS_ENV,
+  AUDIT_LOG_RETENTION_DAYS: AUDIT_LOG_RETENTION_DAYS_ENV,
+  IDEMPOTENCY_RETENTION_DAYS: IDEMPOTENCY_RETENTION_DAYS_ENV
+} = require('./lib/config');
 const dbPath = DB_PATH;
 const backupDir = path.join(__dirname, 'backups');
+const secureUploadsRoot = path.join(__dirname, 'secure_uploads');
+const legacyUploadsRoot = path.join(__dirname, 'uploads');
+const legacyPublicUploadsRoot = path.join(__dirname, 'public', 'uploads');
 const session = require('express-session');
 const bcrypt  = require('bcrypt');
 const createSQLiteStore = require('./session-store');
@@ -26,15 +62,14 @@ const createAccessHelpers = require('./lib/access');
 const { csrfGuard, requireAuth, makeRequireAdminAccess } = require('./lib/auth');
 const createBackupHelper = require('./lib/backup');
 const createShipmentUpload = require('./lib/uploads');
+const createEmployeeIdUpload = require('./lib/id-uploads');
 const { normalizePayrollRules, applyOvertimeAllocations, roundCurrency } = require('./lib/payroll-utils');
-const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/Puerto_Rico';
-const IS_PROD = process.env.NODE_ENV === 'production';
-const SESSION_SECRET = process.env.SESSION_SECRET || '';
+const IS_PROD = NODE_ENV === 'production';
 if (IS_PROD && SESSION_SECRET.length < 32) {
   console.error('SESSION_SECRET must be set to a strong value (32+ chars) in production.');
   process.exit(1);
 }
-const rawCookieSecure = (process.env.COOKIE_SECURE || '').toLowerCase();
+const rawCookieSecure = String(COOKIE_SECURE || '').toLowerCase();
 const cookieSecureFlag =
   rawCookieSecure === 'true'
     ? true
@@ -42,27 +77,199 @@ const cookieSecureFlag =
       ? false
       : IS_PROD;
 const allowedSameSite = new Set(['lax', 'strict', 'none']);
-const rawSameSite = (process.env.COOKIE_SAMESITE || (IS_PROD ? 'strict' : 'lax')).toLowerCase();
+const rawSameSite = String(
+  COOKIE_SAMESITE || (IS_PROD ? 'strict' : 'lax')
+).toLowerCase();
 const cookieSameSite = allowedSameSite.has(rawSameSite) ? rawSameSite : 'strict';
-const ENABLE_IN_PROCESS_BACKUPS =
-  (process.env.ENABLE_IN_PROCESS_BACKUPS || 'false').toLowerCase() === 'true';
+
+const qboConfigMissing = [];
+if (!QBO_CLIENT_ID) qboConfigMissing.push('QBO_CLIENT_ID');
+if (!QBO_CLIENT_SECRET) qboConfigMissing.push('QBO_CLIENT_SECRET');
+if (!QBO_REDIRECT_URI) qboConfigMissing.push('QBO_REDIRECT_URI');
+const qboConfigured = qboConfigMissing.length === 0;
+
+const apnsConfigured = !!(
+  APNS_KEY_PATH &&
+  APNS_KEY_ID &&
+  APNS_TEAM_ID &&
+  APNS_BUNDLE_ID
+);
+
+const smtpPortNum = Number(SMTP_PORT) || 0;
+const smtpConfigured = !!(SMTP_HOST && smtpPortNum && SMTP_USER && SMTP_PASS);
+const mailTransport = smtpConfigured
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: smtpPortNum,
+      secure: smtpPortNum === 465,
+      auth: {
+        user: SMTP_USER,
+        pass: SMTP_PASS
+      }
+    })
+  : null;
+const mailFromAddress = SMTP_FROM || SMTP_USER || '';
+
+const pushConfigured = !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
+if (pushConfigured) {
+  const subject =
+    VAPID_SUBJECT ||
+    (SMTP_USER ? `mailto:${SMTP_USER}` : 'mailto:admin@aviangp.com');
+  webpush.setVapidDetails(subject, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+}
+if (!qboConfigured) {
+  console.warn(`[QBO] Missing env: ${qboConfigMissing.join(', ')}`);
+}
+if (!smtpConfigured) {
+  console.warn('[Notify] SMTP not configured; email notifications disabled.');
+}
+if (!pushConfigured) {
+  console.warn('[Notify] VAPID keys missing; web push disabled.');
+}
+if (apnsConfigured) {
+  console.warn('[Notify] APNs config present but APNs sender is not implemented.');
+}
 
 const { dbAll, dbGet, dbRun } = createDbHelpers(db);
-const { getAdminAccessPerms, loadExceptionRulesMap } = createAccessHelpers({ dbGet });
-const requireAdminAccess = makeRequireAdminAccess(getAdminAccessPerms);
-const { performDatabaseBackup } = createBackupHelper({ db, dbPath, backupDir });
-const { upload, resolveShipmentDocumentPath, uploadsRoot } = createShipmentUpload(__dirname);
+const {
+  getAdminAccessPerms,
+  loadExceptionRulesMap,
+  getEmployeeAccessFlags,
+  getOrgStatus
+} = createAccessHelpers({ dbGet });
+const getMembershipStatus = ({ userId, orgId }) => {
+  if (!userId || !orgId) return null;
+  return dbGet(
+    'SELECT login_enabled FROM user_orgs WHERE user_id = ? AND org_id = ?',
+    [userId, orgId]
+  );
+};
+const requireAdminAccess = makeRequireAdminAccess(
+  getAdminAccessPerms,
+  getEmployeeAccessFlags,
+  getOrgStatus,
+  getMembershipStatus
+);
+const requireViewPayroll = requireAdminAccess(p => p.view_payroll);
+const requireViewPayrollOrSeeShipments = requireAdminAccess(
+  p => p.view_payroll || p.see_shipments
+);
+const requireModifyPayroll = requireAdminAccess(p => p.modify_payroll);
+const requireViewTimeReports = requireAdminAccess(
+  p => p.view_time_reports || p.view_payroll
+);
+const requireModifyTime = requireAdminAccess(p => p.modify_time);
+const requireSeeShipments = requireAdminAccess(p => p.see_shipments);
+const { performDatabaseBackup } = createBackupHelper({
+  db,
+  dbPath,
+  backupDir,
+  uploadsRoot: secureUploadsRoot,
+  extraUploadsRoots: [
+    { root: legacyUploadsRoot, label: 'uploads' },
+    { root: legacyPublicUploadsRoot, label: 'public_uploads' }
+  ]
+});
+
+const BACKUP_LOCK_TTL_MS = 4 * 60 * 60 * 1000;
+
+async function runBackupWithLock({ requireLock = false } = {}) {
+  const gotLock = await acquireJobLock('backup', BACKUP_LOCK_TTL_MS);
+  if (!gotLock) {
+    if (requireLock) {
+      console.warn('Backup lock busy; skipping required backup.');
+    }
+    return { ok: false, reason: 'lock_busy' };
+  }
+  const refreshMs = Math.min(BACKUP_LOCK_TTL_MS / 2, 15 * 60 * 1000);
+  let refreshTimer = null;
+  try {
+    refreshTimer = setInterval(
+      () => refreshJobLock('backup', BACKUP_LOCK_TTL_MS),
+      refreshMs
+    );
+    if (refreshTimer.unref) refreshTimer.unref();
+    await performDatabaseBackup();
+    return { ok: true };
+  } catch (err) {
+    console.error('Backup job failed:', err);
+    return {
+      ok: false,
+      reason: 'error',
+      error: err && err.message ? err.message : String(err)
+    };
+  } finally {
+    if (refreshTimer) clearInterval(refreshTimer);
+    await releaseJobLock('backup');
+  }
+}
+const {
+  upload: uploadShipmentDocs,
+  resolveShipmentDocumentPath,
+  uploadsRoot,
+  allowedMimes: shipmentAllowedMimes,
+  allowedExts: shipmentAllowedExts
+} = createShipmentUpload(__dirname);
+const {
+  upload: uploadIdDocument,
+  resolveEmployeeIdPath,
+  allowedMimes: idAllowedMimes,
+  allowedExts: idAllowedExts
+} = createEmployeeIdUpload(__dirname);
+
+async function tableExists(tableName) {
+  const row = await dbGet(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    [tableName]
+  );
+  return !!row;
+}
+
+async function loadIdempotentResponse(orgId, scope, key) {
+  if (!orgId || !scope || !key) return null;
+  const row = await dbGet(
+    `
+      SELECT response_json
+      FROM idempotency_keys
+      WHERE org_id = ? AND scope = ? AND key = ?
+      LIMIT 1
+    `,
+    [orgId, scope, key]
+  );
+  if (!row) return null;
+  if (!row.response_json) return { ok: true };
+  try {
+    const parsed = JSON.parse(row.response_json);
+    return parsed && typeof parsed === 'object' ? parsed : { ok: true };
+  } catch {
+    return { ok: true };
+  }
+}
+
+async function storeIdempotentResponse(orgId, scope, key, response) {
+  if (!orgId || !scope || !key) return;
+  const payload =
+    response && typeof response === 'object' ? JSON.stringify(response) : null;
+  await dbRun(
+    `
+      INSERT OR IGNORE INTO idempotency_keys (org_id, scope, key, response_json)
+      VALUES (?, ?, ?, ?)
+    `,
+    [orgId, scope, key, payload]
+  );
+}
 
 // Payroll DB lock helpers
-async function acquirePayrollLock(lockedBy = 'server') {
+async function acquirePayrollLock(orgId, lockedBy = 'server') {
   try {
+    if (!orgId) return false;
     const res = await dbRun(
       `
-        INSERT INTO payroll_lock (id, locked_by, locked_at)
-        VALUES (1, ?, datetime('now'))
-        ON CONFLICT(id) DO NOTHING
+        INSERT INTO payroll_lock (org_id, locked_by, locked_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(org_id) DO NOTHING
       `,
-      [lockedBy]
+      [orgId, lockedBy]
     );
     // If changes is 0, lock already held
     if (res && res.changes === 0) {
@@ -75,16 +282,157 @@ async function acquirePayrollLock(lockedBy = 'server') {
   }
 }
 
-async function releasePayrollLock() {
+async function releasePayrollLock(orgId) {
   try {
-    await dbRun(`DELETE FROM payroll_lock WHERE id = 1`);
+    if (!orgId) return;
+    await dbRun(`DELETE FROM payroll_lock WHERE org_id = ?`, [orgId]);
   } catch (err) {
     console.error('Failed to release payroll lock:', err);
   }
 }
 
+// Auto clock-out DB lock helpers (multi-instance safety)
+const AUTO_CLOCKOUT_LOCK_TTL_MS = 5 * 60 * 1000;
+const AUTO_CLOCKOUT_LOCKER_ID = `${os.hostname()}:${process.pid}`;
+const JOB_LOCKER_ID = AUTO_CLOCKOUT_LOCKER_ID;
+const JOB_LOCK_DEFAULT_TTL_MS = 10 * 60 * 1000;
+
+async function acquireAutoClockOutLock(orgId, lockedBy = AUTO_CLOCKOUT_LOCKER_ID) {
+  try {
+    if (!orgId) return false;
+    const nowMs = Date.now();
+    const lockUntil = nowMs + AUTO_CLOCKOUT_LOCK_TTL_MS;
+    const res = await dbRun(
+      `
+        INSERT INTO auto_clockout_lock (org_id, locked_by, locked_at, locked_until)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(org_id) DO UPDATE SET
+          locked_by = excluded.locked_by,
+          locked_at = excluded.locked_at,
+          locked_until = excluded.locked_until
+        WHERE auto_clockout_lock.locked_until IS NULL
+          OR auto_clockout_lock.locked_until <= ?
+      `,
+      [orgId, lockedBy, nowMs, lockUntil, nowMs]
+    );
+    return !!(res && res.changes > 0);
+  } catch (err) {
+    console.error('Failed to acquire auto clock-out lock:', err);
+    return false;
+  }
+}
+
+async function releaseAutoClockOutLock(orgId, lockedBy = AUTO_CLOCKOUT_LOCKER_ID) {
+  try {
+    if (!orgId) return;
+    await dbRun(
+      `DELETE FROM auto_clockout_lock WHERE org_id = ? AND locked_by = ?`,
+      [orgId, lockedBy]
+    );
+  } catch (err) {
+    console.error('Failed to release auto clock-out lock:', err);
+  }
+}
+
+async function refreshAutoClockOutLock(orgId, lockedBy = AUTO_CLOCKOUT_LOCKER_ID) {
+  try {
+    if (!orgId) return;
+    const nowMs = Date.now();
+    const lockUntil = nowMs + AUTO_CLOCKOUT_LOCK_TTL_MS;
+    await dbRun(
+      `
+        UPDATE auto_clockout_lock
+        SET locked_at = ?, locked_until = ?
+        WHERE org_id = ? AND locked_by = ?
+      `,
+      [nowMs, lockUntil, orgId, lockedBy]
+    );
+  } catch (err) {
+    console.error('Failed to refresh auto clock-out lock:', err);
+  }
+}
+
+// General job lock helpers (multi-instance safety for schedulers)
+async function acquireJobLock(jobKey, ttlMs = JOB_LOCK_DEFAULT_TTL_MS, lockedBy = JOB_LOCKER_ID) {
+  try {
+    if (!jobKey) return false;
+    const nowMs = Date.now();
+    const lockUntil = nowMs + (ttlMs || JOB_LOCK_DEFAULT_TTL_MS);
+    const res = await dbRun(
+      `
+        INSERT INTO job_locks (job_key, locked_by, locked_at, locked_until)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(job_key) DO UPDATE SET
+          locked_by = excluded.locked_by,
+          locked_at = excluded.locked_at,
+          locked_until = excluded.locked_until
+        WHERE job_locks.locked_until IS NULL
+          OR job_locks.locked_until <= ?
+      `,
+      [jobKey, lockedBy, nowMs, lockUntil, nowMs]
+    );
+    return !!(res && res.changes > 0);
+  } catch (err) {
+    console.error('Failed to acquire job lock:', err);
+    return false;
+  }
+}
+
+async function refreshJobLock(jobKey, ttlMs = JOB_LOCK_DEFAULT_TTL_MS, lockedBy = JOB_LOCKER_ID) {
+  try {
+    if (!jobKey) return;
+    const nowMs = Date.now();
+    const lockUntil = nowMs + (ttlMs || JOB_LOCK_DEFAULT_TTL_MS);
+    await dbRun(
+      `
+        UPDATE job_locks
+        SET locked_at = ?, locked_until = ?
+        WHERE job_key = ? AND locked_by = ?
+      `,
+      [nowMs, lockUntil, jobKey, lockedBy]
+    );
+  } catch (err) {
+    console.error('Failed to refresh job lock:', err);
+  }
+}
+
+async function releaseJobLock(jobKey, lockedBy = JOB_LOCKER_ID) {
+  try {
+    if (!jobKey) return;
+    await dbRun(`DELETE FROM job_locks WHERE job_key = ? AND locked_by = ?`, [
+      jobKey,
+      lockedBy
+    ]);
+  } catch (err) {
+    console.error('Failed to release job lock:', err);
+  }
+}
+
 // Global in-memory lock to prevent concurrent payroll runs
 let isPayrollRunInProgress = false;
+const QBO_SYNC_LOCK_TTL_MS = 15 * 60 * 1000;
+
+function getQboSyncLockKey(scope, orgId) {
+  if (!scope || !orgId) return null;
+  return `qbo_sync:${scope}:${orgId}`;
+}
+
+async function acquireQboSyncLock(scope, orgId) {
+  const key = getQboSyncLockKey(scope, orgId);
+  if (!key) return null;
+  const gotLock = await acquireJobLock(key, QBO_SYNC_LOCK_TTL_MS);
+  return gotLock ? key : null;
+}
+
+async function refreshQboSyncLock(lockKey) {
+  if (!lockKey) return;
+  await refreshJobLock(lockKey, QBO_SYNC_LOCK_TTL_MS);
+}
+
+async function releaseQboSyncLock(lockKey) {
+  if (!lockKey) return;
+  await releaseJobLock(lockKey);
+}
 
 // Helper: log time entry actions to time_exception_actions for auditing
 async function logTimeEntryAudit({
@@ -96,16 +444,18 @@ async function logTimeEntryAudit({
   req
 }) {
   try {
-    const actorUserId = req?.session?.user?.id || null;
-    const actorEmployeeId = req?.session?.user?.employee_id || null;
-    const actorName = req?.session?.user?.email || req?.session?.user?.name || 'unknown';
+    const orgId = req?.session?.orgId;
+    if (!orgId) return;
+    const { actorUserId, actorEmployeeId, actorName } =
+      await getExceptionActor(req, null);
     await dbRun(
       `
         INSERT INTO time_exception_actions
-          (source_type, source_id, action, actor_user_id, actor_employee_id, actor_name, note, changes_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (org_id, source_type, source_id, action, actor_user_id, actor_employee_id, actor_name, note, changes_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
+        orgId,
         'time_entry',
         entryId,
         action,
@@ -122,10 +472,107 @@ async function logTimeEntryAudit({
 }
 
 // ───────── SHIPMENT DOCUMENT UPLOADS ─────────
-// (configured via lib/uploads.js → uploadsRoot, upload, resolveShipmentDocumentPath)
+// (configured via lib/uploads.js → uploadsRoot, uploadShipmentDocs, resolveShipmentDocumentPath)
+
+function detectMimeFromBuffer(buf) {
+  if (!buf || buf.length < 4) return null;
+  if (buf.length >= 5 && buf.slice(0, 5).toString('ascii') === '%PDF-') {
+    return 'application/pdf';
+  }
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (buf.length >= 6) {
+    const sig = buf.slice(0, 6).toString('ascii');
+    if (sig === 'GIF87a' || sig === 'GIF89a') return 'image/gif';
+  }
+  if (
+    buf.length >= 12 &&
+    buf.slice(0, 4).toString('ascii') === 'RIFF' &&
+    buf.slice(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
+
+async function sniffMimeFromFile(filePath) {
+  const handle = await fsp.open(filePath, 'r');
+  try {
+    const { buffer, bytesRead } = await handle.read(Buffer.alloc(12), 0, 12, 0);
+    return detectMimeFromBuffer(buffer.slice(0, bytesRead));
+  } finally {
+    await handle.close();
+  }
+}
+
+async function validateStoredUpload(filePath, allowedMimes, allowedExts) {
+  const ext = path.extname(filePath || '').toLowerCase();
+  const expectedMime = allowedExts[ext];
+  if (!expectedMime) {
+    return { ok: false, error: 'Unsupported file extension.' };
+  }
+  const sniffed = await sniffMimeFromFile(filePath);
+  if (!sniffed || !allowedMimes.has(sniffed)) {
+    return { ok: false, error: 'Unsupported file type.' };
+  }
+  if (sniffed !== expectedMime) {
+    return { ok: false, error: 'File content does not match extension.' };
+  }
+  return { ok: true, mime: sniffed };
+}
+
+async function cleanupUploadedFiles(files) {
+  for (const file of files || []) {
+    if (!file || !file.path) continue;
+    try {
+      await fsp.unlink(file.path);
+    } catch {}
+  }
+}
+
+async function validateUploadedFiles(files, allowedMimes, allowedExts) {
+  for (const file of files || []) {
+    if (!file || !file.path) continue;
+    const result = await validateStoredUpload(file.path, allowedMimes, allowedExts);
+    if (!result.ok) {
+      throw new Error(result.error || 'Unsupported file type.');
+    }
+  }
+}
+
+function wrapUpload(middleware) {
+  return (req, res, next) => {
+    middleware(req, res, err => {
+      if (!err) return next();
+      const message = err && err.message ? err.message : 'Upload failed.';
+      const isMulter = err && err.name === 'MulterError';
+      const isClientError =
+        isMulter ||
+        /unsupported file|invalid file|file size|limit/i.test(message);
+      const status = isClientError ? 400 : 500;
+      return res
+        .status(status)
+        .json({ error: isClientError ? message : 'Upload failed.' });
+    });
+  };
+}
 
 // ───────── Payroll attempt helpers ─────────
-async function recordPayrollAttempt({ payrollRunId = null, start, end, qbResult }) {
+async function recordPayrollAttempt({ orgId, payrollRunId = null, start, end, qbResult }) {
   const okFlag = (() => {
     if (!qbResult) return 0;
     const hasErrors =
@@ -136,10 +583,10 @@ async function recordPayrollAttempt({ payrollRunId = null, start, end, qbResult 
   const attempt = await dbRun(
     `
       INSERT INTO payroll_run_attempts (
-        payroll_run_id, start_date, end_date, ok, fatal_error
-      ) VALUES (?, ?, ?, ?, ?)
+        org_id, payroll_run_id, start_date, end_date, ok, fatal_error
+      ) VALUES (?, ?, ?, ?, ?, ?)
     `,
-    [payrollRunId || null, start, end, okFlag, qbResult?.fatalQboError || null]
+    [orgId, payrollRunId || null, start, end, okFlag, qbResult?.fatalQboError || null]
   );
 
   const attemptId = attempt.lastID;
@@ -148,6 +595,7 @@ async function recordPayrollAttempt({ payrollRunId = null, start, end, qbResult 
     await dbRun(
       `
         INSERT INTO payroll_attempt_results (
+          org_id,
           attempt_id,
           employee_id,
           employee_name,
@@ -157,9 +605,10 @@ async function recordPayrollAttempt({ payrollRunId = null, start, end, qbResult 
           error,
           warning_codes,
           qbo_txn_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
+        orgId,
         attemptId,
         r?.employeeId || null,
         r?.employeeName || null,
@@ -176,71 +625,159 @@ async function recordPayrollAttempt({ payrollRunId = null, start, end, qbResult 
   return attemptId;
 }
 
-async function updateAttemptRunId(attemptId, payrollRunId) {
-  if (!attemptId || !payrollRunId) return;
+async function updateAttemptRunId({ orgId, attemptId, payrollRunId }) {
+  if (!orgId || !attemptId || !payrollRunId) return;
   await dbRun(
     `
       UPDATE payroll_run_attempts
       SET payroll_run_id = ?
-      WHERE id = ? AND payroll_run_id IS NULL
+      WHERE id = ? AND payroll_run_id IS NULL AND org_id = ?
     `,
-    [payrollRunId, attemptId]
+    [payrollRunId, attemptId, orgId]
   );
 }
 
-async function getFailedEmployeeIdsForAttempt(attemptId) {
-  if (!attemptId) return [];
+async function getFailedEmployeeIdsForAttempt({ orgId, attemptId }) {
+  if (!orgId || !attemptId) return [];
   const rows = await dbAll(
     `
       SELECT DISTINCT employee_id
       FROM payroll_attempt_results
       WHERE attempt_id = ?
+        AND org_id = ?
         AND IFNULL(ok, 0) = 0
         AND employee_id IS NOT NULL
     `,
-    [attemptId]
+    [attemptId, orgId]
   );
   return rows.map(r => Number(r.employee_id)).filter(n => Number.isFinite(n));
 }
 
 // ───────── Name on checks retry queue ─────────
-async function enqueueNameOnChecksRetry({ employeeId, desiredName, payeeRef, lastError }) {
-  if (!employeeId || !desiredName || !payeeRef || !payeeRef.value) return;
+const NAME_ON_CHECKS_BACKOFF_MINUTES = [10, 60, 360, 1440];
+const NAME_ON_CHECKS_MAX_AGE_DAYS = 7;
+
+function getNameOnChecksBackoffMinutes(attempts) {
+  if (!Number.isFinite(attempts) || attempts < 0) return NAME_ON_CHECKS_BACKOFF_MINUTES[0];
+  if (attempts >= NAME_ON_CHECKS_BACKOFF_MINUTES.length) {
+    return NAME_ON_CHECKS_BACKOFF_MINUTES[NAME_ON_CHECKS_BACKOFF_MINUTES.length - 1];
+  }
+  return NAME_ON_CHECKS_BACKOFF_MINUTES[attempts];
+}
+
+async function enqueueNameOnChecksRetry({ orgId, employeeId, desiredName, payeeRef, lastError }) {
+  if (!orgId || !employeeId || !desiredName || !payeeRef || !payeeRef.value) return;
   await dbRun(
     `
       INSERT INTO name_on_checks_queue (
-        employee_id, desired_name, payee_type, payee_id, last_error, attempts, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
-      ON CONFLICT(employee_id) DO UPDATE SET
+        org_id,
+        employee_id,
+        desired_name,
+        payee_type,
+        payee_id,
+        last_error,
+        attempts,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+      ON CONFLICT(org_id, employee_id) DO UPDATE SET
         desired_name = excluded.desired_name,
         payee_type   = excluded.payee_type,
         payee_id     = excluded.payee_id,
         last_error   = excluded.last_error,
-        attempts     = name_on_checks_queue.attempts,
+        attempts     = 0,
+        created_at   = datetime('now'),
         updated_at   = datetime('now')
     `,
-    [employeeId, desiredName, payeeRef.type || null, String(payeeRef.value || ''), lastError || null]
+    [
+      orgId,
+      employeeId,
+      desiredName,
+      payeeRef.type || null,
+      String(payeeRef.value || ''),
+      lastError || null
+    ]
   );
 }
 
-async function clearNameOnChecksRetry(employeeId) {
-  if (!employeeId) return;
-  await dbRun('DELETE FROM name_on_checks_queue WHERE employee_id = ?', [employeeId]);
+async function clearNameOnChecksRetry(orgId, employeeId) {
+  if (!orgId || !employeeId) return;
+  await dbRun('DELETE FROM name_on_checks_queue WHERE org_id = ? AND employee_id = ?', [
+    orgId,
+    employeeId
+  ]);
 }
 
+let nameOnChecksJobRunning = false;
+
 async function processNameOnChecksQueue() {
+  if (nameOnChecksJobRunning) return;
+  nameOnChecksJobRunning = true;
+  const lockKey = 'name_on_checks_queue';
+  const lockTtlMs = 10 * 60 * 1000;
+  const gotLock = await acquireJobLock(lockKey, lockTtlMs);
+  if (!gotLock) {
+    nameOnChecksJobRunning = false;
+    return;
+  }
+
   try {
+    const refreshIntervalMs = Math.max(30000, Math.floor(lockTtlMs / 2));
+    let lastRefresh = Date.now();
+    const refreshIfNeeded = async () => {
+      const now = Date.now();
+      if (now - lastRefresh >= refreshIntervalMs) {
+        await refreshJobLock(lockKey, lockTtlMs);
+        lastRefresh = now;
+      }
+    };
+
     const rows = await dbAll(
       `
-        SELECT id, employee_id, desired_name, payee_type, payee_id, attempts
+        SELECT id, org_id, employee_id, desired_name, payee_type, payee_id,
+               attempts, created_at, updated_at, last_error
         FROM name_on_checks_queue
         ORDER BY updated_at ASC
-        LIMIT 10
+        LIMIT 25
       `
     );
     if (!rows.length) return;
 
     for (const row of rows) {
+      await refreshIfNeeded();
+      const createdMs = Date.parse(row.created_at || '');
+      if (Number.isFinite(createdMs)) {
+        const ageDays = (Date.now() - createdMs) / (1000 * 60 * 60 * 24);
+        if (ageDays >= NAME_ON_CHECKS_MAX_AGE_DAYS) {
+          if (!row.last_error || !String(row.last_error).includes('Stopped retrying')) {
+            await dbRun(
+              `
+                UPDATE name_on_checks_queue
+                SET last_error = ?, updated_at = datetime('now')
+                WHERE id = ? AND org_id = ?
+              `,
+              ['Stopped retrying after 7 days.', row.id, row.org_id]
+            );
+          }
+          continue;
+        }
+      }
+
+      const lastAttemptMs = Date.parse(row.updated_at || row.created_at || '');
+      if (Number.isFinite(lastAttemptMs)) {
+        const elapsedMinutes = (Date.now() - lastAttemptMs) / (1000 * 60);
+        const waitMinutes = getNameOnChecksBackoffMinutes(Number(row.attempts || 0));
+        if (elapsedMinutes < waitMinutes) {
+          continue;
+        }
+      }
+
+      const accessToken = await getAccessToken(row.org_id);
+      const realmId = await getRealmId(row.org_id);
+      if (!accessToken || !realmId) {
+        continue;
+      }
+
       const payeeRef = row.payee_id
         ? { value: row.payee_id, type: row.payee_type || 'Employee' }
         : null;
@@ -250,28 +787,37 @@ async function processNameOnChecksQueue() {
         continue;
       }
 
-      const res = await setPrintOnCheckName(payeeRef, row.desired_name);
+      const res = await setPrintOnCheckName(payeeRef, row.desired_name, row.org_id);
       if (res?.ok || res?.skipped) {
         await dbRun(
-          'UPDATE employees SET name_on_checks_qbo_updated_at = datetime(\'now\') WHERE id = ?',
-          [row.employee_id]
+          'UPDATE employees SET name_on_checks_qbo_updated_at = datetime(\'now\') WHERE id = ? AND org_id = ?',
+          [row.employee_id, row.org_id]
         );
-        await dbRun('DELETE FROM name_on_checks_queue WHERE id = ?', [row.id]);
+        await dbRun('DELETE FROM name_on_checks_queue WHERE id = ? AND org_id = ?', [
+          row.id,
+          row.org_id
+        ]);
       } else {
+        if (res?.status === 401 || res?.status === 403) {
+          continue;
+        }
         await dbRun(
           `
             UPDATE name_on_checks_queue
             SET attempts = attempts + 1,
                 last_error = ?,
                 updated_at = datetime('now')
-            WHERE id = ?
+            WHERE id = ? AND org_id = ?
           `,
-          [res?.error || 'Unknown error', row.id]
+          [res?.error || 'Unknown error', row.id, row.org_id]
         );
       }
     }
   } catch (err) {
     console.error('Name-on-checks retry queue error:', err);
+  } finally {
+    nameOnChecksJobRunning = false;
+    await releaseJobLock(lockKey);
   }
 }
 
@@ -308,6 +854,50 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+async function refreshKioskSessionGeofence({ orgId, projectId, geoLat, geoLng, geoRadius }) {
+  if (!orgId || !projectId) return;
+  const latNum = geoLat == null ? null : Number(geoLat);
+  const lngNum = geoLng == null ? null : Number(geoLng);
+  const radiusNum = geoRadius == null ? null : Number(geoRadius);
+  const hasGeofence =
+    latNum != null &&
+    lngNum != null &&
+    radiusNum != null &&
+    !Number.isNaN(latNum) &&
+    !Number.isNaN(lngNum) &&
+    !Number.isNaN(radiusNum);
+
+  if (!hasGeofence) {
+    await dbRun(
+      'UPDATE kiosk_sessions SET geo_violation = 0, geo_distance_m = NULL WHERE org_id = ? AND project_id = ?',
+      [orgId, projectId]
+    );
+    return;
+  }
+
+  const sessions = await dbAll(
+    `
+      SELECT id, geo_lat, geo_lng
+      FROM kiosk_sessions
+      WHERE org_id = ? AND project_id = ? AND geo_violation != 0
+        AND geo_lat IS NOT NULL AND geo_lng IS NOT NULL
+    `,
+    [orgId, projectId]
+  );
+
+  for (const session of sessions || []) {
+    const sessLat = Number(session.geo_lat);
+    const sessLng = Number(session.geo_lng);
+    if (Number.isNaN(sessLat) || Number.isNaN(sessLng)) continue;
+    const dist = distanceMeters(sessLat, sessLng, latNum, lngNum);
+    const violation = dist > radiusNum ? 1 : 0;
+    await dbRun(
+      'UPDATE kiosk_sessions SET geo_distance_m = ?, geo_violation = ? WHERE id = ? AND org_id = ?',
+      [dist, violation, session.id, orgId]
+    );
+  }
+}
+
 // YYYY-MM-DD → Date at midnight (or null on bad input)
 function toDateOnly(dateStr) {
   if (!dateStr) return null;
@@ -315,24 +905,169 @@ function toDateOnly(dateStr) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-// Today's date in 'YYYY-MM-DD'
-function getTodayIsoDate() {
+const WEEKDAY_INDEX = {
+  Mon: 0,
+  Tue: 1,
+  Wed: 2,
+  Thu: 3,
+  Fri: 4,
+  Sat: 5,
+  Sun: 6
+};
+
+function shiftIsoDate(dateStr, deltaDays) {
+  if (!dateStr) return dateStr;
+  const parts = String(dateStr).split('-').map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return dateStr;
+  const [year, month, day] = parts;
+  const dt = new Date(Date.UTC(year, month - 1, day + deltaDays));
+  return dt.toISOString().slice(0, 10);
+}
+
+function getIsoDateInTimezone(dateInput, timeZone = APP_TIMEZONE) {
+  const dateObj = dateInput instanceof Date ? dateInput : new Date(dateInput || Date.now());
+  if (Number.isNaN(dateObj.getTime())) return null;
   try {
     const fmt = new Intl.DateTimeFormat('en-CA', {
-      timeZone: APP_TIMEZONE,
+      timeZone: timeZone || APP_TIMEZONE,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
     });
-    const parts = fmt.formatToParts(new Date());
+    const parts = fmt.formatToParts(dateObj);
     const y = parts.find(p => p.type === 'year')?.value;
     const m = parts.find(p => p.type === 'month')?.value;
     const d = parts.find(p => p.type === 'day')?.value;
     if (y && m && d) return `${y}-${m}-${d}`;
   } catch (err) {
-    console.warn('Falling back to UTC date in getTodayIsoDate:', err.message || err);
+    console.warn('Falling back to UTC date in getIsoDateInTimezone:', err.message || err);
   }
-  return new Date().toISOString().slice(0, 10);
+  return dateObj.toISOString().slice(0, 10);
+}
+
+function getIsoTimeInTimezone(dateInput, timeZone = APP_TIMEZONE) {
+  if (!dateInput) return null;
+  const dateObj = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (Number.isNaN(dateObj.getTime())) return null;
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timeZone || APP_TIMEZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    });
+    const parts = fmt.formatToParts(dateObj);
+    const hh = parts.find(p => p.type === 'hour')?.value;
+    const mm = parts.find(p => p.type === 'minute')?.value;
+    if (hh && mm) return `${hh}:${mm}`;
+  } catch (err) {
+    console.warn('Falling back to UTC time in getIsoTimeInTimezone:', err.message || err);
+  }
+  return dateObj.toISOString().slice(11, 16);
+}
+
+// Today's date in 'YYYY-MM-DD' for a given timezone
+function getTodayIsoDate(timeZone = APP_TIMEZONE) {
+  return getIsoDateInTimezone(new Date(), timeZone) || new Date().toISOString().slice(0, 10);
+}
+
+function getTimeZoneOffsetMs(dateObj, timeZone = APP_TIMEZONE) {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timeZone || APP_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    });
+    const parts = fmt.formatToParts(dateObj);
+    const y = Number(parts.find(p => p.type === 'year')?.value);
+    const m = Number(parts.find(p => p.type === 'month')?.value);
+    const d = Number(parts.find(p => p.type === 'day')?.value);
+    const hh = Number(parts.find(p => p.type === 'hour')?.value);
+    const mm = Number(parts.find(p => p.type === 'minute')?.value);
+    const ss = Number(parts.find(p => p.type === 'second')?.value);
+    if ([y, m, d, hh, mm, ss].some(Number.isNaN)) return 0;
+    const asUtc = Date.UTC(y, m - 1, d, hh, mm, ss);
+    return asUtc - dateObj.getTime();
+  } catch (err) {
+    console.warn('Falling back to zero offset in getTimeZoneOffsetMs:', err.message || err);
+    return 0;
+  }
+}
+
+function getUtcTimestampForLocal(
+  { year, month, day, hour = 0, minute = 0, second = 0 },
+  timeZone = APP_TIMEZONE
+) {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second);
+  let offset = getTimeZoneOffsetMs(new Date(utcGuess), timeZone);
+  let utc = utcGuess - offset;
+  const offset2 = getTimeZoneOffsetMs(new Date(utc), timeZone);
+  if (offset2 !== offset) {
+    utc = utcGuess - offset2;
+  }
+  return utc;
+}
+
+function getLocalEndOfDayIso(dateStr, timeZone = APP_TIMEZONE) {
+  if (!dateStr) return null;
+  const parts = String(dateStr).split('-').map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return null;
+  const [year, month, day] = parts;
+  const utcMs = getUtcTimestampForLocal(
+    { year, month, day, hour: 23, minute: 59, second: 59 },
+    timeZone
+  );
+  const iso = new Date(utcMs + 999).toISOString();
+  return iso;
+}
+
+function getDateForLocalIso(dateStr, timeZone = APP_TIMEZONE) {
+  if (!dateStr) return null;
+  const parts = String(dateStr).split('-').map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return null;
+  const [year, month, day] = parts;
+  const utcMs = getUtcTimestampForLocal({ year, month, day, hour: 12 }, timeZone);
+  const dateObj = new Date(utcMs);
+  return Number.isNaN(dateObj.getTime()) ? null : dateObj;
+}
+
+function makeWeekStartResolver(timeZone = APP_TIMEZONE) {
+  const tz = timeZone || APP_TIMEZONE;
+  const dateFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const weekdayFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short'
+  });
+
+  return dateObj => {
+    if (!dateObj || Number.isNaN(dateObj.getTime())) return null;
+    const parts = dateFormatter.formatToParts(dateObj);
+    const y = parts.find(p => p.type === 'year')?.value;
+    const m = parts.find(p => p.type === 'month')?.value;
+    const d = parts.find(p => p.type === 'day')?.value;
+    if (!y || !m || !d) return null;
+    const dateStr = `${y}-${m}-${d}`;
+    const weekdayShort = weekdayFormatter.format(dateObj);
+    const idx = WEEKDAY_INDEX[weekdayShort];
+    if (idx == null) return dateStr;
+    return shiftIsoDate(dateStr, -idx);
+  };
+}
+
+async function getOrgTimezone(orgId) {
+  if (!orgId) return APP_TIMEZONE;
+  const row = await dbGet('SELECT timezone FROM orgs WHERE id = ?', [orgId]);
+  return (row && row.timezone) ? row.timezone : APP_TIMEZONE;
 }
 
 /* ───────── BACKUP HELPER (implemented in ./lib/backup.js) ───────── */
@@ -345,8 +1080,8 @@ const PAYROLL_STATUS = {
   PARTIAL: 'partial'
 };
 
-async function markPayrollRunStatus(runId, status, { lastError, lastAttemptId, idempotencyKey } = {}) {
-  if (!runId) return;
+async function markPayrollRunStatus(orgId, runId, status, { lastError, lastAttemptId, idempotencyKey } = {}) {
+  if (!orgId || !runId) return;
   const sets = ['status = ?'];
   const params = [status];
 
@@ -365,10 +1100,10 @@ async function markPayrollRunStatus(runId, status, { lastError, lastAttemptId, i
     params.push(idempotencyKey);
   }
 
-  params.push(runId);
+  params.push(runId, orgId);
 
   await dbRun(
-    `UPDATE payroll_runs SET ${sets.join(', ')} WHERE id = ?`,
+    `UPDATE payroll_runs SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`,
     params
   );
 }
@@ -402,9 +1137,13 @@ async function validatePayrollRangeServer(start, end) {
 
 const PAYROLL_PREFLIGHT_TTL_MINUTES = 30;
 
-async function loadPayrollRulesMap() {
+async function loadPayrollRulesMap(orgId) {
+  if (!orgId) return null;
   try {
-    const row = await dbGet('SELECT value FROM app_settings WHERE key = ?', ['payroll_rules']);
+    const row = await dbGet(
+      'SELECT value FROM org_settings WHERE org_id = ? AND key = ?',
+      [orgId, 'payroll_rules']
+    );
     if (!row || !row.value) return null;
     const parsed = JSON.parse(row.value);
     return parsed && typeof parsed === 'object' ? parsed : null;
@@ -521,6 +1260,7 @@ function hashPayrollPayload(raw = {}) {
 }
 
 async function storePayrollPreflight({
+  orgId,
   normalized,
   payloadJson,
   payloadHash,
@@ -531,6 +1271,7 @@ async function storePayrollPreflight({
   const result = await dbRun(
     `
       INSERT INTO payroll_preflights (
+        org_id,
         start_date,
         end_date,
         run_type,
@@ -540,9 +1281,10 @@ async function storePayrollPreflight({
         payload_json,
         expires_at,
         created_by_employee_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?), ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), ?)
     `,
     [
+      orgId,
       normalized.start,
       normalized.end,
       normalized.run_type || 'standard',
@@ -557,15 +1299,15 @@ async function storePayrollPreflight({
   return result?.lastID || null;
 }
 
-async function loadPayrollPreflight(preflightId) {
-  if (!preflightId) return null;
+async function loadPayrollPreflight({ orgId, preflightId }) {
+  if (!orgId || !preflightId) return null;
   return dbGet(
     `
       SELECT id, payload_hash, payload_json, snapshot_hash, snapshot_count, expires_at
       FROM payroll_preflights
-      WHERE id = ? AND expires_at > datetime('now')
+      WHERE id = ? AND org_id = ? AND expires_at > datetime('now')
     `,
-    [preflightId]
+    [preflightId, orgId]
   );
 }
 
@@ -585,6 +1327,7 @@ async function purgeExpiredPayrollPreflights() {
 /* ───────── PAYROLL AUDIT LOG HELPER ───────── */
 
 async function logPayrollEvent({
+  orgId,
   event_type,
   payroll_run_id = null,
   actor_employee_id = null,
@@ -593,18 +1336,50 @@ async function logPayrollEvent({
 }) {
   const detailsJson = details ? JSON.stringify(details) : null;
 
+  if (!orgId) return;
   await dbRun(
     `
       INSERT INTO payroll_audit_log (
+        org_id,
         event_type,
         payroll_run_id,
         actor_employee_id,
         message,
         details_json
-      ) VALUES (?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?)
     `,
-    [event_type, payroll_run_id, actor_employee_id, message, detailsJson]
+    [orgId, event_type, payroll_run_id, actor_employee_id, message, detailsJson]
   );
+
+  if (PAYROLL_NOTIFICATION_EVENTS.includes(event_type)) {
+    const titleMap = {
+      PAYROLL_RUN_DUE: 'Payroll run due',
+      PAYROLL_RUN_STARTED: 'Payroll run started',
+      PAYROLL_RUN_SUCCESS: 'Payroll run completed',
+      PAYROLL_RUN_PARTIAL: 'Payroll run partially completed',
+      PAYROLL_RUN_FAILURE: 'Payroll run failed',
+      PAYROLL_FATAL_ERROR: 'Payroll fatal error',
+      PAYROLL_QBO_ERROR: 'Payroll QuickBooks error',
+      PAYROLL_UNPAY: 'Payroll marked unpaid'
+    };
+    const title = titleMap[event_type] || 'Payroll update';
+    const bodyText = message || `Payroll event: ${event_type}`;
+    try {
+      await notifyPayrollEvent({
+        orgId,
+        eventType: event_type,
+        title,
+        body: bodyText,
+        data: {
+          payroll_run_id,
+          actor_employee_id,
+          details: details || null
+        }
+      });
+    } catch (err) {
+      console.warn('Payroll notification failed:', err.message || err);
+    }
+  }
 }
 
 /* ───────── QUICKBOOKS HELPERS ───────── */
@@ -613,6 +1388,8 @@ const {
   getAuthUrl,
   exchangeCodeForTokens,
   getAccessToken,
+  getRealmId,
+  clearTokens,
   syncVendors,
   syncProjects,
   createChecksForPeriod,
@@ -620,20 +1397,261 @@ const {
   syncEmployeesFromQuickBooks,
   listPayrollAccounts,
   listClasses,
+  createEmployeeInQuickBooks,
   setPrintOnCheckName,
   ensureNameOnChecksColumns
 } = require('./quickbooks');
 
-// Make sure name_on_checks columns exist (non-blocking)
-ensureNameOnChecksColumns().catch(err => {
-  console.error('Error ensuring name_on_checks columns:', err);
-});
+const QBO_OAUTH_STATE_TTL_MINUTES = 10;
+
+async function createQboOAuthState({ orgId, userId }) {
+  if (!orgId || !userId) {
+    throw new Error('orgId and userId are required for OAuth state.');
+  }
+  const state = crypto.randomBytes(24).toString('hex');
+  await dbRun(
+    `
+      INSERT INTO qbo_oauth_states (org_id, user_id, state, expires_at)
+      VALUES (?, ?, ?, datetime('now', ?))
+    `,
+    [orgId, userId, state, `+${QBO_OAUTH_STATE_TTL_MINUTES} minutes`]
+  );
+  return state;
+}
+
+async function consumeQboOAuthState(state) {
+  if (!state) return null;
+  const row = await dbGet(
+    `
+      SELECT id, org_id, user_id
+      FROM qbo_oauth_states
+      WHERE state = ? AND expires_at > datetime('now')
+      LIMIT 1
+    `,
+    [state]
+  );
+  if (!row) return null;
+  await dbRun('DELETE FROM qbo_oauth_states WHERE id = ?', [row.id]);
+  return row;
+}
+
+async function purgeExpiredQboOAuthStates() {
+  try {
+    const res = await dbRun(
+      `DELETE FROM qbo_oauth_states WHERE expires_at <= datetime('now')`
+    );
+    if (res && res.changes) {
+      console.log(`🧹 QBO OAuth states purged: ${res.changes} expired rows.`);
+    }
+  } catch (err) {
+    console.error('QBO OAuth state purge error:', err);
+  }
+}
+
+function requireQboConfig(res, { expose = false } = {}) {
+  if (qboConfigured) return true;
+  const message = 'QuickBooks is not configured.';
+  if (expose) {
+    res.status(500).json({ error: message, missing: qboConfigMissing });
+  } else {
+    res.status(500).send(message);
+  }
+  return false;
+}
+
+async function respondWithQboError(res, err, { orgId } = {}) {
+  const status = err && err.response ? err.response.status : null;
+  const retryAfter = err && err.response ? err.response.headers?.['retry-after'] : null;
+  const message = err?.message || 'QuickBooks request failed.';
+
+  if (message.includes('Not connected to QuickBooks')) {
+    return res.status(400).json({ error: 'Not connected to QuickBooks.' });
+  }
+
+  if (status === 401 || status === 403) {
+    if (orgId) {
+      try {
+        await clearTokens(orgId);
+      } catch (wipeErr) {
+        console.warn('Failed to clear QBO tokens after auth error:', wipeErr.message || wipeErr);
+      }
+    }
+    return res.status(400).json({ error: 'Not connected to QuickBooks.' });
+  }
+
+  if (status === 429) {
+    if (retryAfter) res.setHeader('Retry-After', retryAfter);
+    return res.status(503).json({
+      error: 'QuickBooks rate limit reached. Please retry after a short delay.',
+      retryable: true
+    });
+  }
+
+  if (status && status >= 500) {
+    return res.status(503).json({
+      error: 'QuickBooks is temporarily unavailable. Please retry later.',
+      retryable: true
+    });
+  }
+
+  return res.status(502).json({
+    error: message,
+    retryable: false
+  });
+}
 
 
 
 /* ───────── KIOSK HELPERS ───────── */
 
-function getTodayForemanForDevice(deviceId, employeeIdOrCb, maybeCb) {
+const ENROLLMENT_CODE_KEY = 'kiosk_enrollment_code';
+
+function normalizeEnrollmentCode(raw) {
+  return String(raw || '').replace(/\D/g, '');
+}
+
+async function generateUniqueEnrollmentCode() {
+  for (let i = 0; i < 10; i += 1) {
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const existing = await dbGet(
+      'SELECT org_id FROM org_settings WHERE key = ? AND value = ? LIMIT 1',
+      [ENROLLMENT_CODE_KEY, code]
+    );
+    if (!existing) return code;
+  }
+  return String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+}
+
+async function upsertOrgSetting(orgId, key, value) {
+  await dbRun(
+    `
+      INSERT INTO org_settings (org_id, key, value)
+      VALUES (?, ?, ?)
+      ON CONFLICT(org_id, key) DO UPDATE SET value = excluded.value
+    `,
+    [orgId, key, value]
+  );
+}
+
+async function loadOrgSettingValue(orgId, key) {
+  if (!orgId || !key) return null;
+  const row = await dbGet(
+    'SELECT value FROM org_settings WHERE org_id = ? AND key = ?',
+    [orgId, key]
+  );
+  return row ? row.value : null;
+}
+
+async function loadOrgSyncStatus(orgId) {
+  if (!orgId) {
+    return {
+      employees: null,
+      vendors: null,
+      projects: null,
+      payroll_accounts: null
+    };
+  }
+
+  const keys = [
+    'qbo_last_sync_employees_at',
+    'qbo_last_sync_vendors_at',
+    'qbo_last_sync_projects_at',
+    'qbo_last_sync_payroll_accounts_at'
+  ];
+
+  const rows = await dbAll(
+    `
+      SELECT key, value
+      FROM org_settings
+      WHERE org_id = ? AND key IN (${keys.map(() => '?').join(',')})
+    `,
+    [orgId, ...keys]
+  );
+
+  const map = Object.create(null);
+  (rows || []).forEach(row => {
+    map[row.key] = row.value;
+  });
+
+  return {
+    employees: map.qbo_last_sync_employees_at || null,
+    vendors: map.qbo_last_sync_vendors_at || null,
+    projects: map.qbo_last_sync_projects_at || null,
+    payroll_accounts: map.qbo_last_sync_payroll_accounts_at || null
+  };
+}
+
+async function loadEnrollmentCode(orgId, { createIfMissing = false } = {}) {
+  const row = await dbGet(
+    'SELECT value FROM org_settings WHERE org_id = ? AND key = ?',
+    [orgId, ENROLLMENT_CODE_KEY]
+  );
+  if (row && row.value) return row.value;
+  if (!createIfMissing) return null;
+  const code = await generateUniqueEnrollmentCode();
+  await upsertOrgSetting(orgId, ENROLLMENT_CODE_KEY, code);
+  return code;
+}
+
+async function rotateEnrollmentCode(orgId) {
+  const code = await generateUniqueEnrollmentCode();
+  await upsertOrgSetting(orgId, ENROLLMENT_CODE_KEY, code);
+  return code;
+}
+
+async function getClockInPhotoRequired(orgId) {
+  const row = await dbGet(
+    'SELECT value FROM org_settings WHERE org_id = ? AND key = ?',
+    [orgId, 'clock_in_photo_required']
+  );
+  if (!row) return false;
+  return String(row.value || '').trim() === '1';
+}
+
+function parseBase64Image(raw) {
+  if (!raw) return null;
+  const str = String(raw);
+  const match = str.match(/^data:image\/(png|jpeg|jpg);base64,(.+)$/i);
+  let ext = 'jpg';
+  let payload = str;
+  if (match) {
+    ext = match[1] === 'jpeg' ? 'jpg' : match[1].toLowerCase();
+    payload = match[2];
+  }
+  try {
+    const buffer = Buffer.from(payload, 'base64');
+    if (!buffer.length) return null;
+    return { buffer, ext };
+  } catch {
+    return null;
+  }
+}
+
+async function saveClockInPhoto({ orgId, employeeId, deviceId, photoBase64, punchTime }) {
+  const parsed = parseBase64Image(photoBase64);
+  if (!parsed) return null;
+  const datePart = (punchTime || new Date().toISOString()).slice(0, 10);
+  const root = path.join(__dirname, 'secure_uploads', 'clock_in_photos');
+  const dir = path.join(root, String(orgId), datePart);
+  await fsp.mkdir(dir, { recursive: true });
+  const suffix = crypto.randomBytes(4).toString('hex');
+  const name = `emp_${employeeId || 'unknown'}_${Date.now()}_${suffix}.${parsed.ext}`;
+  const fullPath = path.join(dir, name);
+  await fsp.writeFile(fullPath, parsed.buffer);
+  const rel = path.relative(path.join(__dirname, 'secure_uploads'), fullPath);
+  return rel.replace(/\\\\/g, '/');
+}
+
+function getTodayForemanForDeviceAsync(deviceId, employeeId, todayOverride) {
+  return new Promise((resolve, reject) => {
+    getTodayForemanForDevice(deviceId, employeeId, (err, foremanId) => {
+      if (err) return reject(err);
+      resolve(foremanId);
+    }, todayOverride);
+  });
+}
+
+function getTodayForemanForDevice(deviceId, employeeIdOrCb, maybeCb, todayOverride) {
   let employeeId;
   let cb;
 
@@ -652,11 +1670,12 @@ function getTodayForemanForDevice(deviceId, employeeIdOrCb, maybeCb) {
     return cb(null, null); // no device context → no foreman
   }
 
-  const today = getTodayIsoDate();
+  const today = todayOverride || getTodayIsoDate();
 
   const sql = `
     SELECT
       k.id AS kiosk_id,
+      k.org_id AS kiosk_org_id,
       kf.foreman_employee_id
     FROM kiosks k
     LEFT JOIN kiosk_foreman_days kf
@@ -675,20 +1694,20 @@ function getTodayForemanForDevice(deviceId, employeeIdOrCb, maybeCb) {
     }
 
     // No kiosk row or no employee provided to auto-set a foreman → nothing to do.
-    if (!row || !row.kiosk_id || !employeeId) {
+    if (!row || !row.kiosk_id || !row.kiosk_org_id || !employeeId) {
       return cb(null, null);
     }
 
     // No foreman yet for this kiosk/date: make THIS employee today's foreman.
     const insertSql = `
       INSERT INTO kiosk_foreman_days
-        (kiosk_id, foreman_employee_id, date, set_by_employee_id)
-      VALUES (?, ?, ?, ?)
+        (org_id, kiosk_id, foreman_employee_id, date, set_by_employee_id)
+      VALUES (?, ?, ?, ?, ?)
     `;
 
     db.run(
       insertSql,
-      [row.kiosk_id, employeeId, today, employeeId],
+      [row.kiosk_org_id, row.kiosk_id, employeeId, today, employeeId],
       function (err2) {
         if (err2) {
           const msg = String(err2.message || '');
@@ -698,8 +1717,8 @@ function getTodayForemanForDevice(deviceId, employeeIdOrCb, maybeCb) {
             db.get(
               `SELECT foreman_employee_id
                FROM kiosk_foreman_days
-               WHERE kiosk_id = ? AND date = ?`,
-              [row.kiosk_id, today],
+               WHERE org_id = ? AND kiosk_id = ? AND date = ?`,
+              [row.kiosk_org_id, row.kiosk_id, today],
               (err3, row2) => {
                 if (err3) return cb(err3);
                 return cb(null, row2 ? row2.foreman_employee_id : null);
@@ -720,12 +1739,17 @@ function getTodayForemanForDevice(deviceId, employeeIdOrCb, maybeCb) {
 /* ───────── 2. EXPRESS APP & GLOBAL MIDDLEWARE ───────── */
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const SERVER_PORT = PORT || 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
+const trustProxyFlag = String(process.env.TRUST_PROXY || '').toLowerCase();
+if (trustProxyFlag === 'true' || trustProxyFlag === '1') {
+  app.set('trust proxy', 1);
+}
 
 // Session middleware for login state
-const sessionStore = createSQLiteStore(session, { dbPath });
+const sessionStore = createSQLiteStore(session, { dbPath: SESSION_DB_PATH || dbPath });
 const activeSessionSecret =
   SESSION_SECRET ||
   crypto.randomBytes(48).toString('hex');
@@ -746,35 +1770,92 @@ app.use(
 
 app.use(csrfGuard);
 
-// Landing route: show login/register page if NOT logged in,
-// otherwise show the main admin console (index.html).
-app.get('/', (req, res) => {
-  // If logged in and admin, show admin console; otherwise show auth
-  const sessionEmpId = req.session && req.session.employeeId;
+// Auth page (sign-in + bootstrap + org selection)
+app.get('/auth', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'auth.html'));
+});
+
+// Admin console (desktop only)
+app.get('/', async (req, res) => {
   const sessionUserId = req.session && req.session.userId;
+  const sessionOrgId = req.session && req.session.orgId;
+  const sessionEmpId = req.session && req.session.employeeId;
+  const uiMode = req.session && req.session.ui_mode;
 
-  const sendAuth = () => res.sendFile(path.join(__dirname, 'public', 'auth.html'));
-  const sendAdmin = () => res.sendFile(path.join(__dirname, 'public', 'index.html'));
-
-  if (!sessionUserId) {
-    return sendAuth();
+  if (!sessionUserId || !sessionOrgId || !sessionEmpId) {
+    return res.redirect('/auth');
   }
 
-  if (!sessionEmpId) {
-    // No linked employee → treat as admin-only path; send admin console
-    return sendAdmin();
-  }
-
-  getAdminAccessPerms(sessionEmpId)
-    .then(perms => {
-      if (perms && perms.view_payroll) {
-        return sendAdmin();
-      }
-      // Non-admins are blocked from desktop UI; send auth screen
+  try {
+    const orgStatus = await getOrgStatus(sessionOrgId);
+    if (orgStatus && orgStatus !== 'active') {
       req.session.destroy(() => {});
-      return sendAuth();
-    })
-    .catch(() => sendAuth());
+      return res.redirect('/auth');
+    }
+    const membership = await dbGet(
+      'SELECT login_enabled FROM user_orgs WHERE user_id = ? AND org_id = ?',
+      [sessionUserId, sessionOrgId]
+    );
+    if (!membership || !isTruthyFlag(membership.login_enabled)) {
+      req.session.destroy(() => {});
+      return res.redirect('/auth');
+    }
+    const access = await getEmployeeAccessFlags({
+      employeeId: sessionEmpId,
+      orgId: sessionOrgId
+    });
+    if (access && access.active && uiMode === 'kiosk') {
+      return res.redirect('/kiosk');
+    }
+
+    if (access && access.active && access.desktop_access) {
+      return res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    }
+    if (
+      access &&
+      access.active &&
+      (access.kiosk_admin_access || access.worker_timekeeping)
+    ) {
+      return res.redirect('/kiosk');
+    }
+  } catch (err) {
+    console.warn('Failed to resolve desktop access:', err.message);
+  }
+
+  req.session.destroy(() => {});
+  return res.redirect('/auth');
+});
+
+// Kiosk admin shell (guarded by session or device auth)
+app.get(['/kiosk-admin', '/kiosk-admin.html'], async (req, res) => {
+  try {
+    if (req.path === '/kiosk-admin.html') {
+      const idx = req.originalUrl.indexOf('?');
+      const query = idx >= 0 ? req.originalUrl.slice(idx) : '';
+      return res.redirect(`/kiosk-admin${query}`);
+    }
+
+    const deviceId = ((req.query && req.query.device_id) || '').trim();
+    if (!deviceId) {
+      return res.redirect('/kiosk');
+    }
+    const access = await ensureKioskDevice(req);
+    if (!access || !access.ok) {
+      return res.redirect('/kiosk');
+    }
+    return res.sendFile(path.join(__dirname, 'public', 'kiosk-admin.html'));
+  } catch (err) {
+    console.warn('Kiosk admin guard failed:', err.message);
+    return res.redirect('/kiosk');
+  }
+});
+
+// Block legacy public uploads from direct access (serve via auth endpoints only)
+app.use((req, res, next) => {
+  if (req.path && req.path.startsWith('/uploads/')) {
+    return res.status(404).send('Not found');
+  }
+  return next();
 });
 
 // Static assets (CSS, JS, etc.)
@@ -795,284 +1876,441 @@ app.get('/kiosk', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'kiosk.html'));
 });
 
-/* ───────── AUTH: REGISTER & LOGIN ───────── */
-
+/* ───────── AUTH: BOOTSTRAP & LOGIN ───────── */
 
 // Helper to normalize emails
 function normalizeEmail(email) {
   return (email || '').trim().toLowerCase();
 }
 
-/* ───────── AUTH: REGISTER (must match a QuickBooks employee) ───────── */
+const PASSWORD_MIN_LENGTH = 8;
+function validatePassword(password) {
+  const value = String(password || '');
+  if (value.length < PASSWORD_MIN_LENGTH) {
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`;
+  }
+  return null;
+}
 
-app.post('/api/auth/register', (req, res) => {
-  const { email, password } = req.body || {};
+function ensureCsrfToken(req, res) {
+  if (!req.session) return null;
+  if (!req.session.csrfToken) {
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+  }
+  if (res && req.session.csrfToken) {
+    res.setHeader('X-CSRF-Token', req.session.csrfToken);
+  }
+  return req.session.csrfToken;
+}
 
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required.' });
+async function regenerateSession(req) {
+  if (!req.session || typeof req.session.regenerate !== 'function') return;
+  await new Promise((resolve, reject) => {
+    req.session.regenerate(err => (err ? reject(err) : resolve()));
+  });
+}
+
+function createRateLimiter({ windowMs, max, keyFn }) {
+  const hits = new Map();
+
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = typeof keyFn === 'function' ? keyFn(req) : req.ip || 'unknown';
+    const entry = hits.get(key);
+    if (!entry || now - entry.start >= windowMs) {
+      hits.set(key, { start: now, count: 1 });
+      return next();
+    }
+
+    entry.count += 1;
+    if (entry.count > max) {
+      const retryAfterSeconds = Math.ceil((entry.start + windowMs - now) / 1000);
+      res.setHeader('Retry-After', String(Math.max(retryAfterSeconds, 1)));
+      return res.status(429).json({ error: 'Too many requests. Please retry shortly.' });
+    }
+
+    return next();
+  };
+}
+
+async function loadUserOrgs(userId) {
+  return dbAll(
+    `
+      SELECT
+        o.id,
+        o.name,
+        o.timezone,
+        o.status,
+        uo.employee_id,
+        uo.is_super_admin,
+        uo.login_enabled,
+        e.active AS employee_active,
+        e.desktop_access AS employee_desktop_access
+      FROM user_orgs uo
+      JOIN orgs o ON o.id = uo.org_id
+      LEFT JOIN employees e
+        ON e.id = uo.employee_id
+        AND e.org_id = uo.org_id
+      WHERE uo.user_id = ?
+      ORDER BY o.name ASC
+    `,
+    [userId]
+  );
+}
+
+function isTruthyFlag(value) {
+  return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function isActiveFlag(value) {
+  if (value == null) return true;
+  return isTruthyFlag(value);
+}
+
+function isEligibleSuperAdminOrg(org) {
+  if (!org) return false;
+  if (org.status && org.status !== 'active') return false;
+  if (!isTruthyFlag(org.is_super_admin)) return false;
+  if (!isTruthyFlag(org.login_enabled)) return false;
+  if (!org.employee_id) return false;
+  if (!isActiveFlag(org.employee_active)) return false;
+  if (!isTruthyFlag(org.employee_desktop_access)) return false;
+  return true;
+}
+
+function applyRememberCookie(req, remember) {
+  if (!req.session) return;
+  if (remember) {
+    req.session.cookie.maxAge = 1000 * 60 * 60 * 24 * 30;
+    req.session.cookie.expires = new Date(
+      Date.now() + req.session.cookie.maxAge
+    );
+  } else {
+    req.session.cookie.maxAge = null;
+    req.session.cookie.expires = false;
+  }
+}
+
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    const first = String(forwarded).split(',')[0].trim();
+    if (first) return first;
+  }
+  return req.ip || '';
+}
+
+const loginRateLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyFn: (req) => `${getClientIp(req)}:login`
+});
+
+const bootstrapRateLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  keyFn: (req) => `${getClientIp(req)}:bootstrap`
+});
+
+const SESSION_ENC_PREFIX = 'enc:v1:';
+const sessionCryptoKey = (() => {
+  const raw = SESSION_ENCRYPTION_KEY || SESSION_SECRET;
+  if (!raw) return null;
+  return crypto.createHash('sha256').update(String(raw)).digest();
+})();
+
+function decryptSessionValue(value) {
+  if (!value) return null;
+  const raw = String(value);
+  if (!sessionCryptoKey || !raw.startsWith(SESSION_ENC_PREFIX)) return raw;
+  try {
+    const body = raw.slice(SESSION_ENC_PREFIX.length);
+    const [ivB64, tagB64, dataB64] = body.split(':');
+    if (!ivB64 || !tagB64 || !dataB64) return null;
+    const iv = Buffer.from(ivB64, 'base64');
+    const tag = Buffer.from(tagB64, 'base64');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', sessionCryptoKey, iv);
+    decipher.setAuthTag(tag);
+    let dec = decipher.update(dataB64, 'base64', 'utf8');
+    dec += decipher.final('utf8');
+    return dec;
+  } catch {
+    return null;
+  }
+}
+
+async function revokeUserSessions({ userId, orgId }) {
+  if (!userId) return 0;
+  let rows = [];
+  try {
+    rows = await dbAll('SELECT sid, sess FROM sessions');
+  } catch (err) {
+    console.warn('Failed to load sessions for revocation:', err.message);
+    return 0;
+  }
+
+  const sids = [];
+  for (const row of rows || []) {
+    const raw = decryptSessionValue(row.sess);
+    if (!raw) continue;
+    let sess;
+    try {
+      sess = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!sess || Number(sess.userId) !== Number(userId)) continue;
+    if (orgId && sess.orgId && Number(sess.orgId) !== Number(orgId)) continue;
+    sids.push(row.sid);
+  }
+
+  if (!sids.length) return 0;
+  for (const sid of sids) {
+    await dbRun('DELETE FROM sessions WHERE sid = ?', [sid]);
+  }
+  return sids.length;
+}
+
+async function requireActiveDesktopSession(req) {
+  const userId = req.session?.userId;
+  const orgId = req.session?.orgId;
+  if (!userId || !orgId) {
+    return { ok: false, status: 403, error: 'Org access denied.' };
+  }
+
+  const orgStatus = await getOrgStatus(orgId);
+  if (orgStatus && orgStatus !== 'active') {
+    return { ok: false, status: 403, error: 'Org access denied.' };
+  }
+
+  const membership = await dbGet(
+    'SELECT login_enabled, employee_id FROM user_orgs WHERE user_id = ? AND org_id = ?',
+    [userId, orgId]
+  );
+  if (!membership || !isTruthyFlag(membership.login_enabled)) {
+    return { ok: false, status: 403, error: 'Login disabled.' };
+  }
+
+  const employeeId = membership.employee_id || req.session?.employeeId;
+  if (!employeeId) {
+    return { ok: false, status: 403, error: 'Org access denied.' };
+  }
+
+  const access = await getEmployeeAccessFlags({ employeeId, orgId });
+  if (!access || !access.active || !access.desktop_access) {
+    return { ok: false, status: 403, error: 'Org access denied.' };
+  }
+
+  req.session.employeeId = employeeId;
+  return { ok: true, orgId, employeeId, access };
+}
+
+async function requireSuperAdmin(req, res, next) {
+  const userId = req.session?.userId;
+  const orgId = req.session?.orgId;
+  if (!userId || !orgId) {
+    return res.status(403).json({ error: 'Super admin access required.' });
+  }
+
+  const orgStatus = await getOrgStatus(orgId);
+  if (orgStatus && orgStatus !== 'active') {
+    return res.status(403).json({ error: 'Org access denied.' });
+  }
+
+  const membership = await dbGet(
+    'SELECT is_super_admin, login_enabled, employee_id FROM user_orgs WHERE user_id = ? AND org_id = ?',
+    [userId, orgId]
+  );
+  if (!membership || !membership.is_super_admin || !isTruthyFlag(membership.login_enabled)) {
+    return res.status(403).json({ error: 'Super admin access required.' });
+  }
+
+  const employeeId = membership.employee_id || req.session?.employeeId;
+  if (!employeeId) {
+    return res.status(403).json({ error: 'Super admin access required.' });
+  }
+  const access = await getEmployeeAccessFlags({ employeeId, orgId });
+  if (!access || !access.active || !access.desktop_access) {
+    return res.status(403).json({ error: 'Super admin access required.' });
+  }
+
+  req.session.employeeId = employeeId;
+  req.session.isSuperAdmin = 1;
+  return next();
+}
+
+app.post('/api/auth/bootstrap', bootstrapRateLimiter, async (req, res) => {
+  const { email, password, admin_name, org_name, org_timezone } = req.body || {};
+
+  if (!email || !password || !admin_name || !org_name || !org_timezone) {
+    return res.status(400).json({
+      error: 'email, password, admin_name, org_name, and org_timezone are required.'
+    });
   }
 
   const normEmail = normalizeEmail(email);
 
-  db.serialize(() => {
-    // 0) Check if any users exist; if none, allow bootstrap admin creation
-    db.get('SELECT COUNT(*) AS cnt FROM users', [], (errCount, rowCount) => {
-      if (errCount) {
-        console.error('Register: error counting users:', errCount);
-        return res.status(500).json({ error: 'Database error.' });
-      }
-      const userCount = rowCount && Number(rowCount.cnt) ? Number(rowCount.cnt) : 0;
-
-      const handleBootstrap = () => {
-        // Create a bootstrap admin employee + user when no users exist yet
-        const password_hash = bcrypt.hashSync(password, 10);
-        db.run(
-          `
-            INSERT INTO employees (name, email, is_admin, active)
-            VALUES (?, ?, 1, 1)
-          `,
-          [normEmail, normEmail],
-          function (errEmp) {
-            if (errEmp) {
-              console.error('Register bootstrap: error inserting employee:', errEmp);
-              return res.status(500).json({ error: 'Database error.' });
-            }
-            const employeeId = this.lastID;
-            db.run(
-              `
-                INSERT INTO users (email, password_hash, employee_id)
-                VALUES (?, ?, ?)
-              `,
-              [normEmail, password_hash, employeeId],
-              function (errUser) {
-                if (errUser) {
-                  console.error('Register bootstrap: error inserting user:', errUser);
-                  return res.status(500).json({ error: 'Database error.' });
-                }
-                if (req.session) {
-                  req.session.userId = this.lastID;
-                  req.session.employeeId = employeeId;
-                  req.session.cookie.maxAge = 1000 * 60 * 60 * 24 * 30;
-                }
-                return res.json({
-                  ok: true,
-                  bootstrap: true,
-                  userId: this.lastID,
-                  employeeId,
-                  message: 'Bootstrap admin created.'
-                });
-              }
-            );
-          }
-        );
-      };
-
-      if (userCount === 0) {
-        return handleBootstrap();
-      }
-
-      // 1) Check if user already exists
-    db.get(
-      'SELECT id FROM users WHERE LOWER(email) = LOWER(?)',
-      [normEmail],
-      (err, existing) => {
-        if (err) {
-          console.error('Register: error checking existing user:', err);
-          return res.status(500).json({ error: 'Database error.' });
-        }
-
-        if (existing) {
-          return res.status(409).json({
-            error:
-              'An account already exists for this email. Please sign in instead.'
-          });
-        }
-
-        // 2) Look for a matching employee by email (QuickBooks sync)
-        db.get(
-          `
-            SELECT id, name, name_on_checks, rate, email
-            FROM employees
-            WHERE LOWER(email) = LOWER(?)
-              AND (active = 1 OR active IS NULL)
-          `,
-          [normEmail],
-          (err2, emp) => {
-            if (err2) {
-              console.error('Register: error finding employee:', err2);
-              return res.status(500).json({ error: 'Database error.' });
-            }
-
-            if (!emp) {
-              // ❌ No QB employee with this email → DO NOT create user
-              return res.status(400).json({
-                error:
-                  'We could not find a QuickBooks employee with that email. ' +
-                  'Please speak with your QuickBooks administrator to get your email added, ' +
-                  'then try again.'
-              });
-            }
-
-            // 3) We have a matching employee → create user (not linked yet)
-            const password_hash = bcrypt.hashSync(password, 10);
-
-            db.run(
-              `
-                INSERT INTO users (email, password_hash, employee_id)
-                VALUES (?, ?, NULL)
-              `,
-              [normEmail, password_hash],
-              function (err3) {
-                if (err3) {
-                  console.error('Register: error inserting user:', err3);
-                  return res.status(500).json({ error: 'Database error.' });
-                }
-
-                // Return candidate employee for the "Is this you?" step
-                return res.json({
-                  ok: true,
-                  userId: this.lastID,
-                  candidateEmployee: {
-                    id: emp.id,
-                    name: emp.name,
-                    name_on_checks: emp.name_on_checks,
-                    rate: emp.rate,
-                    email: emp.email
-                  }
-                });
-              }
-            );
-          }
-        );
-      }
-    );
-    });
-  });
-});
-
-
-/* ───────── AUTH: LINK EMPLOYEE (step 2 – after user confirms) ───────── */
-
-app.post('/api/auth/link-employee', requireAuth, (req, res) => {
-  const { userId, employeeId } = req.body || {};
-
-  if (!userId || !employeeId) {
-    return res.status(400).json({ error: 'userId and employeeId are required.' });
-  }
-
-  const sessionUserId = Number(req.session.userId);
-  if (!sessionUserId || sessionUserId !== Number(userId)) {
-    return res.status(403).json({ error: 'You can only link your own account.' });
-  }
-
-  db.serialize(() => {
-    db.get(
-      'SELECT id, email, employee_id FROM users WHERE id = ?',
-      [userId],
-      (err, user) => {
-        if (err) {
-          console.error('Link employee: user lookup error:', err);
-          return res.status(500).json({ error: 'Database error.' });
-        }
-        if (!user) {
-          return res.status(404).json({ error: 'User not found.' });
-        }
-
-        db.get(
-          'SELECT id, name, name_on_checks, rate, email FROM employees WHERE id = ?',
-          [employeeId],
-          (err2, emp) => {
-            if (err2) {
-              console.error('Link employee: employee lookup error:', err2);
-              return res.status(500).json({ error: 'Database error.' });
-            }
-            if (!emp) {
-              return res.status(404).json({ error: 'Employee not found.' });
-            }
-
-            // Optional safety: ensure emails match if both are set
-            if (emp.email && user.email &&
-                emp.email.toLowerCase() !== user.email.toLowerCase()) {
-              console.warn(
-                'Link employee: email mismatch between user and employee',
-                user.email,
-                emp.email
-              );
-              // You can block here if you want strict matching:
-              // return res.status(400).json({ error: 'Email mismatch.' });
-            }
-
-            db.run(
-              'UPDATE users SET employee_id = ? WHERE id = ?',
-              [employeeId, userId],
-              function (err3) {
-                if (err3) {
-                  console.error('Link employee: update error:', err3);
-                  return res.status(500).json({ error: 'Database error.' });
-                }
-
-                // ✅ Log them in now that the account is linked
-                if (req.session) {
-                  req.session.userId = user.id;
-                  req.session.employeeId = emp.id;
-
-                  // New accounts: give them a default "remember me" session
-                  // (30 days; adjust as desired)
-                  req.session.cookie.maxAge = 1000 * 60 * 60 * 24 * 30;
-                }
-
-                return res.json({
-                  ok: true,
-                  linkedEmployee: {
-                    id: emp.id,
-                    name: emp.name,
-                    name_on_checks: emp.name_on_checks,
-                    rate: emp.rate,
-                    email: emp.email
-                  }
-                });
-              }
-            );
-          }
-        );
-      }
-    );
-  });
-});
-
-/* ───────── AUTH: CANCEL REGISTRATION (delete user if they say "not me") ───────── */
-
-app.post('/api/auth/cancel-register', (req, res) => {
-  const { userId } = req.body || {};
-
-  if (!userId) {
-    return res.status(400).json({ error: 'userId is required.' });
-  }
-
-  db.run(
-    'DELETE FROM users WHERE id = ?',
-    [userId],
-    function (err) {
-      if (err) {
-        console.error('Cancel register: delete error:', err);
-        return res.status(500).json({ error: 'Database error.' });
-      }
-
-      // this.changes = number of rows deleted
-      if (this.changes === 0) {
-        return res
-          .status(404)
-          .json({ error: 'User not found or already removed.' });
-      }
-
-      return res.json({ ok: true, deleted: true });
+  try {
+    const countRow = await dbGet('SELECT COUNT(*) AS cnt FROM users');
+    const userCount = countRow ? Number(countRow.cnt || 0) : 0;
+    if (userCount > 0) {
+      return res.status(400).json({ error: 'Bootstrap already completed.' });
     }
-  );
+
+    const passwordErr = validatePassword(password);
+    if (passwordErr) {
+      return res.status(400).json({ error: passwordErr });
+    }
+
+    const orgName = String(org_name).trim();
+    const orgTimezone = String(org_timezone).trim();
+    const adminName = String(admin_name).trim();
+
+    if (!orgName || !orgTimezone || !adminName) {
+      return res.status(400).json({
+        error: 'org_name, org_timezone, and admin_name cannot be blank.'
+      });
+    }
+
+    await dbRun('BEGIN');
+
+    const orgRes = await dbRun(
+      `
+        INSERT INTO orgs (name, timezone)
+        VALUES (?, ?)
+      `,
+      [orgName, orgTimezone]
+    );
+    const orgId = orgRes.lastID;
+
+    const payrollRules = {
+      pay_period_length_days: 7,
+      pay_period_start_weekday: 1,
+      pay_period_anchor_date: null,
+      overtime_enabled: false,
+      overtime_daily_threshold_hours: 8,
+      overtime_weekly_threshold_hours: 40,
+      overtime_multiplier: 1.5,
+      double_time_enabled: false,
+      double_time_daily_threshold_hours: 12,
+      double_time_multiplier: 2.0
+    };
+
+    const timeExceptionRules = {
+      weekly_hours_threshold: null,
+      auto_clockout_daily_max_hours: null,
+      auto_clockout_weekly_max_hours: null
+    };
+
+    const enrollmentCode = await generateUniqueEnrollmentCode();
+
+    const settings = [
+      ['company_name', orgName],
+      ['company_email', null],
+      ['storage_daily_late_fee_default', null],
+      ['clock_in_photo_required', 0],
+      [ENROLLMENT_CODE_KEY, enrollmentCode],
+      ['payroll_rules', JSON.stringify(payrollRules)],
+      ['time_exception_rules', JSON.stringify(timeExceptionRules)],
+      ['notifications', JSON.stringify({})],
+      ['branding', JSON.stringify({})]
+    ];
+
+    for (const [key, value] of settings) {
+      await dbRun(
+        `
+          INSERT INTO org_settings (org_id, key, value)
+          VALUES (?, ?, ?)
+        `,
+        [orgId, key, value]
+      );
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const userRes = await dbRun(
+      `
+        INSERT INTO users (email, password_hash)
+        VALUES (?, ?)
+      `,
+      [normEmail, passwordHash]
+    );
+    const userId = userRes.lastID;
+
+    const employeeRes = await dbRun(
+      `
+        INSERT INTO employees (
+          org_id,
+          name,
+          email,
+          worker_timekeeping,
+          desktop_access,
+          kiosk_admin_access,
+          active,
+          language
+        ) VALUES (?, ?, ?, 1, 1, 1, 1, 'en')
+      `,
+      [orgId, adminName, normEmail]
+    );
+    const employeeId = employeeRes.lastID;
+
+    await dbRun(
+      `
+        INSERT INTO user_orgs (user_id, org_id, employee_id, is_super_admin, login_enabled)
+        VALUES (?, ?, ?, 1, 1)
+      `,
+      [userId, orgId, employeeId]
+    );
+
+    await dbRun(
+      `
+        INSERT INTO employee_permissions (
+          employee_id,
+          see_shipments,
+          modify_time,
+          view_time_reports,
+          view_payroll,
+          modify_payroll,
+          modify_pay_rates
+        ) VALUES (?, 1, 1, 1, 1, 1, 1)
+      `,
+      [employeeId]
+    );
+
+    await dbRun('COMMIT');
+
+    if (req.session) {
+      try {
+        await regenerateSession(req);
+      } catch (err) {
+        console.error('Session regeneration failed:', err);
+        return res.status(500).json({ error: 'Bootstrap failed.' });
+      }
+      req.session.userId = userId;
+      req.session.orgId = orgId;
+      req.session.employeeId = employeeId;
+      req.session.isSuperAdmin = 1;
+      ensureCsrfToken(req, res);
+    }
+
+    return res.json({
+      ok: true,
+      userId,
+      orgId,
+      employeeId,
+      is_super_admin: true
+    });
+  } catch (err) {
+    try {
+      await dbRun('ROLLBACK');
+    } catch (rollbackErr) {
+      console.warn('Bootstrap rollback failed:', rollbackErr.message);
+    }
+    console.error('Bootstrap error:', err);
+    return res.status(500).json({ error: 'Bootstrap failed.' });
+  }
 });
 
-
-// POST /api/auth/login
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
   const { email, password, remember } = req.body || {};
 
   if (!email || !password) {
@@ -1081,62 +2319,205 @@ app.post('/api/auth/login', (req, res) => {
 
   const normEmail = normalizeEmail(email);
 
-  db.get(
-    `
-      SELECT id, email, password_hash, employee_id
-      FROM users
-      WHERE LOWER(email) = LOWER(?)
-    `,
-    [normEmail],
-    (err, user) => {
-      if (err) {
-        console.error('Login: DB error:', err);
-        return res.status(500).json({ error: 'Database error.' });
+  try {
+    const user = await dbGet(
+      `
+        SELECT id, email, password_hash
+        FROM users
+        WHERE LOWER(email) = LOWER(?)
+      `,
+      [normEmail]
+    );
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const orgs = await loadUserOrgs(user.id);
+    const activeOrgs = (orgs || []).filter(isEligibleSuperAdminOrg);
+    if (!activeOrgs.length) {
+      return res.status(403).json({
+        error: 'No active desktop super admin membership found.'
+      });
+    }
+
+    if (req.session) {
+      try {
+        await regenerateSession(req);
+      } catch (err) {
+        console.error('Session regeneration failed:', err);
+        return res.status(500).json({ error: 'Login failed.' });
       }
+      req.session.userId = user.id;
+      req.session.orgId = null;
+      req.session.employeeId = null;
+      req.session.isSuperAdmin = null;
+      applyRememberCookie(req, remember);
+    }
 
-      if (!user) {
-        return res
-          .status(401)
-          .json({ error: 'Invalid email or password.' });
-      }
-
-      const ok = bcrypt.compareSync(password, user.password_hash);
-      if (!ok) {
-        return res
-          .status(401)
-          .json({ error: 'Invalid email or password.' });
-      }
-
-      // Log the user in + apply remember-me cookie
-      if (req.session) {
-        req.session.userId = user.id;
-        req.session.employeeId = user.employee_id || null;
-
-        if (remember) {
-          // 30 days
-          req.session.cookie.maxAge = 1000 * 60 * 60 * 24 * 30;
-          req.session.cookie.expires = new Date(
-            Date.now() + req.session.cookie.maxAge
-          );
-        } else {
-          // Session cookie (dies when browser closes)
-          req.session.cookie.maxAge = null;
-          req.session.cookie.expires = false;
-        }
-      }
-
+    if (activeOrgs.length > 1) {
+      ensureCsrfToken(req, res);
       return res.json({
         ok: true,
         userId: user.id,
-        employeeId: user.employee_id || null
+        orgs: activeOrgs.map(org => ({
+          id: org.id,
+          name: org.name,
+          timezone: org.timezone
+        })),
+        requires_org_selection: true
       });
     }
-  );
+
+    const membership = activeOrgs[0];
+    if (req.session) {
+      req.session.orgId = membership.id;
+      req.session.employeeId = membership.employee_id || null;
+      req.session.isSuperAdmin = membership.is_super_admin ? 1 : 0;
+      ensureCsrfToken(req, res);
+    }
+
+    return res.json({
+      ok: true,
+      userId: user.id,
+      orgId: membership.id,
+      employeeId: membership.employee_id || null
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Login failed.' });
+  }
 });
 
+app.get('/api/auth/orgs', requireAuth, async (req, res) => {
+  try {
+    const orgs = await loadUserOrgs(req.session.userId);
+    const activeOrgs = (orgs || []).filter(isEligibleSuperAdminOrg);
+    return res.json({
+      ok: true,
+      orgs: activeOrgs.map(org => ({
+        id: org.id,
+        name: org.name,
+        timezone: org.timezone
+      }))
+    });
+  } catch (err) {
+    console.error('auth/orgs error:', err);
+    return res.status(500).json({ error: 'Failed to load orgs.' });
+  }
+});
 
+app.post('/api/auth/select-org', requireAuth, async (req, res) => {
+  const { org_id } = req.body || {};
+  const orgId = Number(org_id);
+  if (!orgId) {
+    return res.status(400).json({ error: 'org_id is required.' });
+  }
 
-/* ───────── AUTH: LOGOUT ───────── */
+  try {
+    const membership = await dbGet(
+      `
+        SELECT
+          uo.org_id,
+          uo.employee_id,
+          uo.is_super_admin,
+          uo.login_enabled,
+          o.status,
+          e.active AS employee_active,
+          e.desktop_access AS employee_desktop_access
+        FROM user_orgs uo
+        JOIN orgs o ON o.id = uo.org_id
+        LEFT JOIN employees e
+          ON e.id = uo.employee_id
+          AND e.org_id = uo.org_id
+        WHERE uo.user_id = ? AND uo.org_id = ?
+      `,
+      [req.session.userId, orgId]
+    );
+
+    if (!membership) {
+      return res.status(403).json({ error: 'Org access denied.' });
+    }
+    if (membership.status && membership.status !== 'active') {
+      return res.status(403).json({ error: 'Org access denied.' });
+    }
+    if (!membership.is_super_admin || !isTruthyFlag(membership.login_enabled)) {
+      return res.status(403).json({ error: 'Org access denied.' });
+    }
+    if (
+      !membership.employee_id ||
+      !isActiveFlag(membership.employee_active) ||
+      !isTruthyFlag(membership.employee_desktop_access)
+    ) {
+      return res.status(403).json({ error: 'Org access denied.' });
+    }
+
+    const existingUserId = req.session.userId;
+    const existingUiMode = req.session.ui_mode || null;
+    const rememberMaxAge = req.session.cookie ? req.session.cookie.maxAge : null;
+
+    try {
+      await regenerateSession(req);
+    } catch (err) {
+      console.error('Session regeneration failed:', err);
+      return res.status(500).json({ error: 'Failed to select org.' });
+    }
+
+    req.session.userId = existingUserId;
+    req.session.orgId = membership.org_id;
+    req.session.employeeId = membership.employee_id || null;
+    req.session.isSuperAdmin = membership.is_super_admin ? 1 : 0;
+    if (existingUiMode) {
+      req.session.ui_mode = existingUiMode;
+    }
+    if (rememberMaxAge) {
+      req.session.cookie.maxAge = rememberMaxAge;
+      req.session.cookie.expires = new Date(Date.now() + rememberMaxAge);
+    } else {
+      req.session.cookie.maxAge = null;
+      req.session.cookie.expires = false;
+    }
+    ensureCsrfToken(req, res);
+
+    return res.json({
+      ok: true,
+      orgId: membership.org_id,
+      employeeId: membership.employee_id || null
+    });
+  } catch (err) {
+    console.error('select-org error:', err);
+    return res.status(500).json({ error: 'Failed to select org.' });
+  }
+});
+
+app.post('/api/auth/ui-mode', requireAuth, async (req, res) => {
+  const rawMode = String(req.body?.mode || '').trim().toLowerCase();
+  const mode = rawMode === 'kiosk' ? 'kiosk' : rawMode === 'desktop' ? 'desktop' : null;
+  if (!mode) {
+    return res.status(400).json({ error: 'mode must be kiosk or desktop.' });
+  }
+  try {
+    const status = await requireActiveDesktopSession(req);
+    if (!status.ok) {
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
+      return res.status(status.status || 403).json({ error: status.error });
+    }
+  } catch (err) {
+    console.error('ui-mode auth error:', err);
+    return res.status(500).json({ error: 'Failed to update UI mode.' });
+  }
+  if (req.session) {
+    req.session.ui_mode = mode;
+  }
+  return res.json({ ok: true, mode });
+});
 
 app.post('/api/auth/logout', (req, res) => {
   if (req.session) {
@@ -1152,54 +2533,124 @@ app.post('/api/auth/logout', (req, res) => {
   }
 });
 
-// ───────── AUTH: CURRENT USER ─────────
-
-app.get('/api/auth/me', async (req, res) => {
-  if (!req.session || !req.session.userId) {
-    return res.status(401).json({ ok: false, error: 'Not authenticated' });
-  }
+app.get('/api/auth/me', requireAuth, async (req, res) => {
+  const userId = req.session.userId;
+  const orgId = req.session.orgId;
 
   try {
-    const user = await dbGet(
-      'SELECT id, email, employee_id FROM users WHERE id = ?',
-      [req.session.userId]
-    );
-
+    const user = await dbGet('SELECT id, email FROM users WHERE id = ?', [
+      userId
+    ]);
     if (!user) {
       return res.status(404).json({ ok: false, error: 'User not found.' });
     }
 
-    let employee = null;
-    if (user.employee_id) {
-      employee = await dbGet(
-        'SELECT id, name, name_on_checks, is_admin FROM employees WHERE id = ?',
-        [user.employee_id]
-      );
+    if (!orgId) {
+      const orgs = await loadUserOrgs(userId);
+      const eligibleOrgs = (orgs || []).filter(isEligibleSuperAdminOrg);
+      if (!eligibleOrgs.length) {
+        if (req.session) {
+          req.session.destroy(() => {});
+        }
+        return res.status(403).json({
+          ok: false,
+          error: 'No active desktop super admin membership found.'
+        });
+      }
+      return res.status(409).json({
+        ok: false,
+        requires_org_selection: true,
+        orgs: eligibleOrgs.map(org => ({
+          id: org.id,
+          name: org.name,
+          timezone: org.timezone
+        }))
+      });
     }
 
-    res.json({
+    const org = await dbGet('SELECT id, name, timezone, status FROM orgs WHERE id = ?', [
+      orgId
+    ]);
+    if (org && org.status && org.status !== 'active') {
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
+      return res.status(403).json({ ok: false, error: 'Org access denied.' });
+    }
+    const membership = await dbGet(
+      `
+        SELECT is_super_admin, login_enabled, employee_id
+        FROM user_orgs
+        WHERE user_id = ? AND org_id = ?
+      `,
+      [userId, orgId]
+    );
+    if (
+      !membership ||
+      !membership.is_super_admin ||
+      !isTruthyFlag(membership.login_enabled) ||
+      !membership.employee_id
+    ) {
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
+      return res.status(403).json({ ok: false, error: 'Org access denied.' });
+    }
+
+    const employeeId = membership?.employee_id || null;
+    let employee = null;
+    if (employeeId) {
+      employee = await dbGet(
+        `
+          SELECT id, name, desktop_access, kiosk_admin_access, worker_timekeeping, IFNULL(active, 1) AS active
+          FROM employees
+          WHERE id = ? AND org_id = ?
+        `,
+        [employeeId, orgId]
+      );
+    }
+    if (!employee || !employee.desktop_access || !employee.active) {
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
+      return res.status(403).json({ ok: false, error: 'Org access denied.' });
+    }
+
+    const permissions = employeeId
+      ? await getAdminAccessPerms({ employeeId, orgId })
+      : null;
+
+    req.session.employeeId = employeeId;
+    req.session.isSuperAdmin = membership?.is_super_admin ? 1 : 0;
+
+    return res.json({
       ok: true,
-      user: {
-        id: user.id,
-        email: user.email,
-        employee_id: user.employee_id || null
-      },
+      user: { id: user.id, email: user.email },
+      org: org ? { id: org.id, name: org.name, timezone: org.timezone } : null,
+      membership: membership
+        ? {
+            is_super_admin: !!membership.is_super_admin,
+            login_enabled: isTruthyFlag(membership.login_enabled)
+          }
+        : null,
       employee: employee
         ? {
             id: employee.id,
             name: employee.name,
-            display_name: employee.name_on_checks || employee.name,
-            is_admin: !!employee.is_admin
+            desktop_access: !!employee.desktop_access,
+            kiosk_admin_access: !!employee.kiosk_admin_access,
+            worker_timekeeping: !!employee.worker_timekeeping
           }
-        : null
+        : null,
+      permissions,
+      ui_mode: req.session && req.session.ui_mode ? req.session.ui_mode : 'desktop'
     });
   } catch (err) {
     console.error('auth/me error:', err);
-    res.status(500).json({ ok: false, error: 'Failed to load current user.' });
+    return res.status(500).json({ ok: false, error: 'Failed to load current user.' });
   }
 });
 
-// ───────── AUTH: CHANGE PASSWORD ─────────
 app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   const { current_password, new_password } = req.body || {};
 
@@ -1208,14 +2659,20 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
       .status(400)
       .json({ error: 'Current password and new password are required.' });
   }
-
-  if (String(new_password).length < 8) {
-    return res
-      .status(400)
-      .json({ error: 'New password must be at least 8 characters long.' });
+  const passwordErr = validatePassword(new_password);
+  if (passwordErr) {
+    return res.status(400).json({ error: passwordErr });
   }
 
   try {
+    const status = await requireActiveDesktopSession(req);
+    if (!status.ok) {
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
+      return res.status(status.status || 403).json({ error: status.error });
+    }
+
     const user = await dbGet(
       'SELECT id, password_hash FROM users WHERE id = ?',
       [req.session.userId]
@@ -1225,60 +2682,404 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    const matches = bcrypt.compareSync(current_password, user.password_hash);
+    const matches = await bcrypt.compare(current_password, user.password_hash);
     if (!matches) {
       return res.status(401).json({ error: 'Current password is incorrect.' });
     }
 
-    const newHash = bcrypt.hashSync(new_password, 10);
+    const newHash = await bcrypt.hash(new_password, 10);
     await dbRun(
       'UPDATE users SET password_hash = ? WHERE id = ?',
       [newHash, user.id]
     );
 
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (err) {
     console.error('Change password error:', err);
-    res.status(500).json({ error: 'Failed to update password.' });
+    return res.status(500).json({ error: 'Failed to update password.' });
+  }
+});
+
+app.get('/api/auth/users', requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session.orgId;
+    const rows = await dbAll(
+      `
+        SELECT
+          u.id AS user_id,
+          u.email,
+          uo.employee_id,
+          uo.is_super_admin,
+          uo.login_enabled,
+          e.name AS employee_name,
+          IFNULL(e.active, 1) AS employee_active,
+          IFNULL(e.desktop_access, 0) AS desktop_access
+        FROM user_orgs uo
+        JOIN users u ON u.id = uo.user_id
+        LEFT JOIN employees e ON e.id = uo.employee_id
+        WHERE uo.org_id = ?
+        ORDER BY u.email COLLATE NOCASE
+      `,
+      [orgId]
+    );
+    res.json({ ok: true, users: rows || [] });
+  } catch (err) {
+    console.error('Load users error:', err);
+    res.status(500).json({ error: 'Failed to load users.' });
+  }
+});
+
+app.post('/api/auth/users/:id/reset-password', requireAuth, requireSuperAdmin, async (req, res) => {
+  const userId = Number(req.params.id);
+  const { new_password } = req.body || {};
+
+  if (!userId) {
+    return res.status(400).json({ error: 'User id is required.' });
+  }
+  const passwordErr = validatePassword(new_password);
+  if (passwordErr) {
+    return res.status(400).json({ error: passwordErr });
+  }
+
+  try {
+    const orgId = req.session.orgId;
+    const membership = await dbGet(
+      `
+        SELECT id
+        FROM user_orgs
+        WHERE user_id = ? AND org_id = ?
+      `,
+      [userId, orgId]
+    );
+    if (!membership) {
+      return res.status(404).json({ error: 'User not found in this org.' });
+    }
+
+    const hash = await bcrypt.hash(String(new_password), 10);
+    await dbRun('UPDATE users SET password_hash = ? WHERE id = ?', [hash, userId]);
+
+    const revoked = await revokeUserSessions({ userId });
+    return res.json({ ok: true, revoked_sessions: revoked });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    return res.status(500).json({ error: 'Failed to reset password.' });
+  }
+});
+
+app.post('/api/auth/users/:id/disable', requireAuth, requireSuperAdmin, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!userId) {
+    return res.status(400).json({ error: 'User id is required.' });
+  }
+
+  try {
+    const orgId = req.session.orgId;
+    const membership = await dbGet(
+      `
+        SELECT id, is_super_admin, login_enabled
+        FROM user_orgs
+        WHERE user_id = ? AND org_id = ?
+      `,
+      [userId, orgId]
+    );
+    if (!membership) {
+      return res.status(404).json({ error: 'User not found in this org.' });
+    }
+
+    if (membership.is_super_admin && isTruthyFlag(membership.login_enabled)) {
+      const countRow = await dbGet(
+        `
+          SELECT COUNT(*) AS cnt
+          FROM user_orgs
+          WHERE org_id = ? AND is_super_admin = 1 AND login_enabled = 1
+        `,
+        [orgId]
+      );
+      const count = countRow ? Number(countRow.cnt || 0) : 0;
+      if (count <= 1) {
+        return res.status(409).json({
+          error: 'Cannot disable the last super admin login for this org.'
+        });
+      }
+    }
+
+    await dbRun('BEGIN');
+    await dbRun(
+      `
+        UPDATE user_orgs
+        SET login_enabled = 0
+        WHERE id = ?
+      `,
+      [membership.id]
+    );
+    const revoked = await revokeUserSessions({ userId, orgId });
+    await dbRun('COMMIT');
+
+    return res.json({ ok: true, revoked_sessions: revoked });
+  } catch (err) {
+    try {
+      await dbRun('ROLLBACK');
+    } catch (rollbackErr) {
+      console.warn('Disable login rollback failed:', rollbackErr.message);
+    }
+    console.error('Disable user login error:', err);
+    return res.status(500).json({ error: 'Failed to disable login.' });
+  }
+});
+
+app.post('/api/auth/users/:id/enable', requireAuth, requireSuperAdmin, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!userId) {
+    return res.status(400).json({ error: 'User id is required.' });
+  }
+
+  try {
+    const orgId = req.session.orgId;
+    const membership = await dbGet(
+      `
+        SELECT id, employee_id, is_super_admin, login_enabled
+        FROM user_orgs
+        WHERE user_id = ? AND org_id = ?
+      `,
+      [userId, orgId]
+    );
+    if (!membership) {
+      return res.status(404).json({ error: 'User not found in this org.' });
+    }
+
+    if (!membership.employee_id) {
+      return res.status(400).json({ error: 'Employee link required to enable login.' });
+    }
+
+    const employee = await dbGet(
+      `
+        SELECT id, IFNULL(active, 1) AS active, IFNULL(desktop_access, 0) AS desktop_access
+        FROM employees
+        WHERE id = ? AND org_id = ?
+      `,
+      [membership.employee_id, orgId]
+    );
+    if (!employee || !employee.active || !employee.desktop_access) {
+      return res.status(400).json({
+        error: 'Employee must be active with desktop access to enable login.'
+      });
+    }
+
+    const updateFields = ['login_enabled = 1'];
+    if (!membership.is_super_admin) {
+      updateFields.push('is_super_admin = 1');
+    }
+
+    await dbRun(
+      `
+        UPDATE user_orgs
+        SET ${updateFields.join(', ')}
+        WHERE id = ?
+      `,
+      [membership.id]
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Enable user login error:', err);
+    return res.status(500).json({ error: 'Failed to enable login.' });
+  }
+});
+
+app.post('/api/auth/users', requireAuth, requireSuperAdmin, async (req, res) => {
+  const { email, password, employee_id } = req.body || {};
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required.' });
+  }
+
+  const orgId = req.session.orgId;
+  const normEmail = normalizeEmail(email);
+  const employeeId = employee_id ? Number(employee_id) : null;
+  const passwordErr = password ? validatePassword(password) : null;
+  if (passwordErr) {
+    return res.status(400).json({ error: passwordErr });
+  }
+
+  try {
+    if (!employeeId) {
+      return res.status(400).json({ error: 'employee_id is required.' });
+    }
+
+    const employee = await dbGet(
+      `
+        SELECT id, IFNULL(active, 1) AS active, IFNULL(desktop_access, 0) AS desktop_access
+        FROM employees
+        WHERE id = ? AND org_id = ?
+      `,
+      [employeeId, orgId]
+    );
+    if (!employee || !employee.active || !employee.desktop_access) {
+      return res.status(400).json({
+        error: 'Employee must be active with desktop access to create a login.'
+      });
+    }
+
+    let user = await dbGet('SELECT id FROM users WHERE LOWER(email) = LOWER(?)', [
+      normEmail
+    ]);
+    if (!user) {
+      if (!password) {
+        return res
+          .status(400)
+          .json({ error: 'Password is required for new users.' });
+      }
+      const hash = await bcrypt.hash(password, 10);
+      const userRes = await dbRun(
+        'INSERT INTO users (email, password_hash) VALUES (?, ?)',
+        [normEmail, hash]
+      );
+      user = { id: userRes.lastID };
+    } else if (password) {
+      const hash = await bcrypt.hash(password, 10);
+      await dbRun('UPDATE users SET password_hash = ? WHERE id = ?', [
+        hash,
+        user.id
+      ]);
+    }
+
+    const existingForEmployee = await dbGet(
+      `
+        SELECT user_id
+        FROM user_orgs
+        WHERE org_id = ? AND employee_id = ?
+      `,
+      [orgId, employeeId]
+    );
+    if (existingForEmployee && existingForEmployee.user_id !== user.id) {
+      return res
+        .status(409)
+        .json({ error: 'This employee is already linked to another user.' });
+    }
+
+    const existingMembership = await dbGet(
+      `
+        SELECT id
+        FROM user_orgs
+        WHERE user_id = ? AND org_id = ?
+      `,
+      [user.id, orgId]
+    );
+
+    if (existingMembership) {
+      const updateFields = ['is_super_admin = ?', 'login_enabled = ?'];
+      const updateValues = [1, 1];
+      updateFields.push('employee_id = ?');
+      updateValues.push(employeeId);
+
+      updateValues.push(existingMembership.id);
+
+      await dbRun(
+        `
+          UPDATE user_orgs
+          SET ${updateFields.join(', ')}
+          WHERE id = ?
+        `,
+        updateValues
+      );
+    } else {
+      await dbRun(
+        `
+          INSERT INTO user_orgs (user_id, org_id, employee_id, is_super_admin, login_enabled)
+          VALUES (?, ?, ?, ?, ?)
+        `,
+        [user.id, orgId, employeeId, 1, 1]
+      );
+    }
+
+    return res.json({ ok: true, userId: user.id });
+  } catch (err) {
+    console.error('Create user error:', err);
+    return res.status(500).json({ error: 'Failed to create user.' });
   }
 });
 
 
 /* ───────── 3. QUICKBOOKS STATUS & AUTH ───────── */
 
-app.get('/api/status', async (req, res) => {
+app.get('/api/status', requireAdminAccess(p => p.view_payroll), async (req, res) => {
   try {
-    const token = await getAccessToken();
-    const qbConnected = !!token;
-    res.json({ qbConnected });
+    const orgId = req.session && req.session.orgId;
+    const token = await getAccessToken(orgId);
+    const realmId = await getRealmId(orgId);
+    const qbConnected = !!token && !!realmId;
+    const lastSync = await loadOrgSyncStatus(orgId);
+    res.json({
+      qbConnected,
+      qbRealmId: realmId || null,
+      lastSync
+    });
   } catch (err) {
     console.error('Status error:', err.message);
-    res.json({ qbConnected: false });
+    res.json({
+      qbConnected: false,
+      qbRealmId: null,
+      lastSync: {
+        employees: null,
+        vendors: null,
+        projects: null,
+        payroll_accounts: null
+      }
+    });
   }
 });
 
-app.get('/auth/qbo', (req, res) => {
-  const url = getAuthUrl();
-  res.redirect(url);
+app.get('/auth/qbo', requireAdminAccess(p => p.view_payroll), requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+    if (!requireQboConfig(res, { expose: true })) {
+      return;
+    }
+    const state = await createQboOAuthState({ orgId, userId });
+    const url = getAuthUrl(state);
+    res.redirect(url);
+  } catch (err) {
+    console.error('QuickBooks auth error:', err.message || err);
+    res.status(500).json({ error: 'Failed to start QuickBooks auth.' });
+  }
 });
 
 // QuickBooks OAuth callback
 app.get('/quickbooks/oauth/callback', async (req, res) => {
-  const { code, realmId } = req.query;
+  const { code, realmId, state, error } = req.query;
 
-  if (!code) {
-    return res.status(400).send('Missing ?code= in callback URL.');
+  if (error === 'access_denied') {
+    return res.status(400).send('QuickBooks access was denied.');
   }
 
-  if (realmId) {
-    console.log('QuickBooks realmId:', realmId);
+  if (!requireQboConfig(res)) {
+    return;
+  }
+
+  if (!code || !state) {
+    return res.status(400).send('Missing OAuth code or state.');
   }
 
   try {
-    await exchangeCodeForTokens(code);
+    const stateRow = await consumeQboOAuthState(String(state));
+    if (!stateRow) {
+      return res.status(400).send('OAuth state is invalid or expired.');
+    }
+    if (!realmId) {
+      return res.status(400).send('Missing realmId in callback URL.');
+    }
+
+    await exchangeCodeForTokens(code, {
+      orgId: stateRow.org_id,
+      realmId: String(realmId)
+    });
 
     // Figure out base URL from redirect URI
-    const redirectUri = process.env.QBO_REDIRECT_URI || '';
+    const redirectUri = QBO_REDIRECT_URI || '';
     const baseUrl = redirectUri.replace('/quickbooks/oauth/callback', '') || '/';
 
     return res.redirect(baseUrl);
@@ -1288,13 +3089,28 @@ app.get('/quickbooks/oauth/callback', async (req, res) => {
   }
 });
 
+app.post('/api/qbo/disconnect', requireAdminAccess(p => p.view_payroll), requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+    await clearTokens(orgId);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Error disconnecting QuickBooks:', err);
+    return res.status(500).json({ error: 'Failed to disconnect QuickBooks.' });
+  }
+});
+
 /* ───────── 4. PAYROLL SETTINGS & LOOKUPS ───────── */
 
 // Get available QuickBooks accounts for payroll setup (bank + expense)
 app.get('/api/payroll/account-options', requireAdminAccess(p => p.view_payroll), async (req, res) => {
 
   try {
-    const { bankAccounts, expenseAccounts } = await listPayrollAccounts();
+    const orgId = req.session && req.session.orgId;
+    const { bankAccounts, expenseAccounts } = await listPayrollAccounts(orgId);
 
     res.json({
       ok: true,
@@ -1313,19 +3129,15 @@ app.get('/api/payroll/account-options', requireAdminAccess(p => p.view_payroll),
     });
   } catch (err) {
     console.error('Error loading payroll account options:', err);
-
-    const msg = err.message || 'Failed to load account options.';
-    return res.status(500).json({
-      ok: false,
-      error: msg
-    });
+    return respondWithQboError(res, err, { orgId: req.session && req.session.orgId });
   }
 });
 
 // Get QuickBooks Classes for use on payroll lines
 app.get('/api/payroll/classes', requireAdminAccess(p => p.view_payroll), async (req, res) => {
   try {
-    const classes = await listClasses();
+    const orgId = req.session && req.session.orgId;
+    const classes = await listClasses(orgId);
 
     res.json({
       ok: true,
@@ -1338,13 +3150,16 @@ app.get('/api/payroll/classes', requireAdminAccess(p => p.view_payroll), async (
     });
   } catch (err) {
     console.error('Error loading QuickBooks classes:', err);
-    const msg = err.message || 'Failed to load QuickBooks classes.';
-    res.status(500).json({ ok: false, error: msg });
+    return respondWithQboError(res, err, { orgId: req.session && req.session.orgId });
   }
 });
 
 // Get payroll defaults
 app.get('/api/payroll/settings', requireAdminAccess(p => p.view_payroll), (req, res) => {
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
   db.get(
     `SELECT
        bank_account_name,
@@ -1352,7 +3167,10 @@ app.get('/api/payroll/settings', requireAdminAccess(p => p.view_payroll), (req, 
        default_memo,
        line_description_template
      FROM payroll_settings
-     WHERE id = 1`,
+     WHERE org_id = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+    [orgId],
     (err, row) => {
       if (err) {
         console.error('Error reading payroll_settings:', err);
@@ -1371,13 +3189,18 @@ app.get('/api/payroll/settings', requireAdminAccess(p => p.view_payroll), (req, 
 });
 
 // Update payroll defaults
-app.post('/api/payroll/settings', requireAdminAccess(p => p.view_payroll), (req, res) => {
+app.post('/api/payroll/settings', requireAdminAccess(p => p.modify_payroll), (req, res) => {
   const {
     bank_account_name,
     expense_account_name,
     default_memo,
     line_description_template
   } = req.body || {};
+
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
 
   db.run(
     `
@@ -1386,20 +3209,44 @@ app.post('/api/payroll/settings', requireAdminAccess(p => p.view_payroll), (req,
           expense_account_name = ?,
           default_memo = ?,
           line_description_template = ?
-      WHERE id = 1
+      WHERE org_id = ?
     `,
     [
       bank_account_name || null,
       expense_account_name || null,
       default_memo || null,
-      line_description_template || null
+      line_description_template || null,
+      orgId
     ],
-    err => {
+    function (err) {
       if (err) {
         console.error('Error updating payroll_settings:', err);
         return res.status(500).json({ error: 'Failed to update payroll settings.' });
       }
-      res.json({ ok: true });
+      if (this.changes > 0) {
+        return res.json({ ok: true });
+      }
+      db.run(
+        `
+          INSERT INTO payroll_settings
+            (org_id, bank_account_name, expense_account_name, default_memo, line_description_template)
+          VALUES (?, ?, ?, ?, ?)
+        `,
+        [
+          orgId,
+          bank_account_name || null,
+          expense_account_name || null,
+          default_memo || null,
+          line_description_template || null
+        ],
+        insertErr => {
+          if (insertErr) {
+            console.error('Error creating payroll_settings:', insertErr);
+            return res.status(500).json({ error: 'Failed to update payroll settings.' });
+          }
+          return res.json({ ok: true });
+        }
+      );
     }
   );
 });
@@ -1434,7 +3281,13 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
   }
 
   try {
-    const rulesMap = await loadExceptionRulesMap();
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+    const orgTimezone = await getOrgTimezone(orgId);
+
+    const rulesMap = await loadExceptionRulesMap(orgId);
     const isRuleEnabled = makeRuleChecker(rulesMap);
 
     const ruleMissingClockOut = isRuleEnabled('missing_clock_out');
@@ -1445,11 +3298,18 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
     const ruleProjectMismatch = isRuleEnabled('project_mismatch');
     const ruleTinyPunch = isRuleEnabled('tiny_punch');
     const ruleGeoIn = isRuleEnabled('geofence_clock_in');
-    const ruleGeoOut = isRuleEnabled('geofence_clock_out');
     const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
     const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
     const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
     const ruleWeeklyHours = isRuleEnabled('weekly_hours');
+    const rawWeeklyThreshold =
+      rulesMap && rulesMap.weekly_hours_threshold != null
+        ? Number(rulesMap.weekly_hours_threshold)
+        : null;
+    const weeklyHoursThreshold =
+      Number.isFinite(rawWeeklyThreshold) && rawWeeklyThreshold > 0
+        ? rawWeeklyThreshold
+        : null;
 
     const punchExceptionConditions = [];
     if (ruleMissingClockOut) punchExceptionConditions.push('tp.clock_out_ts IS NULL');
@@ -1462,8 +3322,11 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
       );
     }
     if (ruleAutoClockOut) punchExceptionConditions.push('tp.auto_clock_out IS NOT NULL AND tp.auto_clock_out != 0');
-    if (ruleGeoIn || ruleGeoOut) {
-      punchExceptionConditions.push('tp.geo_violation IS NOT NULL AND tp.geo_violation != 0');
+    if (ruleGeoIn) {
+      punchExceptionConditions.push(
+        `(tp.geo_violation IS NOT NULL AND tp.geo_violation != 0)
+         OR (ks.geo_violation IS NOT NULL AND ks.geo_violation != 0)`
+      );
     }
     if (ruleLongShift) {
       punchExceptionConditions.push(
@@ -1479,27 +3342,14 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
     }
     if (ruleCrossesMidnight) {
       punchExceptionConditions.push(
-        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
-          AND date(tp.clock_in_ts) != date(tp.clock_out_ts))`
+        `(tp.clock_in_local_date IS NOT NULL AND tp.clock_out_local_date IS NOT NULL
+          AND tp.clock_in_local_date != tp.clock_out_local_date)`
       );
     }
     if (ruleTinyPunch) {
       punchExceptionConditions.push(
         `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
           AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0 * 60) < 5)`
-      );
-    }
-    if (ruleWeeklyHours) {
-      punchExceptionConditions.push(
-        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
-          AND (
-            SELECT SUM((julianday(tp2.clock_out_ts) - julianday(tp2.clock_in_ts)) * 24.0)
-            FROM time_punches tp2
-            WHERE tp2.employee_id = tp.employee_id
-              AND tp2.clock_in_ts IS NOT NULL
-              AND tp2.clock_out_ts IS NOT NULL
-              AND strftime('%Y-%W', tp2.clock_in_ts) = strftime('%Y-%W', tp.clock_in_ts)
-          ) > 50)`
       );
     }
 
@@ -1551,8 +3401,9 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
           END
         ) AS punch_hours
       FROM time_entries t
-      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
-      WHERE t.start_date >= ? AND t.end_date <= ?
+      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
+      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = t.org_id
+      WHERE t.org_id = ? AND t.start_date >= ? AND t.end_date <= ?
         ${paidClause}
       GROUP BY
         t.id,
@@ -1604,8 +3455,8 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
       p.customer_name AS project_customer_name,
       COALESCE(p.name, f.project_name_snapshot, '(No project)') AS project_name_raw
     FROM eligible_entries f
-    LEFT JOIN employees e ON f.employee_id = e.id
-    LEFT JOIN projects p ON f.project_id = p.id
+    LEFT JOIN employees e ON f.employee_id = e.id AND e.org_id = ?
+    LEFT JOIN projects p ON f.project_id = p.id AND p.org_id = ?
     ORDER BY
       employee_name,
       project_name,
@@ -1613,11 +3464,32 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
       f.id
   `;
 
-    const params = [start, end];
+    const params = [orgId, start, end, orgId, orgId];
 
-    const payrollRulesRaw = await loadPayrollRulesMap();
+    const payrollRulesRaw = await loadPayrollRulesMap(orgId);
     const payrollRules = normalizePayrollRules(payrollRulesRaw);
-    const rows = await dbAll(sql, params);
+    let rows = await dbAll(sql, params);
+
+    if (ruleWeeklyHours && weeklyHoursThreshold && rows && rows.length) {
+      const weeklyCounts = await loadWeeklyHoursExceptionCounts({
+        orgId,
+        start,
+        end,
+        orgTimezone,
+        weeklyHoursThreshold
+      });
+      const eligibleRows = [];
+      for (const row of rows) {
+        const entryId = Number(row.time_entry_id || 0);
+        if (!entryId) continue;
+        const counts = weeklyCounts.perEntry.get(entryId);
+        if (counts && counts.unapproved > 0) {
+          continue;
+        }
+        eligibleRows.push(row);
+      }
+      rows = eligibleRows;
+    }
 
     const entriesByEmployee = new Map();
     rows.forEach(row => {
@@ -1740,6 +3612,10 @@ app.post('/api/payroll/unpay', requireAdminAccess(p => p.modify_payroll), async 
     reason,
     payrollCheckId: payrollCheckIdRaw
   } = req.body || {};
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+  }
   const runId = Number(payrollRunId);
   const empIdNum = Number(employeeId);
   const payrollCheckId =
@@ -1761,8 +3637,9 @@ app.post('/api/payroll/unpay', requireAdminAccess(p => p.modify_payroll), async 
           WHERE payroll_run_id = ?
             AND employee_id = ?
             AND id = ?
+            AND org_id = ?
         `,
-        [reason || 'manual unpay', runId, empIdNum, payrollCheckId]
+        [reason || 'manual unpay', runId, empIdNum, payrollCheckId, orgId]
       );
     } else {
       await dbRun(
@@ -1774,8 +3651,9 @@ app.post('/api/payroll/unpay', requireAdminAccess(p => p.modify_payroll), async 
               voided_reason = ?
           WHERE payroll_run_id = ?
             AND employee_id = ?
+            AND org_id = ?
         `,
-        [reason || 'manual unpay', runId, empIdNum]
+        [reason || 'manual unpay', runId, empIdNum, orgId]
       );
     }
 
@@ -1786,16 +3664,16 @@ app.post('/api/payroll/unpay', requireAdminAccess(p => p.modify_payroll), async 
         SET total_hours = (
               SELECT IFNULL(SUM(total_hours), 0)
               FROM payroll_checks
-              WHERE payroll_run_id = ?
+              WHERE payroll_run_id = ? AND org_id = ?
             ),
             total_pay = (
               SELECT IFNULL(SUM(total_pay), 0)
               FROM payroll_checks
-              WHERE payroll_run_id = ?
+              WHERE payroll_run_id = ? AND org_id = ?
             )
-        WHERE id = ?
+        WHERE id = ? AND org_id = ?
       `,
-      [runId, runId, runId]
+      [runId, orgId, runId, orgId, runId, orgId]
     );
 
     // unmark time entries as paid (run-scoped)
@@ -1805,14 +3683,18 @@ app.post('/api/payroll/unpay', requireAdminAccess(p => p.modify_payroll), async 
         SET paid = 0,
             paid_date = NULL,
             payroll_run_id = NULL,
-            payroll_check_id = NULL
+            payroll_check_id = NULL,
+            updated_at = ?
         WHERE employee_id = ?
           AND payroll_run_id = ?
+          AND org_id = ?
       `,
-      [empIdNum, runId]
+      [new Date().toISOString(), empIdNum, runId, orgId]
     );
 
     await logPayrollEvent({
+      orgId: req.session && req.session.orgId,
+      actor_employee_id: req.session && req.session.employeeId ? req.session.employeeId : null,
       event_type: 'PAYROLL_UNPAY',
       payroll_run_id: runId,
       message: `Unlocked payroll for employee ${empIdNum} (run ${runId})`,
@@ -1830,15 +3712,19 @@ app.post('/api/payroll/unpay', requireAdminAccess(p => p.modify_payroll), async 
 app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), async (req, res) => {
   const employeeId = parseInt(req.query.employeeId, 10);
   const { start, end } = req.query || {};
+  const orgId = req.session && req.session.orgId;
 
   if (!employeeId || !start || !end) {
     return res
       .status(400)
       .json({ error: 'employeeId, start, and end are required.' });
   }
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
 
   try {
-    const rulesMap = await loadExceptionRulesMap();
+    const rulesMap = await loadExceptionRulesMap(orgId);
     const isRuleEnabled = makeRuleChecker(rulesMap);
 
     const ruleMissingClockOut = isRuleEnabled('missing_clock_out');
@@ -1850,10 +3736,18 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
     const ruleTinyPunch = isRuleEnabled('tiny_punch');
     const ruleWeeklyHours = isRuleEnabled('weekly_hours');
     const ruleGeoIn = isRuleEnabled('geofence_clock_in');
-    const ruleGeoOut = isRuleEnabled('geofence_clock_out');
     const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
     const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
     const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
+    const rawWeeklyThreshold =
+      rulesMap && rulesMap.weekly_hours_threshold != null
+        ? Number(rulesMap.weekly_hours_threshold)
+        : null;
+    const weeklyHoursThreshold =
+      Number.isFinite(rawWeeklyThreshold) && rawWeeklyThreshold > 0
+        ? rawWeeklyThreshold
+        : null;
+    const orgTimezone = await getOrgTimezone(orgId);
 
     const punchExceptionConditions = [];
     if (ruleMissingClockOut) punchExceptionConditions.push('tp.clock_out_ts IS NULL');
@@ -1866,7 +3760,12 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
       );
     }
     if (ruleAutoClockOut) punchExceptionConditions.push('tp.auto_clock_out IS NOT NULL AND tp.auto_clock_out != 0');
-    if (ruleGeoIn) punchExceptionConditions.push('tp.geo_violation IS NOT NULL AND tp.geo_violation != 0'); // geo violation already computed at punch time
+    if (ruleGeoIn) {
+      punchExceptionConditions.push(
+        `(tp.geo_violation IS NOT NULL AND tp.geo_violation != 0)
+         OR (ks.geo_violation IS NOT NULL AND ks.geo_violation != 0)`
+      ); // geo violation already computed at punch time
+    }
     if (ruleLongShift) {
       punchExceptionConditions.push(
         `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
@@ -1881,8 +3780,8 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
     }
     if (ruleCrossesMidnight) {
       punchExceptionConditions.push(
-        `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
-          AND date(tp.clock_in_ts) != date(tp.clock_out_ts))`
+        `(tp.clock_in_local_date IS NOT NULL AND tp.clock_out_local_date IS NOT NULL
+          AND tp.clock_in_local_date != tp.clock_out_local_date)`
       );
     }
     if (ruleTinyPunch) {
@@ -1925,9 +3824,11 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
           END
         ) AS punch_hours
       FROM time_entries t
-      LEFT JOIN projects p ON t.project_id = p.id
-      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
+      LEFT JOIN projects p ON t.project_id = p.id AND p.org_id = t.org_id
+      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
+      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = t.org_id
       WHERE t.employee_id = ?
+        AND t.org_id = ?
         AND t.start_date >= ?
         AND t.end_date <= ?
       GROUP BY
@@ -1946,11 +3847,30 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
       ORDER BY project_name, t.start_date, t.id
     `;
 
-    const rows = await dbAll(sql, [employeeId, start, end]);
+    let rows = await dbAll(sql, [employeeId, orgId, start, end]);
+    let weeklyBlocked = new Set();
+    if (ruleWeeklyHours && weeklyHoursThreshold && rows && rows.length) {
+      const weeklyCounts = await loadWeeklyHoursExceptionCounts({
+        orgId,
+        start,
+        end,
+        orgTimezone,
+        weeklyHoursThreshold
+      });
+      weeklyBlocked = new Set(
+        rows
+          .map(r => Number(r.id || 0))
+          .filter(id => id && weeklyCounts.perEntry.get(id)?.unapproved > 0)
+      );
+    }
 
     const HOURS_EPSILON = 0.1; // ~6 minutes
 
     const eligible = rows.filter(r => {
+      const entryId = Number(r.id || 0);
+      if (entryId && weeklyBlocked.has(entryId)) {
+        return false;
+      }
       const punchCount = Number(r.punch_count || 0);
       const entryHours =
         r.hours != null && !Number.isNaN(Number(r.hours))
@@ -2014,51 +3934,106 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
   }
 });
 
-// Preview payroll checks (no DB writes)
+// Preview payroll checks (compatibility path; mirrors preflight behavior)
 app.post('/api/payroll/preview-checks', requireAdminAccess(p => p.modify_payroll), async (req, res) => {
   const {
     start,
     end,
     bankAccountName,
     expenseAccountName,
-    excludeEmployeeIds = [],
-    includeOvertime,
     memo,
+    lineDescriptionTemplate,
+    overrides = [],
+    excludeEmployeeIds = [],
     customLines = [],
-    lineOverrides = []
+    lineOverrides = [],
+    onlyEmployeeIds = []
   } = req.body || {};
 
-  if (!start || !end) {
-    return res
-      .status(400)
-      .json({ error: 'start and end are required in the request body.' });
+  try {
+    await validatePayrollRangeServer(start, end);
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: err.message });
+  }
+
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+  }
+  const actorEmployeeId =
+    req.session && req.session.employeeId ? req.session.employeeId : null;
+
+  try {
+    const pendingApprovals = await loadPendingTimeEntryApprovals({
+      orgId,
+      start,
+      end
+    });
+    if (pendingApprovals.length) {
+      return res.status(409).json({
+        ok: false,
+        error: 'Time entry approvals are required before running payroll.',
+        pending: pendingApprovals
+      });
+    }
+    const unresolved = await loadPayrollUnresolvedExceptions({
+      orgId,
+      start,
+      end
+    });
+    if (unresolved.length) {
+      return res.status(409).json({
+        ok: false,
+        error: 'Time exceptions must be reviewed before running payroll.',
+        unresolved
+      });
+    }
+  } catch (err) {
+    console.error('Pending approvals check failed:', err);
   }
 
   try {
-    const result = await createChecksForPeriod(start, end, {
+    const { normalized, payloadJson, payloadHash } = hashPayrollPayload(req.body || {});
+    const snapshot = await computePayrollDraftsSnapshot(start, end, {
+      excludeEmployeeIds: normalized.excludeEmployeeIds,
+      onlyEmployeeIds: normalized.onlyEmployeeIds,
+      includeOvertime: normalized.include_overtime,
+      orgId
+    });
+    const qbResult = await createChecksForPeriod(start, end, {
       bankAccountName,
       expenseAccountName,
-      excludeEmployeeIds,
-      includeOvertime: typeof includeOvertime === 'boolean' ? includeOvertime : true,
       memo,
+      lineDescriptionTemplate,
+      includeOvertime: normalized.include_overtime,
+      overrides,
+      lineOverrides,
       customLines,
-      lineOverrides
+      excludeEmployeeIds,
+      onlyEmployeeIds,
+      previewOnly: true,
+      orgId
     });
-
-    // If connected and ok, just echo a minimal preview payload
-    if (result.ok) {
-      return res.json({
-        ok: true,
-        start,
-        end,
-        bankAccountName,
-        expenseAccountName
-        // You could add summary info here later if you want
-      });
+    if (qbResult && qbResult.ok === false) {
+      return res.json({ ...qbResult, preview: true });
     }
-
-    // If not connected, pass through the draft result
-    return res.json(result);
+    const preflightId = await storePayrollPreflight({
+      orgId,
+      normalized,
+      payloadJson,
+      payloadHash,
+      snapshotHash: snapshot.snapshot_hash,
+      snapshotCount: snapshot.snapshot_count,
+      actorEmployeeId: req.session && req.session.employeeId ? req.session.employeeId : null
+    });
+    return res.json({
+      ...qbResult,
+      preview: true,
+      preflight_id: preflightId,
+      payload_hash: payloadHash,
+      snapshot_hash: snapshot.snapshot_hash,
+      snapshot_count: snapshot.snapshot_count
+    });
   } catch (err) {
     console.error('Preview checks error:', err);
     res.status(500).json({ error: err.message || 'Failed to preview checks.' });
@@ -2087,11 +4062,42 @@ app.post('/api/payroll/preflight-checks', requireAdminAccess(p => p.modify_payro
   }
 
   try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+    }
+
+    const pendingApprovals = await loadPendingTimeEntryApprovals({
+      orgId,
+      start,
+      end
+    });
+    if (pendingApprovals.length) {
+      return res.status(409).json({
+        ok: false,
+        error: 'Time entry approvals are required before running payroll.',
+        pending: pendingApprovals
+      });
+    }
+    const unresolved = await loadPayrollUnresolvedExceptions({
+      orgId,
+      start,
+      end
+    });
+    if (unresolved.length) {
+      return res.status(409).json({
+        ok: false,
+        error: 'Time exceptions must be reviewed before running payroll.',
+        unresolved
+      });
+    }
+
     const { normalized, payloadJson, payloadHash } = hashPayrollPayload(req.body || {});
     const snapshot = await computePayrollDraftsSnapshot(start, end, {
       excludeEmployeeIds: normalized.excludeEmployeeIds,
       onlyEmployeeIds: normalized.onlyEmployeeIds,
-      includeOvertime: normalized.include_overtime
+      includeOvertime: normalized.include_overtime,
+      orgId
     });
     const qbResult = await createChecksForPeriod(start, end, {
       bankAccountName,
@@ -2104,12 +4110,14 @@ app.post('/api/payroll/preflight-checks', requireAdminAccess(p => p.modify_payro
       customLines,
       excludeEmployeeIds,
       onlyEmployeeIds,
-      previewOnly: true
+      previewOnly: true,
+      orgId
     });
     if (qbResult && qbResult.ok === false) {
       return res.json({ ...qbResult, preview: true });
     }
     const preflightId = await storePayrollPreflight({
+      orgId,
       normalized,
       payloadJson,
       payloadHash,
@@ -2127,15 +4135,13 @@ app.post('/api/payroll/preflight-checks', requireAdminAccess(p => p.modify_payro
     });
   } catch (err) {
     console.error('Preflight checks error:', err);
-    return res.status(500).json({
-      ok: false,
-      error: err.message || 'Failed to preview checks.'
-    });
+    const orgId = req.session && req.session.orgId;
+    return respondWithQboError(res, err, { orgId });
   }
 });
 
 app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll), async (req, res) => {
-  const {
+  let {
     preflight_id: preflightIdRaw,
     payload_hash: payloadHashRaw,
     start,
@@ -2167,13 +4173,74 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
       error: 'preflight_id and payload_hash are required before creating checks.'
     });
   }
+  if (!start || !end) {
+    return res.status(400).json({
+      ok: false,
+      error: 'start and end dates are required before creating checks.'
+    });
+  }
 
   let idempotencyKey = providedIdempotencyKey || crypto.randomUUID();
   let payrollRunId = null;
+  let backupWarning = null;
+
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+  }
+  const actorEmployeeId =
+    req.session && req.session.employeeId ? req.session.employeeId : null;
+
+  if (providedIdempotencyKey && !isRetry) {
+    const existingByKey = await dbGet(
+      `SELECT id, start_date, end_date, status FROM payroll_runs WHERE idempotency_key = ? AND org_id = ?`,
+      [providedIdempotencyKey, orgId]
+    );
+
+    if (existingByKey) {
+      if (existingByKey.start_date !== start || existingByKey.end_date !== end) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Idempotency key already used for a different payroll period.'
+        });
+      }
+
+      const existingStatus = existingByKey.status || '';
+      if (existingStatus === PAYROLL_STATUS.COMPLETED) {
+        return res.status(200).json({
+          ok: true,
+          payrollRunId: existingByKey.id,
+          status: existingStatus,
+          idempotencyKey: providedIdempotencyKey,
+          message:
+            'Payroll already completed for this idempotency key. No new checks were created.'
+        });
+      }
+      if (
+        existingStatus === PAYROLL_STATUS.PENDING ||
+        existingStatus === PAYROLL_STATUS.IN_PROGRESS
+      ) {
+        return res.status(409).json({
+          ok: false,
+          payrollRunId: existingByKey.id,
+          status: existingStatus,
+          error:
+            'A payroll run is already in progress for this idempotency key. Please wait or use a new key.'
+        });
+      }
+      return res.status(409).json({
+        ok: false,
+        payrollRunId: existingByKey.id,
+        status: existingStatus,
+        error:
+          'A payroll run already exists for this idempotency key. Use retry for failed employees or start a new run with a new key.'
+      });
+    }
+  }
 
   let preflightRow = null;
   try {
-    preflightRow = await loadPayrollPreflight(preflightId);
+    preflightRow = await loadPayrollPreflight({ orgId, preflightId });
   } catch (err) {
     console.error('Failed to load payroll preflight:', err);
   }
@@ -2206,10 +4273,24 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     });
   }
 
+  const pendingApprovals = await loadPendingTimeEntryApprovals({
+    orgId,
+    start,
+    end
+  });
+  if (pendingApprovals.length) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Time entry approvals are required before running payroll.',
+      pending: pendingApprovals
+    });
+  }
+
   const currentSnapshot = await computePayrollDraftsSnapshot(start, end, {
     excludeEmployeeIds: normalized.excludeEmployeeIds,
     onlyEmployeeIds: normalized.onlyEmployeeIds,
-    includeOvertime: normalized.include_overtime
+    includeOvertime: normalized.include_overtime,
+    orgId
   });
   if (currentSnapshot.snapshot_hash !== preflightRow.snapshot_hash) {
     return res.status(409).json({
@@ -2227,9 +4308,63 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     });
   }
 
+  if (fromAttemptId) {
+    let failedIds = [];
+    try {
+      failedIds = await getFailedEmployeeIdsForAttempt({
+        orgId,
+        attemptId: Number(fromAttemptId)
+      });
+    } catch (err) {
+      console.warn('Failed to load failed employees for attempt', fromAttemptId, err);
+      return res.status(400).json({
+        ok: false,
+        error: 'Could not load failed employees for the retry attempt. Please re-run preflight.'
+      });
+    }
+
+    const normalizedFailed = [...new Set(failedIds.map(Number).filter(Number.isFinite))].sort(
+      (a, b) => a - b
+    );
+    const normalizedOnly = [...new Set((onlyEmployeeIds || []).map(Number).filter(Number.isFinite))].sort(
+      (a, b) => a - b
+    );
+
+    if (!normalizedFailed.length) {
+      return res.status(400).json({
+        ok: false,
+        error: 'No failed employees found for that attempt. Nothing to retry.'
+      });
+    }
+
+    if (!normalizedOnly.length) {
+      return res.status(409).json({
+        ok: false,
+        error:
+          'Retrying failed employees requires a preflight for that subset. Re-run preflight with onlyEmployeeIds set to the failed employees, then retry.',
+        failed_employee_ids: normalizedFailed
+      });
+    }
+
+    const sameSet =
+      normalizedOnly.length === normalizedFailed.length &&
+      normalizedOnly.every((id, idx) => id === normalizedFailed[idx]);
+    if (!sameSet) {
+      return res.status(409).json({
+        ok: false,
+        error:
+          'Retry employees do not match the approved preflight subset. Re-run preflight with onlyEmployeeIds matching the failed employees.',
+        failed_employee_ids: normalizedFailed
+      });
+    }
+
+    onlyEmployeeIds = normalizedOnly;
+    isRetry = true;
+  }
+
   // 🔒 DB-backed mutex: block concurrent payroll runs across processes
   const locker = `emp:${req.session && req.session.employeeId ? req.session.employeeId : 'unknown'}`;
-  const gotLock = await acquirePayrollLock(locker);
+  const gotLock = await acquirePayrollLock(orgId, locker);
   if (!gotLock) {
     return res.status(409).json({
       ok: false,
@@ -2239,12 +4374,10 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
   }
 
   try {
-    // 🔒 Safety: backup DB right before creating checks
-    await performDatabaseBackup();
     const existingByKey = idempotencyKey
       ? await dbGet(
-          `SELECT id, start_date, end_date, status FROM payroll_runs WHERE idempotency_key = ?`,
-          [idempotencyKey]
+          `SELECT id, start_date, end_date, status FROM payroll_runs WHERE idempotency_key = ? AND org_id = ?`,
+          [idempotencyKey, orgId]
         )
       : null;
 
@@ -2258,14 +4391,36 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
       payrollRunId = existingByKey.id;
       idempotencyKey = existingByKey.idempotency_key || idempotencyKey;
 
-      if (!isRetry && existingByKey.status === PAYROLL_STATUS.COMPLETED) {
-        return res.status(200).json({
-          ok: true,
+      const existingStatus = existingByKey.status || '';
+      if (!isRetry) {
+        if (existingStatus === PAYROLL_STATUS.COMPLETED) {
+          return res.status(200).json({
+            ok: true,
+            payrollRunId,
+            status: existingStatus,
+            idempotencyKey,
+            message:
+              'Payroll already completed for this idempotency key. No new checks were created.'
+          });
+        }
+        if (
+          existingStatus === PAYROLL_STATUS.PENDING ||
+          existingStatus === PAYROLL_STATUS.IN_PROGRESS
+        ) {
+          return res.status(409).json({
+            ok: false,
+            payrollRunId,
+            status: existingStatus,
+            error:
+              'A payroll run is already in progress for this idempotency key. Please wait or use a new key.'
+          });
+        }
+        return res.status(409).json({
+          ok: false,
           payrollRunId,
-          status: existingByKey.status,
-          idempotencyKey,
-          message:
-            'Payroll already completed for this idempotency key. No new checks were created.'
+          status: existingStatus,
+          error:
+            'A payroll run already exists for this idempotency key. Use retry for failed employees or start a new run with a new key.'
         });
       }
     }
@@ -2305,8 +4460,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
       // Find the existing payroll run to attach retries to
       if (originalPayrollRunId) {
         const existingById = await dbGet(
-          'SELECT id, start_date, end_date FROM payroll_runs WHERE id = ?',
-          [originalPayrollRunId]
+          'SELECT id, start_date, end_date FROM payroll_runs WHERE id = ? AND org_id = ?',
+          [originalPayrollRunId, orgId]
         );
         if (!existingById) {
           return res.status(400).json({
@@ -2327,10 +4482,10 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
           `
             SELECT id, start_date, end_date
             FROM payroll_runs
-            WHERE start_date = ? AND end_date = ?
+            WHERE start_date = ? AND end_date = ? AND org_id = ?
             LIMIT 1
           `,
-          [start, end]
+          [start, end, orgId]
         );
         if (!existingExact) {
           return res.status(400).json({
@@ -2344,6 +4499,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
 
       // 🔎 Audit log: retry started
       await logPayrollEvent({
+        orgId,
+        actor_employee_id: actorEmployeeId,
         event_type: 'RETRY_STARTED',
         message: `Retry payroll run for ${start} → ${end}`,
         payroll_run_id: payrollRunId,
@@ -2358,11 +4515,11 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
           `
             SELECT id, start_date, end_date
             FROM payroll_runs
-            WHERE start_date <= ? AND end_date >= ?
+            WHERE start_date <= ? AND end_date >= ? AND org_id = ?
             ORDER BY id DESC
             LIMIT 1
           `,
-          [end, start]
+          [end, start, orgId]
         );
         if (overlapping && (!payrollRunId || overlapping.id !== payrollRunId)) {
           return res.status(400).json({
@@ -2377,6 +4534,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         const runInsert = await dbRun(
           `
             INSERT INTO payroll_runs (
+              org_id,
               start_date,
               end_date,
               created_at,
@@ -2389,9 +4547,10 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
               idempotency_key,
               last_attempt_id,
               last_error
-            ) VALUES (?, ?, datetime('now'), 0, 0, ?, ?, ?, ?, ?, NULL, NULL)
+            ) VALUES (?, ?, ?, datetime('now'), 0, 0, ?, ?, ?, ?, ?, NULL, NULL)
           `,
           [
+            orgId,
             start,
             end,
             PAYROLL_STATUS.PENDING,
@@ -2403,7 +4562,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         );
         payrollRunId = runInsert.lastID;
       } else {
-        await markPayrollRunStatus(payrollRunId, PAYROLL_STATUS.PENDING, {
+        await markPayrollRunStatus(orgId, payrollRunId, PAYROLL_STATUS.PENDING, {
           idempotencyKey,
           lastError: null
         });
@@ -2411,6 +4570,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
 
       // 🔎 Audit log: run started
       await logPayrollEvent({
+        orgId,
+        actor_employee_id: actorEmployeeId,
         event_type: 'PAYROLL_RUN_STARTED',
         message: `Payroll run started for ${start} → ${end}`,
         details: {
@@ -2428,8 +4589,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
 
     if (payrollRunId) {
       const keyRow = await dbGet(
-        `SELECT idempotency_key FROM payroll_runs WHERE id = ?`,
-        [payrollRunId]
+        `SELECT idempotency_key FROM payroll_runs WHERE id = ? AND org_id = ?`,
+        [payrollRunId, orgId]
       );
       if (keyRow && keyRow.idempotency_key) {
         idempotencyKey = keyRow.idempotency_key;
@@ -2438,26 +4599,38 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
 
     // Ensure the idempotency key is attached to any pre-existing run we found
     if (payrollRunId && idempotencyKey) {
-      await markPayrollRunStatus(payrollRunId, PAYROLL_STATUS.PENDING, {
+      await markPayrollRunStatus(orgId, payrollRunId, PAYROLL_STATUS.PENDING, {
         idempotencyKey,
         lastError: null
       });
     }
 
-    // 2) Call QuickBooks helper to actually build & create checks.
-    if (fromAttemptId && (!onlyEmployeeIds || !onlyEmployeeIds.length)) {
-      try {
-        const failedIds = await getFailedEmployeeIdsForAttempt(Number(fromAttemptId));
-        if (failedIds.length) {
-          onlyEmployeeIds = failedIds;
-          isRetry = true;
-        }
-      } catch (errAttempt) {
-        console.warn('Could not load failed employees for attempt', fromAttemptId, errAttempt);
-      }
+    const backupResult = await runBackupWithLock({ requireLock: true });
+    if (!backupResult.ok) {
+      backupWarning = {
+        code: backupResult.reason === 'lock_busy' ? 'backup_lock_busy' : 'backup_failed',
+        message:
+          backupResult.reason === 'lock_busy'
+            ? 'Database backup skipped because another backup is already running.'
+            : 'Database backup failed. Please run a backup as soon as possible.',
+        error: backupResult.error || null
+      };
+      await logPayrollEvent({
+        orgId,
+        actor_employee_id: actorEmployeeId,
+        event_type: 'PAYROLL_BACKUP_WARNING',
+        message: backupWarning.message,
+        details: {
+          start,
+          end,
+          reason: backupResult.reason || null,
+          error: backupResult.error || null
+        },
+        payroll_run_id: payrollRunId
+      });
     }
 
-    await markPayrollRunStatus(payrollRunId, PAYROLL_STATUS.IN_PROGRESS, {
+    await markPayrollRunStatus(orgId, payrollRunId, PAYROLL_STATUS.IN_PROGRESS, {
       lastError: null,
       idempotencyKey
     });
@@ -2479,11 +4652,14 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         runType,
         adjustmentReason,
         idempotencyKey
-      }
+      },
+      orgId
     });
 
     // 🔎 Audit log: QuickBooks call completed (basic info)
     await logPayrollEvent({
+      orgId,
+      actor_employee_id: actorEmployeeId,
       event_type: isRetry ? 'RETRY_QBO_COMPLETE' : 'PAYROLL_QBO_COMPLETE',
       message: 'QuickBooks check creation call completed.',
       details: {
@@ -2498,6 +4674,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     });
 
     const attemptId = await recordPayrollAttempt({
+      orgId,
       payrollRunId,
       start,
       end,
@@ -2507,6 +4684,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     const fatalQboError = qbResult?.fatalQboError || null;
     if (fatalQboError) {
       await logPayrollEvent({
+        orgId,
+        actor_employee_id: actorEmployeeId,
         event_type: 'PAYROLL_QBO_ERROR',
         message: fatalQboError,
         details: {
@@ -2525,8 +4704,41 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         qbResult?.reason ||
         'QuickBooks check creation failed.';
 
+      if (
+        qbResult?.reason &&
+        qbResult.reason.includes('Not connected to QuickBooks')
+      ) {
+        const notConnectedMsg = 'Not connected to QuickBooks.';
+        await logPayrollEvent({
+          orgId,
+          actor_employee_id: actorEmployeeId,
+          event_type: 'PAYROLL_QBO_ERROR',
+          message: notConnectedMsg,
+          details: {
+            start,
+            end,
+            results: qbResult?.results || []
+          },
+          payroll_run_id: payrollRunId
+        });
+        await markPayrollRunStatus(orgId, payrollRunId, PAYROLL_STATUS.FAILED, {
+          lastError: notConnectedMsg,
+          lastAttemptId: attemptId,
+          idempotencyKey
+        });
+        return res.status(400).json({
+          ok: false,
+          error: notConnectedMsg,
+          results: qbResult?.results || [],
+          attempt_id: attemptId,
+          warnings: backupWarning ? [backupWarning] : []
+        });
+      }
+
       // 🔎 Audit log: QuickBooks error
       await logPayrollEvent({
+        orgId,
+        actor_employee_id: actorEmployeeId,
         event_type: 'PAYROLL_QBO_ERROR',
         message: errorMsg,
         details: {
@@ -2537,7 +4749,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         payroll_run_id: payrollRunId
       });
 
-      await markPayrollRunStatus(payrollRunId, PAYROLL_STATUS.FAILED, {
+      await markPayrollRunStatus(orgId, payrollRunId, PAYROLL_STATUS.FAILED, {
         lastError: errorMsg,
         lastAttemptId: attemptId,
         idempotencyKey
@@ -2547,7 +4759,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         ok: false,
         error: errorMsg,
         results: qbResult?.results || [],
-        attempt_id: attemptId
+        attempt_id: attemptId,
+        warnings: backupWarning ? [backupWarning] : []
       });
     }
 
@@ -2558,13 +4771,15 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     const successfulResults = results.filter(r => r && r.ok !== false);
     const failedResults = results.filter(r => r && r.ok === false);
     if (fatalQboError && successfulResults.length === 0) {
-      await markPayrollRunStatus(payrollRunId, PAYROLL_STATUS.FAILED, {
+      await markPayrollRunStatus(orgId, payrollRunId, PAYROLL_STATUS.FAILED, {
         lastError: fatalQboError,
         lastAttemptId: attemptId,
         idempotencyKey
       });
 
       await logPayrollEvent({
+        orgId,
+        actor_employee_id: actorEmployeeId,
         event_type: 'PAYROLL_RUN_FAILURE',
         message: 'Payroll run failed due to a fatal QuickBooks error.',
         payroll_run_id: payrollRunId,
@@ -2580,7 +4795,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         error: fatalQboError,
         results,
         attempt_id: attemptId,
-        fatal_qbo_error: fatalQboError
+        fatal_qbo_error: fatalQboError,
+        warnings: backupWarning ? [backupWarning] : []
       });
     }
 
@@ -2605,6 +4821,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         const runInsert = await dbRun(
           `
             INSERT INTO payroll_runs (
+              org_id,
               start_date,
               end_date,
               created_at,
@@ -2617,9 +4834,10 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
               idempotency_key,
               last_attempt_id,
               last_error
-            ) VALUES (?, ?, datetime('now'), 0, 0, ?, ?, ?, ?, ?, ?, NULL)
+            ) VALUES (?, ?, ?, datetime('now'), 0, 0, ?, ?, ?, ?, ?, ?, NULL)
           `,
           [
+            orgId,
             start,
             end,
             PAYROLL_STATUS.IN_PROGRESS,
@@ -2631,7 +4849,11 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
           ]
         );
         payrollRunId = runInsert.lastID;
-        await updateAttemptRunId(attemptId, payrollRunId);
+        await updateAttemptRunId({
+          orgId,
+          attemptId,
+          payrollRunId
+        });
       }
 
       // When retrying, delete all existing check rows for that employee in this run
@@ -2645,14 +4867,16 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
               DELETE FROM payroll_checks
               WHERE payroll_run_id = ?
                 AND employee_id    = ?
+                AND org_id         = ?
             `,
-            [payrollRunId, r.employeeId]
+            [payrollRunId, r.employeeId, orgId]
           );
         }
 
         await dbRun(
           `
             INSERT INTO payroll_checks (
+              org_id,
               payroll_run_id,
               employee_id,
               total_hours,
@@ -2661,9 +4885,10 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
               paid,
               paid_date,
               qbo_txn_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
+            orgId,
             payrollRunId,
             r.employeeId,
             Number(r.totalHours || 0),
@@ -2683,16 +4908,16 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
           SET total_hours = (
                 SELECT IFNULL(SUM(total_hours), 0)
                 FROM payroll_checks
-                WHERE payroll_run_id = ?
+                WHERE payroll_run_id = ? AND org_id = ?
               ),
               total_pay = (
                 SELECT IFNULL(SUM(total_pay), 0)
                 FROM payroll_checks
-                WHERE payroll_run_id = ?
+                WHERE payroll_run_id = ? AND org_id = ?
               )
-          WHERE id = ?
+          WHERE id = ? AND org_id = ?
         `,
-        [payrollRunId, payrollRunId, payrollRunId]
+        [payrollRunId, orgId, payrollRunId, orgId, payrollRunId, orgId]
       );
 
       // 🔒 Mark underlying time entries as PAID for successful employees in this date range
@@ -2710,11 +4935,11 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
             `
               SELECT id
               FROM payroll_checks
-              WHERE payroll_run_id = ? AND employee_id = ?
+              WHERE payroll_run_id = ? AND employee_id = ? AND org_id = ?
               ORDER BY id DESC
               LIMIT 1
             `,
-            [payrollRunId, empId]
+            [payrollRunId, empId, orgId]
           );
           const payrollCheckId = checkRow ? checkRow.id : null;
           await dbRun(
@@ -2723,13 +4948,15 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     SET paid      = 1,
         paid_date = ?,
         payroll_run_id = ?,
-        payroll_check_id = ?
+        payroll_check_id = ?,
+        updated_at = ?
     WHERE employee_id = ?
+      AND org_id = ?
       AND start_date  >= ?
       AND end_date    <= ?
       AND (paid IS NULL OR paid = 0)
   `,
-  [paidAt, payrollRunId, payrollCheckId, empId, start, end]
+  [paidAt, payrollRunId, payrollCheckId, new Date().toISOString(), empId, orgId, start, end]
 );
         }
 
@@ -2739,7 +4966,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         throw new Error('Failed marking time entries as paid: ' + markErr.message); // Force rollback so we never report success with unpaid entries
       }
 
-      await markPayrollRunStatus(payrollRunId, finalRunStatus, {
+      await markPayrollRunStatus(orgId, payrollRunId, finalRunStatus, {
         lastAttemptId: attemptId,
         lastError: fatalQboError || null,
         idempotencyKey
@@ -2749,6 +4976,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
 
       // 🔎 Audit log: DB commit success
       await logPayrollEvent({
+        orgId,
+        actor_employee_id: actorEmployeeId,
         event_type: isRetry
           ? 'RETRY_SUCCESS'
           : (finalRunStatus === PAYROLL_STATUS.PARTIAL ? 'PAYROLL_RUN_PARTIAL' : 'PAYROLL_RUN_SUCCESS'),
@@ -2772,7 +5001,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
       await dbRun('ROLLBACK');
       console.error('Error saving payroll run/checks:', dbErr);
 
-      await markPayrollRunStatus(payrollRunId, PAYROLL_STATUS.FAILED, {
+      await markPayrollRunStatus(orgId, payrollRunId, PAYROLL_STATUS.FAILED, {
         lastError: dbErr.message,
         lastAttemptId: attemptId,
         idempotencyKey
@@ -2780,6 +5009,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
 
       // 🔎 Audit log: DB failure
       await logPayrollEvent({
+        orgId,
+        actor_employee_id: actorEmployeeId,
         event_type: 'PAYROLL_RUN_FAILURE',
         message: 'DB error during payroll run.',
         payroll_run_id: payrollRunId,
@@ -2795,7 +5026,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
         error:
           'Checks were created in QuickBooks, but saving the payroll run failed. Please review in QuickBooks and contact support with this error: ' +
           dbErr.message,
-        results
+        results,
+        warnings: backupWarning ? [backupWarning] : []
       });
     }
 
@@ -2811,7 +5043,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     results,
     attempt_id: attemptId,
     idempotencyKey,
-    fatal_qbo_error: fatalQboError || null
+    fatal_qbo_error: fatalQboError || null,
+    warnings: backupWarning ? [backupWarning] : []
   });
 
   } catch (err) {
@@ -2820,7 +5053,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     const message = err.message || 'Failed to create checks.';
 
     if (payrollRunId) {
-      await markPayrollRunStatus(payrollRunId, PAYROLL_STATUS.FAILED, {
+      await markPayrollRunStatus(orgId, payrollRunId, PAYROLL_STATUS.FAILED, {
         lastError: message,
         idempotencyKey
       });
@@ -2828,6 +5061,8 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
 
     // 🔎 Audit log: fatal error
     await logPayrollEvent({
+      orgId,
+      actor_employee_id: actorEmployeeId,
       event_type: 'PAYROLL_FATAL_ERROR',
       message,
       payroll_run_id: null,
@@ -2838,6 +5073,10 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
       }
     });
 
+    if (err && err.response) {
+      return respondWithQboError(res, err, { orgId });
+    }
+
     if (
       message.includes('required and must be valid') ||
       message.includes('End date must be on or after') ||
@@ -2847,27 +5086,34 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     ) {
       return res.status(400).json({
         ok: false,
-        error: message
+        error: message,
+        warnings: backupWarning ? [backupWarning] : []
       });
     }
 
     return res.status(500).json({
       ok: false,
-      error: message
+      error: message,
+      warnings: backupWarning ? [backupWarning] : []
     });
   } finally {
-    await releasePayrollLock();
+    await releasePayrollLock(orgId);
   }
 });
 
 app.get('/api/payroll/audit-log', requireAdminAccess(p => p.view_payroll), async (req, res) => {
   try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+    }
     const rows = await dbAll(`
       SELECT *
       FROM payroll_audit_log
+      WHERE org_id = ?
       ORDER BY created_at DESC
       LIMIT 200
-    `);
+    `, [orgId]);
 
     res.json({ ok: true, logs: rows });
   } catch (err) {
@@ -2877,109 +5123,132 @@ app.get('/api/payroll/audit-log', requireAdminAccess(p => p.view_payroll), async
 
 /* ───────── 5. VENDORS & EMPLOYEES ───────── */
 
-app.post('/api/vendors/:id/pin', requireAdminAccess(() => true), (req, res) => {
-
+async function handleVendorUpdate(req, res, { allowPin }) {
+  const orgId = req.session && req.session.orgId;
   const id = parseInt(req.params.id, 10);
   if (!id) {
     return res.status(400).json({ error: 'Invalid vendor id.' });
   }
 
-  const { pin, allowOverride, is_freight_forwarder, uses_timekeeping } = req.body || {};
+  const {
+    pin,
+    allowOverride,
+    is_freight_forwarder,
+    uses_timekeeping
+  } = req.body || {};
 
   const freightFlag =
     typeof is_freight_forwarder === 'undefined'
       ? null
       : (is_freight_forwarder ? 1 : 0);
 
+  // Vendor timekeeping is not supported; keep this false if sent.
   const timekeepingFlag =
     typeof uses_timekeeping === 'undefined'
       ? null
-      : (uses_timekeeping ? 1 : 0);
+      : 0;
 
-  // If pin is completely omitted, we only want to update flags.
-  if (typeof pin === 'undefined') {
-    if (freightFlag === null && timekeepingFlag === null) {
-      return res.json({ ok: true }); // nothing to do
+  try {
+    const vendor = await dbGet(
+      `
+        SELECT id, pin_hash
+        FROM vendors
+        WHERE id = ? AND org_id = ?
+      `,
+      [id, orgId]
+    );
+    if (!vendor) {
+      return res.status(404).json({ error: 'Vendor not found.' });
     }
 
-    const parts = [];
+    const updates = [];
     const params = [];
 
     if (freightFlag !== null) {
-      parts.push('is_freight_forwarder = ?');
+      updates.push('is_freight_forwarder = ?');
       params.push(freightFlag);
     }
     if (timekeepingFlag !== null) {
-      parts.push('uses_timekeeping = ?');
+      updates.push('uses_timekeeping = ?');
       params.push(timekeepingFlag);
     }
 
-    const sql = `UPDATE vendors SET ${parts.join(', ')} WHERE id = ?`;
-    params.push(id);
+  const pinRaw = typeof pin === 'undefined' ? '' : String(pin || '').trim();
+  const hasPin = allowPin && pinRaw.length > 0;
+  if (allowPin) {
+    if (hasPin) {
+      if (!/^\d{4}$/.test(pinRaw)) {
+        return res.status(400).json({ error: 'PIN must be a 4-digit number.' });
+      }
+      const override = allowOverride === true || allowOverride === 'true';
+      if (!override && vendor.pin_hash) {
+        return res.status(409).json({
+          error: 'PIN already set for this vendor. Use allowOverride to change it.'
+        });
+      }
+      const hash = await bcrypt.hash(pinRaw, 10);
+      updates.push('pin_hash = ?');
+      params.push(hash);
+    } else if (pin !== undefined && pin !== null && pinRaw === '') {
+      return res.status(400).json({ error: 'PIN must be a 4-digit number.' });
+    }
+  }
 
-    return db.run(sql, params, function (err) {
-      if (err) return res.status(500).json({ error: err.message });
+    if (!updates.length) {
       return res.json({ ok: true });
-    });
-  }
-
-  // Otherwise we're updating PIN (and optionally flags)
-  const newPin = pin || null;
-
-  let setParts = ['pin = ?'];
-  const params = [newPin];
-
-  if (freightFlag !== null) {
-    setParts.push('is_freight_forwarder = ?');
-    params.push(freightFlag);
-  }
-  if (timekeepingFlag !== null) {
-    setParts.push('uses_timekeeping = ?');
-    params.push(timekeepingFlag);
-  }
-
-  // We always include "id = id" workaround in the original code to keep SQL valid;
-  // we don't need it now because setParts is guaranteed non-empty.
-  let sql = `UPDATE vendors SET ${setParts.join(', ')} WHERE id = ?`;
-  params.push(id);
-
-  if (!allowOverride) {
-    sql += ' AND pin IS NULL';
-  }
-
-  db.run(sql, params, function (err) {
-    if (err) return res.status(500).json({ error: err.message });
-
-    if (this.changes === 0 && !allowOverride) {
-      return res.status(409).json({
-        error: 'PIN already set for this vendor. Use allowOverride to change it.'
-      });
     }
 
-    res.json({ ok: true });
-  });
+    params.push(id, orgId);
+
+    await dbRun(
+      `
+        UPDATE vendors
+        SET ${updates.join(', ')}
+        WHERE id = ? AND org_id = ?
+      `,
+      params
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Error updating vendor:', err);
+    return res.status(500).json({ error: 'Failed to update vendor.' });
+  }
+}
+
+app.post('/api/vendors/:id', requireViewPayroll, async (req, res) => {
+  return handleVendorUpdate(req, res, { allowPin: false });
 });
 
-app.get('/api/vendors', requireAdminAccess(() => true), (req, res) => {
+app.post('/api/vendors/:id/pin', requireViewPayroll, async (req, res) => {
+  return handleVendorUpdate(req, res, { allowPin: true });
+});
 
+app.get('/api/vendors', requireViewPayrollOrSeeShipments, (req, res) => {
+  const orgId = req.session && req.session.orgId;
   const status = req.query.status || 'all'; // 'active' | 'inactive' | 'all'
 
-  let where = '';
-  const params = [];
+  let where = 'WHERE org_id = ?';
+  const params = [orgId];
 
   if (status === 'active') {
-    where = 'WHERE IFNULL(active, 1) = 1';
+    where += ' AND IFNULL(active, 1) = 1';
   } else if (status === 'inactive') {
-    where = 'WHERE IFNULL(active, 1) = 0';
-  } else {
-    where = ''; // all
+    where += ' AND IFNULL(active, 1) = 0';
   }
 
   const sql = `
-    SELECT *
+    SELECT
+      id,
+      qbo_id,
+      name,
+      active,
+      is_freight_forwarder,
+      uses_timekeeping,
+      CASE WHEN pin_hash IS NULL THEN 0 ELSE 1 END AS has_pin
     FROM vendors
     ${where}
-    ORDER BY name
+    ORDER BY name COLLATE NOCASE
   `;
 
   db.all(sql, params, (err, rows) => {
@@ -2988,75 +5257,234 @@ app.get('/api/vendors', requireAdminAccess(() => true), (req, res) => {
   });
 });
 
-app.get('/api/employees', requireAdminAccess(() => true), (req, res) => {
-  const status = req.query.status || 'active'; // 'active' | 'inactive' | 'all'
+app.get('/api/employees', requireViewPayroll, (req, res) => {
+  const orgId = req.session && req.session.orgId;
+  const status = req.query.status || 'active'; // 'active' | 'inactive' | 'all' | 'pending'
 
-  let where = '';
+  let where = 'WHERE e.org_id = ?';
+  const params = [orgId];
+
   if (status === 'active') {
-    where = 'WHERE IFNULL(active, 1) = 1';
+    where += ' AND IFNULL(e.active, 1) = 1';
   } else if (status === 'inactive') {
-    where = 'WHERE IFNULL(active, 1) = 0';
+    where += ' AND IFNULL(e.active, 1) = 0';
   } else if (status === 'pending') {
-    where =
-      'WHERE (((employee_qbo_id IS NULL OR employee_qbo_id = "") AND (vendor_qbo_id IS NULL OR vendor_qbo_id = "")) OR needs_qbo_sync = 1) AND IFNULL(active, 1) = 1';
-  } else {
-    // "all" → all employees
-    where = '';
+    where +=
+      ` AND IFNULL(e.active, 1) = 1
+        AND (
+          ((e.employee_qbo_id IS NULL OR e.employee_qbo_id = '')
+            AND (e.vendor_qbo_id IS NULL OR e.vendor_qbo_id = ''))
+          OR e.needs_qbo_sync = 1
+        )`;
   }
 
-const sql = `
-  SELECT
-    id,
-    vendor_qbo_id,
-    name,
-    nickname,
-    name_on_checks,
-    rate,
-    is_admin,
-    pin,
-    uses_timekeeping,
-    email,
-    language,
-    employee_qbo_id,
-    kiosk_can_view_shipments,       -- 👈 NEW
-    needs_qbo_sync,
-    active
-  FROM employees
-  ${where}
-  ORDER BY name COLLATE NOCASE
-`;
+  const sql = `
+    SELECT
+      e.id,
+      e.employee_qbo_id,
+      e.vendor_qbo_id,
+      e.name,
+      e.nickname,
+      e.name_on_checks,
+      e.rate,
+      e.role_title,
+      e.permission_template_id,
+      e.worker_timekeeping,
+      e.desktop_access,
+      e.kiosk_admin_access,
+      e.email,
+      e.language,
+      e.needs_qbo_sync,
+      e.active,
+      e.name_on_checks_updated_at,
+      e.name_on_checks_qbo_updated_at,
+      e.id_document_type,
+      e.id_document_uploaded_at,
+      q.last_error AS name_on_checks_qbo_error,
+      CASE
+        WHEN q.created_at IS NOT NULL
+          AND q.created_at < datetime('now', '-7 days')
+        THEN 1
+        ELSE 0
+      END AS name_on_checks_qbo_warning,
+      CASE WHEN e.pin_hash IS NULL THEN 0 ELSE 1 END AS has_pin,
+      p.see_shipments,
+      p.modify_time,
+      p.view_time_reports,
+      p.view_payroll,
+      p.modify_payroll,
+      p.modify_pay_rates
+    FROM employees e
+    LEFT JOIN employee_permissions p
+      ON p.employee_id = e.id
+    LEFT JOIN name_on_checks_queue q
+      ON q.org_id = e.org_id AND q.employee_id = e.id
+    ${where}
+    ORDER BY e.name COLLATE NOCASE
+  `;
 
-
-  db.all(sql, [], (err, rows) => {
+  db.all(sql, params, (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows || []);
   });
 });
 
-// Public kiosk-friendly list (no auth; limited fields)
-app.get('/api/kiosk/employees', (req, res) => {
+// Public kiosk-friendly list (device auth or admin session; limited fields)
+app.get('/api/kiosk/employees', async (req, res) => {
+  const access = await ensureKioskDevice(req);
+  if (!access.ok) {
+    return res
+      .status(access.status || 401)
+      .json({ error: access.error || 'Not authenticated' });
+  }
+
+  const orgId =
+    access.via === 'session'
+      ? req.session && req.session.orgId
+      : access.kiosk && access.kiosk.org_id;
+
   const sql = `
     SELECT
       id,
       name,
       name_on_checks,
       nickname,
-      is_admin,
-      pin,
-      uses_timekeeping,
-      kiosk_can_view_shipments,
       language,
-      IFNULL(active, 1) AS active
+      worker_timekeeping,
+      kiosk_admin_access,
+      pin_hash,
+      p.see_shipments,
+      p.modify_time,
+      p.view_time_reports,
+      p.view_payroll,
+      p.modify_pay_rates
     FROM employees
-    WHERE IFNULL(active, 1) = 1
-      AND IFNULL(uses_timekeeping, 1) = 1
+    LEFT JOIN employee_permissions p
+      ON p.employee_id = employees.id
+    WHERE org_id = ?
+      AND IFNULL(active, 1) = 1
+      AND (IFNULL(worker_timekeeping, 0) = 1 OR IFNULL(kiosk_admin_access, 0) = 1)
     ORDER BY name COLLATE NOCASE
   `;
 
-  db.all(sql, [], (err, rows) => {
+  db.all(sql, [orgId], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows || []);
   });
+});
+
+// Kiosk admin: create a pending employee with ID document
+app.post('/api/kiosk/employees', wrapUpload(uploadIdDocument.single('id_document')), async (req, res) => {
+  const cleanupFile = async () => {
+    if (req.file && req.file.path) {
+      try {
+        await fsp.unlink(req.file.path);
+      } catch {}
+    }
+  };
+
+  try {
+    const adminCtx = await resolveKioskAdmin(req);
+    if (!adminCtx.ok) {
+      await cleanupFile();
+      return res
+        .status(adminCtx.status || 401)
+        .json({ error: adminCtx.error || 'Not authenticated' });
+    }
+
+    const name = String(req.body?.name || '').trim();
+    if (!name) {
+      await cleanupFile();
+      return res.status(400).json({ error: 'Name is required.' });
+    }
+
+    const nickname = String(req.body?.nickname || '').trim() || null;
+    const rawLang = String(req.body?.language || '').trim().toLowerCase();
+    const allowedLanguages = ['en', 'es', 'ht'];
+    const language = allowedLanguages.includes(rawLang) ? rawLang : 'en';
+
+    const idType = String(req.body?.id_document_type || '').trim();
+    const allowedTypes = new Set(['drivers_license', 'passport', 'other']);
+    if (!idType || !allowedTypes.has(idType)) {
+      await cleanupFile();
+      return res.status(400).json({
+        error: 'id_document_type must be drivers_license, passport, or other.'
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'id_document file is required.' });
+    }
+
+    try {
+      const result = await validateStoredUpload(req.file.path, idAllowedMimes, idAllowedExts);
+      if (!result.ok) {
+        await cleanupFile();
+        return res.status(400).json({ error: result.error || 'Unsupported file type.' });
+      }
+    } catch (err) {
+      await cleanupFile();
+      return res.status(400).json({ error: err.message || 'Unsupported file type.' });
+    }
+
+    const relativePath = `employee_ids/${req.file.filename}`;
+    const orgId = adminCtx.orgId;
+    const uploadedAt = new Date().toISOString();
+
+    const insertRes = await dbRun(
+      `
+        INSERT INTO employees (
+          org_id,
+          name,
+          nickname,
+          language,
+          active,
+          worker_timekeeping,
+          desktop_access,
+          kiosk_admin_access,
+          needs_qbo_sync,
+          id_document_type,
+          id_document_path,
+          id_document_uploaded_at,
+          id_document_uploaded_by
+        ) VALUES (?, ?, ?, ?, 1, 1, 0, 0, 1, ?, ?, ?, ?)
+      `,
+      [
+        orgId,
+        name,
+        nickname,
+        language,
+        idType,
+        relativePath,
+        uploadedAt,
+        adminCtx.adminId
+      ]
+    );
+
+    const employeeId = insertRes.lastID;
+
+    await dbRun(
+      `
+        INSERT INTO employee_permissions (
+          employee_id,
+          see_shipments,
+          modify_time,
+          view_time_reports,
+          view_payroll,
+          modify_payroll,
+          modify_pay_rates
+        ) VALUES (?, 0, 0, 0, 0, 0, 0)
+        ON CONFLICT(employee_id) DO NOTHING
+      `,
+      [employeeId]
+    );
+
+    return res.json({ ok: true, id: employeeId, needs_qbo_sync: 1 });
+  } catch (err) {
+    console.error('Error creating kiosk employee:', err);
+    await cleanupFile();
+    return res.status(500).json({ error: 'Failed to create employee.' });
+  }
 });
 
 const RATE_UNLOCK_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
@@ -3071,9 +5499,127 @@ function isRateUnlockValid(req, adminId) {
   return true;
 }
 
+async function resolveKioskRateContext(req) {
+  const deviceAccess = await ensureKioskDevice(req);
+  if (!deviceAccess.ok) return deviceAccess;
+
+  const orgId =
+    deviceAccess.via === 'session'
+      ? req.session && req.session.orgId
+      : deviceAccess.kiosk && deviceAccess.kiosk.org_id;
+  if (!orgId) {
+    return { ok: false, status: 403, error: 'Not authorized.' };
+  }
+
+  const adminId = req.session && req.session.kioskRateAdminId;
+  if (!isRateUnlockValid(req, adminId)) {
+    return { ok: false, status: 403, error: 'Rates access is locked.' };
+  }
+
+  const deviceId = deviceAccess.kiosk && deviceAccess.kiosk.device_id
+    ? String(deviceAccess.kiosk.device_id)
+    : '';
+  const sessionDeviceId = req.session && req.session.kioskRateDeviceId
+    ? String(req.session.kioskRateDeviceId)
+    : '';
+  if (deviceId && sessionDeviceId && deviceId !== sessionDeviceId) {
+    return { ok: false, status: 403, error: 'Rates access is locked.' };
+  }
+
+  const admin = await dbGet(
+    `
+      SELECT id
+      FROM employees
+      WHERE id = ? AND org_id = ? AND IFNULL(kiosk_admin_access, 0) = 1
+        AND IFNULL(active, 1) = 1
+      LIMIT 1
+    `,
+    [adminId, orgId]
+  );
+  if (!admin) {
+    return { ok: false, status: 403, error: 'Admin not authorized.' };
+  }
+
+  const perms = await getAdminAccessPerms({ employeeId: adminId, orgId });
+  if (!perms.modify_pay_rates) {
+    return { ok: false, status: 403, error: 'This admin cannot modify pay rates.' };
+  }
+
+  return { ok: true, orgId, adminId, perms };
+}
+
+function parseTemplateJson(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeTemplateAccess(raw) {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  return {
+    worker_timekeeping: input.worker_timekeeping === true || input.worker_timekeeping === 1 || input.worker_timekeeping === '1' || input.worker_timekeeping === 'true',
+    desktop_access: input.desktop_access === true || input.desktop_access === 1 || input.desktop_access === '1' || input.desktop_access === 'true',
+    kiosk_admin_access: input.kiosk_admin_access === true || input.kiosk_admin_access === 1 || input.kiosk_admin_access === '1' || input.kiosk_admin_access === 'true'
+  };
+}
+
+function normalizeTemplatePerms(raw) {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  return {
+    see_shipments: input.see_shipments === true || input.see_shipments === 1 || input.see_shipments === '1' || input.see_shipments === 'true',
+    modify_time: input.modify_time === true || input.modify_time === 1 || input.modify_time === '1' || input.modify_time === 'true',
+    view_time_reports: input.view_time_reports === true || input.view_time_reports === 1 || input.view_time_reports === '1' || input.view_time_reports === 'true',
+    view_payroll: input.view_payroll === true || input.view_payroll === 1 || input.view_payroll === '1' || input.view_payroll === 'true',
+    modify_payroll: input.modify_payroll === true || input.modify_payroll === 1 || input.modify_payroll === '1' || input.modify_payroll === 'true',
+    modify_pay_rates: input.modify_pay_rates === true || input.modify_pay_rates === 1 || input.modify_pay_rates === '1' || input.modify_pay_rates === 'true'
+  };
+}
+
+async function loadPermissionTemplate(orgId, templateId) {
+  if (!orgId || !templateId) return null;
+  const row = await dbGet(
+    `
+      SELECT id, org_id, name, role_title, access_json, permissions_json
+      FROM permission_templates
+      WHERE id = ? AND org_id = ?
+      LIMIT 1
+    `,
+    [templateId, orgId]
+  );
+  if (!row) return null;
+  const access = normalizeTemplateAccess(parseTemplateJson(row.access_json));
+  const permissions = normalizeTemplatePerms(parseTemplateJson(row.permissions_json));
+  return {
+    id: row.id,
+    name: row.name,
+    role_title: row.role_title,
+    access,
+    permissions
+  };
+}
+
 // Re-auth a kiosk admin (by PIN) to unlock rate editing, gated by access permissions
 app.post('/api/kiosk/rates/unlock', async (req, res) => {
   try {
+    const deviceAccess = await ensureKioskDevice(req);
+    if (!deviceAccess.ok) {
+      return res
+        .status(deviceAccess.status || 401)
+        .json({ error: deviceAccess.error || 'Not authenticated' });
+    }
+
+    const orgId =
+      deviceAccess.via === 'session'
+        ? req.session && req.session.orgId
+        : deviceAccess.kiosk && deviceAccess.kiosk.org_id;
+    if (!orgId) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
     const adminId = req.body && req.body.admin_id ? Number(req.body.admin_id) : null;
     const pin = (req.body && req.body.pin ? String(req.body.pin) : '').trim();
 
@@ -3083,34 +5629,38 @@ app.post('/api/kiosk/rates/unlock', async (req, res) => {
 
     const admin = await dbGet(
       `
-        SELECT id, name, pin, is_admin
+        SELECT id, name, pin_hash, kiosk_admin_access
         FROM employees
-        WHERE id = ? AND IFNULL(is_admin, 0) = 1
+        WHERE id = ? AND org_id = ? AND IFNULL(kiosk_admin_access, 0) = 1
+          AND IFNULL(active, 1) = 1
         LIMIT 1
       `,
-      [adminId]
+      [adminId, orgId]
     );
 
     if (!admin) {
       return res.status(404).json({ error: 'Admin not found or not authorized.' });
     }
 
-    const perms = await getAdminAccessPerms(admin.id);
+    const perms = await getAdminAccessPerms({ employeeId: admin.id, orgId });
     if (!perms.modify_pay_rates) {
       return res.status(403).json({ error: 'This admin cannot modify pay rates.' });
     }
 
-    const currentPin = (admin.pin || '').trim();
-    if (!currentPin) {
+    if (!admin.pin_hash) {
       return res.status(403).json({ error: 'No PIN is set for this admin.' });
     }
-    if (pin !== currentPin) {
+    const pinOk = await bcrypt.compare(pin, admin.pin_hash);
+    if (!pinOk) {
       return res.status(401).json({ error: 'Incorrect PIN.' });
     }
 
     if (req.session) {
       req.session.kioskRateAdminId = admin.id;
       req.session.kioskRateUnlockedAt = Date.now();
+      if (deviceAccess.kiosk && deviceAccess.kiosk.device_id) {
+        req.session.kioskRateDeviceId = deviceAccess.kiosk.device_id;
+      }
     }
 
     res.json({ ok: true, expires_in_ms: RATE_UNLOCK_MAX_AGE_MS });
@@ -3123,15 +5673,13 @@ app.post('/api/kiosk/rates/unlock', async (req, res) => {
 // Fetch employees + rates for kiosk editors (requires an active unlock session)
 app.get('/api/kiosk/rates', async (req, res) => {
   try {
-    const adminId = req.session && req.session.kioskRateAdminId;
-    if (!isRateUnlockValid(req, adminId)) {
-      return res.status(403).json({ error: 'Rates access is locked.' });
+    const ctx = await resolveKioskRateContext(req);
+    if (!ctx.ok) {
+      return res
+        .status(ctx.status || 403)
+        .json({ error: ctx.error || 'Not authorized.' });
     }
-
-    const perms = await getAdminAccessPerms(adminId);
-    if (!perms.modify_pay_rates) {
-      return res.status(403).json({ error: 'This admin cannot modify pay rates.' });
-    }
+    const orgId = ctx.orgId;
 
     // Refresh the unlock timer while they are actively using it
     req.session.kioskRateUnlockedAt = Date.now();
@@ -3146,9 +5694,11 @@ app.get('/api/kiosk/rates', async (req, res) => {
           rate,
           IFNULL(active, 1) AS active
         FROM employees
-        WHERE employee_qbo_id IS NOT NULL
+        WHERE org_id = ?
+          AND IFNULL(active, 1) = 1
         ORDER BY name COLLATE NOCASE
-      `
+      `,
+      [orgId]
     );
 
     res.json({ employees: rows || [] });
@@ -3161,15 +5711,13 @@ app.get('/api/kiosk/rates', async (req, res) => {
 // Update a single employee rate from kiosk (requires unlock + permission)
 app.post('/api/kiosk/rates/:id', async (req, res) => {
   try {
-    const adminId = req.session && req.session.kioskRateAdminId;
-    if (!isRateUnlockValid(req, adminId)) {
-      return res.status(403).json({ error: 'Rates access is locked.' });
+    const ctx = await resolveKioskRateContext(req);
+    if (!ctx.ok) {
+      return res
+        .status(ctx.status || 403)
+        .json({ error: ctx.error || 'Not authorized.' });
     }
-
-    const perms = await getAdminAccessPerms(adminId);
-    if (!perms.modify_pay_rates) {
-      return res.status(403).json({ error: 'This admin cannot modify pay rates.' });
-    }
+    const orgId = ctx.orgId;
 
     const id = Number(req.params.id);
     const rate = req.body && req.body.rate !== undefined ? Number(req.body.rate) : null;
@@ -3178,8 +5726,8 @@ app.post('/api/kiosk/rates/:id', async (req, res) => {
     }
 
     const updateRes = await dbRun(
-      'UPDATE employees SET rate = ? WHERE id = ?',
-      [rate, id]
+      'UPDATE employees SET rate = ? WHERE id = ? AND org_id = ?',
+      [rate, id, orgId]
     );
     if (updateRes.changes === 0) {
       return res.status(404).json({ error: 'Employee not found.' });
@@ -3195,53 +5743,126 @@ app.post('/api/kiosk/rates/:id', async (req, res) => {
   }
 });
 
-app.post('/api/employees', requireAdminAccess(() => true), async (req, res) => {
+app.post('/api/employees', requireViewPayroll, async (req, res) => {
   try {
-    const {
-      id,
-      name,
-      rate,
-      is_admin,
-      uses_timekeeping,
-      nickname,
-      name_on_checks,
-      vendor_qbo_id,
-      employee_qbo_id,
-      email,
-      kiosk_can_view_shipments,
-      language
-    } = req.body;
+    const orgId = req.session && req.session.orgId;
+    const isSuperAdmin = req.session && req.session.isSuperAdmin;
+    const body = req.body || {};
+    const hasField = key => Object.prototype.hasOwnProperty.call(body, key);
 
-    const perms = await getAdminAccessPerms(req.session && req.session.employeeId);
-    const canModifyRates = perms.modify_pay_rates === true;
-
-    const incomingRate =
-      rate === undefined || rate === null ? null : Number(rate);
-
-    const needsQboSync =
-      employee_qbo_id || vendor_qbo_id ? 0 : 1;
+    const id = body.id ? Number(body.id) : null;
+    const name = hasField('name') ? String(body.name || '').trim() : null;
+    const nickname = hasField('nickname') ? String(body.nickname || '').trim() : null;
+    const nameOnChecks = hasField('name_on_checks')
+      ? String(body.name_on_checks || '').trim()
+      : null;
+    const email = hasField('email') ? String(body.email || '').trim() : null;
+    const rawRate = hasField('rate') ? body.rate : undefined;
+    const rateValue =
+      rawRate === undefined || rawRate === null || rawRate === ''
+        ? null
+        : Number(rawRate);
 
     const allowedLanguages = ['en', 'es', 'ht'];
-    const normalizedLanguage = (() => {
-      const raw = (language || '').toString().trim().toLowerCase();
-      return allowedLanguages.includes(raw) ? raw : 'en';
-    })();
+    const normalizedLanguage = hasField('language')
+      ? (() => {
+          const raw = (body.language || '').toString().trim().toLowerCase();
+          return allowedLanguages.includes(raw) ? raw : 'en';
+        })()
+      : null;
 
-    const isAdminFlag = is_admin ? 1 : 0;
-    const usesTimekeepingFlag =
-      uses_timekeeping === undefined || uses_timekeeping === null
-        ? 1 // default ON if missing
-        : (uses_timekeeping ? 1 : 0);
+    const employeeQboId = hasField('employee_qbo_id')
+      ? String(body.employee_qbo_id || '').trim() || null
+      : undefined;
+    const vendorQboId = hasField('vendor_qbo_id')
+      ? String(body.vendor_qbo_id || '').trim() || null
+      : undefined;
 
-    const viewShipmentsFlag =
-      kiosk_can_view_shipments ? 1 : 0; 
+    const roleTitleProvided = hasField('role_title');
+    const roleTitleRaw = roleTitleProvided ? String(body.role_title || '').trim() : null;
 
-    // ───────── CREATE PATH ─────────
+    const templateFieldProvided = hasField('permission_template_id');
+    const templateRaw = templateFieldProvided ? body.permission_template_id : null;
+    let templateId = null;
+    if (templateFieldProvided) {
+      if (templateRaw === null || templateRaw === '' || templateRaw === 0 || templateRaw === '0') {
+        templateId = null;
+      } else {
+        const parsed = Number(templateRaw);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          return res.status(400).json({ error: 'permission_template_id must be a valid id.' });
+        }
+        templateId = parsed;
+      }
+    }
+
+    const accessFieldProvided =
+      hasField('worker_timekeeping') ||
+      hasField('desktop_access') ||
+      hasField('kiosk_admin_access');
+    const permFieldProvided =
+      hasField('see_shipments') ||
+      hasField('modify_time') ||
+      hasField('view_time_reports') ||
+      hasField('view_payroll') ||
+      hasField('modify_payroll') ||
+      hasField('modify_pay_rates');
+
+    if (!isSuperAdmin && (accessFieldProvided || permFieldProvided || templateFieldProvided || roleTitleProvided)) {
+      return res.status(403).json({ error: 'Super admin access required.' });
+    }
+
+    const perms = await getAdminAccessPerms({
+      employeeId: req.session && req.session.employeeId,
+      orgId
+    });
+    const canModifyRates = perms.modify_pay_rates === true;
+
+    const toFlag = value => (value === true || value === 'true' || value === 1 || value === '1' ? 1 : 0);
+
+    const template = templateId ? await loadPermissionTemplate(orgId, templateId) : null;
+    if (templateId && !template) {
+      return res.status(404).json({ error: 'Permission template not found.' });
+    }
+
+    const workerTimekeeping = hasField('worker_timekeeping')
+      ? toFlag(body.worker_timekeeping)
+      : template
+        ? (template.access.worker_timekeeping ? 1 : 0)
+        : null;
+    const desktopAccess = hasField('desktop_access')
+      ? toFlag(body.desktop_access)
+      : template
+        ? (template.access.desktop_access ? 1 : 0)
+        : null;
+    const kioskAdminAccess = hasField('kiosk_admin_access')
+      ? toFlag(body.kiosk_admin_access)
+      : template
+        ? (template.access.kiosk_admin_access ? 1 : 0)
+        : null;
+
+    let permPayload = template ? { ...template.permissions } : null;
+    if (permFieldProvided) {
+      permPayload = {
+        see_shipments: toFlag(body.see_shipments),
+        modify_time: toFlag(body.modify_time),
+        view_time_reports: toFlag(body.view_time_reports),
+        view_payroll: toFlag(body.view_payroll),
+        modify_payroll: toFlag(body.modify_payroll),
+        modify_pay_rates: toFlag(body.modify_pay_rates)
+      };
+    }
+
+    const roleTitle = roleTitleProvided
+      ? (roleTitleRaw || null)
+      : (template && (template.role_title || template.name)) ? (template.role_title || template.name) : null;
+
     if (!id) {
-      if (!name || Number.isNaN(incomingRate)) {
-        return res
-          .status(400)
-          .json({ error: 'Name and a numeric rate are required.' });
+      if (!name) {
+        return res.status(400).json({ error: 'Name is required.' });
+      }
+      if (rateValue === null || Number.isNaN(rateValue)) {
+        return res.status(400).json({ error: 'A numeric rate is required.' });
       }
       if (!canModifyRates) {
         return res.status(403).json({
@@ -3249,140 +5870,312 @@ app.post('/api/employees', requireAdminAccess(() => true), async (req, res) => {
         });
       }
 
-      const insertSql = `
-        INSERT INTO employees (
-          name,
-          nickname,
-          name_on_checks,
-          rate,
-          is_admin,
-          uses_timekeeping,
-          active,
-          vendor_qbo_id,
-          employee_qbo_id,
-          email,
-          kiosk_can_view_shipments,
-          language,
-          needs_qbo_sync
-        )
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-      `;
-
-      try {
-        const result = await dbRun(insertSql, [
-          name.trim(),
-          nickname || null,
-          name_on_checks || null,
-          incomingRate,
-          isAdminFlag,
-          usesTimekeepingFlag,
-          vendor_qbo_id || null,
-          employee_qbo_id || null,
-          email || null,
-          viewShipmentsFlag,
-          normalizedLanguage,
-          needsQboSync ? 1 : 0
-        ]);
-
-        return res.json({
-          ok: true,
-          id: result.lastID,
-          needs_qbo_sync: needsQboSync ? 1 : 0
-        });
-      } catch (insertErr) {
-        console.error('Error creating employee:', insertErr);
-        return res.status(500).json({ error: 'Failed to create employee.' });
+      if (employeeQboId) {
+        const dup = await dbGet(
+          `
+            SELECT id, name
+            FROM employees
+            WHERE org_id = ? AND employee_qbo_id = ?
+            LIMIT 1
+          `,
+          [orgId, employeeQboId]
+        );
+        if (dup) {
+          return res.status(409).json({
+            error: 'QBO ID already linked.',
+            linked_employee_id: dup.id,
+            linked_employee_name: dup.name
+          });
+        }
       }
+      if (vendorQboId) {
+        const dup = await dbGet(
+          `
+            SELECT id, name
+            FROM employees
+            WHERE org_id = ? AND vendor_qbo_id = ?
+            LIMIT 1
+          `,
+          [orgId, vendorQboId]
+        );
+        if (dup) {
+          return res.status(409).json({
+            error: 'QBO ID already linked.',
+            linked_employee_id: dup.id,
+            linked_employee_name: dup.name
+          });
+        }
+      }
+
+      const needsQboSync = employeeQboId || vendorQboId ? 0 : 1;
+
+      const insertRes = await dbRun(
+        `
+          INSERT INTO employees (
+            org_id,
+            name,
+            nickname,
+            name_on_checks,
+            rate,
+            active,
+            employee_qbo_id,
+            vendor_qbo_id,
+            email,
+            language,
+            role_title,
+            permission_template_id,
+            needs_qbo_sync,
+            worker_timekeeping,
+            desktop_access,
+            kiosk_admin_access,
+            name_on_checks_updated_at
+          ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          orgId,
+          name,
+          nickname || null,
+          nameOnChecks || null,
+          rateValue,
+          employeeQboId || null,
+          vendorQboId || null,
+          email || null,
+          normalizedLanguage || 'en',
+          roleTitle,
+          templateFieldProvided ? templateId : null,
+          needsQboSync ? 1 : 0,
+          workerTimekeeping !== null ? workerTimekeeping : 1,
+          desktopAccess !== null ? desktopAccess : 0,
+          kioskAdminAccess !== null ? kioskAdminAccess : 0,
+          nameOnChecks ? new Date().toISOString() : null
+        ]
+      );
+
+      const employeeId = insertRes.lastID;
+      await dbRun(
+        `
+          INSERT INTO employee_permissions (
+            employee_id,
+            see_shipments,
+            modify_time,
+            view_time_reports,
+            view_payroll,
+            modify_payroll,
+            modify_pay_rates
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          employeeId,
+          permPayload ? permPayload.see_shipments : 0,
+          permPayload ? permPayload.modify_time : 0,
+          permPayload ? permPayload.view_time_reports : 0,
+          permPayload ? (permPayload.view_payroll || permPayload.modify_payroll ? 1 : 0) : 0,
+          permPayload ? permPayload.modify_payroll : 0,
+          permPayload ? permPayload.modify_pay_rates : 0
+        ]
+      );
+
+      return res.json({ ok: true, id: employeeId, needs_qbo_sync: needsQboSync });
     }
 
-    // ───────── UPDATE PATH ─────────
     const existing = await dbGet(
-      'SELECT id, rate FROM employees WHERE id = ?',
-      [id]
+      `
+        SELECT id, rate, employee_qbo_id, vendor_qbo_id, name_on_checks
+        FROM employees
+        WHERE id = ? AND org_id = ?
+      `,
+      [id, orgId]
     );
     if (!existing) {
       return res.status(404).json({ error: 'Employee not found.' });
     }
 
-    const currentRate = existing.rate;
-
-    if (!canModifyRates) {
-      const rateChanged =
-        incomingRate !== null &&
-        !Number.isNaN(incomingRate) &&
-        Number(incomingRate).toFixed(4) !== Number(currentRate || 0).toFixed(4);
-      if (rateChanged) {
-        return res
-          .status(403)
-          .json({ error: 'You do not have permission to modify pay rates.' });
+    if (hasField('rate')) {
+      if (rateValue === null || Number.isNaN(rateValue)) {
+        return res.status(400).json({ error: 'Rate must be numeric.' });
+      }
+      if (!canModifyRates) {
+        return res.status(403).json({ error: 'You do not have permission to modify pay rates.' });
       }
     }
 
-    let safeRate = currentRate;
-    if (canModifyRates && incomingRate !== null && !Number.isNaN(incomingRate)) {
-      safeRate = incomingRate;
-    }
-
-    db.run(
-      `
-      UPDATE employees
-      SET
-        rate = ?,
-        is_admin = ?,
-        uses_timekeeping = ?,
-        nickname = ?,          -- 🔹 new
-        name_on_checks = ?,     -- 🔹 new (optional, but you're already sending it)
-        kiosk_can_view_shipments = ?,    -- 👈 NEW
-        language = ?
-      WHERE id = ?
-      `,
-      [
-        safeRate,
-        isAdminFlag,
-        usesTimekeepingFlag,
-        nickname || null,
-        name_on_checks || null,
-        viewShipmentsFlag,
-        normalizedLanguage,
-        id
-      ],
-      function (err) {
-        if (err) {
-          console.error('Error updating employee:', err);
-          return res.status(500).json({ error: 'Failed to update employee.' });
-        }
-        if (this.changes === 0) {
-          return res.status(404).json({ error: 'Employee not found.' });
-        }
-        return res.json({
-          id,
-          rate: safeRate,
-          is_admin: isAdminFlag,
-          uses_timekeeping: usesTimekeepingFlag,
-          nickname: nickname || null,
-          name_on_checks: name_on_checks || null,
-          language: normalizedLanguage
+    if (employeeQboId) {
+      const dup = await dbGet(
+        `
+          SELECT id, name
+          FROM employees
+          WHERE org_id = ? AND employee_qbo_id = ? AND id != ?
+          LIMIT 1
+        `,
+        [orgId, employeeQboId, id]
+      );
+      if (dup) {
+        return res.status(409).json({
+          error: 'QBO ID already linked.',
+          linked_employee_id: dup.id,
+          linked_employee_name: dup.name
         });
       }
-    );
+    }
+    if (vendorQboId) {
+      const dup = await dbGet(
+        `
+          SELECT id, name
+          FROM employees
+          WHERE org_id = ? AND vendor_qbo_id = ? AND id != ?
+          LIMIT 1
+        `,
+        [orgId, vendorQboId, id]
+      );
+      if (dup) {
+        return res.status(409).json({
+          error: 'QBO ID already linked.',
+          linked_employee_id: dup.id,
+          linked_employee_name: dup.name
+        });
+      }
+    }
+
+    const updates = [];
+    const params = [];
+
+    if (hasField('name')) {
+      if (!name) {
+        return res.status(400).json({ error: 'Name is required.' });
+      }
+      updates.push('name = ?');
+      params.push(name);
+    }
+    if (hasField('nickname')) {
+      updates.push('nickname = ?');
+      params.push(nickname || null);
+    }
+    if (hasField('name_on_checks')) {
+      updates.push('name_on_checks = ?');
+      params.push(nameOnChecks || null);
+      updates.push('name_on_checks_updated_at = ?');
+      params.push(nameOnChecks ? new Date().toISOString() : null);
+    }
+    if (hasField('email')) {
+      updates.push('email = ?');
+      params.push(email || null);
+    }
+    if (hasField('rate')) {
+      updates.push('rate = ?');
+      params.push(rateValue);
+    }
+    if (hasField('language')) {
+      updates.push('language = ?');
+      params.push(normalizedLanguage || 'en');
+    }
+    if (roleTitleProvided || (template && roleTitle)) {
+      updates.push('role_title = ?');
+      params.push(roleTitle || null);
+    }
+    if (templateFieldProvided) {
+      updates.push('permission_template_id = ?');
+      params.push(templateId);
+    }
+    if (hasField('employee_qbo_id')) {
+      updates.push('employee_qbo_id = ?');
+      params.push(employeeQboId || null);
+    }
+    if (hasField('vendor_qbo_id')) {
+      updates.push('vendor_qbo_id = ?');
+      params.push(vendorQboId || null);
+    }
+    if (workerTimekeeping !== null) {
+      updates.push('worker_timekeeping = ?');
+      params.push(workerTimekeeping);
+    }
+    if (desktopAccess !== null) {
+      updates.push('desktop_access = ?');
+      params.push(desktopAccess);
+    }
+    if (kioskAdminAccess !== null) {
+      updates.push('kiosk_admin_access = ?');
+      params.push(kioskAdminAccess);
+    }
+
+    if (hasField('employee_qbo_id') || hasField('vendor_qbo_id')) {
+      const finalEmployeeQboId =
+        hasField('employee_qbo_id') ? employeeQboId : existing.employee_qbo_id;
+      const finalVendorQboId =
+        hasField('vendor_qbo_id') ? vendorQboId : existing.vendor_qbo_id;
+      const needsQboSync = finalEmployeeQboId || finalVendorQboId ? 0 : 1;
+      updates.push('needs_qbo_sync = ?');
+      params.push(needsQboSync);
+    }
+
+    if (updates.length) {
+      params.push(id, orgId);
+      await dbRun(
+        `
+          UPDATE employees
+          SET ${updates.join(', ')}
+          WHERE id = ? AND org_id = ?
+        `,
+        params
+      );
+    }
+
+    if (permPayload) {
+      const normalizedPerms = {
+        ...permPayload,
+        view_payroll:
+          permPayload.view_payroll || permPayload.modify_payroll ? 1 : 0
+      };
+      await dbRun(
+        `
+          INSERT INTO employee_permissions (
+            employee_id,
+            see_shipments,
+            modify_time,
+            view_time_reports,
+            view_payroll,
+            modify_payroll,
+            modify_pay_rates
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(employee_id) DO UPDATE SET
+            see_shipments = excluded.see_shipments,
+            modify_time = excluded.modify_time,
+            view_time_reports = excluded.view_time_reports,
+            view_payroll = excluded.view_payroll,
+            modify_payroll = excluded.modify_payroll,
+            modify_pay_rates = excluded.modify_pay_rates
+        `,
+        [
+          id,
+          normalizedPerms.see_shipments,
+          normalizedPerms.modify_time,
+          normalizedPerms.view_time_reports,
+          normalizedPerms.view_payroll,
+          normalizedPerms.modify_payroll,
+          normalizedPerms.modify_pay_rates
+        ]
+      );
+    }
+
+    return res.json({ ok: true, id });
   } catch (err) {
     console.error('Error in /api/employees:', err);
-    res.status(500).json({ error: 'Internal server error.' });
+    return res.status(500).json({ error: 'Internal server error.' });
   }
 });
 
-app.post('/api/employees/:id/active', requireAdminAccess(() => true), (req, res) => {
+app.post('/api/employees/:id/active', requireViewPayroll, (req, res) => {
 
   const id = parseInt(req.params.id, 10);
   const active = req.body.active ? 1 : 0;
+  const orgId = req.session && req.session.orgId;
 
   if (!id) {
     return res.status(400).json({ error: 'Invalid employee id.' });
   }
 
   db.run(
-    'UPDATE employees SET active = ? WHERE id = ?',
-    [active, id],
+    'UPDATE employees SET active = ? WHERE id = ? AND org_id = ?',
+    [active, id, orgId],
     function (err) {
       if (err) {
         return res.status(500).json({ error: err.message });
@@ -3396,48 +6189,306 @@ app.post('/api/employees/:id/active', requireAdminAccess(() => true), (req, res)
 });
 
 // Link a locally-created employee to QuickBooks IDs (employee/vendor)
-app.post('/api/employees/:id/link-qbo', requireAdminAccess(() => true), async (req, res) => {
+app.post('/api/employees/:id/link-qbo', requireViewPayroll, requireSuperAdmin, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { employee_qbo_id, vendor_qbo_id } = req.body || {};
+  const orgId = req.session && req.session.orgId;
 
   if (!id) {
     return res.status(400).json({ error: 'Invalid employee id.' });
   }
-  if (!employee_qbo_id && !vendor_qbo_id) {
+  const employeeQboId = employee_qbo_id ? String(employee_qbo_id).trim() : '';
+  const vendorQboId = vendor_qbo_id ? String(vendor_qbo_id).trim() : '';
+  if (!employeeQboId && !vendorQboId) {
     return res.status(400).json({ error: 'Provide a QuickBooks Employee ID or Vendor ID.' });
   }
 
   try {
+    const token = await getAccessToken(orgId);
+    const realmId = await getRealmId(orgId);
+    if (!token || !realmId) {
+      return res.status(400).json({ error: 'Not connected to QuickBooks.' });
+    }
+
+    const emp = await dbGet(
+      'SELECT id, name FROM employees WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+    if (!emp) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+
+    if (employeeQboId) {
+      const dup = await dbGet(
+        `
+          SELECT id, name
+          FROM employees
+          WHERE org_id = ? AND employee_qbo_id = ? AND id != ?
+        `,
+        [orgId, employeeQboId, id]
+      );
+      if (dup) {
+        return res.status(409).json({
+          error: 'QBO ID already linked.',
+          linked_employee_id: dup.id,
+          linked_employee_name: dup.name
+        });
+      }
+    }
+    if (vendorQboId) {
+      const dup = await dbGet(
+        `
+          SELECT id, name
+          FROM employees
+          WHERE org_id = ? AND vendor_qbo_id = ? AND id != ?
+        `,
+        [orgId, vendorQboId, id]
+      );
+      if (dup) {
+        return res.status(409).json({
+          error: 'QBO ID already linked.',
+          linked_employee_id: dup.id,
+          linked_employee_name: dup.name
+        });
+      }
+    }
+
+    const warnings = [];
+
+    if (employeeQboId) {
+      const knownEmployee = await dbGet(
+        `
+          SELECT id
+          FROM employees
+          WHERE org_id = ? AND employee_qbo_id = ?
+          LIMIT 1
+        `,
+        [orgId, employeeQboId]
+      );
+      if (!knownEmployee) {
+        const lastSync = await loadOrgSettingValue(
+          orgId,
+          'qbo_last_sync_employees_at'
+        );
+        warnings.push(
+          lastSync
+            ? 'Employee ID not found in the last QuickBooks sync.'
+            : 'No employee sync on record; ID could not be validated.'
+        );
+      }
+    }
+
+    if (vendorQboId) {
+      const knownVendor = await dbGet(
+        `
+          SELECT id
+          FROM vendors
+          WHERE org_id = ? AND qbo_id = ?
+          LIMIT 1
+        `,
+        [orgId, vendorQboId]
+      );
+      if (!knownVendor) {
+        const lastSync = await loadOrgSettingValue(
+          orgId,
+          'qbo_last_sync_vendors_at'
+        );
+        warnings.push(
+          lastSync
+            ? 'Vendor ID not found in the last QuickBooks sync.'
+            : 'No vendor sync on record; ID could not be validated.'
+        );
+      }
+    }
+
     const sql = `
       UPDATE employees
       SET
         employee_qbo_id = COALESCE(?, employee_qbo_id),
         vendor_qbo_id   = COALESCE(?, vendor_qbo_id),
         needs_qbo_sync  = 0
-      WHERE id = ?
+      WHERE id = ? AND org_id = ?
     `;
     const result = await dbRun(sql, [
-      employee_qbo_id || null,
-      vendor_qbo_id || null,
-      id
+      employeeQboId || null,
+      vendorQboId || null,
+      id,
+      orgId
     ]);
     if (!result || result.changes === 0) {
       return res.status(404).json({ error: 'Employee not found.' });
     }
-    res.json({ ok: true });
+    res.json({ ok: true, warning: warnings.length ? warnings.join(' ') : null });
   } catch (err) {
     console.error('Error linking employee to QBO:', err);
     res.status(500).json({ error: 'Failed to link to QuickBooks.' });
   }
 });
 
+app.post('/api/employees/:id/qbo-create', requireViewPayroll, requireSuperAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const orgId = req.session && req.session.orgId;
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  const displayName = (req.body && req.body.display_name) ? String(req.body.display_name).trim() : '';
+  const givenName = (req.body && req.body.given_name) ? String(req.body.given_name).trim() : '';
+  const familyName = (req.body && req.body.family_name) ? String(req.body.family_name).trim() : '';
+  const email = (req.body && req.body.email) ? String(req.body.email).trim() : '';
+
+  if (!givenName || !familyName) {
+    return res.status(400).json({ error: 'given_name and family_name are required.' });
+  }
+
+  try {
+    const token = await getAccessToken(orgId);
+    const realmId = await getRealmId(orgId);
+    if (!token || !realmId) {
+      return res.status(400).json({ error: 'Not connected to QuickBooks.' });
+    }
+
+    const lastSync = await loadOrgSettingValue(orgId, 'qbo_last_sync_employees_at');
+    if (!lastSync) {
+      return res.status(400).json({ error: 'Sync employees first.' });
+    }
+
+    const emp = await dbGet(
+      `
+        SELECT id, name, email, employee_qbo_id
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [id, orgId]
+    );
+    if (!emp) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+    if (emp.employee_qbo_id) {
+      return res.status(409).json({ error: 'Employee is already linked to QuickBooks.' });
+    }
+
+    const fullName = displayName || `${givenName} ${familyName}`.trim();
+    const matches = await dbAll(
+      `
+        SELECT employee_qbo_id, name, email
+        FROM employees
+        WHERE org_id = ?
+          AND employee_qbo_id IS NOT NULL
+          AND (
+            (LOWER(name) = LOWER(?) AND ? <> '')
+            OR (LOWER(email) = LOWER(?) AND ? <> '')
+          )
+        ORDER BY name COLLATE NOCASE
+      `,
+      [orgId, fullName, fullName, email, email]
+    );
+
+    if (matches && matches.length) {
+      return res.status(409).json({
+        error: 'Potential duplicate in QuickBooks.',
+        matches: matches.map(m => ({
+          employee_qbo_id: m.employee_qbo_id,
+          name: m.name,
+          email: m.email || null
+        }))
+      });
+    }
+
+    const qboRes = await createEmployeeInQuickBooks({
+      displayName: fullName,
+      givenName,
+      familyName,
+      email: email || null,
+      orgId
+    });
+
+    if (!qboRes || qboRes.ok !== true) {
+      const message = qboRes && qboRes.error ? qboRes.error : 'QuickBooks create failed.';
+      return res.status(400).json({ error: message });
+    }
+
+    const qboId = qboRes.employee_qbo_id;
+    const qboName = qboRes.employee_qbo_name || fullName;
+
+    await dbRun(
+      `
+        UPDATE employees
+        SET employee_qbo_id = ?, needs_qbo_sync = 0
+        WHERE id = ? AND org_id = ?
+      `,
+      [qboId, id, orgId]
+    );
+
+    return res.json({
+      ok: true,
+      employee_qbo_id: qboId,
+      employee_qbo_name: qboName
+    });
+  } catch (err) {
+    console.error('Error creating QBO employee:', err);
+    return res.status(500).json({ error: 'Failed to create QuickBooks employee.' });
+  }
+});
+
+app.post('/api/employees/:id/unlink-qbo', requireViewPayroll, requireSuperAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const orgId = req.session && req.session.orgId;
+  const payload = req.body || {};
+
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  const unlinkEmployee =
+    payload.employee === undefined ? true : !!payload.employee;
+  const unlinkVendor =
+    payload.vendor === undefined ? true : !!payload.vendor;
+
+  if (!unlinkEmployee && !unlinkVendor) {
+    return res.status(400).json({ error: 'Nothing to unlink.' });
+  }
+
+  const sets = [];
+  if (unlinkEmployee) sets.push('employee_qbo_id = NULL');
+  if (unlinkVendor) sets.push('vendor_qbo_id = NULL');
+  sets.push('needs_qbo_sync = 1');
+
+  try {
+    const result = await dbRun(
+      `
+        UPDATE employees
+        SET ${sets.join(', ')}
+        WHERE id = ? AND org_id = ?
+      `,
+      [id, orgId]
+    );
+    if (!result || result.changes === 0) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Error unlinking employee from QBO:', err);
+    return res.status(500).json({ error: 'Failed to unlink from QuickBooks.' });
+  }
+});
+
 // Lightweight endpoint just to update language (used by kiosk admin)
-// Note: kiosk admin is PIN-gated in the UI, so we allow unauthenticated here.
-app.post('/api/employees/:id/language', (req, res) => {
+app.post('/api/employees/:id/language', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!id) {
     return res.status(400).json({ error: 'Invalid employee id.' });
   }
+
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
+    return res
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authenticated' });
+  }
+
+  const orgId = adminCtx.orgId;
 
   const allowedLanguages = ['en', 'es', 'ht'];
   const raw = (req.body && req.body.language) || '';
@@ -3446,8 +6497,8 @@ app.post('/api/employees/:id/language', (req, res) => {
     : 'en';
 
   db.run(
-    'UPDATE employees SET language = ? WHERE id = ?',
-    [lang, id],
+    'UPDATE employees SET language = ? WHERE id = ? AND org_id = ?',
+    [lang, id, orgId],
     function (err) {
       if (err) {
         return res.status(500).json({ error: err.message });
@@ -3481,43 +6532,23 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
   const name = String(raw || '').trim();
   const normalized = name ? name : null;
 
-  // Auth check (session OR kiosk device secret)
-  const hasSession = req.session && req.session.userId;
-  let kioskOk = false;
-
-  if (!hasSession) {
-    const { device_id, device_secret } = req.body || {};
-    const devId = (device_id || '').trim();
-    const devSecret = (device_secret || '').trim();
-    if (devId && devSecret) {
-      try {
-        const kioskRow = await dbGet(
-          'SELECT id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
-          [devId]
-        );
-        if (kioskRow && kioskRow.device_secret && kioskRow.device_secret === devSecret) {
-          kioskOk = true;
-        }
-      } catch (err) {
-        console.error('Error looking up kiosk by device_id:', err);
-        return res.status(500).json({ error: 'Internal server error.' });
-      }
-    }
-  }
-
-  if (!hasSession && !kioskOk) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
-
   try {
+    const adminCtx = await resolveKioskAdmin(req);
+    if (!adminCtx.ok) {
+      return res
+        .status(adminCtx.status || 401)
+        .json({ error: adminCtx.error || 'Not authenticated' });
+    }
+
+    const orgId = adminCtx.orgId;
     const empRow = await dbGet(
       `
         SELECT id, name, name_on_checks, vendor_qbo_id, employee_qbo_id
         FROM employees
-        WHERE id = ?
+        WHERE id = ? AND org_id = ?
         LIMIT 1
       `,
-      [id]
+      [id, orgId]
     );
 
     if (!empRow) {
@@ -3530,9 +6561,9 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
         SET
           name_on_checks = ?,
           name_on_checks_updated_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ? AND org_id = ?
       `,
-      [normalized, id]
+      [normalized, id, orgId]
     );
 
     // Try to push to QuickBooks immediately if we have a payee ref
@@ -3541,7 +6572,7 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
       ? { value: empRow.vendor_qbo_id, type: 'Vendor' }
       : (empRow.employee_qbo_id ? { value: empRow.employee_qbo_id, type: 'Employee' } : null);
     if (payeeRef && normalized) {
-      const qboRes = await setPrintOnCheckName(payeeRef, normalized);
+      const qboRes = await setPrintOnCheckName(payeeRef, normalized, orgId);
       if (!qboRes?.ok && !qboRes?.skipped) {
         qboWarning = qboRes.error || 'Could not update QuickBooks.';
         console.warn('[NameOnChecks/QBO] Immediate update failed', {
@@ -3550,6 +6581,7 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
           error: qboWarning
         });
         await enqueueNameOnChecksRetry({
+          orgId,
           employeeId: id,
           desiredName: normalized,
           payeeRef,
@@ -3564,7 +6596,7 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
           `,
           [id]
         );
-        await clearNameOnChecksRetry(id);
+        await clearNameOnChecksRetry(orgId, id);
       }
     }
 
@@ -3575,30 +6607,134 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
   }
 });
 
-app.post('/api/employees/:id/pin', async (req, res) => {
+app.get('/api/employees/:id/id-document', requireViewPayroll, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const orgId = req.session && req.session.orgId;
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
 
+  try {
+    const row = await dbGet(
+      `
+        SELECT id_document_path
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [id, orgId]
+    );
+    if (!row || !row.id_document_path) {
+      return res.status(404).json({ error: 'ID document not found.' });
+    }
+
+    const absPath = resolveEmployeeIdPath(row.id_document_path);
+    if (!absPath) {
+      return res.status(404).json({ error: 'ID document not found.' });
+    }
+
+    try {
+      await fsp.access(absPath, fs.constants.R_OK);
+    } catch {
+      return res.status(404).json({ error: 'ID document not found.' });
+    }
+
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.download(absPath, path.basename(absPath));
+  } catch (err) {
+    console.error('Error loading ID document:', err);
+    return res.status(500).json({ error: 'Failed to load ID document.' });
+  }
+});
+
+app.delete('/api/employees/:id/id-document', requireViewPayroll, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const orgId = req.session && req.session.orgId;
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  try {
+    const row = await dbGet(
+      `
+        SELECT id_document_path
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [id, orgId]
+    );
+    if (!row) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+
+    if (row.id_document_path) {
+      const absPath = resolveEmployeeIdPath(row.id_document_path);
+      if (absPath) {
+        try {
+          await fsp.unlink(absPath);
+        } catch {}
+      }
+    }
+
+    await dbRun(
+      `
+        UPDATE employees
+        SET
+          id_document_type = NULL,
+          id_document_path = NULL,
+          id_document_uploaded_at = NULL,
+          id_document_uploaded_by = NULL
+        WHERE id = ? AND org_id = ?
+      `,
+      [id, orgId]
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Error deleting ID document:', err);
+    return res.status(500).json({ error: 'Failed to delete ID document.' });
+  }
+});
+
+app.post('/api/employees/:id/pin', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!id) {
     return res.status(400).json({ error: 'Invalid employee id.' });
   }
 
-  const { pin, allowOverride, require_photo, device_id, device_secret } = req.body || {};
+  const { pin, allowOverride, device_id, device_secret, client_id } = req.body || {};
 
   // Allow either a normal logged-in session OR a registered kiosk device
   const hasSession = req.session && req.session.userId;
+  const sessionOrgId = req.session && req.session.orgId;
+  const sessionEmployeeId = req.session && req.session.employeeId;
   let kioskOk = false;
+  let kioskOrgId = null;
 
-  if (!hasSession) {
+  if (hasSession) {
+    if (!sessionOrgId || !sessionEmployeeId) {
+      return res.status(403).json({ error: 'Admin privileges required.' });
+    }
+    const perms = await getAdminAccessPerms({
+      employeeId: sessionEmployeeId,
+      orgId: sessionOrgId
+    });
+    if (!perms.view_payroll) {
+      return res.status(403).json({ error: 'Admin privileges required.' });
+    }
+  } else {
     const devId = (device_id || '').trim();
     const devSecret = (device_secret || '').trim();
     if (devId && devSecret) {
       try {
         const kioskRow = await dbGet(
-          'SELECT id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
+          'SELECT id, device_secret, org_id FROM kiosks WHERE device_id = ? LIMIT 1',
           [devId]
         );
         if (kioskRow && kioskRow.device_secret && kioskRow.device_secret === devSecret) {
           kioskOk = true;
+          kioskOrgId = kioskRow.org_id;
         }
       } catch (err) {
         console.error('Error looking up kiosk by device_id:', err);
@@ -3611,127 +6747,354 @@ app.post('/api/employees/:id/pin', async (req, res) => {
     return res.status(401).json({ error: 'Not authenticated' });
   }
 
-  // Build the SET clause dynamically so we can optionally include require_photo
-  const setParts = [];
-  const params = [];
+  const orgId = sessionOrgId || kioskOrgId;
+  const clientId = client_id ? String(client_id).trim() : '';
+  if (clientId) {
+    const existing = await loadIdempotentResponse(orgId, 'employee_pin', clientId);
+    if (existing) {
+      return res.json({ ...existing, alreadyProcessed: true });
+    }
+  }
 
-  // PIN logic:
-  // - If allowOverride is true, we always set pin (can be null to clear).
-  // - If allowOverride is false/omitted, we only set pin if it is currently NULL.
+  const pinRaw = String(pin || '').trim();
+  if (!/^\d{4}$/.test(pinRaw)) {
+    return res.status(400).json({ error: 'PIN must be a 4-digit number.' });
+  }
+
+  const existing = await dbGet(
+    `
+      SELECT id, pin_hash
+      FROM employees
+      WHERE id = ? AND org_id = ?
+    `,
+    [id, orgId]
+  );
+  if (!existing) {
+    return res.status(404).json({ error: 'Employee not found.' });
+  }
+
   const overrideFlag = allowOverride === true || allowOverride === 'true';
-  let whereExtra = '';
-  setParts.push('pin = ?');
-  params.push(pin || null);
-  if (!overrideFlag) {
-    // Don't overwrite an existing PIN unless explicitly allowed
-    whereExtra = ' AND pin IS NULL';
+  if (!overrideFlag && existing.pin_hash) {
+    return res.status(409).json({
+      error: 'PIN already set for this employee. Use allowOverride to change it.'
+    });
   }
-
-  // Optional require_photo toggle
-  const hasRequirePhoto =
-    typeof require_photo === 'boolean' ||
-    require_photo === 1 ||
-    require_photo === '1';
-  if (hasRequirePhoto) {
-    const requirePhotoFlag =
-      require_photo === true || require_photo === 'true' || require_photo === 1;
-    setParts.push('require_photo = ?');
-    params.push(requirePhotoFlag ? 1 : 0);
-  }
-
-  if (setParts.length === 0) {
-    return res.status(400).json({ error: 'Nothing to update.' });
-  }
-
-  const sql = `
-    UPDATE employees
-    SET ${setParts.join(', ')}
-    WHERE id = ?${whereExtra}
-  `;
-  params.push(id);
 
   try {
-    const result = await dbRun(sql, params);
+    const hash = await bcrypt.hash(pinRaw, 10);
+    const result = await dbRun(
+      `
+        UPDATE employees
+        SET pin_hash = ?
+        WHERE id = ? AND org_id = ?
+      `,
+      [hash, id, orgId]
+    );
 
     if (!result || result.changes === 0) {
-      return res.status(409).json({
-        error: 'PIN already set for this employee. Use allowOverride to change it.'
-      });
+      return res.status(404).json({ error: 'Employee not found.' });
     }
 
-    res.json({ ok: true });
+    const response = { ok: true };
+    if (clientId) {
+      await storeIdempotentResponse(orgId, 'employee_pin', clientId, response);
+    }
+
+    return res.json(response);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-/* ───────── 5.5 SYNC (QuickBooks → SQLite ) ───────── */
-
-app.post('/api/sync/vendors', requireAdminAccess(() => true), async (req, res) => {
-
+// Permission templates (super admin only)
+app.get('/api/permission-templates', requireSuperAdmin, async (req, res) => {
   try {
-    const count = await syncVendors();
-    res.json({ ok: true, message: `Synced ${count} vendor(s).` });
+    const orgId = req.session && req.session.orgId;
+    const rows = await dbAll(
+      `
+        SELECT id, name, role_title, access_json, permissions_json, created_at, updated_at
+        FROM permission_templates
+        WHERE org_id = ?
+        ORDER BY name COLLATE NOCASE
+      `,
+      [orgId]
+    );
+
+    const templates = (rows || []).map(row => ({
+      id: row.id,
+      name: row.name,
+      role_title: row.role_title || null,
+      access: normalizeTemplateAccess(parseTemplateJson(row.access_json)),
+      permissions: normalizeTemplatePerms(parseTemplateJson(row.permissions_json)),
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    }));
+
+    return res.json({ templates });
   } catch (err) {
-    console.error('Sync vendors error:', err.message);
-    res.status(500).json({ ok: false, error: err.message });
+    console.error('Error loading permission templates:', err);
+    return res.status(500).json({ error: 'Failed to load permission templates.' });
   }
 });
 
-app.post('/api/sync/employees', requireAdminAccess(() => true), async (req, res) => {
-
+app.post('/api/permission-templates', requireSuperAdmin, async (req, res) => {
   try {
+    const orgId = req.session && req.session.orgId;
+    const body = req.body || {};
+    const name = String(body.name || '').trim();
+    if (!name) {
+      return res.status(400).json({ error: 'Template name is required.' });
+    }
+
+    const roleTitle = String(body.role_title || '').trim() || null;
+    const access = normalizeTemplateAccess(body.access);
+    const permissions = normalizeTemplatePerms(body.permissions);
+    const accessJson = JSON.stringify(access);
+    const permissionsJson = JSON.stringify(permissions);
+
+    const insertRes = await dbRun(
+      `
+        INSERT INTO permission_templates (
+          org_id,
+          name,
+          role_title,
+          access_json,
+          permissions_json,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `,
+      [orgId, name, roleTitle, accessJson, permissionsJson]
+    );
+
+    return res.json({ ok: true, id: insertRes.lastID });
+  } catch (err) {
+    console.error('Error creating permission template:', err);
+    return res.status(500).json({ error: 'Failed to create permission template.' });
+  }
+});
+
+app.put('/api/permission-templates/:id', requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const id = Number(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: 'Template id is required.' });
+    }
+
+    const body = req.body || {};
+    const name = String(body.name || '').trim();
+    if (!name) {
+      return res.status(400).json({ error: 'Template name is required.' });
+    }
+
+    const roleTitle = String(body.role_title || '').trim() || null;
+    const access = normalizeTemplateAccess(body.access);
+    const permissions = normalizeTemplatePerms(body.permissions);
+    const accessJson = JSON.stringify(access);
+    const permissionsJson = JSON.stringify(permissions);
+
+    const updateRes = await dbRun(
+      `
+        UPDATE permission_templates
+        SET name = ?, role_title = ?, access_json = ?, permissions_json = ?, updated_at = datetime('now')
+        WHERE id = ? AND org_id = ?
+      `,
+      [name, roleTitle, accessJson, permissionsJson, id, orgId]
+    );
+    if (updateRes.changes === 0) {
+      return res.status(404).json({ error: 'Template not found.' });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Error updating permission template:', err);
+    return res.status(500).json({ error: 'Failed to update permission template.' });
+  }
+});
+
+app.delete('/api/permission-templates/:id', requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const id = Number(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: 'Template id is required.' });
+    }
+
+    const deleteRes = await dbRun(
+      `
+        DELETE FROM permission_templates
+        WHERE id = ? AND org_id = ?
+      `,
+      [id, orgId]
+    );
+    if (deleteRes.changes === 0) {
+      return res.status(404).json({ error: 'Template not found.' });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Error deleting permission template:', err);
+    return res.status(500).json({ error: 'Failed to delete permission template.' });
+  }
+});
+
+/* ───────── 5.5 SYNC (QuickBooks → SQLite ) ───────── */
+
+app.post('/api/sync/vendors', requireViewPayroll, async (req, res) => {
+
+  const orgId = req.session && req.session.orgId;
+  let lockKey = null;
+  let lockRefresh = null;
+  try {
+    const token = await getAccessToken(orgId);
+    const realmId = await getRealmId(orgId);
+    if (!token || !realmId) {
+      return res.status(400).json({ error: 'Not connected to QuickBooks.' });
+    }
+    lockKey = await acquireQboSyncLock('vendors', orgId);
+    if (!lockKey) {
+      return res.status(409).json({ error: 'Sync already in progress.' });
+    }
+    lockRefresh = setInterval(() => {
+      refreshQboSyncLock(lockKey);
+    }, Math.floor(QBO_SYNC_LOCK_TTL_MS / 2));
+
+    const count = await syncVendors(orgId);
+    const syncedAt = new Date().toISOString();
+    await upsertOrgSetting(orgId, 'qbo_last_sync_vendors_at', syncedAt);
+    res.json({ ok: true, count, synced_at: syncedAt });
+  } catch (err) {
+    console.error('Sync vendors error:', err.message);
+    return respondWithQboError(res, err, { orgId });
+  } finally {
+    if (lockRefresh) clearInterval(lockRefresh);
+    if (lockKey) {
+      await releaseQboSyncLock(lockKey);
+    }
+  }
+});
+
+app.post('/api/sync/employees', requireViewPayroll, async (req, res) => {
+
+  const orgId = req.session && req.session.orgId;
+  let lockKey = null;
+  let lockRefresh = null;
+  try {
+    const token = await getAccessToken(orgId);
+    const realmId = await getRealmId(orgId);
+    if (!token || !realmId) {
+      return res.status(400).json({ error: 'Not connected to QuickBooks.' });
+    }
+    lockKey = await acquireQboSyncLock('employees', orgId);
+    if (!lockKey) {
+      return res.status(409).json({ error: 'Sync already in progress.' });
+    }
+    lockRefresh = setInterval(() => {
+      refreshQboSyncLock(lockKey);
+    }, Math.floor(QBO_SYNC_LOCK_TTL_MS / 2));
     await ensureNameOnChecksColumns();
-    const newEmployees = await syncEmployeesFromQuickBooks();
-    res.json({
-      ok: true,
-      message: `Synced ${newEmployees} employee(s) from QuickBooks.`
-    });
+    const newEmployees = await syncEmployeesFromQuickBooks(orgId);
+    const syncedAt = new Date().toISOString();
+    await upsertOrgSetting(orgId, 'qbo_last_sync_employees_at', syncedAt);
+    res.json({ ok: true, count: newEmployees, synced_at: syncedAt });
   } catch (err) {
     console.error('Sync employees error:', err.message);
-    res.status(500).json({ ok: false, error: err.message });
+    return respondWithQboError(res, err, { orgId });
+  } finally {
+    if (lockRefresh) clearInterval(lockRefresh);
+    if (lockKey) {
+      await releaseQboSyncLock(lockKey);
+    }
   }
 });
 
 /* ───────── 6. PROJECTS & TIME ENTRIES ───────── */
 
-app.post('/api/sync/projects', requireAdminAccess(() => true), async (req, res) => {
+app.post('/api/sync/projects', requireViewPayroll, async (req, res) => {
 
+  const orgId = req.session && req.session.orgId;
+  let lockKey = null;
+  let lockRefresh = null;
   try {
-    const count = await syncProjects();
-    res.json({ ok: true, message: `Synced ${count} project(s).` });
+    const token = await getAccessToken(orgId);
+    const realmId = await getRealmId(orgId);
+    if (!token || !realmId) {
+      return res.status(400).json({ error: 'Not connected to QuickBooks.' });
+    }
+    lockKey = await acquireQboSyncLock('projects', orgId);
+    if (!lockKey) {
+      return res.status(409).json({ error: 'Sync already in progress.' });
+    }
+    lockRefresh = setInterval(() => {
+      refreshQboSyncLock(lockKey);
+    }, Math.floor(QBO_SYNC_LOCK_TTL_MS / 2));
+
+    const count = await syncProjects(orgId);
+    const syncedAt = new Date().toISOString();
+    await upsertOrgSetting(orgId, 'qbo_last_sync_projects_at', syncedAt);
+    res.json({ ok: true, count, synced_at: syncedAt });
   } catch (err) {
     console.error('Sync projects error:', err.message);
-    res.status(500).json({ ok: false, error: err.message });
+    return respondWithQboError(res, err, { orgId });
+  } finally {
+    if (lockRefresh) clearInterval(lockRefresh);
+    if (lockKey) {
+      await releaseQboSyncLock(lockKey);
+    }
   }
 });
 
 // Sync payroll accounts (bank/expense) for settings dropdowns
-app.post('/api/sync/payroll-accounts', requireAdminAccess(() => true), async (req, res) => {
+app.post('/api/sync/payroll-accounts', requireViewPayroll, async (req, res) => {
+  const orgId = req.session && req.session.orgId;
+  let lockKey = null;
+  let lockRefresh = null;
   try {
-    const { bankAccounts, expenseAccounts } = await listPayrollAccounts();
+    const token = await getAccessToken(orgId);
+    const realmId = await getRealmId(orgId);
+    if (!token || !realmId) {
+      return res.status(400).json({ error: 'Not connected to QuickBooks.' });
+    }
+    lockKey = await acquireQboSyncLock('payroll_accounts', orgId);
+    if (!lockKey) {
+      return res.status(409).json({ error: 'Sync already in progress.' });
+    }
+    lockRefresh = setInterval(() => {
+      refreshQboSyncLock(lockKey);
+    }, Math.floor(QBO_SYNC_LOCK_TTL_MS / 2));
+    const { bankAccounts, expenseAccounts } = await listPayrollAccounts(orgId);
+    const syncedAt = new Date().toISOString();
+    if (orgId) {
+      await upsertOrgSetting(orgId, 'qbo_last_sync_payroll_accounts_at', syncedAt);
+    }
     res.json({
       ok: true,
+      synced_at: syncedAt,
       message: `Loaded ${bankAccounts.length} bank and ${expenseAccounts.length} expense accounts from QuickBooks.`,
       bankAccounts,
       expenseAccounts
     });
   } catch (err) {
     console.error('Sync payroll accounts error:', err);
-    res.status(500).json({ ok: false, error: err.message });
+    return respondWithQboError(res, err, { orgId });
+  } finally {
+    if (lockRefresh) clearInterval(lockRefresh);
+    if (lockKey) {
+      await releaseQboSyncLock(lockKey);
+    }
   }
 });
 
-app.post('/api/projects', requireAuth, async (req, res) => {
+app.post('/api/projects', requireViewPayroll, async (req, res) => {
   const {
     id,
-    name,
-    customer_name,
     project_timezone,
     geo_lat,
     geo_lng,
     geo_radius
   } = req.body;
+  const orgId = req.session && req.session.orgId;
 
   const DEFAULT_RADIUS = 120; // 120 meters ≈ 400 feet
   const hasLatInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'geo_lat');
@@ -3751,21 +7114,37 @@ app.post('/api/projects', requireAuth, async (req, res) => {
       ? DEFAULT_RADIUS
       : Number(geo_radius);
 
-  if (hasLatInput && latInput !== null && Number.isNaN(latInput)) {
+  const isValidLat = (value) => value >= -90 && value <= 90;
+  const isValidLng = (value) => value >= -180 && value <= 180;
+  const isValidRadius = (value) => value >= 0;
+
+  if (
+    hasLatInput &&
+    latInput !== null &&
+    (Number.isNaN(latInput) || !isValidLat(latInput))
+  ) {
     return res.status(400).json({ error: 'Invalid geofence latitude.' });
   }
-  if (hasLngInput && lngInput !== null && Number.isNaN(lngInput)) {
+  if (
+    hasLngInput &&
+    lngInput !== null &&
+    (Number.isNaN(lngInput) || !isValidLng(lngInput))
+  ) {
     return res.status(400).json({ error: 'Invalid geofence longitude.' });
   }
-  if (hasRadiusInput && radiusInput !== null && Number.isNaN(radiusInput)) {
+  if (
+    hasRadiusInput &&
+    radiusInput !== null &&
+    (Number.isNaN(radiusInput) || !isValidRadius(radiusInput))
+  ) {
     return res.status(400).json({ error: 'Invalid geofence radius.' });
   }
 
   try {
     if (id) {
       const existing = await dbGet(
-        `SELECT geo_lat, geo_lng, geo_radius FROM projects WHERE id = ?`,
-        [id]
+        `SELECT geo_lat, geo_lng, geo_radius FROM projects WHERE id = ? AND org_id = ?`,
+        [id, orgId]
       );
       if (!existing) {
         return res.status(404).json({ error: 'Project not found.' });
@@ -3782,12 +7161,17 @@ app.post('/api/projects', requireAuth, async (req, res) => {
         });
       }
       if (
-        (finalLat !== null && Number.isNaN(finalLat)) ||
-        (finalLng !== null && Number.isNaN(finalLng))
+        (finalLat !== null &&
+          (Number.isNaN(finalLat) || !isValidLat(finalLat))) ||
+        (finalLng !== null &&
+          (Number.isNaN(finalLng) || !isValidLng(finalLng)))
       ) {
         return res.status(400).json({ error: 'Invalid geofence coordinates.' });
       }
-      if (finalRadius !== null && Number.isNaN(finalRadius)) {
+      if (
+        finalRadius !== null &&
+        (Number.isNaN(finalRadius) || !isValidRadius(finalRadius))
+      ) {
         return res.status(400).json({ error: 'Invalid geofence radius.' });
       }
 
@@ -3795,51 +7179,31 @@ app.post('/api/projects', requireAuth, async (req, res) => {
         `
           UPDATE projects
           SET geo_lat = ?, geo_lng = ?, geo_radius = ?, project_timezone = ?
-          WHERE id = ?
+          WHERE id = ? AND org_id = ?
         `,
-        [finalLat, finalLng, finalRadius, project_timezone || null, id]
+        [finalLat, finalLng, finalRadius, project_timezone || null, id, orgId]
       );
 
       if (!updateRes || updateRes.changes === 0) {
         return res.status(404).json({ error: 'Project not found.' });
       }
 
+      try {
+        await refreshKioskSessionGeofence({
+          orgId,
+          projectId: id,
+          geoLat: finalLat,
+          geoLng: finalLng,
+          geoRadius: finalRadius
+        });
+      } catch (err) {
+        console.warn('Failed to refresh kiosk session geofence flags:', err.message || err);
+      }
+
       return res.json({ ok: true, id });
     }
 
-    // (Optional) manual project insert – here name IS required
-    if (!name) {
-      return res.status(400).json({ error: 'Project name is required.' });
-    }
-
-    const finalLat = hasLatInput ? latInput : null;
-    const finalLng = hasLngInput ? lngInput : null;
-    const finalRadius = hasRadiusInput ? radiusInput : DEFAULT_RADIUS;
-
-    if ((finalLat === null) !== (finalLng === null)) {
-      return res.status(400).json({
-        error: 'Please enter both latitude and longitude, or leave both blank.'
-      });
-    }
-    if (
-      (finalLat !== null && Number.isNaN(finalLat)) ||
-      (finalLng !== null && Number.isNaN(finalLng))
-    ) {
-      return res.status(400).json({ error: 'Invalid geofence coordinates.' });
-    }
-    if (finalRadius !== null && Number.isNaN(finalRadius)) {
-      return res.status(400).json({ error: 'Invalid geofence radius.' });
-    }
-
-    const insert = await dbRun(
-      `
-        INSERT INTO projects (name, customer_name, project_timezone, geo_lat, geo_lng, geo_radius)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `,
-      [name, customer_name || null, project_timezone || null, finalLat, finalLng, finalRadius]
-    );
-
-    return res.json({ ok: true, id: insert.lastID });
+    return res.status(400).json({ error: 'Project id is required.' });
   } catch (err) {
     console.error('Error saving project:', err);
     return res.status(500).json({ error: 'Failed to save project.' });
@@ -3847,13 +7211,36 @@ app.post('/api/projects', requireAuth, async (req, res) => {
 });
 
 // ───────── SETTINGS (APP-WIDE) ─────────
-app.get('/api/settings', requireAuth, async (req, res) => {
+app.get('/api/settings', requireViewPayroll, async (req, res) => {
   try {
-    const rows = await dbAll('SELECT key, value FROM app_settings', []);
+    const orgId = req.session && req.session.orgId;
+    const rows = await dbAll(
+      'SELECT key, value FROM org_settings WHERE org_id = ?',
+      [orgId]
+    );
+
     const data = {};
     (rows || []).forEach(r => {
+      if (!r || !r.key) return;
+      if (['payroll_rules', 'time_exception_rules', 'notifications', 'branding'].includes(r.key)) {
+        try {
+          data[r.key] = r.value ? JSON.parse(r.value) : null;
+        } catch {
+          data[r.key] = null;
+        }
+        return;
+      }
+      if (r.key === 'clock_in_photo_required') {
+        data[r.key] = r.value === '1' || r.value === 1 || r.value === true || r.value === 'true';
+        return;
+      }
+      if (r.key === 'storage_daily_late_fee_default') {
+        data[r.key] = r.value === null || r.value === '' ? null : Number(r.value);
+        return;
+      }
       data[r.key] = r.value;
     });
+
     res.json({ settings: data });
   } catch (err) {
     console.error('Error loading settings:', err);
@@ -3861,20 +7248,70 @@ app.get('/api/settings', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/settings', requireAuth, express.json(), async (req, res) => {
+app.post('/api/settings', requireViewPayroll, express.json(), async (req, res) => {
   try {
+    const orgId = req.session && req.session.orgId;
+    const isSuperAdmin = req.session && req.session.isSuperAdmin;
     const settings = req.body || {};
-    const entries = Object.entries(settings);
+
+    if (
+      !isSuperAdmin &&
+      (settings.payroll_rules !== undefined ||
+        settings.time_exception_rules !== undefined ||
+        settings.clock_in_photo_required !== undefined)
+    ) {
+      return res.status(403).json({ error: 'Super admin access required.' });
+    }
+
+    const updates = [];
+
+    if (settings.company_name !== undefined) {
+      updates.push(['company_name', String(settings.company_name || '').trim()]);
+    }
+    if (settings.company_email !== undefined) {
+      updates.push(['company_email', String(settings.company_email || '').trim()]);
+    }
+    if (settings.storage_daily_late_fee_default !== undefined) {
+      const raw = settings.storage_daily_late_fee_default;
+      const val =
+        raw === null || raw === '' || typeof raw === 'undefined'
+          ? null
+          : Number(raw);
+      updates.push([
+        'storage_daily_late_fee_default',
+        val === null || Number.isNaN(val) ? null : String(val)
+      ]);
+    }
+    if (settings.clock_in_photo_required !== undefined) {
+      const flag =
+        settings.clock_in_photo_required === true ||
+        settings.clock_in_photo_required === 'true' ||
+        settings.clock_in_photo_required === 1 ||
+        settings.clock_in_photo_required === '1';
+      updates.push(['clock_in_photo_required', flag ? '1' : '0']);
+    }
+    if (settings.time_exception_rules !== undefined) {
+      const raw = settings.time_exception_rules;
+      const value =
+        typeof raw === 'string' ? raw : JSON.stringify(raw || {});
+      updates.push(['time_exception_rules', value]);
+    }
+    if (settings.payroll_rules !== undefined) {
+      const raw = settings.payroll_rules;
+      const value =
+        typeof raw === 'string' ? raw : JSON.stringify(raw || {});
+      updates.push(['payroll_rules', value]);
+    }
 
     await Promise.all(
-      entries.map(([key, value]) =>
+      updates.map(([key, value]) =>
         dbRun(
           `
-            INSERT INTO app_settings (key, value)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            INSERT INTO org_settings (org_id, key, value)
+            VALUES (?, ?, ?)
+            ON CONFLICT(org_id, key) DO UPDATE SET value = excluded.value
           `,
-          [key, value == null ? '' : String(value)]
+          [orgId, key, value]
         )
       )
     );
@@ -3886,13 +7323,55 @@ app.post('/api/settings', requireAuth, express.json(), async (req, res) => {
   }
 });
 
+app.post('/api/admin/backup', requireSuperAdmin, async (req, res) => {
+  try {
+    const result = await runBackupWithLock({ requireLock: true });
+    if (result.ok) {
+      return res.json({ ok: true });
+    }
+    if (result.reason === 'lock_busy') {
+      return res.status(409).json({ ok: false, error: 'Backup already running.' });
+    }
+    return res.status(500).json({ ok: false, error: 'Backup failed.' });
+  } catch (err) {
+    console.error('Manual backup failed:', err);
+    return res.status(500).json({ ok: false, error: 'Backup failed.' });
+  }
+});
+
 // Kiosk-safe settings fetch (no auth cookie needed)
 app.get('/api/kiosk/settings', async (req, res) => {
   try {
-    const rows = await dbAll('SELECT key, value FROM app_settings', []);
+    const access = await ensureKioskDevice(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 401)
+        .json({ error: access.error || 'Not authenticated' });
+    }
+
+    const orgId =
+      access.via === 'session'
+        ? req.session && req.session.orgId
+        : access.kiosk && access.kiosk.org_id;
+
+    const rows = await dbAll(
+      `
+        SELECT key, value
+        FROM org_settings
+        WHERE org_id = ? AND key IN ('clock_in_photo_required')
+      `,
+      [orgId]
+    );
     const data = {};
     (rows || []).forEach(r => {
-      data[r.key] = r.value;
+      if (!r || !r.key) return;
+      if (r.key === 'clock_in_photo_required') {
+        data[r.key] =
+          r.value === '1' ||
+          r.value === 1 ||
+          r.value === true ||
+          r.value === 'true';
+      }
     });
     res.json({ settings: data });
   } catch (err) {
@@ -3901,17 +7380,49 @@ app.get('/api/kiosk/settings', async (req, res) => {
   }
 });
 
+// Super admin: view/rotate kiosk enrollment code
+app.get('/api/kiosks/enrollment-code', requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const code = await loadEnrollmentCode(orgId, { createIfMissing: true });
+    res.json({ code });
+  } catch (err) {
+    console.error('Error loading kiosk enrollment code:', err);
+    res.status(500).json({ error: 'Failed to load enrollment code.' });
+  }
+});
+
+app.post('/api/kiosks/enrollment-code/rotate', requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const code = await rotateEnrollmentCode(orgId);
+    res.json({ code });
+  } catch (err) {
+    console.error('Error rotating kiosk enrollment code:', err);
+    res.status(500).json({ error: 'Failed to rotate enrollment code.' });
+  }
+});
+
 
 async function getExceptionActor(req, fallbackName) {
   const actorUserId = (req.session && req.session.userId) || null;
-  const actorEmployeeId = (req.session && req.session.employeeId) || null;
+  const ctxEmployeeId =
+    req && req.modifyTimeContext && req.modifyTimeContext.adminId
+      ? req.modifyTimeContext.adminId
+      : null;
+  const actorEmployeeId =
+    (req.session && req.session.employeeId) || ctxEmployeeId || null;
+  const orgId =
+    (req && req.modifyTimeContext && req.modifyTimeContext.orgId) ||
+    (req.session && req.session.orgId) ||
+    null;
 
   let actorName = fallbackName || null;
 
-  if (!actorName && actorEmployeeId) {
+  if (!actorName && actorEmployeeId && orgId) {
     const emp = await dbGet(
-      'SELECT name, name_on_checks, email FROM employees WHERE id = ?',
-      [actorEmployeeId]
+      'SELECT name, name_on_checks, email FROM employees WHERE id = ? AND org_id = ?',
+      [actorEmployeeId, orgId]
     );
     if (emp) {
       actorName = emp.name_on_checks || emp.name || emp.email || actorName;
@@ -3939,7 +7450,578 @@ function pickFields(obj, keys = []) {
   }, {});
 }
 
-app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p.view_payroll), async (req, res) => {
+function parseTimestampMs(value) {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function computeTimeEntryRequiresNote(row, ruleFlags = {}) {
+  const {
+    ruleManualNoPunches,
+    ruleManualHoursMismatch,
+    ruleHasPunchException
+  } = ruleFlags;
+
+  const HOURS_EPSILON = 0.1; // keep in sync with time exception rules
+  const punchCount = Number(row.punch_count || 0);
+  const punchHours =
+    row.punch_hours != null && !Number.isNaN(Number(row.punch_hours))
+      ? Number(row.punch_hours)
+      : 0;
+  const entryHours =
+    row.hours != null && !Number.isNaN(Number(row.hours))
+      ? Number(row.hours)
+      : null;
+
+  const manualNoPunches = ruleManualNoPunches && punchCount === 0;
+  const manualHoursMismatch =
+    ruleManualHoursMismatch &&
+    entryHours != null &&
+    Math.abs(punchHours - entryHours) >= HOURS_EPSILON;
+
+  const hasDiscrepancy =
+    manualNoPunches ||
+    manualHoursMismatch ||
+    (ruleHasPunchException && Number(row.punch_exception_count || 0) > 0);
+
+  const lastEditMs = parseTimestampMs(row.last_manual_edit_at);
+  const approvedMs = parseTimestampMs(row.approved_at);
+  const manualEditSinceApproval =
+    lastEditMs != null && (!approvedMs || lastEditMs > approvedMs);
+
+  return hasDiscrepancy || manualEditSinceApproval;
+}
+
+async function loadWeeklyHoursExceptionCounts({
+  orgId,
+  start = null,
+  end = null,
+  orgTimezone = APP_TIMEZONE,
+  weeklyHoursThreshold = null
+}) {
+  if (!orgId || !weeklyHoursThreshold) {
+    return { perEntry: new Map(), overWeeks: new Set() };
+  }
+
+  const tz = orgTimezone || APP_TIMEZONE;
+  const weekStart = makeWeekStartResolver(tz);
+  const startRange = start ? shiftIsoDate(start, -7) : null;
+  const endRange = end ? shiftIsoDate(end, 7) : null;
+
+  const params = [orgId];
+  let where =
+    'WHERE org_id = ? AND clock_in_ts IS NOT NULL AND clock_out_ts IS NOT NULL';
+  if (startRange) {
+    where += ' AND clock_in_local_date >= ?';
+    params.push(startRange);
+  }
+  if (endRange) {
+    where += ' AND clock_in_local_date <= ?';
+    params.push(endRange);
+  }
+
+  const punchRows = await dbAll(
+    `
+      SELECT
+        employee_id,
+        time_entry_id,
+        clock_in_ts,
+        clock_out_ts,
+        exception_review_status
+      FROM time_punches
+      ${where}
+    `,
+    params
+  );
+
+  const normalized = [];
+  const weekTotals = new Map();
+
+  for (const row of punchRows || []) {
+    const startTs = row.clock_in_ts ? new Date(row.clock_in_ts) : null;
+    const endTs = row.clock_out_ts ? new Date(row.clock_out_ts) : null;
+    if (!startTs || !endTs) continue;
+    if (Number.isNaN(startTs.getTime()) || Number.isNaN(endTs.getTime())) continue;
+    const hours = (endTs - startTs) / (1000 * 60 * 60);
+    if (!Number.isFinite(hours) || hours < 0) continue;
+    const weekKey = weekStart(startTs);
+    if (!weekKey) continue;
+
+    const employeeKey = `${row.employee_id}|${weekKey}`;
+    weekTotals.set(employeeKey, (weekTotals.get(employeeKey) || 0) + hours);
+
+    normalized.push({
+      employeeKey,
+      entryId: Number(row.time_entry_id) || null,
+      exceptionStatus: String(row.exception_review_status || '').toLowerCase()
+    });
+  }
+
+  const overWeeks = new Set();
+  weekTotals.forEach((hours, key) => {
+    if (hours > weeklyHoursThreshold) {
+      overWeeks.add(key);
+    }
+  });
+
+  const perEntry = new Map();
+  for (const row of normalized) {
+    if (!row.entryId || !overWeeks.has(row.employeeKey)) continue;
+    const current = perEntry.get(row.entryId) || { total: 0, unapproved: 0 };
+    current.total += 1;
+    if (!['approved', 'modified'].includes(row.exceptionStatus)) {
+      current.unapproved += 1;
+    }
+    perEntry.set(row.entryId, current);
+  }
+
+  return { perEntry, overWeeks };
+}
+
+async function loadTimeEntryApprovalRows({
+  orgId,
+  entryId = null,
+  start = null,
+  end = null,
+  employeeId = null,
+  projectId = null
+}) {
+  const rulesMap = await loadExceptionRulesMap(orgId);
+  const isRuleEnabled = makeRuleChecker(rulesMap);
+
+  const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
+  const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
+
+  const ruleMissingClockOut = isRuleEnabled('missing_clock_out');
+  const ruleLongShift = isRuleEnabled('long_shift');
+  const ruleMultiDay = isRuleEnabled('multi_day');
+  const ruleCrossesMidnight = isRuleEnabled('crosses_midnight');
+  const ruleNoProject = isRuleEnabled('no_project');
+  const ruleProjectMismatch = isRuleEnabled('project_mismatch');
+  const ruleTinyPunch = isRuleEnabled('tiny_punch');
+  const ruleGeoIn = isRuleEnabled('geofence_clock_in');
+  const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
+  const ruleWeeklyHours = isRuleEnabled('weekly_hours');
+
+  const rawWeeklyThreshold =
+    rulesMap && rulesMap.weekly_hours_threshold != null
+      ? Number(rulesMap.weekly_hours_threshold)
+      : null;
+  const weeklyHoursThreshold =
+    Number.isFinite(rawWeeklyThreshold) && rawWeeklyThreshold > 0
+      ? rawWeeklyThreshold
+      : null;
+
+  const punchExceptionConditions = [];
+  if (ruleMissingClockOut) punchExceptionConditions.push('tp.clock_out_ts IS NULL');
+  if (ruleNoProject) punchExceptionConditions.push('tp.project_id IS NULL');
+  if (ruleProjectMismatch) {
+    punchExceptionConditions.push(
+      `tp.clock_out_project_id IS NOT NULL
+       AND tp.project_id IS NOT NULL
+       AND tp.clock_out_project_id != tp.project_id`
+    );
+  }
+  if (ruleAutoClockOut) {
+    punchExceptionConditions.push('tp.auto_clock_out IS NOT NULL AND tp.auto_clock_out != 0');
+  }
+  if (ruleGeoIn) {
+    punchExceptionConditions.push(
+      `(tp.geo_violation IS NOT NULL AND tp.geo_violation != 0)
+       OR (ks.geo_violation IS NOT NULL AND ks.geo_violation != 0)`
+    );
+  }
+  if (ruleLongShift) {
+    punchExceptionConditions.push(
+      `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+        AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0) > 12)`
+    );
+  }
+  if (ruleMultiDay) {
+    punchExceptionConditions.push(
+      `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+        AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0) >= 24)`
+    );
+  }
+  if (ruleCrossesMidnight) {
+    punchExceptionConditions.push(
+        `(tp.clock_in_local_date IS NOT NULL AND tp.clock_out_local_date IS NOT NULL
+          AND tp.clock_in_local_date != tp.clock_out_local_date)`
+    );
+  }
+  if (ruleTinyPunch) {
+    punchExceptionConditions.push(
+      `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+        AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0 * 60) < 5)`
+    );
+  }
+
+  const punchExceptionExpr = punchExceptionConditions.length
+    ? `SUM(CASE WHEN ${punchExceptionConditions.join(' OR ')} THEN 1 ELSE 0 END)`
+    : '0';
+
+  const where = ['t.org_id = ?'];
+  const params = [orgId];
+  if (entryId) {
+    where.push('t.id = ?');
+    params.push(entryId);
+  }
+  if (start) {
+    where.push('t.start_date >= ?');
+    params.push(start);
+  }
+  if (end) {
+    where.push('t.end_date <= ?');
+    params.push(end);
+  }
+  if (employeeId) {
+    where.push('t.employee_id = ?');
+    params.push(employeeId);
+  }
+  if (projectId) {
+    where.push('t.project_id = ?');
+    params.push(projectId);
+  }
+
+  const sql = `
+    SELECT
+      t.id,
+      t.employee_id,
+      t.project_id,
+      t.start_date,
+      t.end_date,
+      t.start_time,
+      t.end_time,
+      t.hours,
+      t.approval_status,
+      t.approved_at,
+      t.approved_by_employee_id,
+      t.updated_at,
+      COUNT(tp.id) AS punch_count,
+      SUM(
+        CASE
+          WHEN tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          THEN (julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0
+          ELSE 0
+        END
+      ) AS punch_hours,
+      ${punchExceptionExpr} AS punch_exception_count,
+      (
+        SELECT MAX(created_at)
+        FROM time_exception_actions tea
+        WHERE tea.source_type = 'time_entry'
+          AND tea.source_id = t.id
+          AND tea.action = 'modify'
+      ) AS last_manual_edit_at
+    FROM time_entries t
+    LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
+    LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = t.org_id
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    GROUP BY
+      t.id,
+      t.employee_id,
+      t.project_id,
+      t.start_date,
+      t.end_date,
+      t.start_time,
+      t.end_time,
+      t.hours,
+      t.approval_status,
+      t.approved_at,
+      t.approved_by_employee_id,
+      t.updated_at
+  `;
+
+  let rows = await dbAll(sql, params);
+
+  if (ruleWeeklyHours && weeklyHoursThreshold && rows && rows.length) {
+    const orgTimezone = await getOrgTimezone(orgId);
+    const weeklyCounts = await loadWeeklyHoursExceptionCounts({
+      orgId,
+      start,
+      end,
+      orgTimezone,
+      weeklyHoursThreshold
+    });
+    for (const row of rows) {
+      const entryId = Number(row.id || 0);
+      if (!entryId) continue;
+      const counts = weeklyCounts.perEntry.get(entryId);
+      if (counts && counts.total > 0) {
+        row.punch_exception_count = Number(row.punch_exception_count || 0) + counts.total;
+      }
+    }
+  }
+
+  rows = rows || [];
+  return {
+    rows,
+    ruleFlags: {
+      ruleManualNoPunches,
+      ruleManualHoursMismatch,
+      ruleHasPunchException:
+        punchExceptionConditions.length > 0 || (ruleWeeklyHours && weeklyHoursThreshold)
+    }
+  };
+}
+
+async function loadPendingTimeEntryApprovals({ orgId, start, end }) {
+  const rows = await dbAll(
+    `
+      SELECT
+        t.id,
+        t.employee_id,
+        COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
+        t.start_date,
+        t.end_date,
+        t.approval_status
+      FROM time_entries t
+      LEFT JOIN employees e ON e.id = t.employee_id AND e.org_id = t.org_id
+      WHERE t.org_id = ?
+        AND t.start_date >= ?
+        AND t.end_date <= ?
+        AND LOWER(COALESCE(t.approval_status, 'pending')) != 'approved'
+      ORDER BY t.start_date ASC, t.id ASC
+    `,
+    [orgId, start, end]
+  );
+  return rows || [];
+}
+
+async function loadPayrollUnresolvedExceptions({ orgId, start, end }) {
+  if (!orgId || !start || !end) return [];
+
+  const rulesMap = await loadExceptionRulesMap(orgId);
+  const isRuleEnabled = makeRuleChecker(rulesMap);
+
+  const ruleMissingClockOut = isRuleEnabled('missing_clock_out');
+  const ruleLongShift = isRuleEnabled('long_shift');
+  const ruleMultiDay = isRuleEnabled('multi_day');
+  const ruleCrossesMidnight = isRuleEnabled('crosses_midnight');
+  const ruleNoProject = isRuleEnabled('no_project');
+  const ruleProjectMismatch = isRuleEnabled('project_mismatch');
+  const ruleTinyPunch = isRuleEnabled('tiny_punch');
+  const ruleGeoIn = isRuleEnabled('geofence_clock_in');
+  const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
+  const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
+  const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
+  const ruleWeeklyHours = isRuleEnabled('weekly_hours');
+
+  const rawWeeklyThreshold =
+    rulesMap && rulesMap.weekly_hours_threshold != null
+      ? Number(rulesMap.weekly_hours_threshold)
+      : null;
+  const weeklyHoursThreshold =
+    Number.isFinite(rawWeeklyThreshold) && rawWeeklyThreshold > 0
+      ? rawWeeklyThreshold
+      : null;
+
+  const punchExceptionConditions = [];
+  if (ruleMissingClockOut) punchExceptionConditions.push('tp.clock_out_ts IS NULL');
+  if (ruleNoProject) punchExceptionConditions.push('tp.project_id IS NULL');
+  if (ruleProjectMismatch) {
+    punchExceptionConditions.push(
+      `tp.clock_out_project_id IS NOT NULL
+       AND tp.project_id IS NOT NULL
+       AND tp.clock_out_project_id != tp.project_id`
+    );
+  }
+  if (ruleAutoClockOut) {
+    punchExceptionConditions.push('tp.auto_clock_out IS NOT NULL AND tp.auto_clock_out != 0');
+  }
+  if (ruleGeoIn) {
+    punchExceptionConditions.push(
+      `(tp.geo_violation IS NOT NULL AND tp.geo_violation != 0)
+       OR (ks.geo_violation IS NOT NULL AND ks.geo_violation != 0)`
+    );
+  }
+  if (ruleLongShift) {
+    punchExceptionConditions.push(
+      `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+        AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0) > 12)`
+    );
+  }
+  if (ruleMultiDay) {
+    punchExceptionConditions.push(
+      `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+        AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0) >= 24)`
+    );
+  }
+  if (ruleCrossesMidnight) {
+    punchExceptionConditions.push(
+      `(tp.clock_in_local_date IS NOT NULL AND tp.clock_out_local_date IS NOT NULL
+        AND tp.clock_in_local_date != tp.clock_out_local_date)`
+    );
+  }
+  if (ruleTinyPunch) {
+    punchExceptionConditions.push(
+      `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+        AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0 * 60) < 5)`
+    );
+  }
+
+  const punchExceptionUnapprovedCase = punchExceptionConditions.length
+    ? `CASE ${punchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
+    : '0';
+
+  const HOURS_EPSILON = 0.1; // keep in sync with payroll filtering
+  const entryExceptionConditions = [];
+  if (ruleManualNoPunches) entryExceptionConditions.push('f.punch_count = 0');
+  if (ruleManualHoursMismatch) {
+    entryExceptionConditions.push(
+      `(f.hours IS NULL OR ABS(IFNULL(f.punch_hours, 0) - f.hours) >= ${HOURS_EPSILON})`
+    );
+  }
+  const entryExceptionExpr = entryExceptionConditions.length
+    ? `(${entryExceptionConditions.join(' OR ')})`
+    : '0';
+
+  const sql = `
+    WITH entry_flags AS (
+      SELECT
+        t.id,
+        t.employee_id,
+        t.project_id,
+        t.employee_name_snapshot,
+        t.project_name_snapshot,
+        t.start_date,
+        t.end_date,
+        t.hours,
+        t.resolved_status,
+        COUNT(tp.id) AS punch_count,
+        SUM(${punchExceptionUnapprovedCase}) AS punch_exception_unapproved_count,
+        SUM(
+          CASE
+            WHEN tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+            THEN (julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0
+            ELSE 0
+          END
+        ) AS punch_hours
+      FROM time_entries t
+      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
+      WHERE t.org_id = ? AND t.start_date >= ? AND t.end_date <= ?
+        AND (t.paid IS NULL OR t.paid = 0)
+      GROUP BY
+        t.id,
+        t.employee_id,
+        t.project_id,
+        t.employee_name_snapshot,
+        t.project_name_snapshot,
+        t.start_date,
+        t.end_date,
+        t.hours,
+        t.resolved_status
+    )
+    SELECT
+      f.*,
+      COALESCE(e.name, f.employee_name_snapshot) AS employee_name,
+      COALESCE(p.name, f.project_name_snapshot, '(No project)') AS project_name,
+      CASE
+        WHEN ${entryExceptionExpr} != 0
+          AND LOWER(COALESCE(f.resolved_status, 'open')) NOT IN ('approved', 'modified')
+        THEN 1 ELSE 0
+      END AS entry_exception_unapproved,
+      CASE
+        WHEN IFNULL(f.punch_exception_unapproved_count, 0) > 0
+        THEN 1 ELSE 0
+      END AS punch_exception_unapproved
+    FROM entry_flags f
+    LEFT JOIN employees e ON f.employee_id = e.id AND e.org_id = ?
+    LEFT JOIN projects p ON f.project_id = p.id AND p.org_id = ?
+    WHERE
+      (
+        ${entryExceptionExpr} != 0
+        AND LOWER(COALESCE(f.resolved_status, 'open')) NOT IN ('approved', 'modified')
+      )
+      OR IFNULL(f.punch_exception_unapproved_count, 0) > 0
+  `;
+
+  const rows = await dbAll(sql, [orgId, start, end, orgId, orgId]);
+  const flagged = new Map();
+
+  for (const row of rows || []) {
+    const reasons = [];
+    if (row.entry_exception_unapproved) reasons.push('entry_exception');
+    if (row.punch_exception_unapproved) reasons.push('punch_exception');
+    flagged.set(row.id, {
+      time_entry_id: row.id,
+      employee_id: row.employee_id,
+      employee_name: row.employee_name || row.employee_name_snapshot,
+      project_id: row.project_id,
+      project_name: row.project_name || row.project_name_snapshot,
+      start_date: row.start_date,
+      end_date: row.end_date,
+      reasons
+    });
+  }
+
+  if (ruleWeeklyHours && weeklyHoursThreshold) {
+    const orgTimezone = await getOrgTimezone(orgId);
+    const weeklyCounts = await loadWeeklyHoursExceptionCounts({
+      orgId,
+      start,
+      end,
+      orgTimezone,
+      weeklyHoursThreshold
+    });
+    const weeklyIds = [];
+    for (const [entryId, counts] of weeklyCounts.perEntry.entries()) {
+      if (counts && counts.unapproved > 0) {
+        weeklyIds.push(entryId);
+      }
+    }
+    const missingIds = weeklyIds.filter(id => !flagged.has(id));
+    if (missingIds.length) {
+      const placeholders = missingIds.map(() => '?').join(',');
+      const detailRows = await dbAll(
+        `
+          SELECT
+            t.id,
+            t.employee_id,
+            t.project_id,
+            t.employee_name_snapshot,
+            t.project_name_snapshot,
+            t.start_date,
+            t.end_date,
+            COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
+            COALESCE(p.name, t.project_name_snapshot, '(No project)') AS project_name
+          FROM time_entries t
+          LEFT JOIN employees e ON e.id = t.employee_id AND e.org_id = t.org_id
+          LEFT JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
+          WHERE t.org_id = ?
+            AND t.start_date >= ?
+            AND t.end_date <= ?
+            AND (t.paid IS NULL OR t.paid = 0)
+            AND t.id IN (${placeholders})
+        `,
+        [orgId, start, end, ...missingIds]
+      );
+      for (const row of detailRows || []) {
+        flagged.set(row.id, {
+          time_entry_id: row.id,
+          employee_id: row.employee_id,
+          employee_name: row.employee_name || row.employee_name_snapshot,
+          project_id: row.project_id,
+          project_name: row.project_name || row.project_name_snapshot,
+          start_date: row.start_date,
+          end_date: row.end_date,
+          reasons: ['weekly_hours']
+        });
+      }
+    }
+    for (const entryId of weeklyIds) {
+      const entry = flagged.get(entryId);
+      if (entry && !entry.reasons.includes('weekly_hours')) {
+        entry.reasons.push('weekly_hours');
+      }
+    }
+  }
+
+  return Array.from(flagged.values());
+}
+
+app.get('/api/time-exceptions', requireViewTimeReports, async (req, res) => {
   try {
     const {
       start,
@@ -3955,12 +8037,17 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
         .json({ error: 'start and end (YYYY-MM-DD) are required.' });
     }
 
-    const params = [];
-    let where = 'WHERE 1=1 ';
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
 
-    // Date range using clock_in_ts
+    const params = [orgId];
+    let where = 'WHERE tp.org_id = ? ';
+
+    // Date range using org-local clock-in date
     where +=
-      'AND date(tp.clock_in_ts) >= date(?) AND date(tp.clock_in_ts) <= date(?) ';
+      'AND tp.clock_in_local_date >= ? AND tp.clock_in_local_date <= ? ';
     params.push(start, end);
 
     if (employee_id) {
@@ -3990,6 +8077,8 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
         tp.project_id,
         tp.clock_in_ts,
         tp.clock_out_ts,
+        tp.clock_in_local_date,
+        tp.clock_out_local_date,
         tp.clock_out_project_id,
         tp.clock_in_lat,
         tp.clock_in_lng,
@@ -4005,6 +8094,8 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
         tp.exception_reviewed_by,
         tp.exception_reviewed_at,
         tp.geo_violation,
+        ks.geo_violation AS session_geo_violation,
+        tp.updated_at,
 
         COALESCE(e.name, tp.employee_name_snapshot) AS employee_name,
         COALESCE(p.name, tp.project_name_snapshot) AS project_name,
@@ -4013,28 +8104,24 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
         p.geo_lng,
         p.geo_radius
       FROM time_punches tp
-      LEFT JOIN employees e ON tp.employee_id = e.id
-      LEFT JOIN projects p ON tp.project_id = p.id
+      LEFT JOIN employees e ON tp.employee_id = e.id AND e.org_id = tp.org_id
+      LEFT JOIN projects p ON tp.project_id = p.id AND p.org_id = tp.org_id
+      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
       ${where}
       ORDER BY tp.clock_in_ts ASC
       `,
       params
     );
 
-    // Load app-wide settings so we can honor disabled rules
-    const settingsRows = await dbAll('SELECT key, value FROM app_settings', []);
-    const settingsMap = {};
-    (settingsRows || []).forEach(r => {
-      settingsMap[r.key] = r.value;
-    });
-
     let exceptionRules = null;
     try {
-      if (settingsMap.time_exception_rules) {
-        const parsed = JSON.parse(settingsMap.time_exception_rules);
-        if (parsed && typeof parsed === 'object') {
-          exceptionRules = parsed;
-        }
+      const row = await dbGet(
+        'SELECT value FROM org_settings WHERE org_id = ? AND key = ?',
+        [orgId, 'time_exception_rules']
+      );
+      if (row && row.value) {
+        const parsed = JSON.parse(row.value);
+        if (parsed && typeof parsed === 'object') exceptionRules = parsed;
       }
     } catch {
       exceptionRules = null;
@@ -4051,22 +8138,57 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
       );
     };
 
-    // Helper to normalize a timestamp to the Monday that starts its ISO week
+    const orgTimezone = await getOrgTimezone(orgId);
+    const tz = orgTimezone || APP_TIMEZONE;
+    const dateFormatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    const weekdayFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      weekday: 'short'
+    });
+    const weekdayMap = {
+      Mon: 0,
+      Tue: 1,
+      Wed: 2,
+      Thu: 3,
+      Fri: 4,
+      Sat: 5,
+      Sun: 6
+    };
+    const shiftIsoDate = (dateStr, deltaDays) => {
+      const parts = String(dateStr || '').split('-').map(Number);
+      if (parts.length !== 3 || parts.some(Number.isNaN)) return dateStr;
+      const [year, month, day] = parts;
+      const dt = new Date(Date.UTC(year, month - 1, day + deltaDays));
+      return dt.toISOString().slice(0, 10);
+    };
+    // Helper to normalize a timestamp to the Monday that starts its week in org timezone
     const getWeekStart = dateObj => {
-      const d = new Date(
-        Date.UTC(
-          dateObj.getUTCFullYear(),
-          dateObj.getUTCMonth(),
-          dateObj.getUTCDate()
-        )
-      );
-      const day = d.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
-      const diff = day === 0 ? -6 : 1 - day;
-      d.setUTCDate(d.getUTCDate() + diff);
-      return d.toISOString().slice(0, 10);
+      if (!dateObj) return null;
+      const parts = dateFormatter.formatToParts(dateObj);
+      const year = parts.find(p => p.type === 'year')?.value;
+      const month = parts.find(p => p.type === 'month')?.value;
+      const day = parts.find(p => p.type === 'day')?.value;
+      if (!year || !month || !day) return null;
+      const dateStr = `${year}-${month}-${day}`;
+      const weekdayShort = weekdayFormatter.format(dateObj);
+      const weekdayIndex = weekdayMap[weekdayShort];
+      if (weekdayIndex == null) return dateStr;
+      return shiftIsoDate(dateStr, -weekdayIndex);
     };
 
-    const WEEKLY_HOURS_THRESHOLD = 50;
+    const rawWeeklyThreshold =
+      exceptionRules && exceptionRules.weekly_hours_threshold != null
+        ? Number(exceptionRules.weekly_hours_threshold)
+        : null;
+    const WEEKLY_HOURS_THRESHOLD =
+      Number.isFinite(rawWeeklyThreshold) && rawWeeklyThreshold > 0
+        ? rawWeeklyThreshold
+        : null;
     const punchWeekTotals = new Map();
 
     // First pass: compute durations and weekly totals per employee
@@ -4095,9 +8217,11 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
     });
 
     const weeksOverThreshold = new Map();
-    for (const [key, hours] of punchWeekTotals.entries()) {
-      if (hours > WEEKLY_HOURS_THRESHOLD) {
-        weeksOverThreshold.set(key, hours);
+    if (WEEKLY_HOURS_THRESHOLD) {
+      for (const [key, hours] of punchWeekTotals.entries()) {
+        if (hours > WEEKLY_HOURS_THRESHOLD) {
+          weeksOverThreshold.set(key, hours);
+        }
       }
     }
 
@@ -4123,9 +8247,11 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
 
       // 4) Crosses midnight
       if (isRuleEnabled('crosses_midnight') && startTs && endTs) {
-        const startDateStr = startTs.toISOString().slice(0, 10);
-        const endDateStr = endTs.toISOString().slice(0, 10);
-        if (startDateStr !== endDateStr) {
+        const startDateStr =
+          r.clock_in_local_date || getIsoDateInTimezone(startTs, tz);
+        const endDateStr =
+          r.clock_out_local_date || getIsoDateInTimezone(endTs, tz);
+        if (startDateStr && endDateStr && startDateStr !== endDateStr) {
           flags.push('Crosses midnight');
         }
       }
@@ -4156,55 +8282,20 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
       // 6b) Weekly overtime threshold
       if (weekKey) {
         const weeklyHours = weeksOverThreshold.get(`${r.employee_id}|${weekKey}`);
-        if (weeklyHours && isRuleEnabled('weekly_hours')) {
+        if (weeklyHours && WEEKLY_HOURS_THRESHOLD && isRuleEnabled('weekly_hours')) {
           flags.push(
             `Week of ${weekKey} exceeds ${WEEKLY_HOURS_THRESHOLD}h (${weeklyHours.toFixed(2)}h)`
           );
         }
       }
 
-      // 7) Geofence mismatch (in / out)
-      const hasProjectGeofence =
-        r.geo_lat != null &&
-        r.geo_lng != null &&
-        r.geo_radius != null &&
-        !Number.isNaN(r.geo_lat) &&
-        !Number.isNaN(r.geo_lng) &&
-        !Number.isNaN(r.geo_radius);
-
-      if (hasProjectGeofence) {
-        // Clock-in geofence
-        if (
-          isRuleEnabled('geofence_clock_in') &&
-          r.clock_in_lat != null &&
-          r.clock_in_lng != null
-        ) {
-          const dIn = distanceMeters(
-            Number(r.clock_in_lat),
-            Number(r.clock_in_lng),
-            Number(r.geo_lat),
-            Number(r.geo_lng)
-          );
-          if (dIn > r.geo_radius) {
-            flags.push('Clock-in outside geofence');
-          }
+      // 7) Geofence mismatch (kiosk clock-in + session check)
+      if (isRuleEnabled('geofence_clock_in')) {
+        if (r.geo_violation) {
+          flags.push('Clock-in outside geofence');
         }
-
-        // Clock-out geofence
-        if (
-          isRuleEnabled('geofence_clock_out') &&
-          r.clock_out_lat != null &&
-          r.clock_out_lng != null
-        ) {
-          const dOut = distanceMeters(
-            Number(r.clock_out_lat),
-            Number(r.clock_out_lng),
-            Number(r.geo_lat),
-            Number(r.geo_lng)
-          );
-          if (dOut > r.geo_radius) {
-            flags.push('Clock-out outside geofence');
-          }
+        if (r.session_geo_violation) {
+          flags.push('Kiosk outside geofence (timesheet)');
         }
       }
 
@@ -4256,9 +8347,10 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
         review_note: r.exception_review_note || null,
         review_by: r.exception_reviewed_by || null,
         review_at: r.exception_reviewed_at || null,
-        has_geo_violation: r.geo_violation ? 1 : 0,
+        has_geo_violation: r.geo_violation || r.session_geo_violation ? 1 : 0,
         auto_clock_out: r.auto_clock_out ? 1 : 0,
-        auto_clock_out_reason: r.auto_clock_out_reason || null
+        auto_clock_out_reason: r.auto_clock_out_reason || null,
+        updated_at: r.updated_at || null
       });
 
     }
@@ -4273,8 +8365,8 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
     // entries with no punches at all.
     //
 
-    const entryWhere = [];
-    const entryParams = [];
+    const entryWhere = ['t.org_id = ?'];
+    const entryParams = [orgId];
 
     // Date range for entries (simple assumption: entries are per-day)
     entryWhere.push('t.start_date >= ?');
@@ -4316,6 +8408,7 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
         t.resolved_note,
         t.resolved_at,
         t.resolved_by,
+        t.updated_at,
 
         COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
         COALESCE(p.name, t.project_name_snapshot) AS project_name,
@@ -4333,9 +8426,9 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
         ) AS punch_hours
 
       FROM time_entries t
-      LEFT JOIN employees e ON t.employee_id = e.id
-      LEFT JOIN projects  p ON t.project_id  = p.id
-      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
+      LEFT JOIN employees e ON t.employee_id = e.id AND e.org_id = t.org_id
+      LEFT JOIN projects  p ON t.project_id  = p.id AND p.org_id = t.org_id
+      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
       ${entryWhere.length ? 'WHERE ' + entryWhere.join(' AND ') : ''}
       GROUP BY
         t.id,
@@ -4439,6 +8532,7 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
         review_note: te.resolved_note || null,
         review_by: te.resolved_by || null,
         review_at: te.resolved_at || null,
+        updated_at: te.updated_at || null,
 
         // These exceptions are about hours mismatch, not geofence/auto
         has_geo_violation: 0,
@@ -4456,15 +8550,21 @@ app.get('/api/time-exceptions', requireAdminAccess(p => p.view_time_reports || p
 
 
 
-app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_reports || p.view_payroll), async (req, res) => {
+app.post('/api/time-exceptions/:id/review', requireModifyTimeAny, async (req, res) => {
   const exceptionId = Number(req.params.id);
   const {
     source,          // 'punch' | 'time_entry'
     action,          // 'approve' | 'modify' | 'reject'
     note,
     actor_name,
-    updates = {}
+    updates = {},
+    if_match_updated_at,
+    client_id
   } = req.body || {};
+  const ctx = req.modifyTimeContext;
+  const orgId = ctx && ctx.orgId ? ctx.orgId : (req.session && req.session.orgId);
+  const orgTimezone = await getOrgTimezone(orgId);
+  const clientId = client_id ? String(client_id).trim() : '';
 
   // Small helpers for validation
   const toDate = value => {
@@ -4475,7 +8575,8 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
 
   const dateOnly = value => {
     const d = toDate(value);
-    return d ? d.toISOString().slice(0, 10) : null;
+    if (!d) return null;
+    return getIsoDateInTimezone(d, orgTimezone) || d.toISOString().slice(0, 10);
   };
 
   const parseHm = value => {
@@ -4494,15 +8595,24 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
   if (!allowedActions.includes(action)) {
     return res.status(400).json({ ok: false, error: 'Invalid action.' });
   }
-  if ((action === 'modify' || action === 'reject') && (!note || !note.trim())) {
+  if ((!note || !note.trim()) && (action === 'modify' || action === 'reject' || action === 'approve')) {
     return res
       .status(400)
-      .json({ ok: false, error: 'A note is required when rejecting or modifying.' });
+      .json({ ok: false, error: 'A note is required for this review action.' });
+  }
+  if (!orgId) {
+    return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+  }
+  if (clientId) {
+    const cached = await loadIdempotentResponse(orgId, 'time_exception_review', clientId);
+    if (cached) {
+      return res.json({ ...cached, alreadyProcessed: true });
+    }
   }
 
   try {
     const { actorUserId, actorEmployeeId, actorName } =
-      await getExceptionActor(req, note ? actor_name : actor_name || null);
+      await getExceptionActor(req, actor_name || null);
 
     const nowIso = new Date().toISOString();
     const statusVal =
@@ -4516,11 +8626,43 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
     let after = {};
 
     if (source === 'punch') {
-      const punch = await dbGet('SELECT * FROM time_punches WHERE id = ?', [
-        exceptionId
-      ]);
+      const punch = await dbGet(
+        'SELECT * FROM time_punches WHERE id = ? AND org_id = ?',
+        [exceptionId, orgId]
+      );
       if (!punch) {
         return res.status(404).json({ ok: false, error: 'Punch not found.' });
+      }
+
+      if (if_match_updated_at && punch.updated_at && punch.updated_at !== if_match_updated_at) {
+        return res.status(409).json({
+          ok: false,
+          error: 'Conflict: the punch was updated since you last loaded it.',
+          current: pickFields(punch, [
+            'id',
+            'employee_id',
+            'project_id',
+            'clock_in_ts',
+            'clock_out_ts',
+            'clock_out_project_id',
+            'updated_at'
+          ])
+        });
+      }
+
+      let linkedEntry = null;
+      if (punch.time_entry_id) {
+        linkedEntry = await dbGet(
+          'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+          [punch.time_entry_id, orgId]
+        );
+      }
+      if (action === 'modify' && linkedEntry && linkedEntry.paid) {
+        return res.status(409).json({
+          ok: false,
+          error:
+            'This time entry has already been paid and cannot be modified. Create an adjustment entry instead.'
+        });
       }
 
       before = pickFields(punch, [
@@ -4640,11 +8782,37 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
           });
         }
 
+        if (finalProjectId != null) {
+          const projRow = await dbGet(
+            'SELECT id FROM projects WHERE id = ? AND org_id = ?',
+            [finalProjectId, orgId]
+          );
+          if (!projRow) {
+            return res.status(400).json({
+              ok: false,
+              error: 'Project not found for this org.'
+            });
+          }
+        }
+
+        const finalClockInLocalDate = finalClockIn
+          ? getIsoDateInTimezone(finalClockIn, orgTimezone)
+          : null;
+        const finalClockOutLocalDate = finalClockOut
+          ? getIsoDateInTimezone(finalClockOut, orgTimezone)
+          : null;
+
         sets.push('clock_in_ts = ?');
         params.push(finalClockIn || null);
 
         sets.push('clock_out_ts = ?');
         params.push(finalClockOut || null);
+
+        sets.push('clock_in_local_date = ?');
+        params.push(finalClockInLocalDate);
+
+        sets.push('clock_out_local_date = ?');
+        params.push(finalClockOutLocalDate);
 
         sets.push('project_id = ?');
         params.push(finalProjectId == null ? null : finalProjectId);
@@ -4672,30 +8840,212 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
       sets.push('exception_reviewed_at = ?');
       params.push(nowIso);
 
+      sets.push('updated_at = ?');
+      params.push(nowIso);
+
       await dbRun(
         `
           UPDATE time_punches
           SET ${sets.join(', ')}
-          WHERE id = ?
+          WHERE id = ? AND org_id = ?
         `,
-        [...params, exceptionId]
+        [...params, exceptionId, orgId]
       );
 
-      const updated = await dbGet('SELECT * FROM time_punches WHERE id = ?', [
-        exceptionId
-      ]);
+      const updated = await dbGet(
+        'SELECT * FROM time_punches WHERE id = ? AND org_id = ?',
+        [exceptionId, orgId]
+      );
       after = pickFields(updated, [
         'clock_in_ts',
         'clock_out_ts',
         'project_id',
         'clock_out_project_id'
       ]);
+
+      const canSyncEntry = action !== 'reject';
+      const hasCompletePunch =
+        updated && updated.clock_in_ts && updated.clock_out_ts;
+      if (canSyncEntry && hasCompletePunch) {
+        const startTs = new Date(updated.clock_in_ts);
+        const endTs = new Date(updated.clock_out_ts);
+        if (!Number.isNaN(startTs.getTime()) && !Number.isNaN(endTs.getTime())) {
+          const diffMs = endTs - startTs;
+          let minutes = Math.ceil(diffMs / 60000);
+          if (!Number.isFinite(minutes) || minutes < 0) minutes = 0;
+          const hours = minutes / 60;
+          const startDate =
+            getIsoDateInTimezone(startTs, orgTimezone) ||
+            startTs.toISOString().slice(0, 10);
+          const endDate =
+            getIsoDateInTimezone(endTs, orgTimezone) ||
+            endTs.toISOString().slice(0, 10);
+          const startTime =
+            getIsoTimeInTimezone(startTs, orgTimezone) ||
+            startTs.toISOString().slice(11, 16);
+          const endTime =
+            getIsoTimeInTimezone(endTs, orgTimezone) ||
+            endTs.toISOString().slice(11, 16);
+
+          const empRow = await dbGet(
+            'SELECT rate, name FROM employees WHERE id = ? AND org_id = ?',
+            [updated.employee_id, orgId]
+          );
+          if (!empRow) {
+            return res.status(400).json({ ok: false, error: 'Employee not found.' });
+          }
+
+          const projRow = updated.project_id
+            ? await dbGet('SELECT name FROM projects WHERE id = ? AND org_id = ?', [
+                updated.project_id,
+                orgId
+              ])
+            : null;
+
+          const rate = Number(empRow.rate) || 0;
+          const totalPay = rate * hours;
+          const nowEntryIso = new Date().toISOString();
+
+          let entryRow = null;
+          if (updated.time_entry_id) {
+            entryRow = await dbGet(
+              'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+              [updated.time_entry_id, orgId]
+            );
+          }
+
+          if (entryRow && action === 'modify') {
+            await dbRun(
+              `
+                UPDATE time_entries
+                SET project_id = ?,
+                    start_date = ?,
+                    end_date = ?,
+                    start_time = ?,
+                    end_time = ?,
+                    hours = ?,
+                    total_pay = ?,
+                    foreman_employee_id = ?,
+                    employee_name_snapshot = ?,
+                    project_name_snapshot = ?,
+                    approval_status = ?,
+                    approved_at = ?,
+                    approved_by_employee_id = ?,
+                    approval_note = ?,
+                    updated_at = ?
+                WHERE id = ? AND org_id = ?
+              `,
+              [
+                updated.project_id || null,
+                startDate,
+                endDate,
+                startTime,
+                endTime,
+                hours,
+                totalPay,
+                updated.foreman_employee_id || null,
+                empRow?.name || null,
+                projRow?.name || null,
+                'pending',
+                null,
+                null,
+                null,
+                nowEntryIso,
+                entryRow.id,
+                orgId
+              ]
+            );
+
+            const afterEntry = await dbGet(
+              'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+              [entryRow.id, orgId]
+            );
+            await logTimeEntryAudit({
+              entryId: entryRow.id,
+              action: 'modify',
+              before: entryRow,
+              after: afterEntry,
+              note: note || null,
+              req
+            });
+          } else if (!entryRow) {
+            const entryRes = await dbRun(
+              `
+                INSERT INTO time_entries
+                  (org_id, employee_id, project_id, start_date, end_date, start_time, end_time, hours, total_pay, foreman_employee_id, employee_name_snapshot, project_name_snapshot, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `,
+              [
+                orgId,
+                updated.employee_id,
+                updated.project_id || null,
+                startDate,
+                endDate,
+                startTime,
+                endTime,
+                hours,
+                totalPay,
+                updated.foreman_employee_id || null,
+                empRow?.name || null,
+                projRow?.name || null,
+                nowEntryIso
+              ]
+            );
+
+            await dbRun(
+              'UPDATE time_punches SET time_entry_id = ?, updated_at = ? WHERE id = ? AND org_id = ?',
+              [entryRes.lastID, nowEntryIso, updated.id, orgId]
+            );
+
+            const createdEntry = await dbGet(
+              'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+              [entryRes.lastID, orgId]
+            );
+            await logTimeEntryAudit({
+              entryId: entryRes.lastID,
+              action: 'create',
+              before: null,
+              after: createdEntry,
+              note: note || null,
+              req
+            });
+          }
+        }
+      }
     } else {
-      const entry = await dbGet('SELECT * FROM time_entries WHERE id = ?', [
-        exceptionId
-      ]);
+      const entry = await dbGet(
+        'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+        [exceptionId, orgId]
+      );
       if (!entry) {
         return res.status(404).json({ ok: false, error: 'Time entry not found.' });
+      }
+
+      if (if_match_updated_at && entry.updated_at && entry.updated_at !== if_match_updated_at) {
+        return res.status(409).json({
+          ok: false,
+          error: 'Conflict: the time entry was updated since you last loaded it.',
+          current: pickFields(entry, [
+            'id',
+            'employee_id',
+            'project_id',
+            'start_date',
+            'end_date',
+            'start_time',
+            'end_time',
+            'hours',
+            'updated_at'
+          ])
+        });
+      }
+
+      if (action === 'modify' && entry.paid) {
+        return res.status(409).json({
+          ok: false,
+          error:
+            'This time entry has already been paid and cannot be modified. ' +
+            'Create a new adjustment entry instead.'
+        });
       }
 
       before = pickFields(entry, [
@@ -4731,8 +9081,15 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
         const finalStartTime = updates.start_time !== undefined ? updates.start_time : entry.start_time;
         const finalEndTime = updates.end_time !== undefined ? updates.end_time : entry.end_time;
 
-        const startMinutes = finalStartTime ? parseHm(finalStartTime) : null;
-        const endMinutes = finalEndTime ? parseHm(finalEndTime) : null;
+        if (!finalStartTime || !finalEndTime) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Start and end times are required when modifying a time entry.'
+          });
+        }
+
+        const startMinutes = parseHm(finalStartTime);
+        const endMinutes = parseHm(finalEndTime);
 
         if (finalStartTime && startMinutes == null) {
           return res.status(400).json({ ok: false, error: 'Invalid start time format.' });
@@ -4762,7 +9119,7 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
             : entry.hours != null
               ? Number(entry.hours)
               : null;
-        if (updates.hours !== undefined && Number.isNaN(finalHours)) {
+        if (finalHours == null || Number.isNaN(finalHours)) {
           return res.status(400).json({ ok: false, error: 'Hours must be numeric.' });
         }
         if (finalHours != null && (finalHours < 0 || finalHours > 24)) {
@@ -4770,6 +9127,15 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
             ok: false,
             error: 'Hours must be between 0 and 24 when modifying a time entry.'
           });
+        }
+        if (startMinutes != null && endMinutes != null) {
+          const expectedHours = (endMinutes - startMinutes) / 60;
+          if (Math.abs(expectedHours - finalHours) > 0.01) {
+            return res.status(400).json({
+              ok: false,
+              error: 'Hours must match the provided start and end times.'
+            });
+          }
         }
 
         const finalProjectIdRaw =
@@ -4787,6 +9153,15 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
           return res
             .status(400)
             .json({ ok: false, error: 'Project must be a valid project ID.' });
+        }
+        const projRow = finalProjectId
+          ? await dbGet('SELECT name FROM projects WHERE id = ? AND org_id = ?', [
+              finalProjectId,
+              orgId
+            ])
+          : null;
+        if (finalProjectId != null && !projRow) {
+          return res.status(400).json({ ok: false, error: 'Project not found.' });
         }
 
         sets.push('start_date = ?');
@@ -4806,6 +9181,35 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
 
         sets.push('project_id = ?');
         params.push(finalProjectId == null ? null : finalProjectId);
+
+        const empRow = await dbGet(
+          'SELECT rate, name FROM employees WHERE id = ? AND org_id = ?',
+          [entry.employee_id, orgId]
+        );
+        if (!empRow) {
+          return res.status(400).json({ ok: false, error: 'Employee not found.' });
+        }
+        const rate = Number(empRow.rate) || 0;
+        const totalPay = rate * (finalHours != null ? finalHours : 0);
+
+        sets.push('total_pay = ?');
+        params.push(totalPay);
+
+        sets.push('employee_name_snapshot = ?');
+        params.push(empRow?.name || entry.employee_name_snapshot || null);
+
+        sets.push('project_name_snapshot = ?');
+        params.push(projRow?.name || entry.project_name_snapshot || null);
+
+        // Any edit resets approval to pending.
+        sets.push('approval_status = ?');
+        params.push('pending');
+        sets.push('approved_at = ?');
+        params.push(null);
+        sets.push('approved_by_employee_id = ?');
+        params.push(null);
+        sets.push('approval_note = ?');
+        params.push(null);
       }
 
       sets.push('resolved = 1');
@@ -4821,18 +9225,22 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
       sets.push('resolved_note = ?');
       params.push(note || null);
 
+      sets.push('updated_at = ?');
+      params.push(nowIso);
+
       await dbRun(
         `
           UPDATE time_entries
           SET ${sets.join(', ')}
-          WHERE id = ?
+          WHERE id = ? AND org_id = ?
         `,
-        [...params, exceptionId]
+        [...params, exceptionId, orgId]
       );
 
-      const updated = await dbGet('SELECT * FROM time_entries WHERE id = ?', [
-        exceptionId
-      ]);
+      const updated = await dbGet(
+        'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+        [exceptionId, orgId]
+      );
       after = pickFields(updated, [
         'start_date',
         'end_date',
@@ -4854,10 +9262,11 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
     await dbRun(
       `
         INSERT INTO time_exception_actions
-          (source_type, source_id, action, actor_user_id, actor_employee_id, actor_name, note, changes_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (org_id, source_type, source_id, action, actor_user_id, actor_employee_id, actor_name, note, changes_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
+        orgId,
         source,
         exceptionId,
         action,
@@ -4869,24 +9278,51 @@ app.post('/api/time-exceptions/:id/review', requireAdminAccess(p => p.view_time_
       ]
     );
 
-    res.json({ ok: true, status: statusVal });
+    await notifyTimeEvent({
+      orgId,
+      eventType: 'TIME_EXCEPTION_REVIEWED',
+      title: 'Time exception reviewed',
+      body: `A ${source === 'punch' ? 'punch' : 'time entry'} exception was ${statusVal}.`,
+      data: {
+        exception_id: exceptionId,
+        source,
+        status: statusVal
+      }
+    });
+
+    const response = { ok: true, status: statusVal };
+    if (clientId) {
+      await storeIdempotentResponse(orgId, 'time_exception_review', clientId, response);
+    }
+    res.json(response);
   } catch (err) {
     console.error('Error reviewing time exception:', err);
     res.status(500).json({ ok: false, error: 'Failed to review exception.' });
   }
 });
 
-app.post('/api/time-exceptions/:id/resolve', requireAdminAccess(p => p.view_time_reports || p.view_payroll), async (req, res) => {
+app.post('/api/time-exceptions/:id/resolve', requireModifyTimeAny, async (req, res) => {
   const punchId = Number(req.params.id);
   if (!punchId) {
     return res.status(400).json({ ok: false, error: 'Invalid punch ID.' });
   }
 
   try {
+    const ctx = req.modifyTimeContext;
+    const orgId = ctx && ctx.orgId ? ctx.orgId : (req.session && req.session.orgId);
+    if (!orgId) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+    }
+
+    const { note } = req.body || {};
+    if (!note || !note.trim()) {
+      return res.status(400).json({ ok: false, error: 'A note is required to resolve.' });
+    }
+
     const { actorName } = await getExceptionActor(req, null);
     const punch = await dbGet(
-      'SELECT id, exception_resolved FROM time_punches WHERE id = ?',
-      [punchId]
+      'SELECT id, exception_resolved FROM time_punches WHERE id = ? AND org_id = ?',
+      [punchId, orgId]
     );
 
     if (!punch) {
@@ -4897,19 +9333,70 @@ app.post('/api/time-exceptions/:id/resolve', requireAdminAccess(p => p.view_time
       return res.json({ ok: true, alreadyResolved: true });
     }
 
+    const nowIso = new Date().toISOString();
+
     await dbRun(
       `
         UPDATE time_punches
         SET exception_resolved = 1,
-            exception_resolved_at = datetime('now'),
+            exception_resolved_at = ?,
             exception_resolved_by = ?,
             exception_review_status = 'approved',
+            exception_review_note = ?,
             exception_reviewed_by = ?,
-            exception_reviewed_at = datetime('now')
-        WHERE id = ?
+            exception_reviewed_at = ?,
+            updated_at = ?
+        WHERE id = ? AND org_id = ?
       `,
-      [actorName || 'admin', actorName || null, punchId]
+      [
+        nowIso,
+        actorName || 'admin',
+        note || null,
+        actorName || null,
+        nowIso,
+        nowIso,
+        punchId,
+        orgId
+      ]
     );
+
+    const afterPunch = await dbGet(
+      'SELECT * FROM time_punches WHERE id = ? AND org_id = ?',
+      [punchId, orgId]
+    );
+
+    await dbRun(
+      `
+        INSERT INTO time_exception_actions
+          (org_id, source_type, source_id, action, actor_user_id, actor_employee_id, actor_name, note, changes_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        orgId,
+        'punch',
+        punchId,
+        'resolve',
+        (req.session && req.session.userId) || null,
+        (req.session && req.session.employeeId) || null,
+        actorName || null,
+        note || null,
+        JSON.stringify({
+          before: pickFields(punch, ['id', 'exception_resolved', 'exception_review_status']),
+          after: pickFields(afterPunch, ['id', 'exception_resolved', 'exception_review_status'])
+        })
+      ]
+    );
+
+    await notifyTimeEvent({
+      orgId,
+      eventType: 'TIME_EXCEPTION_RESOLVED',
+      title: 'Time exception resolved',
+      body: 'A punch exception was resolved.',
+      data: {
+        exception_id: punchId,
+        source: 'punch'
+      }
+    });
 
     res.json({ ok: true });
   } catch (err) {
@@ -4918,8 +9405,13 @@ app.post('/api/time-exceptions/:id/resolve', requireAdminAccess(p => p.view_time
   }
 });
 
-app.get('/api/time-punches/open', requireAuth, (req, res) => {
-    const sql = `
+app.get('/api/time-punches/open', requireViewTimeReports, (req, res) => {
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+
+  const sql = `
     SELECT
       tp.id,
       tp.employee_id,
@@ -4929,35 +9421,43 @@ app.get('/api/time-punches/open', requireAuth, (req, res) => {
       p.customer_name,
       tp.clock_in_ts
     FROM time_punches tp
-    LEFT JOIN employees e ON tp.employee_id = e.id
-    LEFT JOIN projects p ON tp.project_id = p.id
-    WHERE tp.clock_out_ts IS NULL
+    LEFT JOIN employees e ON tp.employee_id = e.id AND e.org_id = tp.org_id
+    LEFT JOIN projects p ON tp.project_id = p.id AND p.org_id = tp.org_id
+    WHERE tp.org_id = ?
+      AND tp.clock_out_ts IS NULL
     ORDER BY tp.clock_in_ts ASC
   `;
 
-  db.all(sql, [], (err, rows) => {
+  db.all(sql, [orgId], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows);
   });
 });
 
-app.get('/api/projects', requireAuth, (req, res) => {
+app.get('/api/projects', requireViewPayrollOrSeeShipments, (req, res) => {
   const status = req.query.status || 'active'; // 'active' | 'inactive' | 'all'
+  const orgId = req.session && req.session.orgId;
 
-  let whereClause = '';
-  const params = [];
+  let whereClause = 'WHERE org_id = ?';
+  const params = [orgId];
 
   if (status === 'active') {
-    whereClause = 'WHERE IFNULL(active, 1) = 1';
+    whereClause += ' AND IFNULL(active, 1) = 1';
   } else if (status === 'inactive') {
-    whereClause = 'WHERE IFNULL(active, 1) = 0';
-  } else {
-    // all → no where clause
-    whereClause = '';
+    whereClause += ' AND IFNULL(active, 1) = 0';
   }
 
   const sql = `
-    SELECT *
+    SELECT
+      id,
+      qbo_id,
+      name,
+      customer_name,
+      project_timezone,
+      geo_lat,
+      geo_lng,
+      geo_radius,
+      active
     FROM projects
     ${whereClause}
     ORDER BY customer_name, name
@@ -4978,15 +9478,20 @@ app.get('/api/kiosk/projects', async (req, res) => {
       .json({ error: access.error || 'Not authenticated' });
   }
 
+  const orgId =
+    access.via === 'session'
+      ? req.session && req.session.orgId
+      : access.kiosk && access.kiosk.org_id;
+
   const status = req.query.status || 'active'; // 'active' | 'inactive' | 'all'
 
-  let whereClause = '';
-  const params = [];
+  let whereClause = 'WHERE org_id = ?';
+  const params = [orgId];
 
   if (status === 'active') {
-    whereClause = 'WHERE IFNULL(active, 1) = 1';
+    whereClause += ' AND IFNULL(active, 1) = 1';
   } else if (status === 'inactive') {
-    whereClause = 'WHERE IFNULL(active, 1) = 0';
+    whereClause += ' AND IFNULL(active, 1) = 0';
   }
 
   const sql = `
@@ -5007,16 +9512,29 @@ app.get('/api/kiosk/projects', async (req, res) => {
   });
 });
 
-app.get('/api/time-entries', requireAdminAccess(p => p.view_time_reports || p.view_payroll), (req, res) => {
+app.get('/api/time-entries', requireViewTimeReports, async (req, res) => {
   let { start, end, employee_id, project_id } = req.query;
+  const orgId = req.session && req.session.orgId;
+
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+  const orgTimezone = await getOrgTimezone(orgId);
+
+  let canViewPayroll = false;
+  try {
+    const employeeId = req.session && req.session.employeeId;
+    if (employeeId) {
+      const perms = await getAdminAccessPerms({ employeeId, orgId });
+      canViewPayroll = !!perms.view_payroll;
+    }
+  } catch (err) {
+    console.warn('Unable to load payroll permissions for time entries:', err.message);
+  }
 
   // If nothing specified, default to "today"
   if (!start && !end && !employee_id && !project_id) {
-    const now = new Date();
-    const yyyy = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate()).padStart(2, '0');
-    const today = `${yyyy}-${mm}-${dd}`;
+    const today = getTodayIsoDate(orgTimezone);
     start = today;
     end = today;
   }
@@ -5034,27 +9552,47 @@ app.get('/api/time-entries', requireAdminAccess(p => p.view_time_reports || p.vi
       t.total_pay,
       t.paid,
       t.paid_date,
+      t.approval_status,
+      t.approved_at,
+      t.approved_by_employee_id,
+      t.resolved_status,
+      t.resolved_note,
       t.verified,
       t.verified_at,
       t.verified_by_employee_id,
       t.resolved,
       t.resolved_at,
       t.resolved_by,
+      t.updated_at,
       COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
       COALESCE(p.name, t.project_name_snapshot) AS project_name,
+      ap.name AS approved_by_name,
 
       -- Exception / flag info aggregated from punches
-      COALESCE(MAX(tp.geo_violation), 0)      AS has_geo_violation,
+      COALESCE(MAX(CASE
+        WHEN tp.geo_violation != 0 OR ks.geo_violation != 0 THEN 1
+        ELSE 0
+      END), 0) AS has_geo_violation,
       COALESCE(MAX(tp.auto_clock_out), 0)     AS has_auto_clock_out,
-      COALESCE(MAX(tp.exception_resolved), 0) AS punch_exception_resolved
+      COALESCE(MAX(tp.exception_resolved), 0) AS punch_exception_resolved,
+      COUNT(tp.id) AS punch_count,
+      SUM(
+        CASE
+          WHEN tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+          THEN (julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0
+          ELSE 0
+        END
+      ) AS punch_hours
     FROM time_entries t
-    LEFT JOIN employees e ON t.employee_id = e.id
-    LEFT JOIN projects  p ON t.project_id = p.id
-    LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
+    LEFT JOIN employees e ON t.employee_id = e.id AND e.org_id = t.org_id
+    LEFT JOIN projects  p ON t.project_id = p.id AND p.org_id = t.org_id
+    LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
+    LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = t.org_id
+    LEFT JOIN employees ap ON ap.id = t.approved_by_employee_id AND ap.org_id = t.org_id
   `;
 
-  const where = [];
-  const params = [];
+  const where = ['t.org_id = ?'];
+  const params = [orgId];
 
   if (start) {
     where.push('t.start_date >= ?');
@@ -5090,47 +9628,68 @@ app.get('/api/time-entries', requireAdminAccess(p => p.view_time_reports || p.vi
       t.total_pay,
       t.paid,
       t.paid_date,
+      t.approval_status,
+      t.approved_at,
+      t.approved_by_employee_id,
+      t.resolved_status,
+      t.resolved_note,
       t.verified,
       t.verified_at,
       t.verified_by_employee_id,
       t.resolved,
       t.resolved_at,
       t.resolved_by,
+      t.updated_at,
       e.name,
       p.name,
+      ap.name,
       t.employee_name_snapshot,
       t.project_name_snapshot
     ORDER BY t.start_date DESC, t.id DESC
     LIMIT 200
   `;
 
-  db.all(sql, params, (err, rows) => {
-    if (err) {
-      console.error('Error fetching time entries:', err.message);
-      return res.status(500).json({ error: err.message });
+  try {
+    const rows = await dbAll(sql, params);
+    if (canViewPayroll) {
+      return res.json(rows || []);
     }
-    res.json(rows || []);
-  });
+    const sanitized = (rows || []).map(row => {
+      const { total_pay, paid, paid_date, ...rest } = row;
+      return rest;
+    });
+    return res.json(sanitized);
+  } catch (err) {
+    console.error('Error fetching time entries:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // Kiosk-friendly time entries (device_secret auth instead of user session)
 app.get('/api/kiosk/time-entries', async (req, res) => {
   try {
-    const access = await ensureKioskDevice(req);
-    if (!access.ok) {
+    const adminCtx = await resolveKioskAdmin(req);
+    if (!adminCtx.ok) {
       return res
-        .status(access.status || 401)
-        .json({ error: access.error || 'Not authenticated' });
+        .status(adminCtx.status || 401)
+        .json({ error: adminCtx.error || 'Not authenticated' });
     }
+
+    const orgId = adminCtx.orgId;
+    const perms = await getAdminAccessPerms({
+      employeeId: adminCtx.adminId,
+      orgId
+    });
+    if (!perms.modify_time) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    const orgTimezone = await getOrgTimezone(orgId);
 
     let { start, end, employee_id, project_id } = req.query;
 
     if (!start && !end && !employee_id && !project_id) {
-      const now = new Date();
-      const yyyy = now.getFullYear();
-      const mm = String(now.getMonth() + 1).padStart(2, '0');
-      const dd = String(now.getDate()).padStart(2, '0');
-      const today = `${yyyy}-${mm}-${dd}`;
+      const today = getTodayIsoDate(orgTimezone);
       start = today;
       end = today;
     }
@@ -5148,27 +9707,47 @@ app.get('/api/kiosk/time-entries', async (req, res) => {
         t.total_pay,
         t.paid,
         t.paid_date,
+        t.approval_status,
+        t.approved_at,
+        t.approved_by_employee_id,
+        t.resolved_status,
+        t.resolved_note,
         t.verified,
         t.verified_at,
         t.verified_by_employee_id,
         t.resolved,
         t.resolved_at,
         t.resolved_by,
+        t.updated_at,
         COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
         COALESCE(p.name, t.project_name_snapshot) AS project_name,
+        ap.name AS approved_by_name,
 
         -- Exception / flag info aggregated from punches
-        COALESCE(MAX(tp.geo_violation), 0)      AS has_geo_violation,
+        COALESCE(MAX(CASE
+          WHEN tp.geo_violation != 0 OR ks.geo_violation != 0 THEN 1
+          ELSE 0
+        END), 0) AS has_geo_violation,
         COALESCE(MAX(tp.auto_clock_out), 0)     AS has_auto_clock_out,
-        COALESCE(MAX(tp.exception_resolved), 0) AS punch_exception_resolved
+        COALESCE(MAX(tp.exception_resolved), 0) AS punch_exception_resolved,
+        COUNT(tp.id) AS punch_count,
+        SUM(
+          CASE
+            WHEN tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
+            THEN (julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0
+            ELSE 0
+          END
+        ) AS punch_hours
       FROM time_entries t
-      LEFT JOIN employees e ON t.employee_id = e.id
-      LEFT JOIN projects  p ON t.project_id = p.id
-      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
+      LEFT JOIN employees e ON t.employee_id = e.id AND e.org_id = t.org_id
+      LEFT JOIN projects  p ON t.project_id = p.id AND p.org_id = t.org_id
+      LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
+      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = t.org_id
+      LEFT JOIN employees ap ON ap.id = t.approved_by_employee_id AND ap.org_id = t.org_id
     `;
 
-    const where = [];
-    const params = [];
+    const where = ['t.org_id = ?'];
+    const params = [orgId];
 
     if (start) {
       where.push('t.start_date >= ?');
@@ -5187,9 +9766,7 @@ app.get('/api/kiosk/time-entries', async (req, res) => {
       params.push(project_id);
     }
 
-    if (where.length) {
-      sql += ' WHERE ' + where.join(' AND ');
-    }
+    sql += ' WHERE ' + where.join(' AND ');
 
     sql += `
       GROUP BY
@@ -5204,14 +9781,21 @@ app.get('/api/kiosk/time-entries', async (req, res) => {
         t.total_pay,
         t.paid,
         t.paid_date,
+        t.approval_status,
+        t.approved_at,
+        t.approved_by_employee_id,
+        t.resolved_status,
+        t.resolved_note,
         t.verified,
         t.verified_at,
         t.verified_by_employee_id,
         t.resolved,
         t.resolved_at,
         t.resolved_by,
+        t.updated_at,
         e.name,
         p.name,
+        ap.name,
         t.employee_name_snapshot,
         t.project_name_snapshot
       ORDER BY t.start_date DESC, t.id DESC
@@ -5233,8 +9817,20 @@ app.get('/api/kiosk/time-entries', async (req, res) => {
 
 
 // Only admins can create manual time entries
-app.post('/api/time-entries', requireAdminAccess(() => true), async (req, res) => {
-  const { employee_id, project_id, start_date, end_date, start_time, end_time, hours } = req.body || {};
+app.post('/api/time-entries', requireModifyTimeAny, async (req, res) => {
+  const {
+    employee_id,
+    project_id,
+    start_date,
+    end_date,
+    start_time,
+    end_time,
+    hours,
+    note,
+    client_id
+  } = req.body || {};
+  const ctx = req.modifyTimeContext;
+  const orgId = ctx && ctx.orgId ? ctx.orgId : (req.session && req.session.orgId);
 
   // Trim string inputs to block empty/whitespace-only dates/times
   const startDate = (start_date || '').trim();
@@ -5249,28 +9845,84 @@ app.post('/api/time-entries', requireAdminAccess(() => true), async (req, res) =
     });
   }
 
+  if (!note || !note.trim()) {
+    return res.status(400).json({ error: 'A note is required for manual time entries.' });
+  }
+
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+
+  if (startDate !== endDate) {
+    return res.status(400).json({ error: 'Manual time entries must be single-day.' });
+  }
+
   const parsedHours = parseFloat(hours);
   if (isNaN(parsedHours)) {
     return res.status(400).json({ error: 'Hours must be a number.' });
   }
+  if (parsedHours < 0 || parsedHours > 24) {
+    return res.status(400).json({ error: 'Hours must be between 0 and 24.' });
+  }
+
+  const parseHm = value => {
+    const match = /^([0-1]?\d|2[0-3]):([0-5]\d)$/.exec(String(value || ''));
+    if (!match) return null;
+    return Number(match[1]) * 60 + Number(match[2]);
+  };
+  const startMinutes = parseHm(startTime);
+  const endMinutes = parseHm(endTime);
+  if (startMinutes == null || endMinutes == null) {
+    return res.status(400).json({
+      error: 'start_time and end_time must be in HH:MM (24-hour) format.'
+    });
+  }
+  if (endMinutes < startMinutes) {
+    return res.status(400).json({ error: 'end_time cannot be before start_time.' });
+  }
+  const expectedHours = (endMinutes - startMinutes) / 60;
+  if (Math.abs(expectedHours - parsedHours) > 0.01) {
+    return res.status(400).json({
+      error: 'Hours must match the provided start and end times.'
+    });
+  }
 
   try {
-    const empRow = await dbGet('SELECT rate, name FROM employees WHERE id = ?', [employee_id]);
+    const clientId = client_id ? String(client_id).trim() : '';
+    if (clientId) {
+      const cached = await loadIdempotentResponse(orgId, 'time_entry_create', clientId);
+      if (cached) {
+        return res.json({ ...cached, alreadyProcessed: true });
+      }
+    }
+
+    const empRow = await dbGet(
+      'SELECT rate, name FROM employees WHERE id = ? AND org_id = ?',
+      [employee_id, orgId]
+    );
     if (!empRow) {
       return res.status(400).json({ error: 'Invalid employee_id.' });
     }
-    const projRow = await dbGet('SELECT name FROM projects WHERE id = ?', [project_id]);
+    const projRow = await dbGet(
+      'SELECT name FROM projects WHERE id = ? AND org_id = ?',
+      [project_id, orgId]
+    );
+    if (!projRow) {
+      return res.status(400).json({ error: 'Invalid project_id.' });
+    }
 
     const rate = parseFloat(empRow.rate || 0);
     const total_pay = rate * parsedHours;
+    const nowIso = new Date().toISOString();
 
     const insert = await dbRun(
       `
         INSERT INTO time_entries
-          (employee_id, project_id, start_date, end_date, start_time, end_time, hours, total_pay, employee_name_snapshot, project_name_snapshot)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (org_id, employee_id, project_id, start_date, end_date, start_time, end_time, hours, total_pay, employee_name_snapshot, project_name_snapshot, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
+        orgId,
         employee_id,
         project_id,
         startDate,
@@ -5280,11 +9932,48 @@ app.post('/api/time-entries', requireAdminAccess(() => true), async (req, res) =
         parsedHours,
         total_pay,
         empRow?.name || null,
-        projRow?.name || null
+        projRow?.name || null,
+        nowIso
       ]
     );
 
-    res.json({ ok: true, id: insert.lastID, total_pay });
+    const response = { ok: true, id: insert.lastID, total_pay };
+    if (clientId) {
+      await storeIdempotentResponse(orgId, 'time_entry_create', clientId, response);
+    }
+
+    await logTimeEntryAudit({
+      entryId: insert.lastID,
+      action: 'create',
+      before: null,
+      after: {
+        employee_id,
+        project_id,
+        start_date: startDate,
+        end_date: endDate,
+        start_time: startTime,
+        end_time: endTime,
+        hours: parsedHours,
+        total_pay
+      },
+      note: note || null,
+      req
+    });
+
+    await notifyTimeEvent({
+      orgId,
+      eventType: 'TIME_ENTRY_MANUAL_CREATED',
+      title: 'Manual time entry added',
+      body: `Manual time entry added for ${empRow?.name || 'employee'} on ${startDate}.`,
+      data: {
+        time_entry_id: insert.lastID,
+        employee_id,
+        project_id,
+        start_date: startDate
+      }
+    });
+
+    res.json(response);
   } catch (err) {
     console.error('Error inserting time entry:', err);
     return res.status(500).json({ error: err.message || 'Failed to insert time entry.' });
@@ -5292,7 +9981,7 @@ app.post('/api/time-entries', requireAdminAccess(() => true), async (req, res) =
 });
 
 // Only admins can edit time entries
-app.post('/api/time-entries/:id', requireAdminAccess(() => true), async (req, res) => {
+app.post('/api/time-entries/:id', requireModifyTimeAny, async (req, res) => {
   const id = Number(req.params.id);
   const {
     employee_id,
@@ -5302,8 +9991,12 @@ app.post('/api/time-entries/:id', requireAdminAccess(() => true), async (req, re
     start_time,
     end_time,
     hours,
-    note
+    note,
+    client_id,
+    if_match_updated_at
   } = req.body || {};
+  const ctx = req.modifyTimeContext;
+  const orgId = ctx && ctx.orgId ? ctx.orgId : (req.session && req.session.orgId);
 
   const startDate = (start_date || '').trim();
   const endDate = (end_date || '').trim();
@@ -5320,16 +10013,65 @@ app.post('/api/time-entries/:id', requireAdminAccess(() => true), async (req, re
     !projIdNum ||
     !startDate ||
     !endDate ||
+    !startTime ||
+    !endTime ||
     Number.isNaN(hoursNum)
   ) {
     return res.status(400).json({
       error:
-        'employee_id, project_id, start_date, end_date, and numeric hours are required.'
+        'employee_id, project_id, start_date, end_date, start_time, end_time, and numeric hours are required.'
+    });
+  }
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+  if (hoursNum < 0 || hoursNum > 24) {
+    return res.status(400).json({ error: 'Hours must be between 0 and 24.' });
+  }
+
+  const parseHm = value => {
+    const match = /^([0-1]?\d|2[0-3]):([0-5]\d)$/.exec(String(value || ''));
+    if (!match) return null;
+    return Number(match[1]) * 60 + Number(match[2]);
+  };
+  const startMinutes = parseHm(startTime);
+  const endMinutes = parseHm(endTime);
+  if (startMinutes == null || endMinutes == null) {
+    return res.status(400).json({
+      error: 'start_time and end_time must be in HH:MM (24-hour) format.'
+    });
+  }
+  if (endMinutes < startMinutes) {
+    return res.status(400).json({ error: 'end_time cannot be before start_time.' });
+  }
+  const expectedHours = (endMinutes - startMinutes) / 60;
+  if (Math.abs(expectedHours - hoursNum) > 0.01) {
+    return res.status(400).json({
+      error: 'Hours must match the provided start and end times.'
     });
   }
 
   try {
-    const existingRow = await dbGet('SELECT paid FROM time_entries WHERE id = ?', [id]);
+    const clientId = client_id ? String(client_id).trim() : '';
+    if (clientId) {
+      const cached = await loadIdempotentResponse(orgId, 'time_entry_edit', clientId);
+      if (cached) {
+        return res.json({ ...cached, alreadyProcessed: true });
+      }
+    }
+
+    if (!note || !note.trim()) {
+      return res.status(400).json({ error: 'A note is required for edits.' });
+    }
+
+    if (startDate !== endDate) {
+      return res.status(400).json({ error: 'Time entry edits must be single-day.' });
+    }
+
+    const existingRow = await dbGet(
+      'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
     if (!existingRow) {
       return res.status(404).json({ error: 'Time entry not found.' });
     }
@@ -5342,17 +10084,47 @@ app.post('/api/time-entries/:id', requireAdminAccess(() => true), async (req, re
       });
     }
 
-    const empRow = await dbGet('SELECT rate, name FROM employees WHERE id = ?', [empIdNum]);
+    if (if_match_updated_at && existingRow.updated_at && existingRow.updated_at !== if_match_updated_at) {
+      return res.status(409).json({
+        error: 'Conflict: this time entry was updated by someone else.',
+        current: pickFields(existingRow, [
+          'id',
+          'employee_id',
+          'project_id',
+          'start_date',
+          'end_date',
+          'start_time',
+          'end_time',
+          'hours',
+          'updated_at'
+        ])
+      });
+    }
+
+    const empRow = await dbGet(
+      'SELECT rate, name FROM employees WHERE id = ? AND org_id = ?',
+      [empIdNum, orgId]
+    );
     if (!empRow) {
       return res.status(400).json({ error: 'Employee not found.' });
     }
-    const projRow = await dbGet('SELECT name FROM projects WHERE id = ?', [projIdNum]);
+    const projRow = await dbGet(
+      'SELECT name FROM projects WHERE id = ? AND org_id = ?',
+      [projIdNum, orgId]
+    );
+    if (!projRow) {
+      return res.status(400).json({ error: 'Project not found.' });
+    }
 
     const rate = Number(empRow.rate) || 0;
     const totalPay = rate * hoursNum;
     const noteVal = typeof note === 'string' ? note.trim() : '';
+    const nowIso = new Date().toISOString();
 
-    const beforeRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+    const beforeRow = await dbGet(
+      'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
     const sql = `
       UPDATE time_entries
       SET
@@ -5364,10 +10136,14 @@ app.post('/api/time-entries/:id', requireAdminAccess(() => true), async (req, re
         end_time = ?,
         hours = ?,
         total_pay = ?,
-        resolved_note = ?,
         employee_name_snapshot = ?,
-        project_name_snapshot  = ?
-      WHERE id = ?
+        project_name_snapshot  = ?,
+        approval_status = ?,
+        approved_at = ?,
+        approved_by_employee_id = ?,
+        approval_note = ?,
+        updated_at = ?
+      WHERE id = ? AND org_id = ?
     `;
 
     const params = [
@@ -5379,10 +10155,15 @@ app.post('/api/time-entries/:id', requireAdminAccess(() => true), async (req, re
       endTime,
       hoursNum,
       totalPay,
-      noteVal || (beforeRow ? beforeRow.resolved_note : null) || null,
       empRow?.name || null,
       projRow?.name || null,
-      id
+      'pending',
+      null,
+      null,
+      null,
+      nowIso,
+      id,
+      orgId
     ];
 
     const updateRes = await dbRun(sql, params);
@@ -5390,8 +10171,11 @@ app.post('/api/time-entries/:id', requireAdminAccess(() => true), async (req, re
       return res.status(404).json({ error: 'Time entry not found.' });
     }
 
-    const afterRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
-    logTimeEntryAudit({
+    const afterRow = await dbGet(
+      'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+    await logTimeEntryAudit({
       entryId: id,
       action: 'modify',
       before: beforeRow,
@@ -5400,7 +10184,25 @@ app.post('/api/time-entries/:id', requireAdminAccess(() => true), async (req, re
       req
     });
 
-    res.json({ ok: true, id, total_pay: totalPay });
+    await notifyTimeEvent({
+      orgId,
+      eventType: 'TIME_ENTRY_MANUAL_EDITED',
+      title: 'Manual time entry updated',
+      body: `Manual time entry updated for ${empRow?.name || 'employee'} on ${startDate}.`,
+      data: {
+        time_entry_id: id,
+        employee_id: empIdNum,
+        project_id: projIdNum,
+        start_date: startDate
+      }
+    });
+
+    const response = { ok: true, id, total_pay: totalPay };
+    if (clientId) {
+      await storeIdempotentResponse(orgId, 'time_entry_edit', clientId, response);
+    }
+
+    res.json(response);
   } catch (err) {
     console.error('Error updating time entry:', err);
     return res.status(500).json({ error: err.message || 'Failed to update time entry.' });
@@ -5409,20 +10211,32 @@ app.post('/api/time-entries/:id', requireAdminAccess(() => true), async (req, re
 
 // Mark a time entry as "accuracy verified" (or clear verification)
 // Only admins can verify time entries
-app.post('/api/time-entries/:id/verify', requireAdminAccess(() => true), (req, res) => {
+app.post('/api/time-entries/:id/verify', requireModifyTimeAny, (req, res) => {
   const id = Number(req.params.id);
   if (!id) {
     return res.status(400).json({ error: 'Invalid time entry id.' });
   }
 
+  const ctx = req.modifyTimeContext;
+  const orgId = ctx && ctx.orgId ? ctx.orgId : (req.session && req.session.orgId);
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+
   const { verified, verified_by_employee_id, note } = req.body || {};
   const isVerified = !!verified;
-  const verifierId = verified_by_employee_id ? Number(verified_by_employee_id) : null;
+  const verifierId = verified_by_employee_id
+    ? Number(verified_by_employee_id)
+    : (ctx && ctx.adminId ? Number(ctx.adminId) : null);
+
+  if (!isVerified && (!note || !note.trim())) {
+    return res.status(400).json({ error: 'A note is required to unverify.' });
+  }
 
   // If marking verified, stamp now; if clearing, null out fields
   const verifiedAt = isVerified ? new Date().toISOString() : null;
 
-  dbGet('SELECT * FROM time_entries WHERE id = ?', [id])
+  dbGet('SELECT * FROM time_entries WHERE id = ? AND org_id = ?', [id, orgId])
     .then(beforeRow => {
       db.run(
         `
@@ -5430,10 +10244,18 @@ app.post('/api/time-entries/:id/verify', requireAdminAccess(() => true), (req, r
         SET
           verified = ?,
           verified_at = ?,
-          verified_by_employee_id = ?
-        WHERE id = ?
+          verified_by_employee_id = ?,
+          updated_at = ?
+        WHERE id = ? AND org_id = ?
         `,
-        [isVerified ? 1 : 0, verifiedAt, isVerified ? verifierId : null, id],
+        [
+          isVerified ? 1 : 0,
+          verifiedAt,
+          isVerified ? verifierId : null,
+          new Date().toISOString(),
+          id,
+          orgId
+        ],
         async function (err) {
           if (err) {
             console.error('Error updating verification for time entry:', err.message);
@@ -5443,7 +10265,10 @@ app.post('/api/time-entries/:id/verify', requireAdminAccess(() => true), (req, r
             return res.status(404).json({ error: 'Time entry not found.' });
           }
 
-          const afterRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+          const afterRow = await dbGet(
+            'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+            [id, orgId]
+          );
           logTimeEntryAudit({
             entryId: id,
             action: isVerified ? 'verify' : 'unverify',
@@ -5470,18 +10295,28 @@ app.post('/api/time-entries/:id/verify', requireAdminAccess(() => true), (req, r
 
 // Mark a time entry as "exception resolved" (admin/foreman)
 // Only admins can resolve time entries
-app.post('/api/time-entries/:id/resolve', requireAdminAccess(() => true), (req, res) => {
+app.post('/api/time-entries/:id/resolve', requireModifyTimeAny, (req, res) => {
   const id = Number(req.params.id);
   if (!id) {
     return res.status(400).json({ error: 'Invalid time entry id.' });
   }
 
+  const ctx = req.modifyTimeContext;
+  const orgId = ctx && ctx.orgId ? ctx.orgId : (req.session && req.session.orgId);
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+
   const { resolved, resolved_by, note } = req.body || {};
   const isResolved = !!resolved;
-  const resolvedBy = resolved_by || 'admin'; // later: use logged-in user
+  const resolvedBy = resolved_by || 'admin'; // UI override or fallback
   const resolvedAt = isResolved ? new Date().toISOString() : null;
 
-  dbGet('SELECT * FROM time_entries WHERE id = ?', [id])
+  if (!note || !note.trim()) {
+    return res.status(400).json({ error: 'A note is required to resolve/unresolve.' });
+  }
+
+  dbGet('SELECT * FROM time_entries WHERE id = ? AND org_id = ?', [id, orgId])
     .then(beforeRow => {
       db.run(
         `
@@ -5489,10 +10324,20 @@ app.post('/api/time-entries/:id/resolve', requireAdminAccess(() => true), (req, 
           SET
             resolved    = ?,
             resolved_at = ?,
-            resolved_by = ?
-          WHERE id = ?
+            resolved_by = ?,
+            resolved_note = ?,
+            updated_at = ?
+          WHERE id = ? AND org_id = ?
         `,
-        [isResolved ? 1 : 0, resolvedAt, isResolved ? resolvedBy : null, id],
+        [
+          isResolved ? 1 : 0,
+          resolvedAt,
+          isResolved ? resolvedBy : null,
+          note || null,
+          new Date().toISOString(),
+          id,
+          orgId
+        ],
         async function (err) {
           if (err) {
             console.error('Error resolving time entry:', err.message);
@@ -5502,7 +10347,10 @@ app.post('/api/time-entries/:id/resolve', requireAdminAccess(() => true), (req, 
             return res.status(404).json({ error: 'Time entry not found.' });
           }
 
-          const afterRow = await dbGet('SELECT * FROM time_entries WHERE id = ?', [id]);
+          const afterRow = await dbGet(
+            'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+            [id, orgId]
+          );
           logTimeEntryAudit({
             entryId: id,
             action: isResolved ? 'resolve' : 'unresolve',
@@ -5527,11 +10375,200 @@ app.post('/api/time-entries/:id/resolve', requireAdminAccess(() => true), (req, 
     });
 });
 
+// Approve a single time entry (super admin only)
+app.post('/api/time-entries/:id/approve', requireModifyTime, requireSuperAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid time entry id.' });
+  }
+
+  const orgId = req.session && req.session.orgId;
+  const approverId = req.session && req.session.employeeId;
+  if (!orgId || !approverId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+
+  const { note, if_match_updated_at } = req.body || {};
+
+  try {
+    const { rows, ruleFlags } = await loadTimeEntryApprovalRows({
+      orgId,
+      entryId: id
+    });
+    const row = rows && rows[0];
+    if (!row) {
+      return res.status(404).json({ error: 'Time entry not found.' });
+    }
+
+    if (if_match_updated_at && row.updated_at && row.updated_at !== if_match_updated_at) {
+      return res.status(409).json({
+        error: 'Conflict: this time entry was updated by someone else.',
+        current: pickFields(row, [
+          'id',
+          'employee_id',
+          'project_id',
+          'start_date',
+          'end_date',
+          'start_time',
+          'end_time',
+          'hours',
+          'approval_status',
+          'approved_at',
+          'approved_by_employee_id',
+          'updated_at'
+        ])
+      });
+    }
+
+    const requiresNote = computeTimeEntryRequiresNote(row, ruleFlags);
+    if (requiresNote && (!note || !note.trim())) {
+      return res.status(400).json({
+        error: 'A note is required to approve entries with discrepancies or manual edits.'
+      });
+    }
+
+    if (row.approval_status === 'approved') {
+      return res.json({
+        ok: true,
+        approval_status: 'approved',
+        approved_at: row.approved_at,
+        approved_by_employee_id: row.approved_by_employee_id
+      });
+    }
+
+    const nowIso = new Date().toISOString();
+    await dbRun(
+      `
+        UPDATE time_entries
+        SET approval_status = ?,
+            approved_at = ?,
+            approved_by_employee_id = ?,
+            approval_note = ?,
+            updated_at = ?
+        WHERE id = ? AND org_id = ?
+      `,
+      [
+        'approved',
+        nowIso,
+        approverId,
+        note && note.trim() ? note.trim() : null,
+        nowIso,
+        id,
+        orgId
+      ]
+    );
+
+    const afterRow = await dbGet(
+      'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
+    await logTimeEntryAudit({
+      entryId: id,
+      action: 'approve',
+      before: row,
+      after: afterRow,
+      note: note || null,
+      req
+    });
+
+    return res.json({
+      ok: true,
+      approval_status: 'approved',
+      approved_at: nowIso,
+      approved_by_employee_id: approverId
+    });
+  } catch (err) {
+    console.error('Error approving time entry:', err);
+    return res.status(500).json({ error: 'Failed to approve time entry.' });
+  }
+});
+
+// Bulk approve clean time entries (super admin only)
+app.post('/api/time-entries/approve', requireModifyTime, requireSuperAdmin, async (req, res) => {
+  const { start, end, employee_id, project_id } = req.body || {};
+  const orgId = req.session && req.session.orgId;
+  const approverId = req.session && req.session.employeeId;
+
+  if (!orgId || !approverId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+  if (!start || !end) {
+    return res.status(400).json({ error: 'start and end are required.' });
+  }
+
+  try {
+    const { rows, ruleFlags } = await loadTimeEntryApprovalRows({
+      orgId,
+      start,
+      end,
+      employeeId: employee_id || null,
+      projectId: project_id || null
+    });
+
+    if (!rows.length) {
+      return res.json({ ok: true, approved_count: 0, skipped: [] });
+    }
+
+    const nowIso = new Date().toISOString();
+    const skipped = [];
+    let approvedCount = 0;
+
+    await dbRun('BEGIN TRANSACTION');
+
+    for (const row of rows) {
+      if (row.approval_status === 'approved') {
+        continue;
+      }
+      const requiresNote = computeTimeEntryRequiresNote(row, ruleFlags);
+      if (requiresNote) {
+        skipped.push({ id: row.id, reason: 'requires_note' });
+        continue;
+      }
+
+      await dbRun(
+        `
+          UPDATE time_entries
+          SET approval_status = ?,
+              approved_at = ?,
+              approved_by_employee_id = ?,
+              approval_note = NULL,
+              updated_at = ?
+          WHERE id = ? AND org_id = ?
+        `,
+        ['approved', nowIso, approverId, nowIso, row.id, orgId]
+      );
+
+      await logTimeEntryAudit({
+        entryId: row.id,
+        action: 'approve',
+        before: row,
+        after: { ...row, approval_status: 'approved', approved_at: nowIso, approved_by_employee_id: approverId },
+        note: null,
+        req
+      });
+
+      approvedCount += 1;
+    }
+
+    await dbRun('COMMIT');
+
+    return res.json({ ok: true, approved_count: approvedCount, skipped });
+  } catch (err) {
+    console.error('Error bulk approving time entries:', err);
+    try {
+      await dbRun('ROLLBACK');
+    } catch {
+      // ignore rollback errors
+    }
+    return res.status(500).json({ error: 'Failed to bulk approve time entries.' });
+  }
+});
+
 
 
 /* ───────── 7. KIOSKS & KIOSK PUNCHES ───────── */
 
-app.post('/api/kiosk/punch', (req, res) => {
+app.post('/api/kiosk/punch', async (req, res) => {
   const {
     client_id,
     employee_id,
@@ -5540,411 +10577,546 @@ app.post('/api/kiosk/punch', (req, res) => {
     lng,
     device_timestamp,
     photo_base64,
-    device_id,          // which kiosk/device this came from
+    device_id,
     device_secret
   } = req.body || {};
+  const intendedMode = String(req.body && req.body.intended_mode || '').toLowerCase();
 
-  // Require either a valid kiosk device or an admin session
   const hasSession = req.session && req.session.userId;
-  const deviceId = (device_id || '').trim();
-  const deviceSecret = (device_secret || '').trim();
-  if (!hasSession) {
-    if (!deviceId || !deviceSecret) {
-      return res.status(401).json({ error: 'Not authenticated' });
-    }
-    db.get(
-      'SELECT id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
-      [deviceId],
-      (errK, kioskRow) => {
-        if (errK) {
-          return res.status(500).json({ error: 'Internal server error.' });
-        }
-        if (!kioskRow || !kioskRow.device_secret || kioskRow.device_secret !== deviceSecret) {
-          return res.status(403).json({ error: 'Not authorized' });
-        }
-        // proceed after device auth
-        processPunch();
-      }
-    );
-    return;
+  const deviceId = String(device_id || '').trim();
+  const deviceSecret = String(device_secret || '').trim();
+
+  if (!deviceId) {
+    return res.status(400).json({ error: 'device_id is required.' });
   }
 
-  // Basic validation
   if (!client_id || !employee_id) {
     return res
       .status(400)
       .json({ error: 'client_id and employee_id are required.' });
   }
+  const employeeId = Number(employee_id);
+  if (!employeeId) {
+    return res.status(400).json({ error: 'employee_id must be a valid number.' });
+  }
+
   if (!project_id) {
     return res
       .status(400)
       .json({ error: 'Project not set for this device. Have a supervisor set today’s project first.' });
   }
 
-  // Ensure a timesheet exists for today for this device/project before allowing punches
-  const today = getTodayIsoDate();
-  const sessionSql = `
-    SELECT id
-    FROM kiosk_sessions
-    WHERE date = ?
-      AND project_id = ?
-      AND (
-        (device_id IS NULL AND ? IS NULL)
-        OR device_id = ?
-      )
-    ORDER BY id DESC
-    LIMIT 1
-  `;
+  const kioskRow = await dbGet(
+    'SELECT id, org_id, device_secret, project_id FROM kiosks WHERE device_id = ? LIMIT 1',
+    [deviceId]
+  );
+  if (kioskRow && kioskRow.org_id) {
+    const orgRow = await dbGet(
+      'SELECT status FROM orgs WHERE id = ? LIMIT 1',
+      [kioskRow.org_id]
+    );
+    if (orgRow && orgRow.status && orgRow.status !== 'active') {
+      return res.status(403).json({ error: 'Org access denied.' });
+    }
+  }
 
-  const processPunch = () => {
-    const punchTime = device_timestamp || new Date().toISOString();
+  if (!kioskRow) {
+    return res.status(403).json({ error: 'Not authorized' });
+  }
 
-    // 1) Check if this client_id was already processed (offline re-sync safety)
-    db.get(
-      'SELECT * FROM time_punches WHERE client_id = ?',
-      [client_id],
-      (err, existing) => {
-        if (err) {
-          return res.status(500).json({ error: err.message });
-        }
+  let sessionIsKioskAdmin = false;
+  const sessionOrgId = req.session && req.session.orgId;
+  const sessionEmployeeId = req.session && req.session.employeeId;
+  if (hasSession && sessionOrgId && sessionEmployeeId) {
+    try {
+      const access = await getEmployeeAccessFlags({
+        employeeId: sessionEmployeeId,
+        orgId: sessionOrgId
+      });
+      sessionIsKioskAdmin = !!(access && access.kiosk_admin_access);
+    } catch (err) {
+      console.warn('Unable to resolve kiosk admin access:', err.message);
+    }
+  }
 
-        if (existing) {
-          // Idempotent behavior: we already handled this punch
-          const mode = existing.clock_out_ts ? 'clock_out' : 'clock_in';
+  if (!sessionIsKioskAdmin) {
+    if (!deviceSecret) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+    if (!kioskRow.device_secret || kioskRow.device_secret !== deviceSecret) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+  }
+
+  const orgId = sessionIsKioskAdmin ? sessionOrgId : kioskRow.org_id;
+  if (!orgId) {
+    return res.status(403).json({ error: 'Not authorized' });
+  }
+  if (sessionIsKioskAdmin && kioskRow.org_id && Number(kioskRow.org_id) !== Number(orgId)) {
+    return res.status(403).json({ error: 'Not authorized' });
+  }
+
+  const requestedProjectId = Number(project_id);
+  if (!Number.isFinite(requestedProjectId) || requestedProjectId <= 0) {
+    return res.status(400).json({ error: 'project_id must be a valid number.' });
+  }
+  const projectId = requestedProjectId;
+
+  const employeeRow = await dbGet(
+    `
+      SELECT id, active, worker_timekeeping, kiosk_admin_access
+      FROM employees
+      WHERE id = ? AND org_id = ?
+      LIMIT 1
+    `,
+    [employeeId, orgId]
+  );
+  if (!employeeRow) {
+    return res.status(403).json({ error: 'Employee not found or not authorized.' });
+  }
+
+  const canTimekeep =
+    (employeeRow.worker_timekeeping || 0) === 1 ||
+    (employeeRow.kiosk_admin_access || 0) === 1;
+
+  const orgTimezone = await getOrgTimezone(orgId);
+  const queuedAtRaw = req.body && req.body.queued_at;
+  let queuedAt = null;
+  if (queuedAtRaw) {
+    const parsed = new Date(String(queuedAtRaw));
+    if (!Number.isNaN(parsed.getTime())) {
+      queuedAt = parsed;
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  let punchTime = device_timestamp || nowIso;
+  if (!queuedAt) {
+    punchTime = nowIso;
+  }
+  let punchDate = new Date(punchTime);
+  if (Number.isNaN(punchDate.getTime())) {
+    punchTime = new Date().toISOString();
+    punchDate = new Date(punchTime);
+  }
+
+  const now = new Date();
+  const futureSkewMs = 5 * 60 * 1000;
+  if (punchDate.getTime() - now.getTime() > futureSkewMs) {
+    return res.status(400).json({ error: 'device_timestamp is too far in the future.' });
+  }
+
+  const enforceActiveProject = !queuedAt;
+
+  if (enforceActiveProject) {
+    const activeProjectId =
+      kioskRow.project_id && Number(kioskRow.project_id) > 0
+        ? Number(kioskRow.project_id)
+        : null;
+    if (!activeProjectId) {
+      return res.status(400).json({
+        error: 'Project not set for this device. Have a supervisor set today’s project first.'
+      });
+    }
+    if (requestedProjectId !== activeProjectId) {
+      return res.status(409).json({
+        error: 'Active project has changed. Punches must use the active timesheet.',
+        active_project_id: activeProjectId
+      });
+    }
+  }
+
+  const clockInLocalDate = getIsoDateInTimezone(punchTime, orgTimezone);
+  const sessionDate = clockInLocalDate || getTodayIsoDate(orgTimezone);
+
+  const existing = await dbGet(
+    'SELECT * FROM time_punches WHERE org_id = ? AND client_id = ? LIMIT 1',
+    [orgId, client_id]
+  );
+  if (existing) {
+    const mode = existing.clock_out_ts ? 'clock_out' : 'clock_in';
+    return res.json({
+      ok: true,
+      alreadyProcessed: true,
+      mode,
+      geofence_violation: !!existing.geo_violation,
+      geo_distance_m: existing.geo_distance_m,
+      geo_radius_m: null
+    });
+  }
+
+  const open = await dbGet(
+    `
+      SELECT *
+      FROM time_punches
+      WHERE org_id = ?
+        AND employee_id = ?
+        AND clock_out_ts IS NULL
+      ORDER BY clock_in_ts DESC
+      LIMIT 1
+    `,
+    [orgId, employeeId]
+  );
+
+  if (open && intendedMode === 'clock_in') {
+    const openTs = open.clock_in_ts ? new Date(open.clock_in_ts) : null;
+    const requested = new Date(punchTime);
+    if (openTs && !Number.isNaN(openTs.getTime()) && !Number.isNaN(requested.getTime())) {
+      const deltaMs = Math.abs(requested.getTime() - openTs.getTime());
+      if (deltaMs <= 15000) {
+        return res.json({
+          ok: true,
+          alreadyProcessed: true,
+          mode: 'clock_in',
+          geofence_violation: !!open.geo_violation,
+          geo_distance_m: open.geo_distance_m,
+          geo_radius_m: null
+        });
+      }
+    }
+    return res.status(409).json({
+      error: 'Already clocked in. Please clock out before starting a new shift.',
+      open_punch_id: open.id
+    });
+  }
+
+  if (!open && intendedMode === 'clock_out') {
+    const recentClosed = await dbGet(
+      `
+        SELECT *
+        FROM time_punches
+        WHERE org_id = ?
+          AND employee_id = ?
+          AND device_id = ?
+          AND clock_out_ts IS NOT NULL
+        ORDER BY clock_out_ts DESC
+        LIMIT 1
+      `,
+      [orgId, employeeId, deviceId]
+    );
+    if (recentClosed && recentClosed.clock_out_ts) {
+      const recentOut = new Date(recentClosed.clock_out_ts);
+      const requested = new Date(punchTime);
+      if (!Number.isNaN(recentOut.getTime()) && !Number.isNaN(requested.getTime())) {
+        const deltaMs = Math.abs(requested.getTime() - recentOut.getTime());
+        if (deltaMs <= 15000) {
           return res.json({
             ok: true,
             alreadyProcessed: true,
-            mode,
-            geofence_violation: !!existing.geo_violation,
-            geo_distance_m: existing.geo_distance_m,
+            mode: 'clock_out',
+            geofence_violation: !!recentClosed.geo_violation,
+            geo_distance_m: recentClosed.geo_distance_m,
             geo_radius_m: null
           });
         }
-
-        // 2) Look for an open punch for this employee (no clock_out_ts yet)
-        const openSql = `
-          SELECT *
-          FROM time_punches
-          WHERE employee_id = ?
-            AND clock_out_ts IS NULL
-          ORDER BY clock_in_ts DESC
-          LIMIT 1
-        `;
-
-        db.get(openSql, [employee_id], (err2, open) => {
-          if (err2) {
-            return res.status(500).json({ error: err2.message });
-          }
-
-          // ───── CASE A: CLOCK IN ─────
-          if (!open) {
-            // Geofence metrics for this punch (clock-in)
-            let geoDistance = null;
-            let geoViolation = 0;
-            let geoRadius = null;
-
-            const doClockIn = () => {
-              getTodayForemanForDevice(
-                device_id,
-                employee_id,
-                (errForeman, foremanId) => {
-                  if (errForeman) {
-                    console.error(
-                      'Error looking up foreman for device:',
-                      errForeman
-                    );
-                    foremanId = null;
-                  }
-
-                  const insertSql = `
-                   INSERT INTO time_punches
-                     (client_id,
-                      employee_id,
-                      project_id,
-                      clock_in_ts,
-                      clock_in_lat,
-                      clock_in_lng,
-                      clock_in_photo,
-                      device_id,
-                      foreman_employee_id,
-                      geo_distance_m,
-                       geo_violation,
-                       employee_name_snapshot,
-                       project_name_snapshot)
-                    VALUES (
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      (SELECT name FROM employees WHERE id = ?),
-                      (SELECT name FROM projects  WHERE id = ?)
-                    )
-                 `;
-
-                  db.run(
-                    insertSql,
-                    [
-                      client_id,
-                      employee_id,
-                      project_id || null,
-                      punchTime,
-                      lat ?? null,
-                      lng ?? null,
-                      photo_base64 || null,
-                      device_id || null,
-                      foremanId || null,
-                      geoDistance,
-                      geoViolation,
-                      employee_id,
-                      project_id || null
-                    ],
-                    function (err3) {
-                      if (err3) {
-                        if (
-                          err3.message &&
-                          err3.message.includes(
-                            'UNIQUE constraint failed: time_punches.client_id'
-                          )
-                        ) {
-                          return res.json({
-                            ok: true,
-                            mode: 'clock_in',
-                            alreadyProcessed: true,
-                            geofence_violation: geoViolation === 1,
-                            geo_distance_m: geoDistance,
-                            geo_radius_m: geoRadius
-                          });
-                        }
-
-                        return res.status(500).json({ error: err3.message });
-                      }
-
-                      return res.json({
-                        ok: true,
-                        mode: 'clock_in',
-                        id: this.lastID,
-                        punch_id: this.lastID,
-                        geofence_violation: geoViolation === 1,
-                        geo_distance_m: geoDistance,
-                        geo_radius_m: geoRadius
-                      });
-                    }
-                  );
-                }
-              );
-            };
-
-            // If we have project + GPS → compute geofence, but DO NOT BLOCK
-            if (project_id && lat != null && lng != null) {
-              db.get(
-                'SELECT geo_lat, geo_lng, geo_radius FROM projects WHERE id = ?',
-                [project_id],
-                (errProj, project) => {
-                  if (errProj) {
-                    console.error('Geofence lookup error:', errProj);
-                    return doClockIn();
-                  }
-
-                  if (
-                    project &&
-                    project.geo_lat != null &&
-                    project.geo_lng != null &&
-                    project.geo_radius != null
-                  ) {
-                    const latNum    = Number(lat);
-                    const lngNum    = Number(lng);
-                    const projLat   = Number(project.geo_lat);
-                    const projLng   = Number(project.geo_lng);
-                    const radiusNum = Number(project.geo_radius);
-
-                    if (
-                      !Number.isNaN(latNum) &&
-                      !Number.isNaN(lngNum) &&
-                      !Number.isNaN(projLat) &&
-                      !Number.isNaN(projLng) &&
-                      !Number.isNaN(radiusNum)
-                    ) {
-                      geoRadius = radiusNum;
-                      const dist = distanceMeters(
-                        latNum,
-                        lngNum,
-                        projLat,
-                        projLng
-                      );
-                      geoDistance = dist;
-                      if (dist > radiusNum) {
-                        geoViolation = 1;
-                      }
-                    }
-                  }
-
-                  return doClockIn();
-                }
-              );
-            } else {
-              return doClockIn();
-            }
-            return;
-          }
-
-          // ───── CASE B: CLOCK OUT ─────
-          const updateSql = `
-            UPDATE time_punches
-            SET clock_out_ts = ?,
-                clock_out_project_id = ?,
-                clock_out_lat = ?,
-                clock_out_lng = ?
-            WHERE id = ?
-          `;
-
-          db.run(
-            updateSql,
-            [
-              punchTime,
-              project_id || null,
-              lat ?? null,
-              lng ?? null,
-              open.id
-            ],
-            (err3) => {
-              if (err3) {
-                return res.status(500).json({ error: err3.message });
-              }
-
-              const startIso = open.clock_in_ts || punchTime;
-              const start = new Date(startIso);
-              const end = new Date(punchTime);
-              const diffMs = end - start;
-
-              let minutes = Math.ceil(diffMs / 60000);
-              if (!Number.isFinite(minutes) || minutes < 0) minutes = 0;
-
-              const hours = minutes / 60;
-              const startDate = (startIso || punchTime).slice(0, 10);
-              const endDate = (punchTime || startIso).slice(0, 10);
-
-              db.get(
-                'SELECT rate FROM employees WHERE id = ?',
-                [employee_id],
-                (err4, row) => {
-                  if (err4) {
-                    console.error('Rate lookup error in kiosk punch:', err4);
-                    return res.json({
-                      ok: true,
-                      mode: 'clock_out',
-                      hours,
-                      warning:
-                        'Clocked out, but failed to compute pay (rate lookup error).'
-                    });
-                  }
-
-                  if (!row) {
-                    return res
-                      .status(400)
-                      .json({ error: 'Invalid employee_id.' });
-                  }
-
-                  const rate = parseFloat(row.rate || 0);
-                  const total_pay = rate * hours;
-
-                  const timeEntrySql = `
-                    INSERT INTO time_entries
-                      (employee_id, project_id, start_date, end_date, hours, total_pay, foreman_employee_id, employee_name_snapshot, project_name_snapshot)
-                    VALUES (
-                      ?, ?, ?, ?, ?, ?, ?,
-                      (SELECT name FROM employees WHERE id = ?),
-                      (SELECT name FROM projects  WHERE id = ?)
-                    )
-                  `;
-
-                  const finalProjectId =
-                    open.project_id || project_id || null;
-                  const foremanId = open.foreman_employee_id || null;
-
-                  db.run(
-                    timeEntrySql,
-                    [
-                      employee_id,
-                      finalProjectId,
-                      startDate,
-                      endDate,
-                      hours,
-                      total_pay,
-                      foremanId,
-                      employee_id,
-                      finalProjectId || null
-                    ],
-                    function (err5) {
-                      if (err5) {
-                        console.error(
-                          'Failed to insert time_entry from kiosk punch:',
-                          err5
-                        );
-                        return res.json({
-                          ok: true,
-                          mode: 'clock_out',
-                          hours,
-                          total_pay,
-                          warning:
-                            'Clocked out, but failed to create time entry in DB.'
-                        });
-                      }
-
-                      const entryId = this.lastID;
-
-                      db.run(
-                        `UPDATE time_punches
-                         SET time_entry_id = ?
-                         WHERE id = ?`,
-                        [entryId, open.id],
-                        (errLink) => {
-                          if (errLink) {
-                            console.error(
-                              'Failed to link punch to time entry:',
-                              errLink
-                            );
-                          }
-
-                          return res.json({
-                            ok: true,
-                            mode: 'clock_out',
-                            hours,
-                            total_pay,
-                            time_entry_id: entryId
-                          });
-                        }
-                      );
-                    }
-                  );
-                }
-              );
-            }
-          );
-        });
       }
-    );
-  };
-
-  db.get(
-    sessionSql,
-    [today, project_id, device_id || null, device_id || null],
-    (errSession, sessionRow) => {
-      if (errSession) {
-        return res.status(500).json({ error: errSession.message });
-      }
-      if (!sessionRow) {
-        return res.status(400).json({
-          error: 'No timesheet exists for this project on this device today. Have a supervisor set a timesheet first.'
-        });
-      }
-      processPunch();
     }
-  );
+    return res.status(409).json({ error: 'No open punch to clock out.' });
+  }
+
+  if (!open) {
+    const sessionRow = await dbGet(
+      `
+        SELECT id
+        FROM kiosk_sessions
+        WHERE org_id = ?
+          AND kiosk_id = ?
+          AND date = ?
+          AND project_id = ?
+          AND datetime(created_at) <= datetime(?)
+          AND (ended_at IS NULL OR datetime(ended_at) >= datetime(?))
+        ORDER BY id DESC
+        LIMIT 1
+      `,
+      [orgId, kioskRow.id, sessionDate, requestedProjectId, punchTime, punchTime]
+    );
+    if (!sessionRow) {
+      return res.status(400).json({
+        error: 'No active timesheet exists for this project on this device for the punch time.'
+      });
+    }
+    const sessionId = sessionRow.id;
+
+    if (!employeeRow.active || !canTimekeep) {
+      return res.status(403).json({ error: 'Employee is not authorized to clock in.' });
+    }
+    const photoRequired = await getClockInPhotoRequired(orgId);
+    if (photoRequired && !photo_base64) {
+      return res.status(400).json({ error: 'Photo is required to clock in.' });
+    }
+
+    let geoDistance = null;
+    let geoViolation = 0;
+    let geoRadius = null;
+
+    if (projectId && lat != null && lng != null) {
+      const project = await dbGet(
+        'SELECT geo_lat, geo_lng, geo_radius FROM projects WHERE id = ? AND org_id = ?',
+        [projectId, orgId]
+      );
+      if (
+        project &&
+        project.geo_lat != null &&
+        project.geo_lng != null &&
+        project.geo_radius != null
+      ) {
+        const latNum = Number(lat);
+        const lngNum = Number(lng);
+        const projLat = Number(project.geo_lat);
+        const projLng = Number(project.geo_lng);
+        const radiusNum = Number(project.geo_radius);
+        if (
+          !Number.isNaN(latNum) &&
+          !Number.isNaN(lngNum) &&
+          !Number.isNaN(projLat) &&
+          !Number.isNaN(projLng) &&
+          !Number.isNaN(radiusNum)
+        ) {
+          geoRadius = radiusNum;
+          const dist = distanceMeters(latNum, lngNum, projLat, projLng);
+          geoDistance = dist;
+          if (dist > radiusNum) geoViolation = 1;
+        }
+      }
+    }
+
+    let foremanId = null;
+    try {
+      foremanId = await getTodayForemanForDeviceAsync(deviceId, employeeId, sessionDate);
+    } catch (err) {
+      console.error('Error looking up foreman for device:', err);
+    }
+
+    let clockInPhotoPath = null;
+    if (photo_base64) {
+      try {
+        clockInPhotoPath = await saveClockInPhoto({
+          orgId,
+          employeeId: employeeId,
+          deviceId,
+          photoBase64: photo_base64,
+          punchTime
+        });
+      } catch (err) {
+        console.error('Error saving clock-in photo:', err);
+        if (photoRequired) {
+          return res.status(500).json({ error: 'Failed to store clock-in photo.' });
+        }
+      }
+    }
+
+    const insertSql = `
+      INSERT INTO time_punches
+        (org_id,
+         client_id,
+         employee_id,
+         project_id,
+         clock_in_ts,
+         clock_in_local_date,
+         clock_in_lat,
+         clock_in_lng,
+         clock_in_photo_path,
+         device_id,
+         kiosk_session_id,
+         foreman_employee_id,
+         geo_distance_m,
+         geo_violation,
+         employee_name_snapshot,
+         project_name_snapshot,
+         updated_at)
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        (SELECT name FROM employees WHERE id = ? AND org_id = ?),
+        (SELECT name FROM projects  WHERE id = ? AND org_id = ?),
+        ?
+      )
+    `;
+
+    try {
+      const result = await dbRun(insertSql, [
+        orgId,
+        client_id,
+        employeeId,
+        projectId || null,
+        punchTime,
+        clockInLocalDate,
+        lat ?? null,
+        lng ?? null,
+        clockInPhotoPath,
+        deviceId || null,
+        sessionId || null,
+        foremanId || null,
+        geoDistance,
+        geoViolation,
+        employeeId,
+        orgId,
+        projectId || null,
+        orgId,
+        punchTime
+      ]);
+
+      return res.json({
+        ok: true,
+        mode: 'clock_in',
+        id: result.lastID,
+        punch_id: result.lastID,
+        geofence_violation: geoViolation === 1,
+        geo_distance_m: geoDistance,
+        geo_radius_m: geoRadius
+      });
+    } catch (err) {
+      const msg = String(err.message || '');
+      if (msg.includes('UNIQUE constraint failed: time_punches.org_id, time_punches.client_id')) {
+        return res.json({
+          ok: true,
+          mode: 'clock_in',
+          alreadyProcessed: true,
+          geofence_violation: geoViolation === 1,
+          geo_distance_m: geoDistance,
+          geo_radius_m: geoRadius
+        });
+      }
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  const clockOutLocalDate = getIsoDateInTimezone(punchTime, orgTimezone);
+  const clockOutProjectId = open.project_id || projectId || null;
+
+  let geoDistance = open.geo_distance_m != null ? Number(open.geo_distance_m) : null;
+  let geoViolation = open.geo_violation ? 1 : 0;
+
+  const updateSql = `
+    UPDATE time_punches
+    SET clock_out_ts = ?,
+        clock_out_local_date = ?,
+        clock_out_project_id = ?,
+        clock_out_lat = ?,
+        clock_out_lng = ?,
+        geo_distance_m = ?,
+        geo_violation = ?,
+        updated_at = ?
+    WHERE id = ? AND org_id = ? AND clock_out_ts IS NULL AND time_entry_id IS NULL
+  `;
+
+  try {
+    const updateRes = await dbRun(updateSql, [
+      punchTime,
+      clockOutLocalDate,
+      clockOutProjectId,
+      lat ?? null,
+      lng ?? null,
+      geoDistance,
+      geoViolation,
+      punchTime,
+      open.id,
+      orgId
+    ]);
+    if (!updateRes || !updateRes.changes) {
+      return res.json({
+        ok: true,
+        alreadyProcessed: true,
+        mode: 'clock_out',
+        geofence_violation: !!geoViolation,
+        geo_distance_m: geoDistance,
+        geo_radius_m: null
+      });
+    }
+
+    const startIso = open.clock_in_ts || punchTime;
+    const start = new Date(startIso);
+    const end = new Date(punchTime);
+    const diffMs = end - start;
+    let minutes = Math.ceil(diffMs / 60000);
+    if (!Number.isFinite(minutes) || minutes < 0) minutes = 0;
+
+    const hours = minutes / 60;
+    const startDate = getIsoDateInTimezone(startIso || punchTime, orgTimezone);
+    const endDate = getIsoDateInTimezone(punchTime || startIso, orgTimezone);
+    const startTime = getIsoTimeInTimezone(startIso || punchTime, orgTimezone);
+    const endTime = getIsoTimeInTimezone(punchTime || startIso, orgTimezone);
+
+    const empRow = await dbGet(
+      'SELECT rate FROM employees WHERE id = ? AND org_id = ?',
+      [employeeId, orgId]
+    );
+    if (!empRow) {
+      return res.status(400).json({ error: 'Invalid employee_id.' });
+    }
+
+    const rate = parseFloat(empRow.rate || 0);
+    const total_pay = rate * hours;
+    const finalProjectId = clockOutProjectId;
+    const foremanId = open.foreman_employee_id || null;
+
+    const timeEntrySql = `
+      INSERT INTO time_entries
+        (org_id,
+         employee_id,
+         project_id,
+         start_date,
+         end_date,
+         start_time,
+         end_time,
+         hours,
+         total_pay,
+         foreman_employee_id,
+         employee_name_snapshot,
+         project_name_snapshot,
+         updated_at)
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        (SELECT name FROM employees WHERE id = ? AND org_id = ?),
+        (SELECT name FROM projects  WHERE id = ? AND org_id = ?),
+        ?
+      )
+    `;
+
+    const entryRes = await dbRun(timeEntrySql, [
+      orgId,
+      employeeId,
+      finalProjectId,
+      startDate,
+      endDate,
+      startTime,
+      endTime,
+      hours,
+      total_pay,
+      foremanId,
+      employeeId,
+      orgId,
+      finalProjectId || null,
+      orgId,
+      punchTime
+    ]);
+
+    await dbRun(
+      'UPDATE time_punches SET time_entry_id = ?, updated_at = ? WHERE id = ? AND org_id = ?',
+      [entryRes.lastID, new Date().toISOString(), open.id, orgId]
+    );
+
+    return res.json({
+      ok: true,
+      mode: 'clock_out',
+      hours,
+      total_pay,
+      time_entry_id: entryRes.lastID
+    });
+  } catch (err) {
+    console.error('Error in clock-out flow:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 
 
 app.get('/api/kiosks', async (req, res) => {
-  const adminCtx = await getAdminContext(req);
+  const adminCtx = await getAdminContext(req, { requirePerm: 'view_payroll' });
   const deviceAccess = adminCtx ? { ok: false } : await ensureKioskDevice(req);
   const isAdmin = !!adminCtx;
+  const orgId = isAdmin
+    ? adminCtx.orgId
+    : (deviceAccess && deviceAccess.kiosk && deviceAccess.kiosk.org_id);
 
   // Admins: list all kiosks; kiosk devices: only their own
   const baseSql = `
@@ -5954,15 +11126,18 @@ app.get('/api/kiosks', async (req, res) => {
       k.location,
       k.device_id,
       k.project_id,
-      k.require_photo,
       k.created_at,
       p.name AS project_name,
       p.customer_name
     FROM kiosks k
     LEFT JOIN projects p ON k.project_id = p.id
   `;
-  const sql = isAdmin ? `${baseSql} ORDER BY k.name` : `${baseSql} WHERE k.id = ? LIMIT 1`;
-  const params = isAdmin ? [] : [(deviceAccess && deviceAccess.kiosk && deviceAccess.kiosk.id) || 0];
+  const sql = isAdmin
+    ? `${baseSql} WHERE k.org_id = ? ORDER BY k.name`
+    : `${baseSql} WHERE k.org_id = ? AND k.id = ? LIMIT 1`;
+  const params = isAdmin
+    ? [orgId]
+    : [orgId, (deviceAccess && deviceAccess.kiosk && deviceAccess.kiosk.id) || 0];
 
   if (!isAdmin && (!deviceAccess || !deviceAccess.ok)) {
     return res.status(deviceAccess.status || 401).json({ error: deviceAccess.error || 'Not authorized' });
@@ -5975,9 +11150,12 @@ app.get('/api/kiosks', async (req, res) => {
 });
 
 app.post('/api/kiosks', async (req, res) => {
-  const adminCtx = await getAdminContext(req);
+  const adminCtx = await getAdminContext(req, { requirePerm: 'view_payroll' });
   const deviceAccess = adminCtx ? { ok: false } : await ensureKioskDevice(req);
   const isAdmin = !!adminCtx;
+  const orgId = isAdmin
+    ? adminCtx.orgId
+    : (deviceAccess && deviceAccess.kiosk && deviceAccess.kiosk.org_id);
 
   if (!isAdmin && (!deviceAccess || !deviceAccess.ok)) {
     return res.status(deviceAccess.status || 401).json({ error: deviceAccess.error || 'Not authorized' });
@@ -5988,15 +11166,13 @@ app.post('/api/kiosks', async (req, res) => {
     name,
     location,
     device_id,
-    project_id,
-    require_photo
+    project_id
   } = req.body || {};
 
   if (!name) {
     return res.status(400).json({ error: 'Kiosk name is required.' });
   }
 
-  const requirePhotoVal = require_photo ? 1 : 0;
   const projectIdVal = project_id || null;
 
   if (id) {
@@ -6007,12 +11183,12 @@ app.post('/api/kiosks', async (req, res) => {
     // Update existing kiosk
     const sql = `
       UPDATE kiosks
-      SET name = ?, location = ?, device_id = ?, project_id = ?, require_photo = ?
-      WHERE id = ?
+      SET name = ?, location = ?, device_id = ?, project_id = ?
+      WHERE id = ? AND org_id = ?
     `;
     db.run(
       sql,
-      [name, location || null, device_id || null, projectIdVal, requirePhotoVal, id],
+      [name, location || null, device_id || null, projectIdVal, id, orgId],
       function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ ok: true, id });
@@ -6024,12 +11200,12 @@ app.post('/api/kiosks', async (req, res) => {
     }
     // Create new kiosk
     const sql = `
-      INSERT INTO kiosks (name, location, device_id, project_id, require_photo)
+      INSERT INTO kiosks (org_id, name, location, device_id, project_id)
       VALUES (?, ?, ?, ?, ?)
     `;
     db.run(
       sql,
-      [name, location || null, device_id || null, projectIdVal, requirePhotoVal],
+      [orgId, name, location || null, device_id || null, projectIdVal],
       function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ ok: true, id: this.lastID, message: 'Kiosk created.' });
@@ -6039,161 +11215,181 @@ app.post('/api/kiosks', async (req, res) => {
 });
 
 app.post('/api/kiosks/register', async (req, res) => {
-  const { device_id, device_secret } = req.body || {};
-  const providedSecret = (device_secret || '').trim();
+  const { device_id, device_secret, enrollment_code } = req.body || {};
+  const deviceId = String(device_id || '').trim();
+  const providedSecret = String(device_secret || '').trim();
+  const enrollmentCode = normalizeEnrollmentCode(enrollment_code);
+  let secretMismatch = false;
+  let includeDeviceSecret = false;
 
-  if (!device_id || !providedSecret) {
-    return res.status(400).json({ error: 'device_id and device_secret are required.' });
+  if (!deviceId) {
+    return res.status(400).json({ error: 'device_id is required.' });
   }
 
-  // Allow either: (a) an authenticated admin session, or (b) a device with the correct secret
-  let adminOk = false;
-  try {
-    const employeeId = req.session && req.session.employeeId;
-    if (employeeId) {
-      const perms = await getAdminAccessPerms(employeeId);
-      adminOk = !!(perms && perms.view_payroll);
+  if (!providedSecret && !enrollmentCode) {
+    return res.status(400).json({ error: 'device_secret or enrollment_code is required.' });
+  }
+
+  let enrollmentOrgId = null;
+  if (enrollmentCode) {
+    const row = await dbGet(
+      `
+        SELECT os.org_id, o.status AS org_status
+        FROM org_settings os
+        JOIN orgs o ON o.id = os.org_id
+        WHERE os.key = ? AND os.value = ?
+        LIMIT 1
+      `,
+      [ENROLLMENT_CODE_KEY, enrollmentCode]
+    );
+    if (!row) {
+      return res.status(400).json({ error: 'Invalid enrollment code.' });
     }
-  } catch (err) {
-    console.error('Error checking admin access for kiosk register:', err);
+    if (row.org_status && row.org_status !== 'active') {
+      return res.status(403).json({ error: 'Org access denied.' });
+    }
+    enrollmentOrgId = row.org_id;
   }
 
-  const selectSql = `
-    SELECT
-      k.*,
-      p.name AS project_name,
-      p.customer_name
-    FROM kiosks k
-    LEFT JOIN projects p ON k.project_id = p.id
-    WHERE k.device_id = ?
-  `;
+  let kioskRow = await dbGet(
+    `
+      SELECT k.*, o.timezone AS org_timezone
+      FROM kiosks k
+      LEFT JOIN orgs o ON o.id = k.org_id
+      WHERE k.device_id = ?
+      LIMIT 1
+    `,
+    [deviceId]
+  );
 
-  db.get(selectSql, [device_id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
+  if (kioskRow) {
+    const orgStatus = await getOrgStatus(kioskRow.org_id);
+    if (orgStatus && orgStatus !== 'active') {
+      return res.status(403).json({ error: 'Org access denied.' });
+    }
+  }
 
-    if (row) {
-      const secretsMatch = row.device_secret && row.device_secret === providedSecret;
+  if (!kioskRow) {
+    if (!enrollmentOrgId) {
+      return res.status(400).json({ error: 'Enrollment code required for new devices.' });
+    }
 
-      // If the kiosk record has no secret yet, accept and save the provided one.
-      if (!row.device_secret) {
-        db.run(
-          `UPDATE kiosks SET device_secret = ? WHERE id = ?`,
-          [providedSecret, row.id],
-          errUpdate => {
-            if (errUpdate) {
-              console.error('Failed to update kiosk device_secret during register:', errUpdate);
-            }
-          }
-        );
-        row.device_secret = providedSecret;
-      } else if (!secretsMatch && adminOk) {
-        db.run(
-          `UPDATE kiosks SET device_secret = ? WHERE id = ?`,
-          [providedSecret, row.id],
-          errUpdate => {
-            if (errUpdate) {
-              console.error('Failed to update kiosk device_secret during register:', errUpdate);
-            }
-          }
-        );
-        row.device_secret = providedSecret;
-      } else if (!secretsMatch && !adminOk) {
-        // Non-admin with stale/incorrect secret – allow fetch but keep the
-        // server secret so the kiosk can re-align its local secret.
-        console.warn(
-          `Kiosk device_secret mismatch for device_id=${device_id}; sending server secret to re-sync`
-        );
+    const newSecret = crypto.randomBytes(24).toString('hex');
+    const defaultName = `Kiosk ${deviceId.slice(-4)}`;
+    const insertRes = await dbRun(
+      `
+        INSERT INTO kiosks (org_id, name, location, device_id, device_secret)
+        VALUES (?, ?, ?, ?, ?)
+      `,
+      [enrollmentOrgId, defaultName, null, deviceId, newSecret]
+    );
+
+    kioskRow = await dbGet(
+      `
+        SELECT k.*, o.timezone AS org_timezone
+        FROM kiosks k
+        LEFT JOIN orgs o ON o.id = k.org_id
+        WHERE k.id = ?
+        LIMIT 1
+      `,
+      [insertRes.lastID]
+    );
+    includeDeviceSecret = true;
+  } else {
+    if (enrollmentOrgId && Number(enrollmentOrgId) !== Number(kioskRow.org_id)) {
+      return res.status(409).json({ error: 'device_id already enrolled in another org.' });
+    }
+
+    if (enrollmentOrgId) {
+      const newSecret = crypto.randomBytes(24).toString('hex');
+      await dbRun('UPDATE kiosks SET device_secret = ? WHERE id = ?', [
+        newSecret,
+        kioskRow.id
+      ]);
+      kioskRow.device_secret = newSecret;
+      includeDeviceSecret = true;
+    } else {
+      if (!providedSecret) {
+        return res.status(400).json({ error: 'device_secret is required.' });
       }
 
-      const today = getTodayIsoDate();
-
-      // Pull today’s sessions for this device
-      const sessionsSql = `
-        SELECT ks.id,
-               ks.project_id,
-               ks.date,
-               ks.created_at,
-               p.name AS project_name,
-               p.customer_name
-        FROM kiosk_sessions ks
-        LEFT JOIN projects p ON p.id = ks.project_id
-        WHERE ks.device_id = ?
-          AND ks.date = ?
-        ORDER BY ks.created_at ASC
-      `;
-
-      return db.all(sessionsSql, [device_id, today], (err2, sessions) => {
-        if (err2) return res.status(500).json({ error: err2.message });
-
-        // Prefer a session that matches the kiosk's saved project_id
-        let activeSession = (sessions || [])
-          .filter(
-            s =>
-              s.project_id &&
-              row.project_id &&
-              Number(s.project_id) === Number(row.project_id)
-          )
-          .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
-          .pop() || null;
-
-        // If the kiosk is missing a project but has sessions today, fall back to
-        // the most recent session and backfill the kiosk project_id so workers
-        // can clock in without being blocked.
-        if (!activeSession && (!row.project_id || Number(row.project_id) === 0)) {
-          const latestSession = (sessions || [])
-            .filter(s => s.project_id)
-            .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
-            .pop();
-
-          if (latestSession) {
-            activeSession = latestSession;
-            row.project_id = latestSession.project_id;
-
-            // Persist the project on the kiosk record for future fetches
-            db.run(
-              `UPDATE kiosks SET project_id = ? WHERE id = ?`,
-              [latestSession.project_id, row.id],
-              errUpdate => {
-                if (errUpdate) {
-                  console.error('Failed to backfill kiosk project_id from session:', errUpdate);
-                }
-              }
-            );
-          }
-        }
-
-        return res.json({
-          ok: true,
-          kiosk: row,
-          sessions: sessions || [],
-          active_session_id: activeSession ? activeSession.id : null
+      if (!kioskRow.device_secret) {
+        return res.status(400).json({
+          error: 'Device secret missing. Re-enroll this kiosk with the enrollment code.'
         });
-      });
+      } else if (kioskRow.device_secret !== providedSecret) {
+        secretMismatch = true;
+        return res.status(403).json({
+          error: 'Device secret mismatch. Re-enroll this kiosk with the enrollment code.'
+        });
+      }
     }
+  }
 
-    // No kiosk yet for this device → create a placeholder row using the provided secret.
-    const insertSql = `
-      INSERT INTO kiosks (name, location, device_id, require_photo, device_secret)
-      VALUES (?, ?, ?, 0, ?)
-    `;
-    const name = 'New kiosk';
-    const location = null;
-    const newSecret = providedSecret || crypto.randomBytes(16).toString('hex');
+  await dbRun('UPDATE kiosks SET last_seen_at = ? WHERE id = ?', [
+    new Date().toISOString(),
+    kioskRow.id
+  ]);
 
-    db.run(insertSql, [name, location, device_id, newSecret], function (err2) {
-      if (err2) return res.status(500).json({ error: err2.message });
+  const orgTimezone =
+    kioskRow.org_timezone || (await getOrgTimezone(kioskRow.org_id));
+  const today = getTodayIsoDate(orgTimezone);
 
-      const newId = this.lastID;
-      db.get(
-        `SELECT * FROM kiosks WHERE id = ?`,
-        [newId],
-        (err3, kioskRow) => {
-          if (err3) return res.status(500).json({ error: err3.message });
-          kioskRow.device_secret = newSecret;
-          res.json({ ok: true, kiosk: kioskRow, sessions: [], active_session_id: null });
-        }
-      );
-    });
+  const sessions = await dbAll(
+    `
+      SELECT ks.id,
+             ks.project_id,
+             ks.date,
+             ks.created_at,
+             p.name AS project_name,
+             p.customer_name
+      FROM kiosk_sessions ks
+      LEFT JOIN projects p ON p.id = ks.project_id
+      WHERE ks.org_id = ?
+        AND ks.kiosk_id = ?
+        AND ks.date = ?
+      ORDER BY ks.created_at ASC
+    `,
+    [kioskRow.org_id, kioskRow.id, today]
+  );
+
+  let activeSession = (sessions || [])
+    .filter(
+      s =>
+        s.project_id &&
+        kioskRow.project_id &&
+        Number(s.project_id) === Number(kioskRow.project_id)
+    )
+    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+    .pop() || null;
+
+  if (!activeSession && (!kioskRow.project_id || Number(kioskRow.project_id) === 0)) {
+    const latestSession = (sessions || [])
+      .filter(s => s.project_id)
+      .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+      .pop();
+
+    if (latestSession) {
+      activeSession = latestSession;
+      kioskRow.project_id = latestSession.project_id;
+      await dbRun('UPDATE kiosks SET project_id = ? WHERE id = ?', [
+        latestSession.project_id,
+        kioskRow.id
+      ]);
+    }
+  }
+
+  const kioskResponse = { ...kioskRow };
+  if (!includeDeviceSecret) {
+    delete kioskResponse.device_secret;
+  }
+
+  return res.json({
+    ok: true,
+    org_timezone: orgTimezone,
+    kiosk: kioskResponse,
+    sessions: sessions || [],
+    active_session_id: activeSession ? activeSession.id : null
   });
 });
 
@@ -6203,54 +11399,54 @@ app.get('/api/kiosks/:id/open-punches', async (req, res) => {
     return res.status(400).json({ error: 'Invalid kiosk id.' });
   }
 
-  const access = await requireAdminOrKiosk(req, kioskId);
-  if (!access.ok) {
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
     return res
-      .status(access.status || 401)
-      .json({ error: access.error || 'Not authorized' });
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authorized' });
   }
 
-  // First, get this kiosk's device_id
-  db.get(
-    `SELECT device_id FROM kiosks WHERE id = ?`,
-    [kioskId],
-    (err, kiosk) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!kiosk || !kiosk.device_id) {
-        return res.json([]); // no device tied or kiosk not found
-      }
-
-      const today = getTodayIsoDate();
-      const sql = `
-        SELECT
-          tp.id,
-          tp.employee_id,
-          COALESCE(e.name, tp.employee_name_snapshot) AS employee_name,
-          tp.project_id,
-          COALESCE(p.name, tp.project_name_snapshot) AS project_name,
-          p.customer_name,
-          tp.clock_in_ts,
-          tp.clock_out_ts
-        FROM time_punches tp
-        LEFT JOIN employees e ON tp.employee_id = e.id
-        LEFT JOIN projects p ON tp.project_id = p.id
-        WHERE (
-          tp.clock_out_ts IS NULL
-          OR date(tp.clock_in_ts) = ?
-        )
-          AND (
-            (tp.device_id IS NULL AND ? IS NULL)
-            OR tp.device_id = ?
-          )
-        ORDER BY (tp.clock_out_ts IS NULL) DESC, tp.clock_in_ts ASC
-      `;
-
-      db.all(sql, [today, kiosk.device_id, kiosk.device_id], (err2, rows) => {
-        if (err2) return res.status(500).json({ error: err2.message });
-        res.json(rows || []);
-      });
-    }
+  const kioskRow = await dbGet(
+    'SELECT id, device_id, org_id FROM kiosks WHERE id = ? AND org_id = ?',
+    [kioskId, adminCtx.orgId]
   );
+  if (!kioskRow || !kioskRow.device_id) {
+    return res.json([]);
+  }
+
+  if (adminCtx.via === 'kiosk') {
+    const deviceAccess = await ensureKioskDevice(req);
+    if (!deviceAccess.ok || Number(deviceAccess.kiosk.id) !== Number(kioskId)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+  }
+
+  const orgTimezone = await getOrgTimezone(adminCtx.orgId);
+  const today = getTodayIsoDate(orgTimezone);
+  const sql = `
+    SELECT
+      tp.id,
+      tp.employee_id,
+      COALESCE(e.name, tp.employee_name_snapshot) AS employee_name,
+      tp.project_id,
+      COALESCE(p.name, tp.project_name_snapshot) AS project_name,
+      p.customer_name,
+      tp.clock_in_ts,
+      tp.clock_out_ts
+    FROM time_punches tp
+    LEFT JOIN employees e ON tp.employee_id = e.id
+    LEFT JOIN projects p ON tp.project_id = p.id
+    WHERE tp.org_id = ?
+      AND tp.clock_out_ts IS NULL
+      AND tp.clock_in_local_date = ?
+      AND tp.device_id = ?
+    ORDER BY tp.clock_in_ts ASC
+  `;
+
+  db.all(sql, [adminCtx.orgId, today, kioskRow.device_id], (err2, rows) => {
+    if (err2) return res.status(500).json({ error: err2.message });
+    res.json(rows || []);
+  });
 });
 
 // List sessions for a kiosk (defaults to today)
@@ -6260,18 +11456,28 @@ app.get('/api/kiosks/:id/sessions', async (req, res) => {
     return res.status(400).json({ error: 'Invalid kiosk id.' });
   }
 
-  const access = await requireAdminOrKiosk(req, kioskId);
-  if (!access.ok) {
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
     return res
-      .status(access.status || 401)
-      .json({ error: access.error || 'Not authorized' });
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authorized' });
   }
 
-  const date = req.query.date || getTodayIsoDate();
+  const kioskRow = await dbGet(
+    'SELECT id, device_id FROM kiosks WHERE id = ? AND org_id = ?',
+    [kioskId, adminCtx.orgId]
+  );
+  if (!kioskRow) return res.status(404).json({ error: 'Kiosk not found.' });
 
-  db.get(`SELECT device_id FROM kiosks WHERE id = ?`, [kioskId], (err, kiosk) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!kiosk) return res.status(404).json({ error: 'Kiosk not found.' });
+  if (adminCtx.via === 'kiosk') {
+    const deviceAccess = await ensureKioskDevice(req);
+    if (!deviceAccess.ok || Number(deviceAccess.kiosk.id) !== Number(kioskId)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+  }
+
+  const orgTimezone = await getOrgTimezone(adminCtx.orgId);
+  const date = req.query.date || getTodayIsoDate(orgTimezone);
 
     const sql = `
       SELECT
@@ -6286,22 +11492,38 @@ app.get('/api/kiosks/:id/sessions', async (req, res) => {
         COALESCE((
           SELECT COUNT(*)
           FROM time_punches tp
-          WHERE tp.project_id = ks.project_id
-            AND substr(tp.clock_in_ts, 1, 10) = ks.date
+          WHERE tp.org_id = ks.org_id
+            AND tp.project_id = ks.project_id
+            AND tp.clock_in_local_date = ks.date
         ), 0) AS entry_count,
         COALESCE((
           SELECT COUNT(*)
           FROM time_punches tp
-          WHERE tp.clock_out_ts IS NULL
+          WHERE tp.org_id = ks.org_id
+            AND tp.clock_out_ts IS NULL
             AND tp.project_id = ks.project_id
-            AND substr(tp.clock_in_ts, 1, 10) = ks.date
+            AND tp.clock_in_local_date = ks.date
         ), 0) AS open_count
         ,
         COALESCE((
+          SELECT MIN(tp.clock_in_ts)
+          FROM time_punches tp
+          WHERE tp.org_id = ks.org_id
+            AND tp.kiosk_session_id = ks.id
+        ), NULL) AS first_clock_in_ts,
+        COALESCE((
+          SELECT MAX(tp.clock_out_ts)
+          FROM time_punches tp
+          WHERE tp.org_id = ks.org_id
+            AND tp.kiosk_session_id = ks.id
+            AND tp.clock_out_ts IS NOT NULL
+        ), NULL) AS last_clock_out_ts,
+        COALESCE((
           SELECT COUNT(*)
           FROM time_punches tp
-          WHERE tp.project_id = ks.project_id
-            AND substr(tp.clock_in_ts, 1, 10) = ks.date
+          WHERE tp.org_id = ks.org_id
+            AND tp.project_id = ks.project_id
+            AND tp.clock_in_local_date = ks.date
             AND (
               (ks.device_id IS NULL AND tp.device_id IS NULL)
               OR tp.device_id = ks.device_id
@@ -6310,9 +11532,10 @@ app.get('/api/kiosks/:id/sessions', async (req, res) => {
         COALESCE((
           SELECT COUNT(*)
           FROM time_punches tp
-          WHERE tp.clock_out_ts IS NULL
+          WHERE tp.org_id = ks.org_id
+            AND tp.clock_out_ts IS NULL
             AND tp.project_id = ks.project_id
-            AND substr(tp.clock_in_ts, 1, 10) = ks.date
+            AND tp.clock_in_local_date = ks.date
             AND (
               (ks.device_id IS NULL AND tp.device_id IS NULL)
               OR tp.device_id = ks.device_id
@@ -6322,16 +11545,16 @@ app.get('/api/kiosks/:id/sessions', async (req, res) => {
       LEFT JOIN kiosks k ON k.id = ks.kiosk_id
       LEFT JOIN projects p ON p.id = ks.project_id
       LEFT JOIN employees ea ON ea.id = ks.created_by_employee_id
-      WHERE ks.kiosk_id = ?
+      WHERE ks.org_id = ?
+        AND ks.kiosk_id = ?
         AND ks.date = ?
       ORDER BY ks.created_at ASC
     `;
 
-    db.all(sql, [kioskId, date], (err2, rows) => {
+    db.all(sql, [adminCtx.orgId, kioskId, date], (err2, rows) => {
       if (err2) return res.status(500).json({ error: err2.message });
       res.json(rows || []);
     });
-  });
 });
 
 // Create a new session and optionally make it active on the kiosk
@@ -6341,112 +11564,353 @@ app.post('/api/kiosks/:id/sessions', async (req, res) => {
     return res.status(400).json({ error: 'Invalid kiosk id.' });
   }
 
-  const access = await requireAdminOrKiosk(req, kioskId);
-  if (!access.ok) {
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
     return res
-      .status(access.status || 401)
-      .json({ error: access.error || 'Not authorized' });
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authorized' });
   }
 
-  const { project_id, make_active, admin_id } = req.body || {};
+  const {
+    project_id,
+    make_active,
+    admin_id,
+    clock_me_in,
+    clock_in_payload,
+    lat,
+    lng,
+    confirm_geo_mismatch
+  } = req.body || {};
   if (!project_id) {
     return res.status(400).json({ error: 'project_id is required.' });
   }
 
-  db.get(`SELECT id, device_id FROM kiosks WHERE id = ?`, [kioskId], (err, kiosk) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!kiosk) return res.status(404).json({ error: 'Kiosk not found.' });
+  const kioskRow = await dbGet(
+    'SELECT id, device_id FROM kiosks WHERE id = ? AND org_id = ?',
+    [kioskId, adminCtx.orgId]
+  );
+  if (!kioskRow) return res.status(404).json({ error: 'Kiosk not found.' });
 
-    const today = getTodayIsoDate();
-    const insertSql = `
-      INSERT INTO kiosk_sessions (kiosk_id, device_id, project_id, date, created_by_employee_id)
-      VALUES (?, ?, ?, ?, ?)
-    `;
+  if (adminCtx.via === 'kiosk') {
+    const deviceAccess = await ensureKioskDevice(req);
+    if (!deviceAccess.ok || Number(deviceAccess.kiosk.id) !== Number(kioskId)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+  }
 
-    // Check if this is the first timesheet for the kiosk today so we can surface it to the UI
-    db.get(
-      `SELECT COUNT(*) AS cnt FROM kiosk_sessions WHERE kiosk_id = ? AND date = ?`,
-      [kioskId, today],
-      (errCount, countRow) => {
-        if (errCount) return res.status(500).json({ error: errCount.message });
-        const isFirstToday = (countRow && Number(countRow.cnt)) === 0;
+  const orgTimezone = await getOrgTimezone(adminCtx.orgId);
+  const today = getTodayIsoDate(orgTimezone);
 
-        const creatorId =
-          admin_id ||
-          (req.session && req.session.employeeId) ||
-          (access.adminCtx && access.adminCtx.employee && access.adminCtx.employee.id) ||
-          null;
+  const creatorId =
+    admin_id ||
+    adminCtx.adminId ||
+    (req.session && req.session.employeeId) ||
+    null;
 
-        db.run(
-          insertSql,
-          [kioskId, kiosk.device_id || null, project_id, today, creatorId],
-          function (err2) {
-            if (err2) return res.status(500).json({ error: err2.message });
-
-            const sessionId = this.lastID;
-
-            const afterInsert = () => {
-              db.get(
-                `
-                  SELECT ks.id,
-                         ks.project_id,
-                         ks.date,
-                         ks.created_at,
-                         ks.created_by_employee_id,
-                         ea.name AS created_by_name,
-                         p.name AS project_name,
-                         p.customer_name
-                  FROM kiosk_sessions ks
-                  LEFT JOIN projects p ON p.id = ks.project_id
-                  LEFT JOIN employees ea ON ea.id = ks.created_by_employee_id
-                  WHERE ks.id = ?
-                `,
-                [sessionId],
-                (err3, session) => {
-                  if (err3) return res.status(500).json({ error: err3.message });
-                  res.json({
-                    ok: true,
-                    session,
-                    active_project_id: make_active ? Number(project_id) : null,
-                    first_session_today: isFirstToday
-                  });
-                }
-              );
-            };
-
-            if (make_active) {
-              db.run(
-                `UPDATE kiosks SET project_id = ? WHERE id = ?`,
-                [project_id, kioskId],
-                (err4) => {
-                  if (err4) return res.status(500).json({ error: err4.message });
-                  afterInsert();
-                }
-              );
-            } else {
-              afterInsert();
-            }
-          }
-        );
-      }
+  if (clock_me_in) {
+    if (!creatorId) {
+      return res.status(400).json({ error: 'admin_id is required for clock_me_in.' });
+    }
+    const openPunch = await dbGet(
+      `
+        SELECT id
+        FROM time_punches
+        WHERE org_id = ? AND employee_id = ? AND clock_out_ts IS NULL
+        LIMIT 1
+      `,
+      [adminCtx.orgId, creatorId]
     );
+    if (openPunch) {
+      return res.status(409).json({ error: 'Admin already clocked in.' });
+    }
+    const payload = clock_in_payload || {};
+    const photoRequired = await getClockInPhotoRequired(adminCtx.orgId);
+    if (photoRequired && !payload.photo_base64) {
+      return res.status(400).json({ error: 'Photo is required to clock in.' });
+    }
+  }
+
+  const hasLatInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'lat');
+  const hasLngInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'lng');
+  const confirmGeoMismatch =
+    confirm_geo_mismatch === true ||
+    confirm_geo_mismatch === 'true' ||
+    confirm_geo_mismatch === 1 ||
+    confirm_geo_mismatch === '1';
+  const latInput =
+    !hasLatInput || lat === '' || lat === null || lat === undefined
+      ? null
+      : Number(lat);
+  const lngInput =
+    !hasLngInput || lng === '' || lng === null || lng === undefined
+      ? null
+      : Number(lng);
+
+  if ((latInput === null) !== (lngInput === null)) {
+    return res.status(400).json({ error: 'Please provide both latitude and longitude, or leave both blank.' });
+  }
+  if (latInput !== null && (Number.isNaN(latInput) || latInput < -90 || latInput > 90)) {
+    return res.status(400).json({ error: 'Invalid latitude.' });
+  }
+  if (lngInput !== null && (Number.isNaN(lngInput) || lngInput < -180 || lngInput > 180)) {
+    return res.status(400).json({ error: 'Invalid longitude.' });
+  }
+
+  let sessionGeoDistance = null;
+  let sessionGeoViolation = 0;
+  const sessionGeoLat = latInput;
+  const sessionGeoLng = lngInput;
+
+  const projectRow = await dbGet(
+    'SELECT geo_lat, geo_lng, geo_radius, name, customer_name FROM projects WHERE id = ? AND org_id = ?',
+    [project_id, adminCtx.orgId]
+  );
+  if (!projectRow) {
+    return res.status(404).json({ error: 'Project not found.' });
+  }
+
+  const hasProjectGeofence =
+    projectRow.geo_lat != null &&
+    projectRow.geo_lng != null &&
+    projectRow.geo_radius != null &&
+    !Number.isNaN(Number(projectRow.geo_lat)) &&
+    !Number.isNaN(Number(projectRow.geo_lng)) &&
+    !Number.isNaN(Number(projectRow.geo_radius));
+
+  if (hasProjectGeofence && sessionGeoLat != null && sessionGeoLng != null) {
+    const projLat = Number(projectRow.geo_lat);
+    const projLng = Number(projectRow.geo_lng);
+    const radiusNum = Number(projectRow.geo_radius);
+    const dist = distanceMeters(sessionGeoLat, sessionGeoLng, projLat, projLng);
+    sessionGeoDistance = dist;
+    if (dist > radiusNum) {
+      if (!confirmGeoMismatch) {
+        const projectLabel =
+          projectRow.customer_name && projectRow.name
+            ? `${projectRow.customer_name} – ${projectRow.name}`
+            : projectRow.name || `Project ${project_id}`;
+        return res.status(409).json({
+          error: 'Kiosk appears outside the project geofence. Confirm to proceed.',
+          geofence_mismatch: true,
+          project_name: projectLabel,
+          geo_distance_m: dist,
+          geo_radius_m: radiusNum
+        });
+      }
+      sessionGeoViolation = 1;
+    }
+  }
+
+  const countRow = await dbGet(
+    'SELECT COUNT(*) AS cnt FROM kiosk_sessions WHERE org_id = ? AND kiosk_id = ? AND date = ?',
+    [adminCtx.orgId, kioskId, today]
+  );
+  const isFirstToday = (countRow && Number(countRow.cnt)) === 0;
+
+  const insertRes = await dbRun(
+    `
+      INSERT INTO kiosk_sessions
+        (org_id, kiosk_id, device_id, project_id, date, created_by_employee_id,
+         geo_lat, geo_lng, geo_distance_m, geo_violation)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      adminCtx.orgId,
+      kioskId,
+      kioskRow.device_id || null,
+      project_id,
+      today,
+      creatorId,
+      sessionGeoLat,
+      sessionGeoLng,
+      sessionGeoDistance,
+      sessionGeoViolation
+    ]
+  );
+
+  const sessionId = insertRes.lastID;
+
+  if (make_active) {
+    await dbRun('UPDATE kiosks SET project_id = ? WHERE id = ? AND org_id = ?', [
+      project_id,
+      kioskId,
+      adminCtx.orgId
+    ]);
+  }
+
+  const session = await dbGet(
+    `
+      SELECT ks.id,
+             ks.project_id,
+             ks.date,
+             ks.created_at,
+             ks.created_by_employee_id,
+             ea.name AS created_by_name,
+             p.name AS project_name,
+             p.customer_name
+      FROM kiosk_sessions ks
+      LEFT JOIN projects p ON p.id = ks.project_id
+      LEFT JOIN employees ea ON ea.id = ks.created_by_employee_id
+      WHERE ks.id = ? AND ks.org_id = ?
+    `,
+    [sessionId, adminCtx.orgId]
+  );
+
+  let clockedIn = false;
+  let punchId = null;
+
+  if (clock_me_in) {
+    const payload = clock_in_payload || {};
+    const punchLat = payload.lat != null ? payload.lat : sessionGeoLat;
+    const punchLng = payload.lng != null ? payload.lng : sessionGeoLng;
+    const clientId = payload.client_id || `start_${sessionId}_${Date.now()}`;
+    const punchTime = payload.device_timestamp || new Date().toISOString();
+    const clockInLocalDate = getIsoDateInTimezone(punchTime, orgTimezone);
+
+    let geoDistance = null;
+    let geoViolation = 0;
+    let geoRadius = null;
+
+    if (punchLat != null && punchLng != null) {
+      const project = await dbGet(
+        'SELECT geo_lat, geo_lng, geo_radius FROM projects WHERE id = ? AND org_id = ?',
+        [project_id, adminCtx.orgId]
+      );
+      if (
+        project &&
+        project.geo_lat != null &&
+        project.geo_lng != null &&
+        project.geo_radius != null
+      ) {
+        const latNum = Number(punchLat);
+        const lngNum = Number(punchLng);
+        const projLat = Number(project.geo_lat);
+        const projLng = Number(project.geo_lng);
+        const radiusNum = Number(project.geo_radius);
+        if (
+          !Number.isNaN(latNum) &&
+          !Number.isNaN(lngNum) &&
+          !Number.isNaN(projLat) &&
+          !Number.isNaN(projLng) &&
+          !Number.isNaN(radiusNum)
+        ) {
+          geoRadius = radiusNum;
+          const dist = distanceMeters(latNum, lngNum, projLat, projLng);
+          geoDistance = dist;
+          if (dist > radiusNum) geoViolation = 1;
+        }
+      }
+    }
+
+    let foremanId = null;
+    try {
+      foremanId = await getTodayForemanForDeviceAsync(
+        kioskRow.device_id,
+        creatorId,
+        today
+      );
+    } catch (err) {
+      console.error('Error looking up foreman for device:', err);
+    }
+
+    let clockInPhotoPath = null;
+    if (payload.photo_base64) {
+      try {
+        clockInPhotoPath = await saveClockInPhoto({
+          orgId: adminCtx.orgId,
+          employeeId: creatorId,
+          deviceId: kioskRow.device_id,
+          photoBase64: payload.photo_base64,
+          punchTime
+        });
+      } catch (err) {
+        console.error('Error saving clock-in photo:', err);
+      }
+    }
+
+    const punchRes = await dbRun(
+      `
+        INSERT INTO time_punches
+          (org_id,
+           client_id,
+           employee_id,
+           project_id,
+           clock_in_ts,
+           clock_in_local_date,
+           clock_in_lat,
+           clock_in_lng,
+           clock_in_photo_path,
+           device_id,
+           kiosk_session_id,
+           foreman_employee_id,
+           geo_distance_m,
+           geo_violation,
+           employee_name_snapshot,
+           project_name_snapshot)
+        VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          (SELECT name FROM employees WHERE id = ? AND org_id = ?),
+          (SELECT name FROM projects  WHERE id = ? AND org_id = ?)
+        )
+      `,
+      [
+        adminCtx.orgId,
+        clientId,
+        creatorId,
+        project_id,
+        punchTime,
+        clockInLocalDate,
+        punchLat ?? null,
+        punchLng ?? null,
+        clockInPhotoPath,
+        kioskRow.device_id || null,
+        sessionId || null,
+        foremanId || null,
+        geoDistance,
+        geoViolation,
+        creatorId,
+        adminCtx.orgId,
+        project_id,
+        adminCtx.orgId
+      ]
+    );
+
+    clockedIn = true;
+    punchId = punchRes.lastID;
+  }
+
+  res.json({
+    ok: true,
+    session,
+    active_session_id: make_active ? sessionId : null,
+    active_project_id: make_active ? Number(project_id) : null,
+    first_session_today: isFirstToday,
+    clocked_in: clockedIn,
+    punch_id: punchId
   });
 });
 
 // Delete a kiosk session (timesheet) with safety checks
 app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
   try {
-    const access = await requireAdminOrKiosk(req, parseInt(req.params.id, 10));
-    if (!access.ok) {
-      return res
-        .status(access.status || 401)
-        .json({ error: access.error || 'Not authorized' });
-    }
-
     const kioskId = parseInt(req.params.id, 10);
     const sessionId = parseInt(req.params.sessionId, 10);
     if (!kioskId || !sessionId) {
       return res.status(400).json({ error: 'Invalid kiosk or session id.' });
+    }
+
+    const adminCtx = await resolveKioskAdmin(req);
+    if (!adminCtx.ok) {
+      return res
+        .status(adminCtx.status || 401)
+        .json({ error: adminCtx.error || 'Not authorized' });
+    }
+
+    if (adminCtx.via === 'kiosk') {
+      const deviceAccess = await ensureKioskDevice(req);
+      if (!deviceAccess.ok || Number(deviceAccess.kiosk.id) !== Number(kioskId)) {
+        return res.status(403).json({ error: 'Not authorized' });
+      }
     }
 
     const adminId = req.body && req.body.admin_id ? Number(req.body.admin_id) : null;
@@ -6457,25 +11921,34 @@ app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
 
     const admin = await dbGet(
       `
-        SELECT id, name, pin, is_admin
+        SELECT id, name, pin_hash, kiosk_admin_access
         FROM employees
-        WHERE id = ? AND IFNULL(is_admin, 0) = 1
+        WHERE id = ? AND org_id = ? AND IFNULL(kiosk_admin_access, 0) = 1
         LIMIT 1
       `,
-      [adminId]
+      [adminId, adminCtx.orgId]
     );
     if (!admin) {
       return res.status(403).json({ error: 'Admin not authorized.' });
+    }
+
+    if (!admin.pin_hash) {
+      return res.status(403).json({ error: 'No PIN set for this admin.' });
+    }
+
+    const pinOk = await bcrypt.compare(pin, admin.pin_hash);
+    if (!pinOk) {
+      return res.status(401).json({ error: 'Incorrect PIN.' });
     }
 
     const sessionRow = await dbGet(
       `
         SELECT id, kiosk_id, device_id, project_id, date
         FROM kiosk_sessions
-        WHERE id = ? AND kiosk_id = ?
+        WHERE id = ? AND kiosk_id = ? AND org_id = ?
         LIMIT 1
       `,
-      [sessionId, kioskId]
+      [sessionId, kioskId, adminCtx.orgId]
     );
     if (!sessionRow) {
       return res.status(404).json({ error: 'Timesheet not found for this kiosk.' });
@@ -6487,14 +11960,16 @@ app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
           COUNT(*) AS entry_count,
           SUM(CASE WHEN tp.clock_out_ts IS NULL THEN 1 ELSE 0 END) AS open_count
         FROM time_punches tp
-        WHERE tp.project_id = ?
-          AND substr(tp.clock_in_ts, 1, 10) = ?
+        WHERE tp.org_id = ?
+          AND tp.project_id = ?
+          AND tp.clock_in_local_date = ?
           AND (
             (? IS NULL AND tp.device_id IS NULL)
             OR tp.device_id = ?
           )
       `,
       [
+        adminCtx.orgId,
         sessionRow.project_id,
         sessionRow.date,
         sessionRow.device_id || null,
@@ -6504,7 +11979,10 @@ app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
 
     const entryCount = counts && counts.entry_count ? Number(counts.entry_count) : 0;
     const openCount = counts && counts.open_count ? Number(counts.open_count) : 0;
-    const perms = await getAdminAccessPerms(admin.id);
+    const perms = await getAdminAccessPerms({
+      employeeId: admin.id,
+      orgId: adminCtx.orgId
+    });
 
     if (openCount > 0) {
       return res.status(409).json({
@@ -6519,8 +11997,8 @@ app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
     }
 
     const delRes = await dbRun(
-      'DELETE FROM kiosk_sessions WHERE id = ? AND kiosk_id = ?',
-      [sessionId, kioskId]
+      'DELETE FROM kiosk_sessions WHERE id = ? AND kiosk_id = ? AND org_id = ?',
+      [sessionId, kioskId, adminCtx.orgId]
     );
     if (!delRes || delRes.changes === 0) {
       return res.status(404).json({ error: 'Timesheet already removed.' });
@@ -6528,24 +12006,28 @@ app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
 
     // If this session was active for the kiosk, clear the project unless another session for it exists today
     const kioskRow = await dbGet(
-      'SELECT project_id FROM kiosks WHERE id = ?',
-      [kioskId]
+      'SELECT project_id FROM kiosks WHERE id = ? AND org_id = ?',
+      [kioskId, adminCtx.orgId]
     );
     if (kioskRow && kioskRow.project_id && Number(kioskRow.project_id) === Number(sessionRow.project_id)) {
       const other = await dbGet(
         `
           SELECT id
           FROM kiosk_sessions
-          WHERE kiosk_id = ?
+          WHERE org_id = ?
+            AND kiosk_id = ?
             AND date = ?
             AND project_id = ?
             AND id != ?
           LIMIT 1
         `,
-        [kioskId, sessionRow.date, sessionRow.project_id, sessionId]
+        [adminCtx.orgId, kioskId, sessionRow.date, sessionRow.project_id, sessionId]
       );
       if (!other) {
-        await dbRun('UPDATE kiosks SET project_id = NULL WHERE id = ?', [kioskId]);
+        await dbRun('UPDATE kiosks SET project_id = NULL WHERE id = ? AND org_id = ?', [
+          kioskId,
+          adminCtx.orgId
+        ]);
       }
     }
 
@@ -6563,11 +12045,18 @@ app.post('/api/kiosks/:id/active-session', async (req, res) => {
     return res.status(400).json({ error: 'Invalid kiosk id.' });
   }
 
-  const access = await requireAdminOrKiosk(req, kioskId);
-  if (!access.ok) {
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
     return res
-      .status(access.status || 401)
-      .json({ error: access.error || 'Not authorized' });
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authorized' });
+  }
+
+  if (adminCtx.via === 'kiosk') {
+    const deviceAccess = await ensureKioskDevice(req);
+    if (!deviceAccess.ok || Number(deviceAccess.kiosk.id) !== Number(kioskId)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
   }
 
   const { session_id } = req.body || {};
@@ -6581,9 +12070,10 @@ app.post('/api/kiosks/:id/active-session', async (req, res) => {
       FROM kiosk_sessions ks
       WHERE ks.id = ?
         AND ks.kiosk_id = ?
+        AND ks.org_id = ?
       LIMIT 1
     `,
-    [session_id, kioskId],
+    [session_id, kioskId, adminCtx.orgId],
     (err, session) => {
       if (err) return res.status(500).json({ error: err.message });
       if (!session) {
@@ -6591,8 +12081,8 @@ app.post('/api/kiosks/:id/active-session', async (req, res) => {
       }
 
       db.run(
-        `UPDATE kiosks SET project_id = ? WHERE id = ?`,
-        [session.project_id, kioskId],
+        `UPDATE kiosks SET project_id = ? WHERE id = ? AND org_id = ?`,
+        [session.project_id, kioskId, adminCtx.orgId],
         (err2) => {
           if (err2) return res.status(500).json({ error: err2.message });
           res.json({ ok: true, project_id: session.project_id });
@@ -6603,8 +12093,10 @@ app.post('/api/kiosks/:id/active-session', async (req, res) => {
 });
 
 // List all sessions for today across kiosks (admin console)
-app.get('/api/kiosk-sessions/today', requireAdminAccess(() => true), (req, res) => {
-  const date = getTodayIsoDate();
+app.get('/api/kiosk-sessions/today', requireViewPayroll, async (req, res) => {
+  const orgId = req.session && req.session.orgId;
+  const orgTimezone = await getOrgTimezone(orgId);
+  const date = getTodayIsoDate(orgTimezone);
 
   const sessionsSql = `
     SELECT
@@ -6622,11 +12114,12 @@ app.get('/api/kiosk-sessions/today', requireAdminAccess(() => true), (req, res) 
     FROM kiosk_sessions ks
     LEFT JOIN kiosks k ON k.id = ks.kiosk_id
     LEFT JOIN projects p ON p.id = ks.project_id
-    WHERE ks.date = ?
+    WHERE ks.org_id = ?
+      AND ks.date = ?
     ORDER BY k.name, ks.created_at
   `;
 
-  db.all(sessionsSql, [date], (err, sessions) => {
+  db.all(sessionsSql, [orgId, date], (err, sessions) => {
     if (err) return res.status(500).json({ error: err.message });
     const list = sessions || [];
 
@@ -6643,11 +12136,12 @@ app.get('/api/kiosk-sessions/today', requireAdminAccess(() => true), (req, res) 
         FROM time_punches tp
         JOIN kiosks k ON k.device_id = tp.device_id
         LEFT JOIN employees e ON e.id = tp.employee_id
-        WHERE tp.clock_out_ts IS NULL
-          AND date(tp.clock_in_ts) = ?
+        WHERE tp.org_id = ?
+          AND tp.clock_out_ts IS NULL
+          AND tp.clock_in_local_date = ?
       `;
 
-    db.all(punchesSql, [date], (err2, punches) => {
+    db.all(punchesSql, [orgId, date], (err2, punches) => {
       if (err2) return res.status(500).json({ error: err2.message });
       const byKey = new Map();
       list.forEach(s => {
@@ -6681,14 +12175,22 @@ app.get('/api/kiosks/:id/foreman-today', async (req, res) => {
     return res.status(400).json({ error: 'Invalid kiosk id.' });
   }
 
-  const access = await requireAdminOrKiosk(req, kioskId);
-  if (!access.ok) {
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
     return res
-      .status(access.status || 401)
-      .json({ error: access.error || 'Not authorized' });
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authorized' });
   }
 
-  const today = getTodayIsoDate();
+  if (adminCtx.via === 'kiosk') {
+    const deviceAccess = await ensureKioskDevice(req);
+    if (!deviceAccess.ok || Number(deviceAccess.kiosk.id) !== Number(kioskId)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+  }
+
+  const orgTimezone = await getOrgTimezone(adminCtx.orgId);
+  const today = getTodayIsoDate(orgTimezone);
 
   const sql = `
     SELECT
@@ -6696,12 +12198,13 @@ app.get('/api/kiosks/:id/foreman-today', async (req, res) => {
       e.name AS foreman_name
     FROM kiosk_foreman_days kf
     LEFT JOIN employees e ON e.id = kf.foreman_employee_id
-    WHERE kf.kiosk_id = ?
+    WHERE kf.org_id = ?
+      AND kf.kiosk_id = ?
       AND kf.date = ?
     LIMIT 1
   `;
 
-  db.get(sql, [kioskId, today], (err, row) => {
+  db.get(sql, [adminCtx.orgId, kioskId, today], (err, row) => {
     if (err) return res.status(500).json({ error: err.message });
 
     if (!row) {
@@ -6724,20 +12227,28 @@ app.post('/api/kiosks/:id/foreman-today', async (req, res) => {
     return res.status(400).json({ error: 'Invalid kiosk id.' });
   }
 
-  const access = await requireAdminOrKiosk(req, kioskId);
-  if (!access.ok) {
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
     return res
-      .status(access.status || 401)
-      .json({ error: access.error || 'Not authorized' });
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authorized' });
+  }
+
+  if (adminCtx.via === 'kiosk') {
+    const deviceAccess = await ensureKioskDevice(req);
+    if (!deviceAccess.ok || Number(deviceAccess.kiosk.id) !== Number(kioskId)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
   }
 
   const { foreman_employee_id, set_by_employee_id } = req.body || {};
-  const today = getTodayIsoDate();
+  const orgTimezone = await getOrgTimezone(adminCtx.orgId);
+  const today = getTodayIsoDate(orgTimezone);
 
   const sql = `
     INSERT INTO kiosk_foreman_days
-      (kiosk_id, foreman_employee_id, date, set_by_employee_id)
-    VALUES (?, ?, ?, ?)
+      (org_id, kiosk_id, foreman_employee_id, date, set_by_employee_id)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(kiosk_id, date) DO UPDATE SET
       foreman_employee_id = excluded.foreman_employee_id,
       set_by_employee_id = excluded.set_by_employee_id,
@@ -6747,6 +12258,7 @@ app.post('/api/kiosks/:id/foreman-today', async (req, res) => {
   db.run(
     sql,
     [
+      adminCtx.orgId,
       kioskId,
       foreman_employee_id || null,
       today,
@@ -6759,10 +12271,25 @@ app.post('/api/kiosks/:id/foreman-today', async (req, res) => {
   );
 });
 
-app.get('/api/kiosk/open-punch', (req, res) => {
+app.get('/api/kiosk/open-punch', async (req, res) => {
+  const access = await ensureKioskDevice(req);
+  if (!access.ok) {
+    return res
+      .status(access.status || 401)
+      .json({ error: access.error || 'Not authenticated' });
+  }
+
   const employeeId = parseInt(req.query.employee_id, 10);
   if (!employeeId) {
     return res.status(400).json({ error: 'employee_id is required.' });
+  }
+
+  const orgId =
+    access.via === 'session'
+      ? req.session && req.session.orgId
+      : access.kiosk && access.kiosk.org_id;
+  if (!orgId) {
+    return res.status(403).json({ error: 'Not authorized' });
   }
 
   const sql = `
@@ -6775,13 +12302,14 @@ app.get('/api/kiosk/open-punch', (req, res) => {
       p.customer_name
     FROM time_punches tp
     LEFT JOIN projects p ON tp.project_id = p.id
-    WHERE tp.employee_id = ?
+    WHERE tp.org_id = ?
+      AND tp.employee_id = ?
       AND tp.clock_out_ts IS NULL
     ORDER BY tp.clock_in_ts DESC
     LIMIT 1
   `;
 
-  db.get(sql, [employeeId], (err, row) => {
+  db.get(sql, [orgId, employeeId], (err, row) => {
     if (err) return res.status(500).json({ error: err.message });
 
     if (!row) {
@@ -6815,22 +12343,44 @@ const SHIPMENT_STATUSES = [
   'Archived'
 ];
 
-async function getAdminContext(req) {
+async function getAdminContext(req, { requirePerm } = {}) {
   if (!req.session || !req.session.userId) return null;
 
-  const user = await dbGet(
-    'SELECT id, email, employee_id FROM users WHERE id = ?',
-    [req.session.userId]
+  const orgId = req.session.orgId;
+  if (!orgId) return null;
+
+  const orgStatus = await getOrgStatus(orgId);
+  if (orgStatus && orgStatus !== 'active') return null;
+
+  const membership = await dbGet(
+    'SELECT login_enabled FROM user_orgs WHERE user_id = ? AND org_id = ?',
+    [req.session.userId, orgId]
   );
-  if (!user || !user.employee_id) return null;
+  if (!membership || !isTruthyFlag(membership.login_enabled)) return null;
+
+  const user = await dbGet('SELECT id, email FROM users WHERE id = ?', [
+    req.session.userId
+  ]);
+  if (!user) return null;
+
+  const employeeId = req.session.employeeId;
+  if (!employeeId) return null;
 
   const employee = await dbGet(
-    'SELECT id, name, is_admin FROM employees WHERE id = ?',
-    [user.employee_id]
+    `
+      SELECT id, name, desktop_access, kiosk_admin_access, worker_timekeeping, active
+      FROM employees
+      WHERE id = ? AND org_id = ?
+    `,
+    [employeeId, orgId]
   );
 
-  if (!employee || !employee.is_admin) return null;
-  return { user, employee };
+  if (!employee || !employee.active || !employee.desktop_access) return null;
+
+  const perms = await getAdminAccessPerms({ employeeId, orgId });
+  if (requirePerm && !perms[requirePerm]) return null;
+
+  return { user, employee, perms, orgId };
 }
 
 function computeItemsVerifiedFlagFromItems(items) {
@@ -6845,26 +12395,44 @@ function computeItemsVerifiedFlagFromItems(items) {
   return allVerified ? 1 : 0;
 }
 
+function coerceBooleanFlag(value) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n'].includes(normalized)) return false;
+  }
+  return !!value;
+}
+
 async function ensureShipmentAccess(req) {
-  // 1) Try session-based auth first (employees with admin or kiosk shipment access)
-  if (req.session && req.session.employeeId) {
+  // 1) Try session-based auth first (desktop admins with see_shipments)
+  if (req.session && req.session.employeeId && req.session.orgId) {
+    const employeeId = req.session.employeeId;
+    const orgId = req.session.orgId;
+    const orgStatus = await getOrgStatus(orgId);
+    if (orgStatus && orgStatus !== 'active') {
+      return { ok: false, status: 403, error: 'Org access denied.' };
+    }
+
     const emp = await dbGet(
       `
-        SELECT id, is_admin, kiosk_can_view_shipments, IFNULL(active, 1) AS active
+        SELECT id, name, desktop_access, kiosk_admin_access, IFNULL(active, 1) AS active
         FROM employees
-        WHERE id = ?
+        WHERE id = ? AND org_id = ?
       `,
-      [req.session.employeeId]
+      [employeeId, orgId]
     );
 
-    if (emp && emp.active && (emp.is_admin || emp.kiosk_can_view_shipments)) {
-      return { ok: true, employee: emp, via: 'session' };
+    if (emp && emp.active && emp.desktop_access) {
+      const perms = await getAdminAccessPerms({ employeeId, orgId });
+      if (perms.see_shipments) {
+        return { ok: true, employee: emp, perms, via: 'session', orgId };
+      }
     }
-  }
 
-  // 1b) Admin console session without a linked employee (e.g., bootstrap admin user)
-  if (req.session && req.session.userId && !req.session.employeeId) {
-    return { ok: true, via: 'session' };
+    return { ok: false, status: 403, error: 'Not authorized' };
   }
 
   // 2) Fallback for kiosk/field devices: require employee_id + device credentials (must pre-exist)
@@ -6872,14 +12440,22 @@ async function ensureShipmentAccess(req) {
     (req.body && req.body.employee_id) ||
       (req.query && req.query.employee_id)
   );
+  const headerDeviceId = (req.get('x-kiosk-device-id') || '').trim();
+  const headerDeviceSecret = (req.get('x-kiosk-device-secret') || '').trim();
+  const cookieDeviceId = getCookieValue(req, 'kiosk_device_id');
+  const cookieDeviceSecret = getCookieValue(req, 'kiosk_device_secret');
   const deviceId = (
     (req.body && req.body.device_id) ||
     (req.query && req.query.device_id) ||
+    headerDeviceId ||
+    cookieDeviceId ||
     ''
   ).trim();
   const deviceSecret = (
     (req.body && req.body.device_secret) ||
     (req.query && req.query.device_secret) ||
+    headerDeviceSecret ||
+    cookieDeviceSecret ||
     ''
   ).trim();
 
@@ -6888,7 +12464,7 @@ async function ensureShipmentAccess(req) {
   }
 
   const kioskRow = await dbGet(
-    'SELECT id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
+    'SELECT id, org_id, device_id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
     [deviceId]
   );
   if (!kioskRow || !kioskRow.device_secret) {
@@ -6899,61 +12475,257 @@ async function ensureShipmentAccess(req) {
     return { ok: false, status: 403, error: 'Not authorized' };
   }
 
+  const kioskOrgStatus = await getOrgStatus(kioskRow.org_id);
+  if (kioskOrgStatus && kioskOrgStatus !== 'active') {
+    return { ok: false, status: 403, error: 'Org access denied.' };
+  }
+
   const emp = await dbGet(
     `
-      SELECT id, is_admin, kiosk_can_view_shipments, IFNULL(active, 1) AS active
+      SELECT id, name, kiosk_admin_access, IFNULL(active, 1) AS active
       FROM employees
-      WHERE id = ?
+      WHERE id = ? AND org_id = ?
     `,
-    [empId]
+    [empId, kioskRow.org_id]
   );
 
-  if (!emp || !emp.active || !(emp.is_admin || emp.kiosk_can_view_shipments)) {
+  if (!emp || !emp.active || !emp.kiosk_admin_access) {
     return { ok: false, status: 403, error: 'Not authorized' };
   }
 
-  return { ok: true, employee: emp, kiosk: kioskRow, via: 'kiosk' };
+  const perms = await getAdminAccessPerms({
+    employeeId: empId,
+    orgId: kioskRow.org_id
+  });
+
+  if (!perms.see_shipments) {
+    return { ok: false, status: 403, error: 'Not authorized' };
+  }
+
+  return {
+    ok: true,
+    employee: emp,
+    perms,
+    kiosk: kioskRow,
+    via: 'kiosk',
+    orgId: kioskRow.org_id
+  };
+}
+
+function getCookieValue(req, name) {
+  const header = req && req.headers ? req.headers.cookie || '' : '';
+  if (!header) return '';
+  const parts = header.split(';');
+  const target = String(name || '').trim();
+  for (const part of parts) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = decodeURIComponent(part.slice(0, idx).trim());
+    if (key !== target) continue;
+    return decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return '';
 }
 
 async function ensureKioskDevice(req) {
-  // Allow any established admin/user session to proceed
-  if (req.session && (req.session.userId || req.session.employeeId)) {
-    return { ok: true, via: 'session' };
-  }
-
+  const headerDeviceId = (req.get('x-kiosk-device-id') || '').trim();
+  const headerDeviceSecret = (req.get('x-kiosk-device-secret') || '').trim();
+  const cookieDeviceId = getCookieValue(req, 'kiosk_device_id');
+  const cookieDeviceSecret = getCookieValue(req, 'kiosk_device_secret');
   const deviceId = (
     (req.body && req.body.device_id) ||
     (req.query && req.query.device_id) ||
+    headerDeviceId ||
+    cookieDeviceId ||
     ''
   ).trim();
   const deviceSecret = (
     (req.body && req.body.device_secret) ||
     (req.query && req.query.device_secret) ||
+    headerDeviceSecret ||
+    cookieDeviceSecret ||
     ''
   ).trim();
 
-  if (!deviceId || !deviceSecret) {
-    return { ok: false, status: 401, error: 'Not authenticated' };
+  const hasDeviceCreds = deviceId || deviceSecret;
+  if (hasDeviceCreds) {
+    if (!deviceId || !deviceSecret) {
+      return { ok: false, status: 401, error: 'Not authenticated' };
+    }
+
+    const kioskRow = await dbGet(
+      'SELECT id, org_id, device_id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
+      [deviceId]
+    );
+    if (!kioskRow || !kioskRow.device_secret) {
+      return { ok: false, status: 403, error: 'Not authorized' };
+    }
+
+    if (kioskRow.device_secret !== deviceSecret) {
+      return { ok: false, status: 403, error: 'Not authorized' };
+    }
+
+    const orgStatus = await getOrgStatus(kioskRow.org_id);
+    if (orgStatus && orgStatus !== 'active') {
+      return { ok: false, status: 403, error: 'Org access denied.' };
+    }
+
+    return { ok: true, kiosk: kioskRow, via: 'kiosk' };
   }
 
-  const kioskRow = await dbGet(
-    'SELECT id, device_secret FROM kiosks WHERE device_id = ? LIMIT 1',
-    [deviceId]
+  if (req.session && req.session.userId && req.session.employeeId && req.session.orgId) {
+    const orgId = req.session.orgId;
+    const orgStatus = await getOrgStatus(orgId);
+    if (orgStatus && orgStatus !== 'active') {
+      return { ok: false, status: 403, error: 'Org access denied.' };
+    }
+    const membership = await dbGet(
+      'SELECT login_enabled FROM user_orgs WHERE user_id = ? AND org_id = ?',
+      [req.session.userId, orgId]
+    );
+    if (!membership || !isTruthyFlag(membership.login_enabled)) {
+      return { ok: false, status: 403, error: 'Not authorized' };
+    }
+    const employeeId = req.session.employeeId;
+    const emp = await dbGet(
+      `
+        SELECT id, kiosk_admin_access, IFNULL(active, 1) AS active
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [employeeId, orgId]
+    );
+    if (!emp || !emp.active || !emp.kiosk_admin_access) {
+      return { ok: false, status: 403, error: 'Not authorized' };
+    }
+    return { ok: true, via: 'session', orgId, employee: emp };
+  }
+
+  return { ok: false, status: 401, error: 'Not authenticated' };
+}
+
+async function resolveKioskAdmin(req) {
+  const access = await ensureKioskDevice(req);
+  if (!access.ok) return access;
+
+  const orgId =
+    access.via === 'session'
+      ? req.session && req.session.orgId
+      : access.kiosk && access.kiosk.org_id;
+
+  if (!orgId) {
+    return { ok: false, status: 403, error: 'Not authorized' };
+  }
+
+  if (access.via === 'session') {
+    const employeeId = req.session && req.session.employeeId;
+    if (!employeeId) {
+      return { ok: false, status: 403, error: 'Admin privileges required.' };
+    }
+
+    const empAccess = await getEmployeeAccessFlags({ employeeId, orgId });
+    if (!empAccess || !empAccess.active || !empAccess.kiosk_admin_access) {
+      return { ok: false, status: 403, error: 'Admin privileges required.' };
+    }
+
+    return { ok: true, orgId, adminId: employeeId, via: 'session' };
+  }
+
+  const adminId = Number(
+    (req.body && (req.body.admin_id || req.body.employee_id)) ||
+      (req.query && (req.query.admin_id || req.query.employee_id)) ||
+      0
   );
-  if (!kioskRow || !kioskRow.device_secret) {
+  if (!adminId) {
+    return { ok: false, status: 400, error: 'admin_id is required.' };
+  }
+
+  const admin = await dbGet(
+    `
+      SELECT id
+      FROM employees
+      WHERE id = ? AND org_id = ? AND IFNULL(kiosk_admin_access, 0) = 1
+        AND IFNULL(active, 1) = 1
+      LIMIT 1
+    `,
+    [adminId, orgId]
+  );
+  if (!admin) {
+    return { ok: false, status: 403, error: 'Admin not authorized.' };
+  }
+
+  return { ok: true, orgId, adminId, via: 'kiosk' };
+}
+
+async function resolveModifyTimeContext(req) {
+  if (req.session && req.session.userId && req.session.orgId) {
+    const status = await requireActiveDesktopSession(req);
+    if (status.ok) {
+      const orgId = status.orgId;
+      const employeeId = status.employeeId;
+      const perms = await getAdminAccessPerms({ employeeId, orgId });
+      if (perms.modify_time) {
+        return { ok: true, orgId, adminId: employeeId, via: 'session', perms };
+      }
+    } else if (status.error === 'Org access denied.') {
+      return { ok: false, status: status.status || 403, error: status.error };
+    }
+  }
+
+  const deviceAccess = await ensureKioskDevice(req);
+  if (!deviceAccess.ok) return deviceAccess;
+
+  const orgId = deviceAccess.kiosk && deviceAccess.kiosk.org_id;
+  if (!orgId) {
     return { ok: false, status: 403, error: 'Not authorized' };
   }
 
-  if (kioskRow.device_secret !== deviceSecret) {
-    return { ok: false, status: 403, error: 'Not authorized' };
+  const adminIdRaw =
+    (req.body && (req.body.admin_id || req.body.employee_id)) ||
+    (req.query && (req.query.admin_id || req.query.employee_id)) ||
+    0;
+  const adminId = Number(adminIdRaw);
+  if (!adminId) {
+    return { ok: false, status: 400, error: 'admin_id is required.' };
   }
 
-  return { ok: true, kiosk: kioskRow, via: 'kiosk' };
+  const admin = await dbGet(
+    `
+      SELECT id
+      FROM employees
+      WHERE id = ? AND org_id = ? AND IFNULL(kiosk_admin_access, 0) = 1
+        AND IFNULL(active, 1) = 1
+      LIMIT 1
+    `,
+    [adminId, orgId]
+  );
+  if (!admin) {
+    return { ok: false, status: 403, error: 'Admin not authorized.' };
+  }
+
+  const perms = await getAdminAccessPerms({ employeeId: adminId, orgId });
+  if (!perms.modify_time) {
+    return { ok: false, status: 403, error: 'Not authorized.' };
+  }
+
+  return { ok: true, orgId, adminId, via: 'kiosk', perms };
+}
+
+async function requireModifyTimeAny(req, res, next) {
+  const ctx = await resolveModifyTimeContext(req);
+  if (!ctx.ok) {
+    return res
+      .status(ctx.status || 403)
+      .json({ error: ctx.error || 'Not authorized.' });
+  }
+  req.modifyTimeContext = ctx;
+  return next();
 }
 
 // Allow either an admin session or a kiosk device secret for kiosk-specific routes.
 async function requireAdminOrKiosk(req, kioskId = null) {
-  const adminCtx = await getAdminContext(req);
+  const adminCtx = await getAdminContext(req, { requirePerm: 'view_payroll' });
   if (adminCtx) {
     return { ok: true, via: 'admin', adminCtx };
   }
@@ -6997,6 +12769,20 @@ function normalizeNotificationShipments(rawIds) {
   return out.slice(0, 200);
 }
 
+function normalizeNotificationProjects(rawIds) {
+  if (!Array.isArray(rawIds)) return [];
+  const out = [];
+
+  rawIds.forEach(val => {
+    const num = Number(val);
+    if (Number.isInteger(num) && num > 0 && !out.includes(num)) {
+      out.push(num);
+    }
+  });
+
+  return out.slice(0, 200);
+}
+
 function normalizeNotifyTime(value) {
   if (!value) return '';
   const str = String(value).trim();
@@ -7015,18 +12801,666 @@ function normalizeNotifyTime(value) {
   return `${match[1]}:${match[2]}`;
 }
 
+const TIME_NOTIFICATION_EVENTS = [
+  'TIME_EXCEPTION_OPEN',
+  'TIME_EXCEPTION_REVIEWED',
+  'TIME_EXCEPTION_RESOLVED',
+  'TIME_ENTRY_MANUAL_CREATED',
+  'TIME_ENTRY_MANUAL_EDITED'
+];
+const PAYROLL_NOTIFICATION_EVENTS = [
+  'PAYROLL_RUN_DUE',
+  'PAYROLL_RUN_STARTED',
+  'PAYROLL_RUN_SUCCESS',
+  'PAYROLL_RUN_PARTIAL',
+  'PAYROLL_RUN_FAILURE',
+  'PAYROLL_FATAL_ERROR',
+  'PAYROLL_QBO_ERROR',
+  'PAYROLL_UNPAY'
+];
+
+const DEFAULT_NOTIFICATION_PREFS = {
+  email_enabled: true,
+  push_enabled: true,
+  shipment_filters: {
+    enabled: true,
+    statuses: [],
+    project_ids: []
+  },
+  payroll_filters: {
+    enabled: true,
+    event_types: [
+      'PAYROLL_RUN_DUE',
+      'PAYROLL_RUN_FAILURE',
+      'PAYROLL_QBO_ERROR',
+      'PAYROLL_FATAL_ERROR'
+    ]
+  },
+  time_filters: {
+    enabled: true,
+    event_types: ['TIME_EXCEPTION_OPEN']
+  },
+  remind_time: '',
+  remind_every_days: 1,
+  clockout_enabled: false,
+  clockout_time: ''
+};
+
+function normalizeEventTypeList(raw, allowed) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  raw.forEach(item => {
+    const val = String(item || '').trim();
+    if (!val) return;
+    if (allowed && allowed.length && !allowed.includes(val)) return;
+    if (!out.includes(val)) out.push(val);
+  });
+  return out;
+}
+
+function parseJsonArray(value) {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonObject(value) {
+  if (!value) return null;
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function mapNotificationPrefsRow(row) {
+  if (!row) {
+    return { ...DEFAULT_NOTIFICATION_PREFS };
+  }
+
+  const shipmentFilters = parseJsonObject(row.shipment_filters_json) || {};
+  const payrollFilters = parseJsonObject(row.payroll_filters_json) || {};
+  const timeFilters = parseJsonObject(row.time_filters_json) || {};
+
+  return {
+    email_enabled: row.email_enabled !== 0,
+    push_enabled: row.push_enabled !== 0,
+    shipment_filters: {
+      enabled:
+        shipmentFilters.enabled !== false &&
+        shipmentFilters.enabled !== 0 &&
+        shipmentFilters.enabled !== 'false',
+      statuses: normalizeNotificationStatuses(shipmentFilters.statuses || []),
+      project_ids: normalizeNotificationProjects(shipmentFilters.project_ids || [])
+    },
+    payroll_filters: {
+      enabled:
+        payrollFilters.enabled !== false &&
+        payrollFilters.enabled !== 0 &&
+        payrollFilters.enabled !== 'false',
+      event_types: normalizeEventTypeList(
+        payrollFilters.event_types || [],
+        PAYROLL_NOTIFICATION_EVENTS
+      )
+    },
+    time_filters: {
+      enabled:
+        timeFilters.enabled !== false &&
+        timeFilters.enabled !== 0 &&
+        timeFilters.enabled !== 'false',
+      event_types: normalizeEventTypeList(
+        timeFilters.event_types || [],
+        TIME_NOTIFICATION_EVENTS
+      )
+    },
+    remind_time: row.remind_time || '',
+    remind_every_days:
+      row.remind_every_days != null ? Number(row.remind_every_days) || 1 : 1,
+    clockout_enabled: row.clockout_enabled === 1 || row.clockout_enabled === true,
+    clockout_time: row.clockout_time || ''
+  };
+}
+
+function normalizeNotificationPrefsPayload(body) {
+  const payload = body && typeof body === 'object' ? body : {};
+  const shipmentFilters = payload.shipment_filters || {};
+  const payrollFilters = payload.payroll_filters || {};
+  const timeFilters = payload.time_filters || {};
+
+  const normalized = {
+    email_enabled: payload.email_enabled !== false && payload.email_enabled !== 0,
+    push_enabled: payload.push_enabled !== false && payload.push_enabled !== 0,
+    shipment_filters: {
+      enabled:
+        shipmentFilters.enabled !== false &&
+        shipmentFilters.enabled !== 0 &&
+        shipmentFilters.enabled !== 'false',
+      statuses: normalizeNotificationStatuses(shipmentFilters.statuses || []),
+      project_ids: normalizeNotificationProjects(shipmentFilters.project_ids || [])
+    },
+    payroll_filters: {
+      enabled:
+        payrollFilters.enabled !== false &&
+        payrollFilters.enabled !== 0 &&
+        payrollFilters.enabled !== 'false',
+      event_types: normalizeEventTypeList(
+        payrollFilters.event_types || [],
+        PAYROLL_NOTIFICATION_EVENTS
+      )
+    },
+    time_filters: {
+      enabled:
+        timeFilters.enabled !== false &&
+        timeFilters.enabled !== 0 &&
+        timeFilters.enabled !== 'false',
+      event_types: normalizeEventTypeList(
+        timeFilters.event_types || [],
+        TIME_NOTIFICATION_EVENTS
+      )
+    },
+    remind_time: payload.remind_time ? normalizeNotifyTime(payload.remind_time) : '',
+    remind_every_days: Number(payload.remind_every_days) || 1,
+    clockout_enabled:
+      payload.clockout_enabled === true ||
+      payload.clockout_enabled === 1 ||
+      payload.clockout_enabled === 'true',
+    clockout_time: payload.clockout_time ? normalizeNotifyTime(payload.clockout_time) : ''
+  };
+
+  if (!Number.isFinite(normalized.remind_every_days) || normalized.remind_every_days < 1) {
+    normalized.remind_every_days = 1;
+  }
+
+  return normalized;
+}
+
+async function loadNotificationPrefs(orgId, userId) {
+  if (!orgId || !userId) return { ...DEFAULT_NOTIFICATION_PREFS };
+  const row = await dbGet(
+    `
+      SELECT email_enabled, push_enabled, shipment_filters_json, payroll_filters_json,
+             time_filters_json, remind_time, remind_every_days, clockout_enabled, clockout_time
+      FROM notification_prefs
+      WHERE org_id = ? AND user_id = ?
+    `,
+    [orgId, userId]
+  );
+  return mapNotificationPrefsRow(row);
+}
+
+async function upsertNotificationPrefs(orgId, userId, payload) {
+  if (!orgId || !userId) return null;
+
+  await dbRun(
+    `
+      INSERT INTO notification_prefs (
+        org_id,
+        user_id,
+        email_enabled,
+        push_enabled,
+        shipment_filters_json,
+        payroll_filters_json,
+        time_filters_json,
+        remind_time,
+        remind_every_days,
+        clockout_enabled,
+        clockout_time,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(org_id, user_id) DO UPDATE SET
+        email_enabled = excluded.email_enabled,
+        push_enabled = excluded.push_enabled,
+        shipment_filters_json = excluded.shipment_filters_json,
+        payroll_filters_json = excluded.payroll_filters_json,
+        time_filters_json = excluded.time_filters_json,
+        remind_time = excluded.remind_time,
+        remind_every_days = excluded.remind_every_days,
+        clockout_enabled = excluded.clockout_enabled,
+        clockout_time = excluded.clockout_time
+    `,
+    [
+      orgId,
+      userId,
+      payload.email_enabled ? 1 : 0,
+      payload.push_enabled ? 1 : 0,
+      JSON.stringify(payload.shipment_filters || {}),
+      JSON.stringify(payload.payroll_filters || {}),
+      JSON.stringify(payload.time_filters || {}),
+      payload.remind_time || null,
+      payload.remind_every_days || 1,
+      payload.clockout_enabled ? 1 : 0,
+      payload.clockout_time || null
+    ]
+  );
+
+  return payload;
+}
+
+async function loadNotificationPrefsMap(orgId) {
+  if (!orgId) return new Map();
+  const rows = await dbAll(
+    `
+      SELECT user_id, email_enabled, push_enabled, shipment_filters_json,
+             payroll_filters_json, time_filters_json, remind_time, remind_every_days,
+             clockout_enabled, clockout_time
+      FROM notification_prefs
+      WHERE org_id = ?
+    `,
+    [orgId]
+  );
+  const map = new Map();
+  (rows || []).forEach(row => {
+    map.set(row.user_id, mapNotificationPrefsRow(row));
+  });
+  return map;
+}
+
+async function loadNotificationRecipients(orgId) {
+  if (!orgId) return [];
+  const rows = await dbAll(
+    `
+      SELECT
+        uo.user_id,
+        uo.employee_id,
+        uo.is_super_admin,
+        u.email,
+        e.name AS employee_name,
+        e.desktop_access,
+        e.active,
+        p.see_shipments,
+        p.modify_time,
+        p.view_time_reports,
+        p.view_payroll,
+        p.modify_payroll
+      FROM user_orgs uo
+      JOIN users u ON u.id = uo.user_id
+      JOIN employees e ON e.id = uo.employee_id AND e.org_id = uo.org_id
+      LEFT JOIN employee_permissions p ON p.employee_id = e.id
+      WHERE uo.org_id = ?
+        AND IFNULL(e.active, 1) = 1
+        AND IFNULL(e.desktop_access, 0) = 1
+        AND IFNULL(uo.login_enabled, 1) = 1
+    `,
+    [orgId]
+  );
+  return rows || [];
+}
+
+function mapRecipientPerms(row) {
+  const isSuper = row && (row.is_super_admin === 1 || row.is_super_admin === true);
+  if (isSuper) {
+    return {
+      see_shipments: true,
+      modify_time: true,
+      view_time_reports: true,
+      view_payroll: true,
+      modify_payroll: true
+    };
+  }
+  const toBool = val => val === 1 || val === true || val === 'true';
+  return {
+    see_shipments: toBool(row?.see_shipments),
+    modify_time: toBool(row?.modify_time),
+    view_time_reports: toBool(row?.view_time_reports),
+    view_payroll: toBool(row?.view_payroll),
+    modify_payroll: toBool(row?.modify_payroll)
+  };
+}
+
+function hasNotificationPerms(perms, category) {
+  if (!perms) return false;
+  if (category === 'shipment') return !!perms.see_shipments;
+  if (category === 'time') {
+    return !!(perms.modify_time || perms.view_time_reports || perms.view_payroll);
+  }
+  if (category === 'payroll') return !!perms.view_payroll;
+  return false;
+}
+
+async function createNotificationRow({ orgId, userId, type, title, body, data }) {
+  if (!orgId || !userId) return null;
+  const dataJson = data ? JSON.stringify(data) : null;
+  const res = await dbRun(
+    `
+      INSERT INTO notifications (org_id, user_id, type, title, body, data_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    [orgId, userId, type || null, title || null, body || null, dataJson]
+  );
+  return res?.lastID || null;
+}
+
+async function recordNotificationDelivery({ orgId, notificationId, channel, status, error }) {
+  if (!orgId || !notificationId || !channel) return;
+  await dbRun(
+    `
+      INSERT INTO notification_deliveries (org_id, notification_id, channel, status, error)
+      VALUES (?, ?, ?, ?, ?)
+    `,
+    [orgId, notificationId, channel, status || null, error || null]
+  );
+}
+
+async function sendEmailNotification({ userEmail, title, body }) {
+  if (!mailTransport || !mailFromAddress) {
+    return { status: 'skipped', error: 'Email not configured.' };
+  }
+  if (!userEmail) {
+    return { status: 'skipped', error: 'No email address on file.' };
+  }
+
+  try {
+    await mailTransport.sendMail({
+      from: mailFromAddress,
+      to: userEmail,
+      subject: title || 'Notification',
+      text: body || ''
+    });
+    return { status: 'sent' };
+  } catch (err) {
+    return { status: 'error', error: err.message || 'Email send failed.' };
+  }
+}
+
+async function sendPushNotification({ orgId, userId, title, body, data }) {
+  if (!pushConfigured) {
+    return { status: 'skipped', error: 'Push not configured.' };
+  }
+  if (!orgId || !userId) {
+    return { status: 'skipped', error: 'Missing user context.' };
+  }
+
+  const subs = await dbAll(
+    `
+      SELECT id, endpoint, p256dh, auth
+      FROM push_subscriptions
+      WHERE org_id = ? AND user_id = ? AND revoked_at IS NULL
+    `,
+    [orgId, userId]
+  );
+
+  if (!subs || !subs.length) {
+    return { status: 'skipped', error: 'No push subscription found.' };
+  }
+
+  const payload = JSON.stringify({
+    title: title || 'Notification',
+    body: body || '',
+    data: data || {}
+  });
+
+  let sent = 0;
+  let lastError = null;
+
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(
+        {
+          endpoint: sub.endpoint,
+          keys: {
+            p256dh: sub.p256dh,
+            auth: sub.auth
+          }
+        },
+        payload
+      );
+      sent += 1;
+    } catch (err) {
+      lastError = err.message || 'Push send failed.';
+      const status = err?.statusCode || err?.status;
+      if (status === 410 || status === 404) {
+        await dbRun(
+          `UPDATE push_subscriptions SET revoked_at = datetime('now') WHERE id = ?`,
+          [sub.id]
+        );
+      }
+    }
+  }
+
+  if (sent > 0) {
+    return { status: 'sent' };
+  }
+  return { status: 'error', error: lastError || 'Push send failed.' };
+}
+
+function formatNotificationResult({ status, error } = {}) {
+  const normalized = status || 'skipped';
+  if (normalized === 'sent') return 'sent';
+  return error ? `${normalized} (${error})` : normalized;
+}
+
+async function deliverNotificationToUser({
+  orgId,
+  userId,
+  prefs,
+  type,
+  title,
+  body,
+  data,
+  channels
+}) {
+  const notificationId = await createNotificationRow({
+    orgId,
+    userId,
+    type,
+    title,
+    body,
+    data
+  });
+
+  if (!notificationId) {
+    return { ok: false, error: 'Failed to create notification.' };
+  }
+
+  await recordNotificationDelivery({
+    orgId,
+    notificationId,
+    channel: 'in_app',
+    status: 'stored'
+  });
+
+  const results = { in_app: 'sent' };
+  const sendChannels = Array.isArray(channels) && channels.length
+    ? channels
+    : ['push', 'email'];
+
+  if (sendChannels.includes('push')) {
+    if (prefs && prefs.push_enabled) {
+      const res = await sendPushNotification({ orgId, userId, title, body, data });
+      results.push = formatNotificationResult(res);
+      await recordNotificationDelivery({
+        orgId,
+        notificationId,
+        channel: 'push',
+        status: res.status,
+        error: res.error || null
+      });
+    } else {
+      results.push = formatNotificationResult({
+        status: 'skipped',
+        error: 'Push disabled.'
+      });
+      await recordNotificationDelivery({
+        orgId,
+        notificationId,
+        channel: 'push',
+        status: 'skipped',
+        error: 'Push disabled.'
+      });
+    }
+  }
+
+  if (sendChannels.includes('email')) {
+    if (prefs && prefs.email_enabled) {
+      const userRow = await dbGet('SELECT email FROM users WHERE id = ?', [userId]);
+      const res = await sendEmailNotification({
+        userEmail: userRow?.email || null,
+        title,
+        body
+      });
+      results.email = formatNotificationResult(res);
+      await recordNotificationDelivery({
+        orgId,
+        notificationId,
+        channel: 'email',
+        status: res.status,
+        error: res.error || null
+      });
+    } else {
+      results.email = formatNotificationResult({
+        status: 'skipped',
+        error: 'Email disabled.'
+      });
+      await recordNotificationDelivery({
+        orgId,
+        notificationId,
+        channel: 'email',
+        status: 'skipped',
+        error: 'Email disabled.'
+      });
+    }
+  }
+
+  return { ok: true, notificationId, results };
+}
+
+async function notifyShipmentStatusChange({
+  orgId,
+  shipmentId,
+  status,
+  projectId,
+  title,
+  actorName
+}) {
+  if (!orgId || !shipmentId) return;
+  const recipients = await loadNotificationRecipients(orgId);
+  const prefsMap = await loadNotificationPrefsMap(orgId);
+
+  const body = `Shipment "${title || 'Untitled'}" moved to ${status}.`;
+  const payload = {
+    shipment_id: Number(shipmentId),
+    status,
+    project_id: projectId || null,
+    actor_name: actorName || null
+  };
+
+  for (const row of recipients) {
+    const perms = mapRecipientPerms(row);
+    if (!hasNotificationPerms(perms, 'shipment')) continue;
+
+    const prefs = prefsMap.get(row.user_id) || { ...DEFAULT_NOTIFICATION_PREFS };
+    const shipmentFilters = prefs.shipment_filters || DEFAULT_NOTIFICATION_PREFS.shipment_filters;
+    if (!shipmentFilters.enabled) continue;
+
+    if (
+      shipmentFilters.statuses &&
+      shipmentFilters.statuses.length &&
+      !shipmentFilters.statuses.includes(status)
+    ) {
+      continue;
+    }
+    if (
+      shipmentFilters.project_ids &&
+      shipmentFilters.project_ids.length &&
+      (!projectId || !shipmentFilters.project_ids.includes(Number(projectId)))
+    ) {
+      continue;
+    }
+
+    await deliverNotificationToUser({
+      orgId,
+      userId: row.user_id,
+      prefs,
+      type: 'shipment',
+      title: 'Shipment status updated',
+      body,
+      data: payload
+    });
+  }
+}
+
+async function notifyTimeEvent({ orgId, eventType, title, body, data }) {
+  if (!orgId || !eventType) return;
+  const recipients = await loadNotificationRecipients(orgId);
+  const prefsMap = await loadNotificationPrefsMap(orgId);
+
+  for (const row of recipients) {
+    const perms = mapRecipientPerms(row);
+    if (!hasNotificationPerms(perms, 'time')) continue;
+    const prefs = prefsMap.get(row.user_id) || { ...DEFAULT_NOTIFICATION_PREFS };
+    const timeFilters = prefs.time_filters || DEFAULT_NOTIFICATION_PREFS.time_filters;
+    if (!timeFilters.enabled) continue;
+    if (
+      timeFilters.event_types &&
+      timeFilters.event_types.length &&
+      !timeFilters.event_types.includes(eventType)
+    ) {
+      continue;
+    }
+
+    await deliverNotificationToUser({
+      orgId,
+      userId: row.user_id,
+      prefs,
+      type: 'time',
+      title,
+      body,
+      data: { ...(data || {}), event_type: eventType }
+    });
+  }
+}
+
+async function notifyPayrollEvent({ orgId, eventType, title, body, data }) {
+  if (!orgId || !eventType) return;
+  const recipients = await loadNotificationRecipients(orgId);
+  const prefsMap = await loadNotificationPrefsMap(orgId);
+
+  for (const row of recipients) {
+    const perms = mapRecipientPerms(row);
+    if (!hasNotificationPerms(perms, 'payroll')) continue;
+    const prefs = prefsMap.get(row.user_id) || { ...DEFAULT_NOTIFICATION_PREFS };
+    const payrollFilters = prefs.payroll_filters || DEFAULT_NOTIFICATION_PREFS.payroll_filters;
+    if (!payrollFilters.enabled) continue;
+    if (
+      payrollFilters.event_types &&
+      payrollFilters.event_types.length &&
+      !payrollFilters.event_types.includes(eventType)
+    ) {
+      continue;
+    }
+
+    await deliverNotificationToUser({
+      orgId,
+      userId: row.user_id,
+      prefs,
+      type: 'payroll',
+      title,
+      body,
+      data: { ...(data || {}), event_type: eventType }
+    });
+  }
+}
+
 function mapNotificationPrefRow(row) {
   if (!row) {
     return {
       enabled: false,
       statuses: [],
+      project_ids: [],
       shipment_ids: [],
-      notify_time: ''
+      notify_time: '',
+      remind_every_days: 1
     };
   }
 
   let statuses = [];
   let shipmentIds = [];
+  let projectIds = [];
 
   try {
     const parsed = JSON.parse(row.statuses_json || '[]');
@@ -7038,18 +13472,26 @@ function mapNotificationPrefRow(row) {
     if (Array.isArray(parsed)) shipmentIds = parsed;
   } catch {}
 
+  try {
+    const parsed = JSON.parse(row.project_ids_json || '[]');
+    if (Array.isArray(parsed)) projectIds = parsed;
+  } catch {}
+
   return {
     enabled: !!row.enabled,
     statuses,
+    project_ids: projectIds,
     shipment_ids: shipmentIds,
-    notify_time: row.notify_time || ''
+    notify_time: row.notify_time || '',
+    remind_every_days:
+      row.remind_every_days != null ? Number(row.remind_every_days) || 1 : 1
   };
 }
 
 // Per-admin shipment notification preferences
-app.get('/api/shipments/notifications', requireAuth, async (req, res) => {
+app.get('/api/shipments/notifications', requireSeeShipments, async (req, res) => {
   try {
-    const ctx = await getAdminContext(req);
+    const ctx = await getAdminContext(req, { requirePerm: 'see_shipments' });
     if (!ctx) {
       return res
         .status(403)
@@ -7058,11 +13500,12 @@ app.get('/api/shipments/notifications', requireAuth, async (req, res) => {
 
     const row = await dbGet(
       `
-        SELECT statuses_json, shipment_ids_json, notify_time, enabled
+        SELECT statuses_json, shipment_ids_json, project_ids_json, notify_time,
+               remind_every_days, enabled
         FROM shipment_notification_prefs
-        WHERE user_id = ?
+        WHERE org_id = ? AND user_id = ?
       `,
-      [ctx.user.id]
+      [ctx.orgId, ctx.user.id]
     );
 
     res.json({
@@ -7077,9 +13520,9 @@ app.get('/api/shipments/notifications', requireAuth, async (req, res) => {
   }
 });
 
-app.put('/api/shipments/notifications', requireAuth, async (req, res) => {
+app.put('/api/shipments/notifications', requireSeeShipments, async (req, res) => {
   try {
-    const ctx = await getAdminContext(req);
+    const ctx = await getAdminContext(req, { requirePerm: 'see_shipments' });
     if (!ctx) {
       return res
         .status(403)
@@ -7088,14 +13531,22 @@ app.put('/api/shipments/notifications', requireAuth, async (req, res) => {
 
     const {
       statuses = [],
+      project_ids = [],
       shipment_ids = [],
       notify_time = '',
+      remind_every_days = 1,
       enabled = true
     } = req.body || {};
 
     const normalizedStatuses  = normalizeNotificationStatuses(statuses);
     const normalizedShipments = normalizeNotificationShipments(shipment_ids);
+    const normalizedProjects  = normalizeNotificationProjects(project_ids);
     const cleanTime           = notify_time ? normalizeNotifyTime(notify_time) : '';
+    const remindEveryRaw = Number(remind_every_days);
+    const remindEveryDays =
+      Number.isFinite(remindEveryRaw) && remindEveryRaw >= 1
+        ? Math.floor(remindEveryRaw)
+        : 1;
 
     if (notify_time && cleanTime == null) {
       return res.status(400).json({
@@ -7106,29 +13557,37 @@ app.put('/api/shipments/notifications', requireAuth, async (req, res) => {
     await dbRun(
       `
         INSERT INTO shipment_notification_prefs (
+          org_id,
           user_id,
           employee_id,
           statuses_json,
           shipment_ids_json,
+          project_ids_json,
           notify_time,
+          remind_every_days,
           enabled,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-        ON CONFLICT(user_id) DO UPDATE SET
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(org_id, user_id) DO UPDATE SET
           employee_id       = excluded.employee_id,
           statuses_json     = excluded.statuses_json,
           shipment_ids_json = excluded.shipment_ids_json,
+          project_ids_json  = excluded.project_ids_json,
           notify_time       = excluded.notify_time,
+          remind_every_days = excluded.remind_every_days,
           enabled           = excluded.enabled,
           updated_at        = datetime('now')
       `,
       [
+        ctx.orgId,
         ctx.user.id,
         ctx.employee.id,
         JSON.stringify(normalizedStatuses),
         JSON.stringify(normalizedShipments),
+        JSON.stringify(normalizedProjects),
         cleanTime || null,
+        remindEveryDays,
         enabled ? 1 : 0
       ]
     );
@@ -7138,8 +13597,10 @@ app.put('/api/shipments/notifications', requireAuth, async (req, res) => {
       preference: {
         enabled: !!enabled,
         statuses: normalizedStatuses,
+        project_ids: normalizedProjects,
         shipment_ids: normalizedShipments,
-        notify_time: cleanTime || ''
+        notify_time: cleanTime || '',
+        remind_every_days: remindEveryDays
       }
     });
   } catch (err) {
@@ -7150,11 +13611,296 @@ app.put('/api/shipments/notifications', requireAuth, async (req, res) => {
   }
 });
 
-
-app.post('/api/shipments', requireAdminAccess(() => true), async (req, res) => {
-
+// In-app notifications feed
+app.get('/api/notifications', requireAuth, async (req, res) => {
   try {
-        const {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    let limit = Number(req.query.limit || 50);
+    if (!Number.isFinite(limit) || limit <= 0 || limit > 200) limit = 50;
+    const beforeId = Number(req.query.before_id || 0);
+    const unreadOnly =
+      req.query.unread_only === '1' ||
+      req.query.unread_only === 'true' ||
+      req.query.unread_only === true;
+
+    const params = [orgId, userId];
+    let where = 'WHERE org_id = ? AND user_id = ?';
+
+    if (beforeId) {
+      where += ' AND id < ?';
+      params.push(beforeId);
+    }
+    if (unreadOnly) {
+      where += ' AND read_at IS NULL';
+    }
+
+    const rows = await dbAll(
+      `
+        SELECT id, type, title, body, data_json, read_at, created_at
+        FROM notifications
+        ${where}
+        ORDER BY id DESC
+        LIMIT ?
+      `,
+      [...params, limit]
+    );
+
+    const notifications = (rows || []).map(row => {
+      let data = null;
+      if (row.data_json) {
+        try {
+          data = JSON.parse(row.data_json);
+        } catch {
+          data = null;
+        }
+      }
+      return {
+        id: row.id,
+        type: row.type,
+        title: row.title,
+        body: row.body,
+        data,
+        read_at: row.read_at,
+        created_at: row.created_at
+      };
+    });
+
+    const nextBeforeId =
+      notifications.length === limit
+        ? notifications[notifications.length - 1].id
+        : null;
+
+    res.json({ notifications, next_before_id: nextBeforeId });
+  } catch (err) {
+    console.error('Error loading notifications:', err);
+    res.status(500).json({ error: 'Failed to load notifications.' });
+  }
+});
+
+app.post('/api/notifications/mark-read', requireAuth, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const { ids = [], all = false } = req.body || {};
+    let updated = 0;
+
+    if (all) {
+      const result = await dbRun(
+        `
+          UPDATE notifications
+          SET read_at = datetime('now')
+          WHERE org_id = ? AND user_id = ? AND read_at IS NULL
+        `,
+        [orgId, userId]
+      );
+      updated = result?.changes || 0;
+    } else {
+      const list = Array.isArray(ids) ? ids : [];
+      const cleaned = list
+        .map(id => Number(id))
+        .filter(id => Number.isInteger(id) && id > 0);
+      if (cleaned.length) {
+        const placeholders = cleaned.map(() => '?').join(',');
+        const result = await dbRun(
+          `
+            UPDATE notifications
+            SET read_at = datetime('now')
+            WHERE org_id = ? AND user_id = ? AND id IN (${placeholders})
+          `,
+          [orgId, userId, ...cleaned]
+        );
+        updated = result?.changes || 0;
+      }
+    }
+
+    res.json({ ok: true, updated });
+  } catch (err) {
+    console.error('Error marking notifications read:', err);
+    res.status(500).json({ error: 'Failed to update notifications.' });
+  }
+});
+
+app.post('/api/notifications/test', requireAuth, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const { channels = [], title, body } = req.body || {};
+    const normalizedChannels = Array.isArray(channels)
+      ? channels
+          .map(c => String(c || '').trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+    const finalChannels = normalizedChannels.length
+      ? normalizedChannels
+      : ['in_app'];
+
+    const prefs = await loadNotificationPrefs(orgId, userId);
+    const result = await deliverNotificationToUser({
+      orgId,
+      userId,
+      prefs,
+      type: 'test',
+      title: title || 'Test notification',
+      body: body || 'This is a test notification from Avian.',
+      data: { test: true },
+      channels: finalChannels
+    });
+
+    res.json({
+      ok: true,
+      results: result.results || { in_app: 'sent' }
+    });
+  } catch (err) {
+    console.error('Error sending test notification:', err);
+    res.status(500).json({ error: 'Failed to send test notification.' });
+  }
+});
+
+app.get('/api/notifications/prefs', requireAuth, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const prefs = await loadNotificationPrefs(orgId, userId);
+    res.json({
+      prefs,
+      push_public_key: VAPID_PUBLIC_KEY || '',
+      config: {
+        email_configured: smtpConfigured,
+        push_configured: pushConfigured,
+        apns_configured: apnsConfigured,
+        apns_supported: false
+      }
+    });
+  } catch (err) {
+    console.error('Error loading notification prefs:', err);
+    res.status(500).json({ error: 'Failed to load notification prefs.' });
+  }
+});
+
+app.put('/api/notifications/prefs', requireAuth, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const normalized = normalizeNotificationPrefsPayload(req.body || {});
+    if (req.body?.remind_time && normalized.remind_time == null) {
+      return res.status(400).json({
+        error: 'remind_time must be in HH:MM (24-hour) format.'
+      });
+    }
+    if (req.body?.clockout_time && normalized.clockout_time == null) {
+      return res.status(400).json({
+        error: 'clockout_time must be in HH:MM (24-hour) format.'
+      });
+    }
+
+    const prefs = await upsertNotificationPrefs(orgId, userId, normalized);
+    res.json({ ok: true, prefs });
+  } catch (err) {
+    console.error('Error saving notification prefs:', err);
+    res.status(500).json({ error: 'Failed to save notification prefs.' });
+  }
+});
+
+app.post('/api/notifications/push/subscribe', requireAuth, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    const { endpoint, p256dh, auth, user_agent } = req.body || {};
+
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    if (!endpoint || !p256dh || !auth) {
+      return res.status(400).json({ error: 'endpoint, p256dh, and auth are required.' });
+    }
+
+    await dbRun(
+      `
+        INSERT INTO push_subscriptions (
+          org_id, user_id, endpoint, p256dh, auth, user_agent, created_at, revoked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), NULL)
+        ON CONFLICT(org_id, user_id, endpoint) DO UPDATE SET
+          p256dh = excluded.p256dh,
+          auth = excluded.auth,
+          user_agent = excluded.user_agent,
+          revoked_at = NULL
+      `,
+      [orgId, userId, endpoint, p256dh, auth, user_agent || null]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error saving push subscription:', err);
+    res.status(500).json({ error: 'Failed to save push subscription.' });
+  }
+});
+
+app.post('/api/notifications/push/unsubscribe', requireAuth, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    const { endpoint } = req.body || {};
+
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    if (!endpoint) {
+      return res.status(400).json({ error: 'endpoint is required.' });
+    }
+
+    await dbRun(
+      `
+        UPDATE push_subscriptions
+        SET revoked_at = datetime('now')
+        WHERE org_id = ? AND user_id = ? AND endpoint = ?
+      `,
+      [orgId, userId, endpoint]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error removing push subscription:', err);
+    res.status(500).json({ error: 'Failed to remove push subscription.' });
+  }
+});
+
+
+app.post('/api/shipments', requireSeeShipments, async (req, res) => {
+  let transactionStarted = false;
+  try {
+    const orgId = req.session && req.session.orgId;
+    const createdBy = req.session && req.session.employeeId
+      ? req.session.employeeId
+      : null;
+
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const {
       title,
       po_number,
       vendor_id,
@@ -7172,9 +13918,7 @@ app.post('/api/shipments', requireAdminAccess(() => true), async (req, res) => {
       bol_number,
       items = [],
 
-      // NEW STORAGE / PICKUP FIELDS
-      storage_room,
-      storage_details,
+      // STORAGE / PICKUP FIELDS
       storage_due_date,
       storage_daily_late_fee,
       picked_up_by,
@@ -7201,25 +13945,6 @@ app.post('/api/shipments', requireAdminAccess(() => true), async (req, res) => {
       status
     } = req.body;
 
-    // Compute auto items_verified from line items:
-// true if we have items and ALL have verification.status === "verified"
-// Compute auto items_verified from line items
-const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
-
-    // Snapshot project/vendor names so shipments stay readable if QBO sync is unavailable
-    const projectRow = project_id
-      ? await dbGet('SELECT name FROM projects WHERE id = ? LIMIT 1', [project_id])
-      : null;
-    const projectNameSnapshot = projectRow?.name || null;
-
-    let finalVendorName = vendor_name || null;
-    if (!finalVendorName && vendor_id) {
-      const vendorRow = await dbGet('SELECT name FROM vendors WHERE id = ? LIMIT 1', [vendor_id]);
-      finalVendorName = vendorRow?.name || null;
-    }
-
-
-
     // ───────── VALIDATION ─────────
     if (!title || !title.trim()) {
       return res
@@ -7233,18 +13958,63 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         .json({ error: 'Project is required.' });
     }
 
-    // Normalize status to one of the known statuses
+    // Snapshot project/vendor names so shipments stay readable if QBO sync is unavailable
+    const projectRow = await dbGet(
+      'SELECT name FROM projects WHERE id = ? AND org_id = ? LIMIT 1',
+      [project_id, orgId]
+    );
+    if (!projectRow) {
+      return res.status(400).json({ error: 'Project not found.' });
+    }
+    const projectNameSnapshot = projectRow?.name || null;
+
+    let finalVendorName = vendor_name || null;
+    if (vendor_id) {
+      const vendorRow = await dbGet(
+        'SELECT name FROM vendors WHERE id = ? AND org_id = ? LIMIT 1',
+        [vendor_id, orgId]
+      );
+      if (!vendorRow) {
+        return res.status(400).json({ error: 'Vendor not found.' });
+      }
+      finalVendorName = vendorRow?.name || null;
+    }
+
+    let itemsVerifiedFlag;
+    if (items_verified !== undefined && items_verified !== null) {
+      itemsVerifiedFlag = coerceBooleanFlag(items_verified) ? 1 : 0;
+    } else {
+      itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
+    }
+
+    // Normalize status (allow custom statuses)
     let initialStatus = 'Pre-Order';
-    if (status && SHIPMENT_STATUSES.includes(status.trim())) {
-      initialStatus = status.trim();
+    if (status && typeof status === 'string') {
+      const trimmed = status.trim();
+      if (trimmed) initialStatus = trimmed;
+    }
+
+    let resolvedStorageDailyLateFee = storage_daily_late_fee;
+    if (resolvedStorageDailyLateFee == null) {
+      const defaultFeeRaw = await loadOrgSettingValue(
+        orgId,
+        'storage_daily_late_fee_default'
+      );
+      const defaultFee = defaultFeeRaw != null ? Number(defaultFeeRaw) : NaN;
+      resolvedStorageDailyLateFee =
+        Number.isFinite(defaultFee) && defaultFee >= 0 ? defaultFee : null;
     }
 
 
 
     // ───────── INSERT INTO shipments ─────────
+    await dbRun('BEGIN TRANSACTION');
+    transactionStarted = true;
+
     const result = await dbRun(
       `
             INSERT INTO shipments (
+        org_id,
         title,
         po_number,
         vendor_id,
@@ -7261,8 +14031,6 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         expected_arrival_date,
         tracking_number,
         bol_number,
-        storage_room,
-        storage_details,
         storage_due_date,
         storage_daily_late_fee,
         picked_up_by,
@@ -7281,13 +14049,17 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         verification_notes,
         website_url,
         notes,
-        status
+        status,
+        created_by,
+        created_at,
+        updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
 
       `,
             [
+        orgId,
         title,
         po_number || null,
         vendor_id || null,
@@ -7297,17 +14069,15 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         sku || null,
         finalVendorName || null,
         freight_forwarder || null,
-        quantity || null,
-        total_price || null,
-        price_per_item || null,
+        quantity != null ? quantity : null,
+        total_price != null ? total_price : null,
+        price_per_item != null ? price_per_item : null,
         expected_ship_date || null,
         expected_arrival_date || null,
         tracking_number || null,
         bol_number || null,
-        storage_room || null,
-        storage_details || null,
         storage_due_date || null,
-        storage_daily_late_fee != null ? storage_daily_late_fee : null,
+        resolvedStorageDailyLateFee != null ? resolvedStorageDailyLateFee : null,
         picked_up_by || null,
         picked_up_date || null,
         null,
@@ -7324,7 +14094,10 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         verification_notes || null,
         website_url || null,
         notes || null,
-        initialStatus
+        initialStatus,
+        createdBy,
+        new Date().toISOString(),
+        new Date().toISOString()
       ]
     );
 
@@ -7336,6 +14109,7 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
         await dbRun(
   `
     INSERT INTO shipment_items (
+  org_id,
   shipment_id,
   description,
   sku,
@@ -7346,9 +14120,10 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
   verified,
   notes,
   verification_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 [
+  orgId,
   id,
   it.description || null,
   it.sku || null,
@@ -7373,39 +14148,65 @@ const itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
     }
 
 
+    if (initialStatus === 'Archived') {
+      await dbRun(
+        `
+          UPDATE shipments
+          SET is_archived = 1,
+              archived_at = datetime('now')
+          WHERE id = ? AND org_id = ?
+        `,
+        [id, orgId]
+      );
+    }
+
     // ───────── STATUS HISTORY ─────────
     await dbRun(
       `
       INSERT INTO shipment_status_history (
-        shipment_id, old_status, new_status, changed_at
-      ) VALUES (?, NULL, ?, datetime('now'))
+        org_id, shipment_id, old_status, new_status, changed_at
+      ) VALUES (?, ?, NULL, ?, datetime('now'))
       `,
-      [id, initialStatus]
+      [orgId, id, initialStatus]
     );
 
     // ───────── TIMELINE ─────────
     await dbRun(
       `
       INSERT INTO shipment_timeline (
-        shipment_id, event_type, old_status, new_status, note, created_at
-      ) VALUES (?, 'status_change', NULL, ?, 'Shipment created.', datetime('now'))
+        org_id, shipment_id, event_type, old_status, new_status, note, created_by, created_at
+      ) VALUES (?, ?, 'status_change', NULL, ?, 'Shipment created.', ?, datetime('now'))
       `,
-      [id, initialStatus]
+      [orgId, id, initialStatus, createdBy]
     );
 
+    // ───────── COMMIT ─────────
+    await dbRun('COMMIT');
+    transactionStarted = false;
+
     // ───────── RETURN ROW ─────────
-    const row = await dbGet('SELECT * FROM shipments WHERE id = ?', [id]);
+    const row = await dbGet(
+      'SELECT * FROM shipments WHERE id = ? AND org_id = ?',
+      [id, orgId]
+    );
 
     res.json({ shipment: row });
 
   } catch (err) {
+    if (transactionStarted) {
+      try {
+        await dbRun('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('Shipment create rollback error:', rollbackErr);
+      }
+    }
     console.error('Error creating shipment:', err);
     res.status(500).json({ error: 'Error creating shipment.' });
   }
 });
 
 
-app.get('/api/shipments', requireAdminAccess(() => true), async (req, res) => {
+app.get('/api/shipments', requireSeeShipments, async (req, res) => {
 
   try {
     const {
@@ -7415,8 +14216,19 @@ app.get('/api/shipments', requireAdminAccess(() => true), async (req, res) => {
       vendor_id = ''
     } = req.query || {};
 
-    const params = [];
-    let where = 'WHERE IFNULL(s.is_archived, 0) = 0 ';
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const params = [orgId];
+    let where = 'WHERE s.org_id = ? ';
+
+    if (status && status === 'Archived') {
+      where += 'AND IFNULL(s.is_archived, 0) = 1 ';
+    } else {
+      where += 'AND IFNULL(s.is_archived, 0) = 0 ';
+    }
 
     // Text search (title, PO, tracking, BOL)
     if (search) {
@@ -7433,7 +14245,7 @@ app.get('/api/shipments', requireAdminAccess(() => true), async (req, res) => {
     }
 
     // Single-status filter (when you pick a specific status)
-    if (status) {
+    if (status && status !== 'Archived') {
       where += 'AND s.status = ? ';
       params.push(status);
     }
@@ -7458,8 +14270,8 @@ app.get('/api/shipments', requireAdminAccess(() => true), async (req, res) => {
         COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name
       FROM shipments s
-      LEFT JOIN vendors  v ON v.id = s.vendor_id
-      LEFT JOIN projects p ON p.id = s.project_id
+      LEFT JOIN vendors  v ON v.id = s.vendor_id AND v.org_id = s.org_id
+      LEFT JOIN projects p ON p.id = s.project_id AND p.org_id = s.org_id
       ${where}
       ORDER BY
         IFNULL(s.updated_at, s.created_at) DESC,
@@ -7468,32 +14280,49 @@ app.get('/api/shipments', requireAdminAccess(() => true), async (req, res) => {
       params
     );
 
-    // Build grouped data for the board
+    const canViewPayments = !!(req.adminPerms && req.adminPerms.view_payroll);
+    const visibleRows = !canViewPayments
+      ? (rows || []).map(row => ({
+          ...row,
+          vendor_paid_amount: null,
+          shipper_paid_amount: null,
+          customs_paid_amount: null,
+          total_paid: null
+        }))
+      : (rows || []);
+
     const shipmentsByStatus = {};
-    // Initialize known columns from your constant, so empty columns still show
-    SHIPMENT_STATUSES.forEach(st => {
-      shipmentsByStatus[st] = [];
-    });
+    let statuses = [];
 
-    const extraStatuses = new Set();
+    if (status && status === 'Archived') {
+      shipmentsByStatus.Archived = visibleRows || [];
+      statuses = ['Archived'];
+    } else {
+      // Initialize known columns from your constant, so empty columns still show
+      SHIPMENT_STATUSES.forEach(st => {
+        shipmentsByStatus[st] = [];
+      });
 
-    rows.forEach(row => {
-      const st = row.status || 'Pre-Order';
+      const extraStatuses = new Set();
 
-      if (!SHIPMENT_STATUSES.includes(st)) {
-        extraStatuses.add(st);
-        if (!shipmentsByStatus[st]) {
-          shipmentsByStatus[st] = [];
+      visibleRows.forEach(row => {
+        const st = row.status || 'Pre-Order';
+
+        if (!SHIPMENT_STATUSES.includes(st)) {
+          extraStatuses.add(st);
+          if (!shipmentsByStatus[st]) {
+            shipmentsByStatus[st] = [];
+          }
         }
-      }
 
-      shipmentsByStatus[st].push(row);
-    });
+        shipmentsByStatus[st].push(row);
+      });
 
-    const statuses = [
-      ...SHIPMENT_STATUSES,
-      ...Array.from(extraStatuses).filter(s => !SHIPMENT_STATUSES.includes(s))
-    ];
+      statuses = [
+        ...SHIPMENT_STATUSES,
+        ...Array.from(extraStatuses).filter(s => !SHIPMENT_STATUSES.includes(s))
+      ];
+    }
 
     // Shape that the front-end expects
     res.json({
@@ -7506,61 +14335,32 @@ app.get('/api/shipments', requireAdminAccess(() => true), async (req, res) => {
   }
 });
 
-app.get('/api/shipments/board', requireAdminAccess(() => true), async (req, res) => {
-
+app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
+  let transactionStarted = false;
   try {
-    const rows = await dbAll(
-      `
-      SELECT
-        s.*,
-        COALESCE(s.vendor_name, v.name) AS vendor_name,
-        COALESCE(s.project_name_snapshot, p.name) AS project_name,
-        p.customer_name
-      FROM shipments s
-      LEFT JOIN vendors  v ON v.id = s.vendor_id
-      LEFT JOIN projects p ON p.id = s.project_id
-      WHERE IFNULL(s.is_archived, 0) = 0
-      ORDER BY
-        IFNULL(s.updated_at, s.created_at) DESC,
-        s.created_at DESC
-      `
-    );
-
-    // Initialize board with all known statuses
-    const board = {};
-    SHIPMENT_STATUSES.forEach(st => {
-      board[st] = [];
-    });
-
-    // Optional: separate bucket if something has a weird status
-    board['Other'] = [];
-
-    rows.forEach(r => {
-      const col = SHIPMENT_STATUSES.includes(r.status)
-        ? r.status
-        : 'Other';
-      board[col].push(r);
-    });
-
-    res.json({ board });
-  } catch (err) {
-    console.error('Error loading shipments board:', err);
-    res.status(500).json({ error: 'Error loading shipments board.' });
-  }
-});
-
-app.put('/api/shipments/:id', requireAdminAccess(() => true), async (req, res) => {  try {
     const id = req.params.id;
+    const orgId = req.session && req.session.orgId;
+    const actorId = req.session && req.session.employeeId
+      ? req.session.employeeId
+      : null;
+
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const body = req.body || {};
 
     const existing = await dbGet(
-      'SELECT * FROM shipments WHERE id = ?',
-      [id]
+      'SELECT * FROM shipments WHERE id = ? AND org_id = ?',
+      [id, orgId]
     );
     if (!existing) {
       return res.status(404).json({ error: 'Shipment not found.' });
     }
 
     const {
+      client_id,
+      if_match_updated_at,
       title,
       po_number,
       vendor_id,
@@ -7577,8 +14377,6 @@ app.put('/api/shipments/:id', requireAdminAccess(() => true), async (req, res) =
       tracking_number,
       bol_number,
       items = [],
-      storage_room,
-      storage_details,
       storage_due_date,
       storage_daily_late_fee,
       picked_up_by,
@@ -7596,7 +14394,29 @@ app.put('/api/shipments/:id', requireAdminAccess(() => true), async (req, res) =
       website_url,
       notes,
       status
-    } = req.body || {};
+    } = body;
+
+    const clientId = client_id ? String(client_id).trim() : '';
+    if (clientId) {
+      const cached = await loadIdempotentResponse(orgId, 'shipment_update', clientId);
+      if (cached) {
+        return res.json({ ...cached, alreadyProcessed: true });
+      }
+    }
+
+    if (if_match_updated_at && existing.updated_at && existing.updated_at !== if_match_updated_at) {
+      return res.status(409).json({
+        error: 'Conflict: the shipment was updated since you last loaded it.',
+        current: pickFields(existing, [
+          'id',
+          'title',
+          'status',
+          'project_id',
+          'vendor_id',
+          'updated_at'
+        ])
+      });
+    }
 
     // ───────── BASIC VALIDATION ─────────
     if (!title || !title.trim()) {
@@ -7609,16 +14429,45 @@ app.put('/api/shipments/:id', requireAdminAccess(() => true), async (req, res) =
 
     // Snapshot project/vendor names to keep shipment readable when QBO data is unavailable
     const projectRow = project_id
-      ? await dbGet('SELECT name FROM projects WHERE id = ? LIMIT 1', [project_id])
+      ? await dbGet('SELECT name FROM projects WHERE id = ? AND org_id = ? LIMIT 1', [
+          project_id,
+          orgId
+        ])
       : null;
+    if (!projectRow) {
+      return res.status(400).json({ error: 'Project not found.' });
+    }
     const projectNameSnapshot =
       projectRow?.name || existing.project_name_snapshot || null;
 
-    let finalVendorName = vendor_name || null;
-    if (!finalVendorName && vendor_id) {
-      const vendorRow = await dbGet('SELECT name FROM vendors WHERE id = ? LIMIT 1', [vendor_id]);
-      finalVendorName = vendorRow?.name || existing.vendor_name || null;
-    } else if (!finalVendorName) {
+    const vendorIdProvided = Object.prototype.hasOwnProperty.call(
+      body,
+      'vendor_id'
+    );
+    const vendorNameProvided = Object.prototype.hasOwnProperty.call(
+      body,
+      'vendor_name'
+    );
+    const normalizedVendorId =
+      vendor_id === undefined || vendor_id === null || vendor_id === ''
+        ? null
+        : vendor_id;
+    const finalVendorId = vendorIdProvided
+      ? normalizedVendorId
+      : existing.vendor_id || null;
+
+    let finalVendorName = vendorNameProvided ? (vendor_name || null) : null;
+    if (finalVendorId) {
+      const vendorRow = await dbGet(
+        'SELECT name FROM vendors WHERE id = ? AND org_id = ? LIMIT 1',
+        [finalVendorId, orgId]
+      );
+      if (!vendorRow) {
+        return res.status(400).json({ error: 'Vendor not found.' });
+      }
+      finalVendorName = vendorRow?.name || null;
+    }
+    if (!vendorIdProvided && !vendorNameProvided && !finalVendorName) {
       finalVendorName = existing.vendor_name || null;
     }
 
@@ -7628,9 +14477,51 @@ app.put('/api/shipments/:id', requireAdminAccess(() => true), async (req, res) =
     let newStatus = existing.status || 'Pre-Order';
     if (status && typeof status === 'string') {
       const trimmed = status.trim();
-      if (SHIPMENT_STATUSES.includes(trimmed)) {
+      if (trimmed) {
         newStatus = trimmed;
       }
+    }
+
+    const nowIso = new Date().toISOString();
+
+    const normalizeText = (val) => {
+      if (val === undefined || val === null) return null;
+      const s = String(val).trim();
+      return s === '' ? null : s;
+    };
+
+    const hasPickedBy = Object.prototype.hasOwnProperty.call(body, 'picked_up_by');
+    const hasPickedDate = Object.prototype.hasOwnProperty.call(body, 'picked_up_date');
+    const updatingPickup = hasPickedBy || hasPickedDate;
+
+    const nextPickedUpBy = hasPickedBy
+      ? normalizeText(picked_up_by)
+      : existing.picked_up_by;
+    const nextPickedUpDate = hasPickedDate
+      ? normalizeText(picked_up_date)
+      : existing.picked_up_date;
+
+    let pickupUpdaterName = null;
+    let updatePickupMeta = false;
+    if (updatingPickup && actorId) {
+      const emp = await dbGet(
+        `SELECT nickname, name FROM employees WHERE id = ? AND org_id = ?`,
+        [actorId, orgId]
+      );
+      if (emp) {
+        pickupUpdaterName = emp.nickname || emp.name || null;
+        updatePickupMeta = true;
+      }
+    }
+
+    let nextIsArchived = existing.is_archived ? 1 : 0;
+    let nextArchivedAt = existing.archived_at || null;
+    if (newStatus === 'Archived') {
+      nextIsArchived = 1;
+      nextArchivedAt = existing.archived_at || nowIso;
+    } else if (existing.is_archived) {
+      nextIsArchived = 0;
+      nextArchivedAt = null;
     }
 
     // ───────── ITEMS_VERIFIED FLAG (initial value for UPDATE) ─────────
@@ -7638,7 +14529,7 @@ let itemsVerifiedFlag;
 
 if (items_verified !== undefined && items_verified !== null) {
   // Explicit override from client
-  itemsVerifiedFlag = items_verified ? 1 : 0;
+  itemsVerifiedFlag = coerceBooleanFlag(items_verified) ? 1 : 0;
 } else if (Array.isArray(items) && items.length > 0) {
   // Infer from line items in this request
   itemsVerifiedFlag = computeItemsVerifiedFlagFromItems(items);
@@ -7649,13 +14540,17 @@ if (items_verified !== undefined && items_verified !== null) {
 
 
     // ───────── UPDATE SHIPMENT CORE FIELDS ─────────
+
+    await dbRun('BEGIN TRANSACTION');
+    transactionStarted = true;
+
     await dbRun(
       `
         UPDATE shipments
         SET
           title                 = ?,
           po_number             = ?,
-          vendor_id             = ?,
+        vendor_id             = ?,
           destination           = ?,
           project_id            = ?,
           project_name_snapshot = ?,
@@ -7669,12 +14564,12 @@ if (items_verified !== undefined && items_verified !== null) {
           expected_arrival_date = ?,
           tracking_number       = ?,
           bol_number            = ?,
-          storage_room          = ?,
-          storage_details       = ?,
           storage_due_date      = ?,
           storage_daily_late_fee = ?,
           picked_up_by          = ?,
           picked_up_date        = ?,
+          picked_up_updated_by  = CASE WHEN ? THEN ? ELSE picked_up_updated_by END,
+          picked_up_updated_at  = CASE WHEN ? THEN datetime('now') ELSE picked_up_updated_at END,
           vendor_paid           = ?,
           vendor_paid_amount    = ?,
           shipper_paid          = ?,
@@ -7688,13 +14583,15 @@ if (items_verified !== undefined && items_verified !== null) {
           website_url           = ?,
           notes                 = ?,
           status                = ?,
-          updated_at            = datetime('now')
-        WHERE id = ?
+          is_archived           = ?,
+          archived_at           = ?,
+          updated_at            = ?
+        WHERE id = ? AND org_id = ?
       `,
       [
         title,
         po_number || null,
-        vendor_id || null,
+        finalVendorId,
         destination || null,
         project_id || null,
         projectNameSnapshot || null,
@@ -7708,12 +14605,13 @@ if (items_verified !== undefined && items_verified !== null) {
         expected_arrival_date || null,
         tracking_number || null,
         bol_number || null,
-        storage_room || null,
-        storage_details || null,
         storage_due_date || null,
         storage_daily_late_fee != null ? storage_daily_late_fee : null,
-        picked_up_by || null,
-        picked_up_date || null,
+        nextPickedUpBy,
+        nextPickedUpDate,
+        updatePickupMeta ? 1 : 0,
+        pickupUpdaterName,
+        updatePickupMeta ? 1 : 0,
         vendor_paid ? 1 : 0,
         vendor_paid_amount != null ? vendor_paid_amount : null,
         shipper_paid ? 1 : 0,
@@ -7727,7 +14625,11 @@ if (items_verified !== undefined && items_verified !== null) {
         website_url || null,
         notes || null,
         newStatus,
-        id
+        nextIsArchived,
+        nextArchivedAt,
+        nowIso,
+        id,
+        orgId
       ]
     );
 
@@ -7737,8 +14639,8 @@ if (items_verified !== undefined && items_verified !== null) {
     // 1. Remove existing items for this shipment
     //
     await dbRun(
-      `DELETE FROM shipment_items WHERE shipment_id = ?`,
-      [id]
+      `DELETE FROM shipment_items WHERE shipment_id = ? AND org_id = ?`,
+      [id, orgId]
     );
 
     //
@@ -7759,6 +14661,7 @@ if (items_verified !== undefined && items_verified !== null) {
         await dbRun(
           `
            INSERT INTO shipment_items (
+  org_id,
   shipment_id,
   description,
   sku,
@@ -7769,9 +14672,10 @@ if (items_verified !== undefined && items_verified !== null) {
   verified,
   notes,
   verification_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
+  orgId,
   id,
   it.description || null,
   it.sku || null,
@@ -7805,9 +14709,9 @@ if (items_verified !== undefined && items_verified !== null) {
         `
           UPDATE shipments
           SET items_verified = ?
-          WHERE id = ?
+          WHERE id = ? AND org_id = ?
         `,
-        [allVerified ? 1 : 0, id]
+        [allVerified ? 1 : 0, id, orgId]
       );
     }
 
@@ -7816,26 +14720,31 @@ if (items_verified !== undefined && items_verified !== null) {
       await dbRun(
         `
           INSERT INTO shipment_status_history (
-            shipment_id, old_status, new_status, changed_at
-          ) VALUES (?, ?, ?, datetime('now'))
+            org_id, shipment_id, old_status, new_status, changed_at
+          ) VALUES (?, ?, ?, ?, datetime('now'))
         `,
-        [id, oldStatus, newStatus]
+        [orgId, id, oldStatus, newStatus]
       );
 
       await dbRun(
         `
           INSERT INTO shipment_timeline (
+            org_id,
             shipment_id,
             event_type,
             old_status,
             new_status,
             note,
+            created_by,
             created_at
-          ) VALUES (?, 'status_change', ?, ?, ?, datetime('now'))
+          ) VALUES (?, ?, 'status_change', ?, ?, ?, ?, datetime('now'))
         `,
-        [id, oldStatus, newStatus, 'Status changed via main edit form.']
+        [orgId, id, oldStatus, newStatus, 'Status changed via main edit form.', actorId]
       );
     }
+
+    await dbRun('COMMIT');
+    transactionStarted = false;
 
     // ───────── RETURN UPDATED ROW ─────────
     const row = await dbGet(
@@ -7844,42 +14753,94 @@ if (items_verified !== undefined && items_verified !== null) {
         COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name
        FROM shipments s
-       LEFT JOIN vendors  v ON v.id = s.vendor_id
-       LEFT JOIN projects p ON p.id = s.project_id
-       WHERE s.id = ?`,
-      [id]
+       LEFT JOIN vendors  v ON v.id = s.vendor_id AND v.org_id = s.org_id
+       LEFT JOIN projects p ON p.id = s.project_id AND p.org_id = s.org_id
+       WHERE s.id = ? AND s.org_id = ?`,
+      [id, orgId]
     );
 
-    res.json({ shipment: row });
+    const response = { shipment: row };
+    if (clientId) {
+      await storeIdempotentResponse(orgId, 'shipment_update', clientId, response);
+    }
+    res.json(response);
   } catch (err) {
+    if (transactionStarted) {
+      try {
+        await dbRun('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('Shipment update rollback error:', rollbackErr);
+      }
+    }
     console.error('Error updating shipment:', err);
     res.status(500).json({ error: 'Error updating shipment.' });
   }
 });
 
 
-app.delete('/api/shipments/:id', requireAdminAccess(() => true), async (req, res) => {
+app.delete('/api/shipments/:id', requireSeeShipments, async (req, res) => {
 
   try {
     const id = req.params.id;
+    const orgId = req.session && req.session.orgId;
+    const actorId = req.session && req.session.employeeId
+      ? req.session.employeeId
+      : null;
+
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
 
     const existing = await dbGet(
-      'SELECT * FROM shipments WHERE id = ?',
-      [id]
+      'SELECT * FROM shipments WHERE id = ? AND org_id = ?',
+      [id, orgId]
     );
     if (!existing) {
       return res.status(404).json({ error: 'Shipment not found.' });
     }
 
+    const nowIso = new Date().toISOString();
+    const alreadyArchived =
+      (existing.status && existing.status === 'Archived') ||
+      (existing.is_archived && Number(existing.is_archived) === 1);
+
     await dbRun(
       `
         UPDATE shipments
-        SET is_archived = 1,
-            archived_at = datetime('now')
-        WHERE id = ?
+        SET status = 'Archived',
+            is_archived = 1,
+            archived_at = COALESCE(archived_at, ?),
+            updated_at = ?
+        WHERE id = ? AND org_id = ?
       `,
-      [id]
+      [nowIso, nowIso, id, orgId]
     );
+
+    if (!alreadyArchived) {
+      await dbRun(
+        `
+          INSERT INTO shipment_status_history (
+            org_id, shipment_id, old_status, new_status, changed_at
+          ) VALUES (?, ?, ?, 'Archived', datetime('now'))
+        `,
+        [orgId, id, existing.status || null]
+      );
+
+      await dbRun(
+        `
+          INSERT INTO shipment_timeline (
+            org_id, shipment_id, event_type, old_status, new_status, note, created_by, created_at
+          ) VALUES (?, ?, 'status_change', ?, 'Archived', ?, ?, datetime('now'))
+        `,
+        [
+          orgId,
+          id,
+          existing.status || null,
+          'Shipment archived.',
+          actorId
+        ]
+      );
+    }
 
     res.json({ ok: true });
   } catch (err) {
@@ -7888,9 +14849,15 @@ app.delete('/api/shipments/:id', requireAdminAccess(() => true), async (req, res
   }
 });
 
-app.get('/api/shipments/:id', requireAdminAccess(() => true), async (req, res) => {
+app.get('/api/shipments/:id', requireSeeShipments, async (req, res) => {
     try {
     const id = req.params.id;
+    const orgId = req.session && req.session.orgId;
+    const canViewPayments = !!(req.adminPerms && req.adminPerms.view_payroll);
+
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
 
     const row = await dbGet(
       `SELECT s.*,
@@ -7898,13 +14865,20 @@ app.get('/api/shipments/:id', requireAdminAccess(() => true), async (req, res) =
         COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name
        FROM shipments s
-       LEFT JOIN vendors v ON v.id = s.vendor_id
-       LEFT JOIN projects p ON p.id = s.project_id
-       WHERE s.id = ?`,
-      [id]
+       LEFT JOIN vendors v ON v.id = s.vendor_id AND v.org_id = s.org_id
+       LEFT JOIN projects p ON p.id = s.project_id AND p.org_id = s.org_id
+       WHERE s.id = ? AND s.org_id = ?`,
+      [id, orgId]
     );
 
     if (!row) return res.status(404).json({ error: 'Not found.' });
+
+    if (!canViewPayments) {
+      row.vendor_paid_amount = null;
+      row.shipper_paid_amount = null;
+      row.customs_paid_amount = null;
+      row.total_paid = null;
+    }
 
     const items = await dbAll(
   `
@@ -7921,10 +14895,10 @@ app.get('/api/shipments/:id', requireAdminAccess(() => true), async (req, res) =
       notes,
       verification_json
     FROM shipment_items
-    WHERE shipment_id = ?
+    WHERE shipment_id = ? AND org_id = ?
     ORDER BY id ASC
   `,
-  [id]
+  [id, orgId]
 );
 
 
@@ -7951,12 +14925,16 @@ const normalizedItems = items.map(it => {
     verification = {
       status: it.verified ? 'verified' : '',
       notes: it.notes || '',
-      storage_override: ''
+      storage_override: '',
+      history: []
     };
   }
 
   if (!verification.storage_override) {
     verification.storage_override = verification.storage_override || '';
+  }
+  if (!Array.isArray(verification.history)) {
+    verification.history = [];
   }
 
   return {
@@ -7967,10 +14945,10 @@ const normalizedItems = items.map(it => {
 
 
 
-res.json({
-  shipment: row,
-  items: normalizedItems
-});
+    res.json({
+      shipment: row,
+      items: normalizedItems
+    });
 
 
   } catch (err) {
@@ -7979,12 +14957,31 @@ res.json({
   }
 });
 
-app.get('/api/shipments/:id/payments', requireAdminAccess(() => true), async (req, res) => {
+app.get('/api/shipments/:id/payments', requireViewPayroll, async (req, res) => {
 
   try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+    const shipmentId = Number(req.params.id);
+    if (!shipmentId) {
+      return res.status(400).json({ error: 'Invalid shipment id.' });
+    }
+    const shipmentRow = await dbGet(
+      'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+      [shipmentId, orgId]
+    );
+    if (!shipmentRow) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
     const rows = await dbAll(
-      `SELECT * FROM shipment_payments WHERE shipment_id = ? ORDER BY created_at ASC`,
-      [req.params.id]
+      `SELECT p.*, e.name AS created_by_name
+       FROM shipment_payments p
+       LEFT JOIN employees e ON e.id = p.created_by AND e.org_id = p.org_id
+       WHERE p.shipment_id = ? AND p.org_id = ?
+       ORDER BY p.created_at ASC`,
+      [shipmentId, orgId]
     );
     res.json({ payments: rows });
   } catch (err) {
@@ -7993,9 +14990,28 @@ app.get('/api/shipments/:id/payments', requireAdminAccess(() => true), async (re
   }
 });
 
-app.post('/api/shipments/:id/payments', requireAdminAccess(() => true), async (req, res) => {
+app.post('/api/shipments/:id/payments', requireViewPayroll, async (req, res) => {
 
   try {
+    const orgId = req.session && req.session.orgId;
+    const createdBy = req.session && req.session.employeeId
+      ? req.session.employeeId
+      : null;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+    const shipmentId = Number(req.params.id);
+    if (!shipmentId) {
+      return res.status(400).json({ error: 'Invalid shipment id.' });
+    }
+    const shipmentRow = await dbGet(
+      'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+      [shipmentId, orgId]
+    );
+    if (!shipmentRow) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
+
     const {
       type,
       amount,
@@ -8012,11 +15028,12 @@ app.post('/api/shipments/:id/payments', requireAdminAccess(() => true), async (r
 
     await dbRun(
       `INSERT INTO shipment_payments (
-        shipment_id, type, amount, currency, status,
-        due_date, paid_date, invoice_number, notes, created_at
-      ) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`,
+        org_id, shipment_id, type, amount, currency, status,
+        due_date, paid_date, invoice_number, notes, created_by, created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`,
       [
-        req.params.id,
+        orgId,
+        shipmentId,
         type || null,
         amount,
         currency || 'USD',
@@ -8024,7 +15041,8 @@ app.post('/api/shipments/:id/payments', requireAdminAccess(() => true), async (r
         due_date || null,
         paid_date || null,
         invoice_number || null,
-        notes || null
+        notes || null,
+        createdBy
       ]
     );
 
@@ -8035,14 +15053,20 @@ app.post('/api/shipments/:id/payments', requireAdminAccess(() => true), async (r
   }
 });
 
-app.get('/api/shipments/:id/timeline', requireAdminAccess(() => true), async (req, res) => {
+app.get('/api/shipments/:id/timeline', requireSeeShipments, async (req, res) => {
 
   try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
     const rows = await dbAll(
-      `SELECT * FROM shipment_timeline
-       WHERE shipment_id = ?
-       ORDER BY created_at ASC`,
-      [req.params.id]
+      `SELECT t.*, e.name AS created_by_name
+       FROM shipment_timeline t
+       LEFT JOIN employees e ON e.id = t.created_by AND e.org_id = t.org_id
+       WHERE t.shipment_id = ? AND t.org_id = ?
+       ORDER BY t.created_at ASC`,
+      [req.params.id, orgId]
     );
     res.json({ timeline: rows });
   } catch (err) {
@@ -8051,14 +15075,35 @@ app.get('/api/shipments/:id/timeline', requireAdminAccess(() => true), async (re
   }
 });
 
-app.get('/api/shipments/:id/comments', requireAdminAccess(() => true), async (req, res) => {
+app.get('/api/shipments/:id/comments', async (req, res) => {
 
   try {
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
+    }
+
+    const shipmentId = Number(req.params.id);
+    if (!shipmentId) {
+      return res.status(400).json({ error: 'Invalid shipment id.' });
+    }
+    const shipmentRow = await dbGet(
+      'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+      [shipmentId, access.orgId]
+    );
+    if (!shipmentRow) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
+
     const rows = await dbAll(
-      `SELECT * FROM shipment_comments
-       WHERE shipment_id = ?
-       ORDER BY created_at ASC`,
-      [req.params.id]
+      `SELECT c.*, e.name AS created_by_name
+       FROM shipment_comments c
+       LEFT JOIN employees e ON e.id = c.created_by AND e.org_id = c.org_id
+       WHERE c.shipment_id = ? AND c.org_id = ? AND IFNULL(c.is_deleted, 0) = 0
+       ORDER BY c.created_at ASC`,
+      [shipmentId, access.orgId]
     );
     res.json({ comments: rows });
   } catch (err) {
@@ -8067,57 +15112,187 @@ app.get('/api/shipments/:id/comments', requireAdminAccess(() => true), async (re
   }
 });
 
-app.post('/api/shipments/:id/comments', requireAdminAccess(() => true), async (req, res) => {
+app.post('/api/shipments/:id/comments', async (req, res) => {
 
   try {
-    const { body } = req.body;
+    const { body, client_id } = req.body;
     if (!body) {
       return res.status(400).json({ error: 'Comment text required.' });
     }
 
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
+    }
+
+    const shipmentId = Number(req.params.id);
+    if (!shipmentId) {
+      return res.status(400).json({ error: 'Invalid shipment id.' });
+    }
+    const shipmentRow = await dbGet(
+      'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+      [shipmentId, access.orgId]
+    );
+    if (!shipmentRow) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
+
+    const createdBy = access.employee ? access.employee.id : null;
+    const clientId = client_id ? String(client_id).trim() : '';
+
+    if (clientId) {
+      const cached = await loadIdempotentResponse(access.orgId, 'shipment_comment', clientId);
+      if (cached) {
+        return res.json({ ...cached, alreadyProcessed: true });
+      }
+    }
+
     await dbRun(
-      `INSERT INTO shipment_comments (shipment_id, body, created_at)
-       VALUES (?,?, datetime('now'))`,
-      [req.params.id, body]
+      `INSERT INTO shipment_comments (org_id, shipment_id, body, created_by, created_at)
+       VALUES (?,?,?,?, datetime('now'))`,
+      [access.orgId, shipmentId, body, createdBy]
     );
 
-    res.json({ ok: true });
+    const response = { ok: true };
+    if (clientId) {
+      await storeIdempotentResponse(access.orgId, 'shipment_comment', clientId, response);
+    }
+    res.json(response);
   } catch (err) {
     console.error('Error creating shipment comment:', err);
     res.status(500).json({ error: 'Error creating comment.' });
   }
 });
 
-app.post('/api/shipments/:id/status', requireAdminAccess(() => true), async (req, res) => {
+app.delete('/api/shipments/:id/comments/:commentId', async (req, res) => {
+  try {
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
+    }
+
+    const shipmentId = Number(req.params.id);
+    const commentId = Number(req.params.commentId);
+    if (!shipmentId || !commentId) {
+      return res.status(400).json({ error: 'Invalid comment id.' });
+    }
+
+    const row = await dbGet(
+      `SELECT id FROM shipment_comments WHERE id = ? AND shipment_id = ? AND org_id = ?`,
+      [commentId, shipmentId, access.orgId]
+    );
+    if (!row) {
+      return res.status(404).json({ error: 'Comment not found.' });
+    }
+
+    await dbRun(
+      `
+        UPDATE shipment_comments
+        SET is_deleted = 1,
+            deleted_by = ?,
+            deleted_at = datetime('now')
+        WHERE id = ? AND shipment_id = ? AND org_id = ?
+      `,
+      [
+        access.employee ? access.employee.id : null,
+        commentId,
+        shipmentId,
+        access.orgId
+      ]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error deleting shipment comment:', err);
+    res.status(500).json({ error: 'Error deleting comment.' });
+  }
+});
+
+app.post('/api/shipments/:id/status', requireSeeShipments, async (req, res) => {
 
   try {
     const id = req.params.id;
     const { new_status, note } = req.body;
 
-    if (!SHIPMENT_STATUSES.includes(new_status)) {
+    const orgId = req.session && req.session.orgId;
+    const actorId = req.session && req.session.employeeId
+      ? req.session.employeeId
+      : null;
+
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const nextStatus = String(new_status || '').trim();
+    if (!nextStatus) {
       return res.status(400).json({ error: 'Invalid status.' });
     }
 
     const existing = await dbGet(
-      'SELECT status FROM shipments WHERE id = ?',
-      [id]
+      `
+        SELECT status, title, project_id, is_archived, archived_at
+        FROM shipments
+        WHERE id = ? AND org_id = ?
+      `,
+      [id, orgId]
     );
     if (!existing) {
       return res.status(404).json({ error: 'Shipment not found.' });
     }
 
+    const nowIso = new Date().toISOString();
+    let nextIsArchived = existing.is_archived ? 1 : 0;
+    let nextArchivedAt = existing.archived_at || null;
+    if (nextStatus === 'Archived') {
+      nextIsArchived = 1;
+      nextArchivedAt = existing.archived_at || nowIso;
+    } else if (existing.is_archived) {
+      nextIsArchived = 0;
+      nextArchivedAt = null;
+    }
+
     await dbRun(
       `UPDATE shipments
-       SET status = ?, updated_at = datetime('now')
-       WHERE id = ?`,
-      [new_status, id]
+       SET status = ?, is_archived = ?, archived_at = ?, updated_at = datetime('now')
+       WHERE id = ? AND org_id = ?`,
+      [nextStatus, nextIsArchived, nextArchivedAt, id, orgId]
     );
 
     await dbRun(
-      `INSERT INTO shipment_timeline (shipment_id, event_type, old_status, new_status, note, created_at)
-       VALUES (?, 'status_change', ?, ?, ?, datetime('now'))`,
-      [id, existing.status, new_status, note || null]
+      `INSERT INTO shipment_status_history (
+         org_id, shipment_id, old_status, new_status, changed_at
+       ) VALUES (?, ?, ?, ?, datetime('now'))`,
+      [orgId, id, existing.status, nextStatus]
     );
+
+    await dbRun(
+      `INSERT INTO shipment_timeline (
+         org_id, shipment_id, event_type, old_status, new_status, note, created_by, created_at
+       ) VALUES (?, ?, 'status_change', ?, ?, ?, ?, datetime('now'))`,
+      [orgId, id, existing.status, nextStatus, note || null, actorId]
+    );
+
+    let actorName = null;
+    if (actorId) {
+      const actor = await dbGet(
+        'SELECT name FROM employees WHERE id = ? AND org_id = ?',
+        [actorId, orgId]
+      );
+      actorName = actor?.name || null;
+    }
+
+    await notifyShipmentStatusChange({
+      orgId,
+      shipmentId: id,
+      status: nextStatus,
+      projectId: existing.project_id,
+      title: existing.title,
+      actorName
+    });
 
     res.json({ ok: true });
   } catch (err) {
@@ -8126,8 +15301,59 @@ app.post('/api/shipments/:id/status', requireAdminAccess(() => true), async (req
   }
 });
 
+function docTextForPaymentDetection(doc = {}) {
+  return [
+    doc.doc_type,
+    doc.doc_label,
+    doc.title,
+    doc.category
+  ]
+    .map(v => (v || '').toString().toLowerCase())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function docIsFreightPayment(doc = {}) {
+  const text = docTextForPaymentDetection(doc);
+  if (!text) return false;
+  const paymenty =
+    text.includes('payment') ||
+    text.includes('paid') ||
+    text.includes('receipt');
+  const freighty =
+    text.includes('freight') ||
+    text.includes('forwarder') ||
+    text.includes('shipper') ||
+    text.includes('shipping') ||
+    text.includes('logistics') ||
+    text.includes('transport') ||
+    text.includes('cargo') ||
+    text.includes('ff');
+  return paymenty && freighty;
+}
+
+function docIsClearingPayment(doc = {}) {
+  const text = docTextForPaymentDetection(doc);
+  if (!text) return false;
+  const paymenty =
+    text.includes('payment') ||
+    text.includes('paid') ||
+    text.includes('receipt');
+  const clearingy =
+    text.includes('customs') ||
+    text.includes('clearing') ||
+    text.includes('broker') ||
+    text.includes('duty') ||
+    text.includes('duties');
+  return paymenty && clearingy;
+}
+
+function isPaymentDoc(doc = {}) {
+  return docIsFreightPayment(doc) || docIsClearingPayment(doc);
+}
+
 // List documents for a shipment
-app.get('/api/shipments/:id/documents', requireAdminAccess(() => true), async (req, res) => {
+app.get('/api/shipments/:id/documents', async (req, res) => {
 
   try {
     const shipmentId = Number(req.params.id);
@@ -8142,17 +15368,28 @@ app.get('/api/shipments/:id/documents', requireAdminAccess(() => true), async (r
         .json({ error: access.error || 'Not authorized' });
     }
 
+    const shipmentRow = await dbGet(
+      'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+      [shipmentId, access.orgId]
+    );
+    if (!shipmentRow) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
+
     const docs = await dbAll(
       `
         SELECT id, shipment_id, title, category, doc_type, doc_label, file_path, uploaded_at
         FROM shipment_documents
-        WHERE shipment_id = ?
+        WHERE shipment_id = ? AND org_id = ?
         ORDER BY uploaded_at DESC, id DESC
       `,
-      [shipmentId]
+      [shipmentId, access.orgId]
     );
 
-    const withUrls = docs.map(doc => {
+    const canViewPayroll = !!(access.perms && access.perms.view_payroll);
+    const visibleDocs = canViewPayroll ? docs : docs.filter(doc => !isPaymentDoc(doc));
+
+    const withUrls = visibleDocs.map(doc => {
       const downloadUrl = `/api/shipments/documents/${doc.id}/download`;
       return {
         ...doc,
@@ -8170,7 +15407,6 @@ app.get('/api/shipments/:id/documents', requireAdminAccess(() => true), async (r
 
 app.get(
   '/api/shipments/documents/:docId/download',
-  requireAdminAccess(() => true),
   async (req, res) => {
     try {
       const docId = Number(req.params.docId);
@@ -8178,17 +15414,29 @@ app.get(
         return res.status(400).json({ error: 'Invalid document id.' });
       }
 
+      const access = await ensureShipmentAccess(req);
+      if (!access.ok) {
+        return res
+          .status(access.status || 403)
+          .json({ error: access.error || 'Not authorized' });
+      }
+
       const doc = await dbGet(
         `
-          SELECT id, shipment_id, title, file_path
+          SELECT id, shipment_id, title, category, doc_type, doc_label, file_path
           FROM shipment_documents
-          WHERE id = ?
+          WHERE id = ? AND org_id = ?
         `,
-        [docId]
+        [docId, access.orgId]
       );
 
       if (!doc) {
         return res.status(404).json({ error: 'Document not found.' });
+      }
+
+      const canViewPayroll = !!(access.perms && access.perms.view_payroll);
+      if (!canViewPayroll && isPaymentDoc(doc)) {
+        return res.status(403).json({ error: 'Not authorized' });
       }
 
       const absPath = resolveShipmentDocumentPath(doc.file_path);
@@ -8197,11 +15445,8 @@ app.get(
       }
 
       const filename = doc.title || path.basename(absPath);
-      return res.sendFile(absPath, {
-        headers: {
-          'Content-Disposition': `inline; filename="${filename}"`
-        }
-      });
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      return res.download(absPath, filename);
     } catch (err) {
       console.error('Error downloading shipment document:', err);
       return res.status(500).json({ error: 'Error downloading document.' });
@@ -8212,8 +15457,7 @@ app.get(
 // Upload one or more documents for a shipment
 app.post(
   '/api/shipments/:id/documents',
-  requireAdminAccess(() => true),
-  upload.array('documents', 10),
+  wrapUpload(uploadShipmentDocs.array('documents', 10)),
   async (req, res) => {
     try {
       const shipmentId = Number(req.params.id);
@@ -8221,14 +15465,36 @@ app.post(
         return res.status(400).json({ error: 'Invalid shipment id.' });
       }
 
+      const access = await ensureShipmentAccess(req);
+      if (!access.ok) {
+        return res
+          .status(access.status || 403)
+          .json({ error: access.error || 'Not authorized' });
+      }
+
+      const shipmentRow = await dbGet(
+        'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+        [shipmentId, access.orgId]
+      );
+      if (!shipmentRow) {
+        return res.status(404).json({ error: 'Shipment not found.' });
+      }
+
       const files = req.files || [];
       if (!files.length) {
         return res.json({ documents: [] });
       }
 
+      try {
+        await validateUploadedFiles(files, shipmentAllowedMimes, shipmentAllowedExts);
+      } catch (err) {
+        await cleanupUploadedFiles(files);
+        return res.status(400).json({ error: err.message || 'Unsupported file type.' });
+      }
+
       const docType = req.body.doc_type || null;
       const docLabel = req.body.doc_label || null;
-      const uploadedBy = null; // hook into auth/user later if you want
+      const uploadedById = access.employee ? access.employee.id : null;
 
       const docs = [];
 
@@ -8238,6 +15504,7 @@ app.post(
         const result = await dbRun(
           `
             INSERT INTO shipment_documents (
+              org_id,
               shipment_id,
               title,
               category,
@@ -8245,16 +15512,17 @@ app.post(
               doc_label,
               file_path,
               uploaded_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
+            access.orgId,
             shipmentId,
             file.originalname,
             null,          // keep category nullable
             docType,
             docLabel,
             storedPath,
-            uploadedBy
+            uploadedById
           ]
         );
 
@@ -8283,7 +15551,6 @@ app.post(
 // Delete a document for a shipment
 app.delete(
   '/api/shipments/:shipmentId/documents/:docId',
-  requireAdminAccess(() => true),
   async (req, res) => {
 
   try {
@@ -8294,14 +15561,21 @@ app.delete(
       return res.status(400).json({ error: 'Invalid shipment or document id.' });
     }
 
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
+    }
+
     // Fetch the document to know the file path
     const doc = await dbGet(
       `
         SELECT id, shipment_id, file_path
         FROM shipment_documents
-        WHERE id = ? AND shipment_id = ?
+        WHERE id = ? AND shipment_id = ? AND org_id = ?
       `,
-      [docId, shipmentId]
+      [docId, shipmentId, access.orgId]
     );
 
     if (!doc) {
@@ -8310,8 +15584,8 @@ app.delete(
 
     // Delete DB row
     await dbRun(
-      `DELETE FROM shipment_documents WHERE id = ? AND shipment_id = ?`,
-      [docId, shipmentId]
+      `DELETE FROM shipment_documents WHERE id = ? AND shipment_id = ? AND org_id = ?`,
+      [docId, shipmentId, access.orgId]
     );
 
     // Try to delete the physical file
@@ -8337,7 +15611,7 @@ app.delete(
 });
 
 // Update storage & pickup details for a shipment (kiosk-friendly)
-app.post('/api/shipments/:id/storage', requireAdminAccess(() => true), async (req, res) => {
+app.post('/api/shipments/:id/storage', async (req, res) => {
   try {
     const shipmentId = Number(req.params.id);
     if (!shipmentId) {
@@ -8348,8 +15622,6 @@ app.post('/api/shipments/:id/storage', requireAdminAccess(() => true), async (re
       storage_due_date,
       storage_daily_late_fee,
       expected_arrival_date,
-      storage_room,
-      storage_details,
       picked_up_by,
       picked_up_date,
       employee_id
@@ -8363,12 +15635,46 @@ app.post('/api/shipments/:id/storage', requireAdminAccess(() => true), async (re
     }
 
     const existing = await dbGet(
-      `SELECT id FROM shipments WHERE id = ?`,
-      [shipmentId]
+      `
+        SELECT
+          id,
+          storage_due_date,
+          storage_daily_late_fee,
+          expected_arrival_date,
+          picked_up_by,
+          picked_up_date,
+          picked_up_updated_by,
+          picked_up_updated_at
+        FROM shipments
+        WHERE id = ? AND org_id = ?
+      `,
+      [shipmentId, access.orgId]
     );
     if (!existing) {
       return res.status(404).json({ error: 'Shipment not found.' });
     }
+
+    const hasStorageDue = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      'storage_due_date'
+    );
+    const hasStorageFee = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      'storage_daily_late_fee'
+    );
+    const hasExpectedArrival = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      'expected_arrival_date'
+    );
+    const hasPickedBy = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      'picked_up_by'
+    );
+    const hasPickedDate = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      'picked_up_date'
+    );
+    const updatingPickup = hasPickedBy || hasPickedDate;
 
     const normalizeText = (val) => {
       if (val === undefined || val === null) return null;
@@ -8376,20 +15682,39 @@ app.post('/api/shipments/:id/storage', requireAdminAccess(() => true), async (re
       return s === '' ? null : s;
     };
 
-    const feeValStr =
-      storage_daily_late_fee === undefined || storage_daily_late_fee === null
-        ? ''
-        : String(storage_daily_late_fee).trim();
-    const feeValNum = feeValStr === '' ? null : Number(feeValStr);
-    const feeVal = Number.isFinite(feeValNum) ? feeValNum : null;
+    const nextStorageDue = hasStorageDue
+      ? normalizeText(storage_due_date)
+      : existing.storage_due_date;
+    const nextExpectedArrival = hasExpectedArrival
+      ? normalizeText(expected_arrival_date)
+      : existing.expected_arrival_date;
+    const nextPickedBy = hasPickedBy
+      ? normalizeText(picked_up_by)
+      : existing.picked_up_by;
+    const nextPickedDate = hasPickedDate
+      ? normalizeText(picked_up_date)
+      : existing.picked_up_date;
+
+    let feeVal = existing.storage_daily_late_fee;
+    if (hasStorageFee) {
+      const feeValStr =
+        storage_daily_late_fee === undefined || storage_daily_late_fee === null
+          ? ''
+          : String(storage_daily_late_fee).trim();
+      const feeValNum = feeValStr === '' ? null : Number(feeValStr);
+      feeVal = Number.isFinite(feeValNum) ? feeValNum : null;
+    }
 
     let updaterName = null;
-    if (employee_id) {
-      const emp = await dbGet(
-        `SELECT nickname, name FROM employees WHERE id = ?`,
-        [employee_id]
-      );
-      if (emp) updaterName = emp.nickname || emp.name || null;
+    if (updatingPickup) {
+      const updaterId = employee_id || (access.employee ? access.employee.id : null);
+      if (updaterId) {
+        const emp = await dbGet(
+          `SELECT nickname, name FROM employees WHERE id = ? AND org_id = ?`,
+          [updaterId, access.orgId]
+        );
+        if (emp) updaterName = emp.nickname || emp.name || null;
+      }
     }
 
     await dbRun(
@@ -8399,25 +15724,24 @@ app.post('/api/shipments/:id/storage', requireAdminAccess(() => true), async (re
           storage_due_date = ?,
           storage_daily_late_fee = ?,
           expected_arrival_date = ?,
-          storage_room = ?,
-          storage_details = ?,
           picked_up_by = ?,
           picked_up_date = ?,
-          picked_up_updated_by = ?,
-          picked_up_updated_at = datetime('now'),
+          picked_up_updated_by = CASE WHEN ? THEN ? ELSE picked_up_updated_by END,
+          picked_up_updated_at = CASE WHEN ? THEN datetime('now') ELSE picked_up_updated_at END,
           updated_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ? AND org_id = ?
       `,
       [
-        normalizeText(storage_due_date),
+        nextStorageDue,
         feeVal,
-        normalizeText(expected_arrival_date),
-        normalizeText(storage_room),
-        normalizeText(storage_details),
-        normalizeText(picked_up_by),
-        normalizeText(picked_up_date),
+        nextExpectedArrival,
+        nextPickedBy,
+        nextPickedDate,
+        updatingPickup ? 1 : 0,
         updaterName,
-        shipmentId
+        updatingPickup ? 1 : 0,
+        shipmentId,
+        access.orgId
       ]
     );
 
@@ -8427,10 +15751,10 @@ app.post('/api/shipments/:id/storage', requireAdminAccess(() => true), async (re
         COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name
        FROM shipments s
-       LEFT JOIN vendors  v ON v.id = s.vendor_id
-       LEFT JOIN projects p ON p.id = s.project_id
-       WHERE s.id = ?`,
-      [shipmentId]
+       LEFT JOIN vendors  v ON v.id = s.vendor_id AND v.org_id = s.org_id
+       LEFT JOIN projects p ON p.id = s.project_id AND p.org_id = s.org_id
+       WHERE s.id = ? AND s.org_id = ?`,
+      [shipmentId, access.orgId]
     );
 
     res.json({ shipment: row });
@@ -8441,49 +15765,48 @@ app.post('/api/shipments/:id/storage', requireAdminAccess(() => true), async (re
 });
 
 function resolveVerificationActor(req, access) {
-  // Prefer session-linked employee/user
-  if (req.session && req.session.user) {
-    const actorEmployeeId = req.session.user.employee_id || null;
-    const actorUserId = req.session.user.id || null;
-    const actorName =
-      req.session.user.email ||
-      req.session.user.name ||
-      (access?.employee && access.employee.id)
-        ? `employee-${access.employee.id}`
-        : 'unknown';
-    return {
-      actorName,
-      actorEmployeeId,
-      actorUserId,
-      actorDeviceId: null,
-      via: 'session'
-    };
+  const actorUserId = (req.session && req.session.userId) || null;
+  const actorEmployeeId =
+    (req.session && req.session.employeeId) ||
+    (access && access.employee ? access.employee.id : null);
+
+  let actorName = null;
+  if (access && access.employee && access.employee.name) {
+    actorName = access.employee.name;
+  }
+  if (!actorName && actorEmployeeId) {
+    actorName = `employee-${actorEmployeeId}`;
+  }
+  if (!actorName && actorUserId) {
+    actorName = `user-${actorUserId}`;
+  }
+  if (!actorName) {
+    actorName = 'unknown';
   }
 
-  if (access?.via === 'kiosk' && access.kiosk) {
-    const actorName = `kiosk-${access.kiosk.id}`;
-    return {
-      actorName,
-      actorEmployeeId: access.employee ? access.employee.id : null,
-      actorUserId: null,
-      actorDeviceId: access.kiosk.id,
-      via: 'kiosk'
-    };
-  }
+  const via =
+    access && access.via === 'kiosk'
+      ? 'kiosk'
+      : (req.session && req.session.userId ? 'session' : 'unknown');
+  const actorDeviceId =
+    access && access.via === 'kiosk' && access.kiosk
+      ? access.kiosk.device_id || null
+      : null;
 
   return {
-    actorName: 'unknown',
-    actorEmployeeId: null,
-    actorUserId: null,
-    actorDeviceId: null,
-    via: 'unknown'
+    actorName,
+    actorEmployeeId,
+    actorUserId,
+    actorDeviceId,
+    via
   };
 }
 
 // Save verification for shipment items from kiosk-admin / field devices
-app.post('/api/shipments/:id/verify-items', requireAdminAccess(() => true), async (req, res) => {
+app.post('/api/shipments/:id/verify-items', async (req, res) => {
   const shipmentId = Number(req.params.id);
-  const { items } = req.body || {};
+  const { items, client_id } = req.body || {};
+  let transactionStarted = false;
 
   if (!shipmentId || !Array.isArray(items) || !items.length) {
     return res.status(400).json({ error: 'Missing shipment id or items.' });
@@ -8497,102 +15820,632 @@ app.post('/api/shipments/:id/verify-items', requireAdminAccess(() => true), asyn
         .json({ error: access.error || 'Not authorized' });
     }
 
-    const actor = resolveVerificationActor(req, access);
+    const orgId = access.orgId;
 
+    const shipmentRow = await dbGet(
+      'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+      [shipmentId, orgId]
+    );
+    if (!shipmentRow) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
+
+    if (client_id) {
+      const cached = await loadIdempotentResponse(orgId, 'shipment_verify', client_id);
+      if (cached) {
+        return res.json({ ...cached, alreadyProcessed: true });
+      }
+    }
+
+    const actor = resolveVerificationActor(req, access);
     const nowIso = new Date().toISOString();
 
-    const stmt = db.prepare(`
-      UPDATE shipment_items
-      SET verification_json = json_set(
-        COALESCE(verification_json, '{}'),
-        '$.status', ?,
-        '$.notes', ?,
-        '$.verified_at', ?,
-        '$.verified_by', ?,
-        '$.verified_by_employee_id', ?,
-        '$.verified_by_user_id', ?,
-        '$.verified_via', ?,
-        '$.verified_device_id', ?,
-        '$.storage_override', ?
-      ),
-      verified = ?
-      WHERE id = ?
-        AND shipment_id = ?
-    `);
+    await dbRun('BEGIN TRANSACTION');
+    transactionStarted = true;
+
+    let storageLocationSet = false;
 
     for (const row of items) {
-      const vid = Number(row.shipment_item_id);
-      if (!vid) continue;
+      const itemId = Number(row.shipment_item_id);
+      if (!itemId) continue;
 
-      const v = row.verification || {};
-      const verifiedAt = v.verified_at || nowIso;
+      const existing = await dbGet(
+        `
+          SELECT id, verification_json, verified, notes
+          FROM shipment_items
+          WHERE id = ? AND shipment_id = ? AND org_id = ?
+        `,
+        [itemId, shipmentId, orgId]
+      );
+      if (!existing) continue;
 
-      const normalizedStatus = (v.status || '').toLowerCase().trim();
-      const verifiedFlag = normalizedStatus && normalizedStatus !== 'unverified' ? 1 : 0;
+      let verification = null;
+      if (existing.verification_json) {
+        try {
+          verification = JSON.parse(existing.verification_json);
+        } catch {
+          verification = null;
+        }
+      }
 
-      stmt.run(
-        v.status || '',
-        v.notes || '',
-        verifiedAt,
-        actor.actorName || v.verified_by || null,
-        actor.actorEmployeeId,
-        actor.actorUserId,
-        actor.via,
-        actor.actorDeviceId,
-        v.storage_override || '',
-        verifiedFlag,
-        vid,
-        shipmentId
+      const isObj =
+        verification &&
+        typeof verification === 'object' &&
+        !Array.isArray(verification);
+      if (!isObj || Object.keys(verification).length === 0) {
+        verification = {
+          status: existing.verified ? 'verified' : '',
+          notes: existing.notes || '',
+          storage_override: '',
+          history: []
+        };
+      }
+
+      if (!Array.isArray(verification.history)) {
+        verification.history = [];
+      }
+
+      const payload = row.verification || {};
+      const statusProvided = Object.prototype.hasOwnProperty.call(payload, 'status');
+      const notesProvided = Object.prototype.hasOwnProperty.call(payload, 'notes');
+      const storageProvided = Object.prototype.hasOwnProperty.call(payload, 'storage_override');
+      const issueProvided = Object.prototype.hasOwnProperty.call(payload, 'issue_type');
+
+      const newStatus = statusProvided
+        ? String(payload.status || '').trim()
+        : String(verification.status || '').trim();
+      const newNotes = notesProvided
+        ? String(payload.notes || '')
+        : String(verification.notes || '');
+      const newStorage = storageProvided
+        ? String(payload.storage_override || '')
+        : String(verification.storage_override || '');
+      const newIssueType = issueProvided
+        ? String(payload.issue_type || '')
+        : String(verification.issue_type || '');
+
+      const oldStatus = String(verification.status || '').trim();
+      const oldStorage = String(verification.storage_override || '').trim();
+
+      const normalizedStatus = newStatus.toLowerCase();
+      const isVerified =
+        normalizedStatus !== '' && normalizedStatus !== 'unverified';
+
+      if (oldStatus !== newStatus) {
+        verification.history.push({
+          at: nowIso,
+          from_status: oldStatus,
+          to_status: newStatus,
+          by_employee_id: actor.actorEmployeeId || null,
+          by_name: actor.actorName || null,
+          notes: newNotes || '',
+          storage_override: newStorage || ''
+        });
+      }
+
+      verification.status = newStatus;
+      verification.notes = newNotes;
+      verification.storage_override = newStorage || '';
+      verification.issue_type = newIssueType || '';
+
+      if (isVerified) {
+        verification.verified_at = payload.verified_at || nowIso;
+        verification.verified_by = actor.actorName || null;
+        verification.verified_by_employee_id = actor.actorEmployeeId || null;
+        verification.verified_by_user_id = actor.actorUserId || null;
+        verification.verified_via = actor.via || null;
+        verification.verified_device_id = actor.actorDeviceId || null;
+      } else {
+        verification.verified_at = null;
+        verification.verified_by = null;
+        verification.verified_by_employee_id = null;
+        verification.verified_by_user_id = null;
+        verification.verified_via = null;
+        verification.verified_device_id = null;
+      }
+
+      if (!oldStorage && newStorage) {
+        storageLocationSet = true;
+      }
+
+      await dbRun(
+        `
+          UPDATE shipment_items
+          SET verification_json = ?,
+              verified = ?,
+              notes = ?
+          WHERE id = ? AND shipment_id = ? AND org_id = ?
+        `,
+        [
+          JSON.stringify(verification),
+          isVerified ? 1 : 0,
+          newNotes || null,
+          itemId,
+          shipmentId,
+          orgId
+        ]
       );
     }
 
-    stmt.finalize();
+    // Recompute items_verified flag (all items have a status other than empty/unverified)
+    const uncheckedRow = await dbGet(
+      `
+        SELECT COUNT(*) AS cnt
+        FROM shipment_items
+        WHERE shipment_id = ? AND org_id = ?
+          AND (
+            (
+              IFNULL(TRIM(verification_json), '') <> ''
+              AND json_valid(verification_json)
+              AND LOWER(TRIM(COALESCE(json_extract(verification_json, '$.status'), ''))) IN ('', 'unverified')
+            )
+            OR (
+              (IFNULL(TRIM(verification_json), '') = '' OR NOT json_valid(verification_json))
+              AND IFNULL(verified, 0) = 0
+            )
+          )
+      `,
+      [shipmentId, orgId]
+    );
 
-// Recompute items_verified flag (all items have a status other than empty/unverified)
-const uncheckedRow = await dbGet(
-  `
-    SELECT COUNT(*) AS cnt
-    FROM shipment_items
-    WHERE shipment_id = ?
-      AND LOWER(TRIM(COALESCE(json_extract(verification_json, '$.status'), ''))) IN ('', 'unverified')
-  `,
-  [shipmentId]
-);
+    const allVerified = uncheckedRow && uncheckedRow.cnt === 0;
 
-const allVerified = uncheckedRow && uncheckedRow.cnt === 0;
+    await dbRun(
+      `
+        UPDATE shipments
+        SET items_verified = ?, updated_at = ?
+        WHERE id = ? AND org_id = ?
+      `,
+      [allVerified ? 1 : 0, nowIso, shipmentId, orgId]
+    );
 
-await dbRun(
-  `
-    UPDATE shipments
-    SET items_verified = ?
-    WHERE id = ?
-  `,
-  [allVerified ? 1 : 0, shipmentId]
-);
+    if (storageLocationSet) {
+      await dbRun(
+        `
+          INSERT INTO shipment_timeline (
+            org_id, shipment_id, event_type, note, created_by, created_at
+          ) VALUES (?, ?, 'storage_location_set', NULL, ?, datetime('now'))
+        `,
+        [orgId, shipmentId, actor.actorEmployeeId || null]
+      );
+    }
 
+    await dbRun('COMMIT');
+    transactionStarted = false;
 
-    res.json({ ok: true, items_verified: allVerified });
+    const response = { ok: true, items_verified: allVerified };
+    if (client_id) {
+      await storeIdempotentResponse(orgId, 'shipment_verify', client_id, response);
+    }
+
+    res.json(response);
   } catch (err) {
+    if (transactionStarted) {
+      try {
+        await dbRun('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('Shipment verification rollback error:', rollbackErr);
+      }
+    }
     console.error('Error saving shipment verification from kiosk:', err);
     res.status(500).json({ error: 'Failed to save shipment verification.' });
   }
 });
 
 
+// Shipment templates
+app.get('/api/shipments/templates', requireSeeShipments, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const rows = await dbAll(
+      `
+        SELECT
+          t.*,
+          v.name AS vendor_name,
+          p.name AS project_name
+        FROM shipment_templates t
+        LEFT JOIN vendors v ON v.id = t.vendor_id AND v.org_id = t.org_id
+        LEFT JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
+        WHERE t.org_id = ?
+        ORDER BY t.created_at DESC, t.id DESC
+      `,
+      [orgId]
+    );
+
+    const templates = [];
+    for (const row of rows || []) {
+      const items = await dbAll(
+        `
+          SELECT description, sku, quantity, unit_price, line_total, vendor_name
+          FROM shipment_template_items
+          WHERE template_id = ? AND org_id = ?
+          ORDER BY id ASC
+        `,
+        [row.id, orgId]
+      );
+      templates.push({
+        ...row,
+        items: items || []
+      });
+    }
+
+    res.json({ templates });
+  } catch (err) {
+    console.error('Error loading shipment templates:', err);
+    res.status(500).json({ error: 'Failed to load shipment templates.' });
+  }
+});
+
+app.post('/api/shipments/templates', requireSeeShipments, async (req, res) => {
+  let transactionStarted = false;
+  try {
+    const orgId = req.session && req.session.orgId;
+    const createdBy = req.session && req.session.employeeId
+      ? req.session.employeeId
+      : null;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const {
+      name,
+      title,
+      vendor_id,
+      freight_forwarder,
+      destination,
+      project_id,
+      sku,
+      quantity,
+      total_price,
+      price_per_item,
+      website_url,
+      notes,
+      items = []
+    } = req.body || {};
+
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'Template name is required.' });
+    }
+
+    if (vendor_id) {
+      const vendorRow = await dbGet(
+        'SELECT id FROM vendors WHERE id = ? AND org_id = ?',
+        [vendor_id, orgId]
+      );
+      if (!vendorRow) {
+        return res.status(400).json({ error: 'Vendor not found.' });
+      }
+    }
+
+    if (project_id) {
+      const projectRow = await dbGet(
+        'SELECT id FROM projects WHERE id = ? AND org_id = ?',
+        [project_id, orgId]
+      );
+      if (!projectRow) {
+        return res.status(400).json({ error: 'Project not found.' });
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    await dbRun('BEGIN TRANSACTION');
+    transactionStarted = true;
+    const result = await dbRun(
+      `
+        INSERT INTO shipment_templates (
+          org_id,
+          name,
+          title,
+          vendor_id,
+          freight_forwarder,
+          destination,
+          project_id,
+          sku,
+          quantity,
+          total_price,
+          price_per_item,
+          website_url,
+          notes,
+          created_by,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        orgId,
+        String(name).trim(),
+        title || null,
+        vendor_id || null,
+        freight_forwarder || null,
+        destination || null,
+        project_id || null,
+        sku || null,
+        quantity != null ? quantity : null,
+        total_price != null ? total_price : null,
+        price_per_item != null ? price_per_item : null,
+        website_url || null,
+        notes || null,
+        createdBy,
+        nowIso,
+        nowIso
+      ]
+    );
+
+    const templateId = result?.lastID;
+
+    if (Array.isArray(items) && items.length) {
+      for (const it of items) {
+        await dbRun(
+          `
+            INSERT INTO shipment_template_items (
+              org_id,
+              template_id,
+              description,
+              sku,
+              quantity,
+              unit_price,
+              line_total,
+              vendor_name,
+              created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          `,
+          [
+            orgId,
+            templateId,
+            it.description || null,
+            it.sku || null,
+            it.quantity != null ? it.quantity : 0,
+            it.unit_price != null ? it.unit_price : 0,
+            it.line_total != null ? it.line_total : 0,
+            it.vendor_name || null
+          ]
+        );
+      }
+    }
+
+    await dbRun('COMMIT');
+    transactionStarted = false;
+
+    res.json({
+      ok: true,
+      template: {
+        id: templateId,
+        name: String(name).trim(),
+        created_at: nowIso
+      }
+    });
+  } catch (err) {
+    if (transactionStarted) {
+      try {
+        await dbRun('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('Shipment template create rollback error:', rollbackErr);
+      }
+    }
+    console.error('Error creating shipment template:', err);
+    res.status(500).json({ error: 'Failed to create shipment template.' });
+  }
+});
+
+app.put('/api/shipments/templates/:id', requireSeeShipments, async (req, res) => {
+  let transactionStarted = false;
+  try {
+    const orgId = req.session && req.session.orgId;
+    const actorId = req.session && req.session.employeeId
+      ? req.session.employeeId
+      : null;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const templateId = Number(req.params.id);
+    if (!templateId) {
+      return res.status(400).json({ error: 'Invalid template id.' });
+    }
+
+    const existing = await dbGet(
+      'SELECT id FROM shipment_templates WHERE id = ? AND org_id = ?',
+      [templateId, orgId]
+    );
+    if (!existing) {
+      return res.status(404).json({ error: 'Template not found.' });
+    }
+
+    const {
+      name,
+      title,
+      vendor_id,
+      freight_forwarder,
+      destination,
+      project_id,
+      sku,
+      quantity,
+      total_price,
+      price_per_item,
+      website_url,
+      notes,
+      items
+    } = req.body || {};
+
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'Template name is required.' });
+    }
+
+    const hasVendorId =
+      vendor_id !== undefined && vendor_id !== null && vendor_id !== '';
+    if (hasVendorId) {
+      const vendorRow = await dbGet(
+        'SELECT id FROM vendors WHERE id = ? AND org_id = ?',
+        [vendor_id, orgId]
+      );
+      if (!vendorRow) {
+        return res.status(400).json({ error: 'Vendor not found.' });
+      }
+    }
+
+    const hasProjectId =
+      project_id !== undefined && project_id !== null && project_id !== '';
+    if (hasProjectId) {
+      const projectRow = await dbGet(
+        'SELECT id FROM projects WHERE id = ? AND org_id = ?',
+        [project_id, orgId]
+      );
+      if (!projectRow) {
+        return res.status(400).json({ error: 'Project not found.' });
+      }
+    }
+
+    await dbRun('BEGIN TRANSACTION');
+    transactionStarted = true;
+
+    await dbRun(
+      `
+        UPDATE shipment_templates
+        SET
+          name = ?,
+          title = ?,
+          vendor_id = ?,
+          freight_forwarder = ?,
+          destination = ?,
+          project_id = ?,
+          sku = ?,
+          quantity = ?,
+          total_price = ?,
+          price_per_item = ?,
+          website_url = ?,
+          notes = ?,
+          created_by = COALESCE(created_by, ?),
+          updated_at = datetime('now')
+        WHERE id = ? AND org_id = ?
+      `,
+      [
+        String(name).trim(),
+        title || null,
+        vendor_id || null,
+        freight_forwarder || null,
+        destination || null,
+        project_id || null,
+        sku || null,
+        quantity != null ? quantity : null,
+        total_price != null ? total_price : null,
+        price_per_item != null ? price_per_item : null,
+        website_url || null,
+        notes || null,
+        actorId,
+        templateId,
+        orgId
+      ]
+    );
+
+    if (Array.isArray(items)) {
+      await dbRun(
+        `DELETE FROM shipment_template_items WHERE template_id = ? AND org_id = ?`,
+        [templateId, orgId]
+      );
+      for (const it of items) {
+        await dbRun(
+          `
+            INSERT INTO shipment_template_items (
+              org_id,
+              template_id,
+              description,
+              sku,
+              quantity,
+              unit_price,
+              line_total,
+              vendor_name,
+              created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          `,
+          [
+            orgId,
+            templateId,
+            it.description || null,
+            it.sku || null,
+            it.quantity != null ? it.quantity : 0,
+            it.unit_price != null ? it.unit_price : 0,
+            it.line_total != null ? it.line_total : 0,
+            it.vendor_name || null
+          ]
+        );
+      }
+    }
+
+    await dbRun('COMMIT');
+    transactionStarted = false;
+
+    res.json({ ok: true });
+  } catch (err) {
+    if (transactionStarted) {
+      try {
+        await dbRun('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('Shipment template update rollback error:', rollbackErr);
+      }
+    }
+    console.error('Error updating shipment template:', err);
+    res.status(500).json({ error: 'Failed to update shipment template.' });
+  }
+});
+
+app.delete('/api/shipments/templates/:id', requireSeeShipments, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const templateId = Number(req.params.id);
+    if (!templateId) {
+      return res.status(400).json({ error: 'Invalid template id.' });
+    }
+
+    await dbRun(
+      `DELETE FROM shipment_template_items WHERE template_id = ? AND org_id = ?`,
+      [templateId, orgId]
+    );
+    await dbRun(
+      `DELETE FROM shipment_templates WHERE id = ? AND org_id = ?`,
+      [templateId, orgId]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error deleting shipment template:', err);
+    res.status(500).json({ error: 'Failed to delete shipment template.' });
+  }
+});
+
 
 /* ───────── 9. REPORTS ───────── */
 
-app.get('/api/time-entries/export/:format', requireAdminAccess(p => p.view_time_reports || p.view_payroll), (req, res) => {
+app.get('/api/time-entries/export/:format', requireViewTimeReports, async (req, res) => {
   const { format } = req.params;
   let { start, end, employee_id, project_id } = req.query;
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+  const orgTimezone = await getOrgTimezone(orgId);
+
+  let canViewPayroll = false;
+  try {
+    const employeeId = req.session && req.session.employeeId;
+    if (employeeId) {
+      const perms = await getAdminAccessPerms({ employeeId, orgId });
+      canViewPayroll = !!perms.view_payroll;
+    }
+  } catch (err) {
+    console.warn('Unable to load payroll permissions for export:', err.message);
+  }
 
   // Same default as normal endpoint: if no filters, default to "today"
   if (!start && !end && !employee_id && !project_id) {
-    const now = new Date();
-    const yyyy = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate()).padStart(2, '0');
-    const today = `${yyyy}-${mm}-${dd}`;
+    const today = getTodayIsoDate(orgTimezone);
     start = today;
     end = today;
   }
@@ -8613,16 +16466,20 @@ app.get('/api/time-entries/export/:format', requireAdminAccess(p => p.view_time_
       t.paid_date,
       COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
       COALESCE(p.name, t.project_name_snapshot) AS project_name,
-      COALESCE(MAX(tp.geo_violation), 0)  AS has_geo_violation,
+      COALESCE(MAX(CASE
+        WHEN tp.geo_violation != 0 OR ks.geo_violation != 0 THEN 1
+        ELSE 0
+      END), 0) AS has_geo_violation,
       COALESCE(MAX(tp.auto_clock_out), 0) AS has_auto_clock_out
     FROM time_entries t
-    LEFT JOIN employees   e ON t.employee_id = e.id
-    LEFT JOIN projects    p ON t.project_id = p.id
-    LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
-    WHERE 1=1
+    LEFT JOIN employees   e ON t.employee_id = e.id AND e.org_id = t.org_id
+    LEFT JOIN projects    p ON t.project_id = p.id AND p.org_id = t.org_id
+    LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
+    LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = t.org_id
+    WHERE t.org_id = ?
   `;
 
-  const params = [];
+  const params = [orgId];
 
   if (start) {
     sql += ' AND t.start_date >= ?';
@@ -8662,31 +16519,39 @@ app.get('/api/time-entries/export/:format', requireAdminAccess(p => p.view_time_
     ORDER BY t.start_date ASC, t.start_time ASC, t.id ASC
   `;
 
-  db.all(sql, params, (err, rows) => {
-    if (err) {
-      console.error('Error exporting time entries:', err.message);
-      return res.status(500).json({ error: err.message });
-    }
-
+  try {
+    const rows = await dbAll(sql, params);
     const safeStart = start || 'all';
     const safeEnd   = end   || 'all';
 
     if (format === 'csv') {
       // ───────── CSV EXPORT ─────────
-      const header = [
-        'Employee',
-        'Project',
-        'Start Date',
-        'End Date',
-        'Start Time',
-        'End Time',
-        'Hours',
-        'Total Pay',
-        'Paid',
-        'Paid Date',
-        'Geo Violation',
-        'Auto Clock-out'
-      ];
+      const header = canViewPayroll
+        ? [
+            'Employee',
+            'Project',
+            'Start Date',
+            'End Date',
+            'Start Time',
+            'End Time',
+            'Hours',
+            'Total Pay',
+            'Paid',
+            'Paid Date',
+            'Geo Violation',
+            'Auto Clock-out'
+          ]
+        : [
+            'Employee',
+            'Project',
+            'Start Date',
+            'End Date',
+            'Start Time',
+            'End Time',
+            'Hours',
+            'Geo Violation',
+            'Auto Clock-out'
+          ];
 
       function esc(value) {
         const s = value == null ? '' : String(value);
@@ -8697,21 +16562,29 @@ app.get('/api/time-entries/export/:format', requireAdminAccess(p => p.view_time_
       }
 
       const lines = [header.join(',')];
-      rows.forEach(r => {
-        const rowArr = [
+      (rows || []).forEach(r => {
+        const base = [
           r.employee_name || '',
           r.project_name || '',
           r.start_date || '',
           r.end_date || '',
           r.start_time || '',
           r.end_time || '',
-          r.hours != null ? r.hours : '',
-          r.total_pay != null ? r.total_pay : '',
-          r.paid ? 'Yes' : 'No',
-          r.paid_date || '',
-          r.has_geo_violation ? 'Yes' : '',
-          r.has_auto_clock_out ? 'Yes' : ''
+          r.hours != null ? r.hours : ''
         ];
+        const tail = canViewPayroll
+          ? [
+              r.total_pay != null ? r.total_pay : '',
+              r.paid ? 'Yes' : 'No',
+              r.paid_date || '',
+              r.has_geo_violation ? 'Yes' : '',
+              r.has_auto_clock_out ? 'Yes' : ''
+            ]
+          : [
+              r.has_geo_violation ? 'Yes' : '',
+              r.has_auto_clock_out ? 'Yes' : ''
+            ];
+        const rowArr = base.concat(tail);
         lines.push(rowArr.map(esc).join(','));
       });
 
@@ -8745,12 +16618,14 @@ app.get('/api/time-entries/export/:format', requireAdminAccess(p => p.view_time_
 
       // simple column headers
       doc.fontSize(9).text(
-        'Date        Time           Employee                     Project                          Hours   Paid',
+        canViewPayroll
+          ? 'Date        Time           Employee                     Project                          Hours   Paid'
+          : 'Date        Time           Employee                     Project                          Hours',
         { underline: true }
       );
       doc.moveDown(0.3);
 
-      rows.forEach(r => {
+      (rows || []).forEach(r => {
         const date = r.start_date || '';
         const timeRange = `${r.start_time || ''}–${r.end_time || ''}`;
         const emp = (r.employee_name || '').slice(0, 26);
@@ -8758,9 +16633,11 @@ app.get('/api/time-entries/export/:format', requireAdminAccess(p => p.view_time_
         const hrs = r.hours != null ? r.hours.toFixed(2) : '';
         const paid = r.paid ? 'Yes' : 'No';
 
-        doc.fontSize(9).text(
-          `${date.padEnd(11)} ${timeRange.padEnd(13)} ${emp.padEnd(28)} ${proj.padEnd(30)} ${hrs.padEnd(7)} ${paid}`
-        );
+        const line = canViewPayroll
+          ? `${date.padEnd(11)} ${timeRange.padEnd(13)} ${emp.padEnd(28)} ${proj.padEnd(30)} ${hrs.padEnd(7)} ${paid}`
+          : `${date.padEnd(11)} ${timeRange.padEnd(13)} ${emp.padEnd(28)} ${proj.padEnd(30)} ${hrs}`;
+
+        doc.fontSize(9).text(line);
       });
 
       doc.end();
@@ -8769,11 +16646,18 @@ app.get('/api/time-entries/export/:format', requireAdminAccess(p => p.view_time_
 
     // Unsupported format
     return res.status(400).json({ error: 'Unsupported export format.' });
-  });
+  } catch (err) {
+    console.error('Error exporting time entries:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 
 app.get('/api/reports/payroll-runs', requireAdminAccess(p => p.view_payroll), (req, res) => {
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
   const sql = `
     SELECT
       pr.id,
@@ -8789,11 +16673,12 @@ app.get('/api/reports/payroll-runs', requireAdminAccess(p => p.view_payroll), (r
       COUNT(pc.id) AS check_count,
       SUM(CASE WHEN pc.paid = 1 THEN 1 ELSE 0 END) AS paid_checks
     FROM payroll_runs pr
-    LEFT JOIN payroll_checks pc ON pc.payroll_run_id = pr.id
+    LEFT JOIN payroll_checks pc ON pc.payroll_run_id = pr.id AND pc.org_id = pr.org_id
+    WHERE pr.org_id = ?
     GROUP BY pr.id
     ORDER BY pr.created_at DESC
   `;
-  db.all(sql, [], (err, rows) => {
+  db.all(sql, [orgId], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows || []);
   });
@@ -8803,6 +16688,10 @@ app.get('/api/reports/payroll-audit', requireAdminAccess(p => p.view_payroll), (
   let limit = parseInt(req.query.limit, 10);
   if (!Number.isFinite(limit) || limit <= 0 || limit > 500) {
     limit = 50;
+  }
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
   }
 
   const sql = `
@@ -8815,11 +16704,12 @@ app.get('/api/reports/payroll-audit', requireAdminAccess(p => p.view_payroll), (
       created_at,
       actor_employee_id
     FROM payroll_audit_log
+    WHERE org_id = ?
     ORDER BY created_at DESC, id DESC
     LIMIT ?
   `;
 
-  db.all(sql, [limit], (err, rows) => {
+  db.all(sql, [orgId, limit], (err, rows) => {
     if (err) {
       console.error('Error loading payroll audit log:', err);
       return res
@@ -8858,6 +16748,10 @@ app.get('/api/reports/payroll-runs/:id', requireAdminAccess(p => p.view_payroll)
   if (Number.isNaN(runId)) {
     return res.status(400).json({ error: 'Invalid payroll run id.' });
   }
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
 
   const sql = `
     SELECT
@@ -8869,11 +16763,12 @@ app.get('/api/reports/payroll-runs/:id', requireAdminAccess(p => p.view_payroll)
       pc.paid,
       pc.paid_date
     FROM payroll_checks pc
-    LEFT JOIN employees e ON pc.employee_id = e.id
+    LEFT JOIN employees e ON pc.employee_id = e.id AND e.org_id = pc.org_id
     WHERE pc.payroll_run_id = ?
+      AND pc.org_id = ?
     ORDER BY e.name
   `;
-  db.all(sql, [runId], (err, rows) => {
+  db.all(sql, [runId, orgId], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows || []);
   });
@@ -8883,6 +16778,10 @@ app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), 
   const checkId = parseInt(req.params.id, 10);
   if (Number.isNaN(checkId)) {
     return res.status(400).json({ error: 'Invalid check id.' });
+  }
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
   }
 
   const { check_number, paid } = req.body || {};
@@ -8896,8 +16795,8 @@ app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), 
   }
 
   const checkRow = await dbGet(
-    `SELECT id, payroll_run_id, employee_id, paid FROM payroll_checks WHERE id = ?`,
-    [checkId]
+    `SELECT id, payroll_run_id, employee_id, paid FROM payroll_checks WHERE id = ? AND org_id = ?`,
+    [checkId, orgId]
   );
   if (!checkRow) {
     return res.status(404).json({ error: 'Payroll check not found.' });
@@ -8906,8 +16805,8 @@ app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), 
   let runRow = null;
   if (paidProvided) {
     runRow = await dbGet(
-      `SELECT start_date, end_date FROM payroll_runs WHERE id = ?`,
-      [checkRow.payroll_run_id]
+      `SELECT start_date, end_date FROM payroll_runs WHERE id = ? AND org_id = ?`,
+      [checkRow.payroll_run_id, orgId]
     );
     if (!runRow) {
       return res.status(400).json({ error: 'Payroll run not found for this check.' });
@@ -8940,8 +16839,8 @@ app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), 
     await dbRun('BEGIN TRANSACTION');
 
     await dbRun(
-      `UPDATE payroll_checks SET ${updates.join(', ')} WHERE id = ?`,
-      [...params, checkId]
+      `UPDATE payroll_checks SET ${updates.join(', ')} WHERE id = ? AND org_id = ?`,
+      [...params, checkId, orgId]
     );
 
     if (paidProvided) {
@@ -8952,8 +16851,10 @@ app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), 
             SET paid = 1,
                 paid_date = ?,
                 payroll_run_id = ?,
-                payroll_check_id = ?
+                payroll_check_id = ?,
+                updated_at = ?
             WHERE employee_id = ?
+              AND org_id = ?
               AND start_date >= ?
               AND end_date <= ?
               AND (paid IS NULL OR paid = 0)
@@ -8962,7 +16863,9 @@ app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), 
             paidAt,
             checkRow.payroll_run_id,
             checkId,
+            new Date().toISOString(),
             checkRow.employee_id,
+            orgId,
             runRow.start_date,
             runRow.end_date
           ]
@@ -8974,11 +16877,13 @@ app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), 
             SET paid = 0,
                 paid_date = NULL,
                 payroll_run_id = NULL,
-                payroll_check_id = NULL
+                payroll_check_id = NULL,
+                updated_at = ?
             WHERE employee_id = ?
               AND payroll_run_id = ?
+              AND org_id = ?
           `,
-          [checkRow.employee_id, checkRow.payroll_run_id]
+          [new Date().toISOString(), checkRow.employee_id, checkRow.payroll_run_id, orgId]
         );
       }
 
@@ -8987,17 +16892,24 @@ app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), 
           UPDATE payroll_runs
           SET total_hours = (
                 SELECT IFNULL(SUM(total_hours), 0)
-                FROM payroll_checks
-                WHERE payroll_run_id = ?
-              ),
-              total_pay = (
-                SELECT IFNULL(SUM(total_pay), 0)
-                FROM payroll_checks
-                WHERE payroll_run_id = ?
-              )
-          WHERE id = ?
+              FROM payroll_checks
+              WHERE payroll_run_id = ? AND org_id = ?
+            ),
+            total_pay = (
+              SELECT IFNULL(SUM(total_pay), 0)
+              FROM payroll_checks
+              WHERE payroll_run_id = ? AND org_id = ?
+            )
+          WHERE id = ? AND org_id = ?
         `,
-        [checkRow.payroll_run_id, checkRow.payroll_run_id, checkRow.payroll_run_id]
+        [
+          checkRow.payroll_run_id,
+          orgId,
+          checkRow.payroll_run_id,
+          orgId,
+          checkRow.payroll_run_id,
+          orgId
+        ]
       );
     }
 
@@ -9021,6 +16933,10 @@ app.get('/api/reports/payroll-audit-log', requireAdminAccess(p => p.view_payroll
     if (!Number.isFinite(limit) || limit <= 0 || limit > 1000) {
       limit = 200; // sensible default
     }
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+    }
 
     const rows = await dbAll(
       `
@@ -9033,10 +16949,11 @@ app.get('/api/reports/payroll-audit-log', requireAdminAccess(p => p.view_payroll
           details_json,
           created_at
         FROM payroll_audit_log
+        WHERE org_id = ?
         ORDER BY datetime(created_at) DESC, id DESC
         LIMIT ?
       `,
-      [limit]
+      [orgId, limit]
     );
 
     res.json({
@@ -9060,7 +16977,7 @@ app.get('/api/reports/payroll-audit-log', requireAdminAccess(p => p.view_payroll
 //  - Detail mode (with shipment_id): single shipment + items +
 //    per-item verification history.
 //
-app.get('/api/reports/shipment-verification', requireAdminAccess(() => true), async (req, res) => {
+app.get('/api/reports/shipment-verification', async (req, res) => {
   try {
     const {
       shipment_id,
@@ -9077,6 +16994,19 @@ app.get('/api/reports/shipment-verification', requireAdminAccess(() => true), as
         .status(access.status || 403)
         .json({ error: access.error || 'Not authorized' });
     }
+    const orgId = access.orgId;
+    const orgTimezone = await getOrgTimezone(orgId);
+    const canViewPayments = !!(access.perms && access.perms.view_payroll);
+
+    let startDate = start ? String(start).trim() : '';
+    let endDate = end ? String(end).trim() : '';
+    if (!startDate) startDate = null;
+    if (!endDate) endDate = null;
+    if (!startDate && !endDate) {
+      const today = getTodayIsoDate(orgTimezone);
+      startDate = shiftIsoDate(today, -30);
+      endDate = today;
+    }
 
     // ───── DETAIL MODE: single shipment with items + history ─────
     if (shipment_id) {
@@ -9092,14 +17022,21 @@ app.get('/api/reports/shipment-verification', requireAdminAccess(() => true), as
                 COALESCE(s.project_name_snapshot, p.name) AS project_name,
                 p.customer_name
            FROM shipments s
-      LEFT JOIN vendors  v ON v.id = s.vendor_id
-      LEFT JOIN projects p ON p.id = s.project_id
-          WHERE s.id = ?`,
-        [id]
+      LEFT JOIN vendors  v ON v.id = s.vendor_id AND v.org_id = s.org_id
+      LEFT JOIN projects p ON p.id = s.project_id AND p.org_id = s.org_id
+          WHERE s.id = ? AND s.org_id = ?`,
+        [id, orgId]
       );
 
       if (!shipment) {
         return res.status(404).json({ error: 'Shipment not found.' });
+      }
+
+      if (!canViewPayments && shipment) {
+        shipment.vendor_paid_amount = null;
+        shipment.shipper_paid_amount = null;
+        shipment.customs_paid_amount = null;
+        shipment.total_paid = null;
       }
 
       const items = await dbAll(
@@ -9117,10 +17054,10 @@ app.get('/api/reports/shipment-verification', requireAdminAccess(() => true), as
             notes,
             verification_json
           FROM shipment_items
-          WHERE shipment_id = ?
+          WHERE shipment_id = ? AND org_id = ?
           ORDER BY id ASC
         `,
-        [id]
+        [id, orgId]
       );
 
       const normalizedItems = items.map(it => {
@@ -9178,26 +17115,23 @@ app.get('/api/reports/shipment-verification', requireAdminAccess(() => true), as
 
     // ───── SUMMARY MODE: list shipments (with filters) ─────
     const params = [];
-    let where = 'WHERE IFNULL(s.is_archived, 0) = 0 ';
+    let where = 'WHERE s.org_id = ? ';
+    params.push(orgId);
+
+    if (status && status === 'Archived') {
+      where += 'AND IFNULL(s.is_archived, 0) = 1 ';
+    } else {
+      where += 'AND IFNULL(s.is_archived, 0) = 0 ';
+    }
 
     if (project_id) {
       where += 'AND s.project_id = ? ';
       params.push(project_id);
     }
 
-    if (status) {
+    if (status && status !== 'Archived') {
       where += 'AND s.status = ? ';
       params.push(status);
-    }
-
-    // Optional date range on created_at
-    if (start) {
-      where += 'AND date(s.created_at) >= date(?) ';
-      params.push(start);
-    }
-    if (end) {
-      where += 'AND date(s.created_at) <= date(?) ';
-      params.push(end);
     }
 
     // "Ready for pickup" filter:
@@ -9232,20 +17166,30 @@ app.get('/api/reports/shipment-verification', requireAdminAccess(() => true), as
           s.items_verified,
           (
             SELECT COUNT(*) FROM shipment_items si
-            WHERE si.shipment_id = s.id
+            WHERE si.shipment_id = s.id AND si.org_id = s.org_id
           ) AS items_total,
           (
             SELECT COUNT(*)
             FROM shipment_items si
-            WHERE si.shipment_id = s.id
-              AND LOWER(
-                TRIM(
-                  COALESCE(
-                    json_extract(si.verification_json, '$.status'),
-                    ''
-                  )
+            WHERE si.shipment_id = s.id AND si.org_id = s.org_id
+              AND (
+                (
+                  IFNULL(TRIM(si.verification_json), '') <> ''
+                  AND json_valid(si.verification_json)
+                  AND LOWER(
+                    TRIM(
+                      COALESCE(
+                        json_extract(si.verification_json, '$.status'),
+                        ''
+                      )
+                    )
+                  ) NOT IN ('', 'unverified')
                 )
-              ) NOT IN ('', 'unverified')
+                OR (
+                  (IFNULL(TRIM(si.verification_json), '') = '' OR NOT json_valid(si.verification_json))
+                  AND IFNULL(si.verified, 0) = 1
+                )
+              )
           ) AS items_verified_count,
           s.picked_up_by,
           s.picked_up_date,
@@ -9264,23 +17208,16 @@ app.get('/api/reports/shipment-verification', requireAdminAccess(() => true), as
           s.customs_paid,
           s.customs_paid_amount,
           s.total_paid,
-          s.vendor_paid,
-          s.vendor_paid_amount,
-          s.shipper_paid,
-          s.shipper_paid_amount,
-          s.customs_paid,
-          s.customs_paid_amount,
-          s.total_paid,
           COALESCE(s.vendor_name, v.name) AS vendor_name,
           (
             SELECT COUNT(DISTINCT TRIM(IFNULL(si.vendor_name, '')))
             FROM shipment_items si
-            WHERE si.shipment_id = s.id
+            WHERE si.shipment_id = s.id AND si.org_id = s.org_id
               AND TRIM(IFNULL(si.vendor_name, '')) <> ''
           ) AS distinct_item_vendors
         FROM shipments s
-        LEFT JOIN vendors v ON v.id = s.vendor_id
-        LEFT JOIN projects p ON p.id = s.project_id
+        LEFT JOIN vendors v ON v.id = s.vendor_id AND v.org_id = s.org_id
+        LEFT JOIN projects p ON p.id = s.project_id AND p.org_id = s.org_id
         ${where}
         ORDER BY
           date(IFNULL(s.updated_at, s.created_at)) DESC,
@@ -9289,9 +17226,33 @@ app.get('/api/reports/shipment-verification', requireAdminAccess(() => true), as
       params
     );
 
+    let filteredRows = rows || [];
+    if (startDate || endDate) {
+      filteredRows = filteredRows.filter(row => {
+        const createdLocal =
+          getIsoDateInTimezone(row.created_at, orgTimezone) ||
+          (row.created_at ? String(row.created_at).slice(0, 10) : null);
+        if (!createdLocal) return false;
+        if (startDate && createdLocal < startDate) return false;
+        if (endDate && createdLocal > endDate) return false;
+        return true;
+      });
+    }
+
+    let finalRows = filteredRows;
+    if (!canViewPayments) {
+      finalRows = filteredRows.map(row => ({
+        ...row,
+        vendor_paid_amount: null,
+        shipper_paid_amount: null,
+        customs_paid_amount: null,
+        total_paid: null
+      }));
+    }
+
     return res.json({
       mode: 'summary',
-      shipments: rows
+      shipments: finalRows
     });
   } catch (err) {
     console.error('Error in /api/reports/shipment-verification:', err);
@@ -9301,143 +17262,990 @@ app.get('/api/reports/shipment-verification', requireAdminAccess(() => true), as
 
 /* ───────── MIDNIGHT AUTO CLOCK-OUT JOB ───────── */
 
-async function autoClockOutStaleOpenPunches(reason = 'midnight_auto') {
+const autoClockOutTimers = new Map();
+let autoClockOutJobRunning = false;
+
+async function closePunchWithAutoClockOut({ punch, clockOutIso, reason }) {
+  if (!punch || !punch.id || !punch.org_id) return;
+
+  const nowIso = clockOutIso || new Date().toISOString();
+  let transactionStarted = false;
+
   try {
-    // Find any open punches that started on a prior calendar day
+    await dbRun('BEGIN IMMEDIATE');
+    transactionStarted = true;
+
+    const current = await dbGet(
+      `
+        SELECT id, org_id, employee_id, project_id, foreman_employee_id,
+               clock_in_ts, clock_in_local_date, created_at, clock_out_ts, time_entry_id
+        FROM time_punches
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [punch.id, punch.org_id]
+    );
+    if (!current || current.clock_out_ts) {
+      await dbRun('ROLLBACK');
+      return;
+    }
+
+    const orgTimezone = await getOrgTimezone(current.org_id);
+    let startIso = current.clock_in_ts || null;
+    let start = startIso ? new Date(startIso) : null;
+    if (!start || Number.isNaN(start.getTime())) {
+      startIso = current.created_at || null;
+      start = startIso ? new Date(startIso) : null;
+    }
+    if (!start || Number.isNaN(start.getTime())) {
+      startIso = nowIso;
+      start = new Date(startIso);
+    }
+    const end = new Date(nowIso);
+
+    let diffMs = end - start;
+    let minutes = Math.ceil(diffMs / 60000);
+    if (!Number.isFinite(minutes) || minutes < 0) {
+      minutes = 0;
+    }
+
+    const hours = minutes / 60;
+    const startDate = getIsoDateInTimezone(startIso, orgTimezone);
+    const endDate = getIsoDateInTimezone(nowIso, orgTimezone);
+    const startTime = getIsoTimeInTimezone(startIso, orgTimezone);
+    const endTime = getIsoTimeInTimezone(nowIso, orgTimezone);
+    const clockOutLocalDate = getIsoDateInTimezone(nowIso, orgTimezone);
+    const clockInLocalDate =
+      current.clock_in_local_date || getIsoDateInTimezone(startIso, orgTimezone);
+
+    const updateRes = await dbRun(
+      `
+        UPDATE time_punches
+        SET clock_out_ts = ?,
+            clock_out_local_date = ?,
+            clock_in_local_date = COALESCE(clock_in_local_date, ?),
+            auto_clock_out = 1,
+            auto_clock_out_reason = ?,
+            clock_out_project_id = ?,
+            updated_at = ?
+        WHERE id = ? AND org_id = ? AND clock_out_ts IS NULL
+      `,
+      [
+        nowIso,
+        clockOutLocalDate,
+        clockInLocalDate,
+        reason,
+        current.project_id || null,
+        nowIso,
+        current.id,
+        current.org_id
+      ]
+    );
+
+    if (!updateRes || !updateRes.changes) {
+      await dbRun('ROLLBACK');
+      return;
+    }
+
+    if (current.time_entry_id) {
+      await dbRun('COMMIT');
+      return;
+    }
+
+    const emp = await dbGet(
+      'SELECT rate FROM employees WHERE id = ? AND org_id = ?',
+      [current.employee_id, current.org_id]
+    );
+    const rate = emp ? Number(emp.rate || 0) : 0;
+    const totalPay = rate * hours;
+
+    const insertEntry = await dbRun(
+      `
+        INSERT INTO time_entries
+          (org_id,
+           employee_id,
+           project_id,
+           start_date,
+           end_date,
+           start_time,
+           end_time,
+           hours,
+           total_pay,
+           foreman_employee_id,
+           employee_name_snapshot,
+           project_name_snapshot,
+           updated_at)
+        VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?,
+          (SELECT name FROM employees WHERE id = ? AND org_id = ?),
+          (SELECT name FROM projects  WHERE id = ? AND org_id = ?),
+          ?
+        )
+      `,
+      [
+        current.org_id,
+        current.employee_id,
+        current.project_id || null,
+        startDate,
+        endDate,
+        startTime,
+        endTime,
+        hours,
+        totalPay,
+        current.foreman_employee_id || null,
+        current.employee_id,
+        current.org_id,
+        current.project_id || null,
+        current.org_id,
+        nowIso
+      ]
+    );
+
+    const entryId = insertEntry.lastID;
+
+    await dbRun(
+      `
+        UPDATE time_punches
+        SET time_entry_id = ?,
+            updated_at = ?
+        WHERE id = ? AND org_id = ?
+      `,
+      [entryId, nowIso, current.id, current.org_id]
+    );
+
+    await dbRun('COMMIT');
+    transactionStarted = false;
+  } catch (err) {
+    if (transactionStarted) {
+      try {
+        await dbRun('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('Auto clock-out rollback error:', rollbackErr);
+      }
+    }
+    console.error('Auto clock-out close error:', err);
+  }
+}
+
+async function autoClockOutStaleOpenPunchesForOrg({
+  orgId,
+  timeZone,
+  reason = 'midnight_auto'
+}) {
+  if (!orgId) return;
+  const tz = timeZone || (await getOrgTimezone(orgId));
+  const gotLock = await acquireAutoClockOutLock(orgId);
+  if (!gotLock) {
+    return;
+  }
+
+  try {
+    const refreshIntervalMs = Math.max(
+      30000,
+      Math.floor(AUTO_CLOCKOUT_LOCK_TTL_MS / 2)
+    );
+    let lastRefresh = Date.now();
+    const refreshIfNeeded = async () => {
+      const now = Date.now();
+      if (now - lastRefresh >= refreshIntervalMs) {
+        await refreshAutoClockOutLock(orgId);
+        lastRefresh = now;
+      }
+    };
+
     const openPunches = await dbAll(
       `
         SELECT *
         FROM time_punches
-        WHERE clock_out_ts IS NULL
-          AND date(clock_in_ts) < date('now')
-      `
+        WHERE org_id = ?
+          AND clock_out_ts IS NULL
+      `,
+      [orgId]
     );
 
     if (!openPunches || openPunches.length === 0) {
-      console.log(`⏰ Auto clock-out (${reason}): no stale open punches.`);
+      console.log(`⏰ Auto clock-out (${reason}): no stale open punches for org ${orgId}.`);
       return;
     }
 
-    const nowIso = new Date().toISOString();
+    const todayLocal = getTodayIsoDate(tz);
+    const stalePunches = openPunches
+      .map(p => {
+        const localDate =
+          p.clock_in_local_date ||
+          getIsoDateInTimezone(p.clock_in_ts, tz) ||
+          getIsoDateInTimezone(p.created_at, tz);
+        return { punch: p, localDate };
+      })
+      .filter(({ localDate }) => {
+        if (!localDate) return true;
+        return localDate < todayLocal;
+      });
 
-    for (const p of openPunches) {
-      const startIso = p.clock_in_ts || nowIso;
-      const start = new Date(startIso);
-      const end   = new Date(nowIso);
+    if (!stalePunches.length) {
+      console.log(`⏰ Auto clock-out (${reason}): no stale open punches for org ${orgId}.`);
+      return;
+    }
 
-      let diffMs = end - start;
-      let minutes = Math.ceil(diffMs / 60000);
-
-      if (!Number.isFinite(minutes) || minutes < 0) {
-        minutes = 0;
-      }
-
-      const hours = minutes / 60;
-      const startDate = startIso.slice(0, 10);
-      const endDate   = nowIso.slice(0, 10);
-
-      // 1) Close the punch and mark as auto
-      await dbRun(
-        `
-          UPDATE time_punches
-          SET clock_out_ts = ?,
-              auto_clock_out = 1,
-              auto_clock_out_reason = ?,
-              clock_out_project_id = ?
-          WHERE id = ?
-        `,
-        [nowIso, reason, p.project_id || null, p.id]
-      );
-
-      // 2) Compute total pay from employee rate
-      const emp = await dbGet(
-        'SELECT rate FROM employees WHERE id = ?',
-        [p.employee_id]
-      );
-      const rate = emp ? Number(emp.rate || 0) : 0;
-      const totalPay = rate * hours;
-
-      // 3) Create a time_entry for payroll
-const insertEntry = await dbRun(
-  `
-    INSERT INTO time_entries
-      (employee_id,
-       project_id,
-       start_date,
-       end_date,
-       hours,
-       total_pay,
-       foreman_employee_id,
-       employee_name_snapshot,
-       project_name_snapshot)
-    VALUES (
-      ?, ?, ?, ?, ?, ?, ?,
-      (SELECT name FROM employees WHERE id = ?),
-      (SELECT name FROM projects  WHERE id = ?)
-    )
-  `,
-  [
-    p.employee_id,
-    p.project_id || null,
-    startDate,
-    endDate,
-    hours,
-    totalPay,
-    p.foreman_employee_id || null,
-    p.employee_id,
-    p.project_id || null
-  ]
-);
-
-const entryId = insertEntry.lastID;
-
-// 🔗 Link the auto-closed punch to its time entry
-await dbRun(
-  `
-    UPDATE time_punches
-    SET time_entry_id = ?
-    WHERE id = ?
-  `,
-  [entryId, p.id]
-);
-
+    for (const { punch, localDate } of stalePunches) {
+      const endOfDayIso = localDate ? getLocalEndOfDayIso(localDate, tz) : null;
+      await closePunchWithAutoClockOut({
+        punch,
+        clockOutIso: endOfDayIso || new Date().toISOString(),
+        reason
+      });
+      await refreshIfNeeded();
     }
 
     console.log(
-      `⏰ Auto clock-out (${reason}): closed ${openPunches.length} open punches.`
+      `⏰ Auto clock-out (${reason}): closed ${stalePunches.length} open punches for org ${orgId}.`
     );
   } catch (err) {
-    console.error(`⏰ Auto clock-out (${reason}) error:`, err);
+    console.error(`⏰ Auto clock-out (${reason}) error for org ${orgId}:`, err);
+  } finally {
+    await releaseAutoClockOutLock(orgId);
   }
 }
 
-// Schedule the job to run every local midnight
-function scheduleMidnightAutoClockOut() {
-  const now = new Date();
-  const next = new Date(now);
+async function autoClockOutThresholdPunchesForOrg({ orgId, timeZone }) {
+  if (!orgId) return;
+  const tz = timeZone || (await getOrgTimezone(orgId));
+  const rulesMap = await loadExceptionRulesMap(orgId);
+  const dailyMax = Number(rulesMap?.auto_clockout_daily_max_hours);
+  const weeklyMax = Number(rulesMap?.auto_clockout_weekly_max_hours);
 
-  // Tomorrow at 00:00 local time
-  next.setHours(24, 0, 0, 0);
-  const delayMs = next.getTime() - now.getTime();
+  const dailyThreshold =
+    Number.isFinite(dailyMax) && dailyMax > 0 ? dailyMax : null;
+  const weeklyThreshold =
+    Number.isFinite(weeklyMax) && weeklyMax > 0 ? weeklyMax : null;
 
-  console.log(
-    `⏰ Scheduling midnight auto-clock-out in ${Math.round(
-      delayMs / 1000
-    )} seconds.`
-  );
+  if (!dailyThreshold && !weeklyThreshold) return;
 
-  setTimeout(async () => {
-    await autoClockOutStaleOpenPunches('midnight_auto');
-    // Re-schedule for the following midnight
-    scheduleMidnightAutoClockOut();
+  const gotLock = await acquireAutoClockOutLock(orgId);
+  if (!gotLock) {
+    return;
+  }
+
+  try {
+    const refreshIntervalMs = Math.max(
+      30000,
+      Math.floor(AUTO_CLOCKOUT_LOCK_TTL_MS / 2)
+    );
+    let lastRefresh = Date.now();
+    const refreshIfNeeded = async () => {
+      const now = Date.now();
+      if (now - lastRefresh >= refreshIntervalMs) {
+        await refreshAutoClockOutLock(orgId);
+        lastRefresh = now;
+      }
+    };
+
+    const openPunches = await dbAll(
+      `
+        SELECT *
+        FROM time_punches
+        WHERE org_id = ?
+          AND clock_out_ts IS NULL
+      `,
+      [orgId]
+    );
+
+    if (!openPunches || openPunches.length === 0) return;
+
+    let weeklyTotals = new Map();
+    let weekStartKey = null;
+    if (weeklyThreshold) {
+      const weekStartResolver = makeWeekStartResolver(tz);
+      weekStartKey = weekStartResolver(new Date());
+      if (weekStartKey) {
+        const weekEndKey = shiftIsoDate(weekStartKey, 6);
+        const windowStart = shiftIsoDate(weekStartKey, -1);
+        const windowEnd = shiftIsoDate(weekEndKey, 1);
+        const rows = await dbAll(
+          `
+            SELECT employee_id, clock_in_ts, clock_out_ts
+            FROM time_punches
+            WHERE org_id = ?
+              AND clock_out_ts IS NOT NULL
+              AND clock_in_local_date >= ?
+              AND clock_in_local_date <= ?
+          `,
+          [orgId, windowStart, windowEnd]
+        );
+
+        for (const row of rows || []) {
+          const startTs = row.clock_in_ts ? new Date(row.clock_in_ts) : null;
+          const endTs = row.clock_out_ts ? new Date(row.clock_out_ts) : null;
+          if (!startTs || !endTs) continue;
+          if (Number.isNaN(startTs.getTime()) || Number.isNaN(endTs.getTime())) continue;
+          const hours = (endTs - startTs) / (1000 * 60 * 60);
+          if (!Number.isFinite(hours) || hours < 0) continue;
+          const rowWeekKey = weekStartResolver(startTs);
+          if (rowWeekKey !== weekStartKey) continue;
+          const empKey = Number(row.employee_id);
+          weeklyTotals.set(empKey, (weeklyTotals.get(empKey) || 0) + hours);
+        }
+      }
+    }
+
+    await refreshIfNeeded();
+
+    for (const punch of openPunches) {
+      const startIso = punch.clock_in_ts || null;
+      if (!startIso) continue;
+      const start = new Date(startIso);
+      if (Number.isNaN(start.getTime())) continue;
+
+      const nowIso = new Date().toISOString();
+      const end = new Date(nowIso);
+      let minutes = Math.ceil((end - start) / 60000);
+      if (!Number.isFinite(minutes) || minutes < 0) {
+        minutes = 0;
+      }
+      const hours = minutes / 60;
+
+      let reason = null;
+      if (dailyThreshold && hours >= dailyThreshold) {
+        reason = 'daily_max';
+      } else if (weeklyThreshold) {
+        const total = weeklyTotals.get(Number(punch.employee_id)) || 0;
+        if (total + hours > weeklyThreshold) {
+          reason = 'weekly_max';
+        }
+      }
+
+      if (!reason) continue;
+
+      await closePunchWithAutoClockOut({
+        punch,
+        clockOutIso: nowIso,
+        reason
+      });
+      await refreshIfNeeded();
+    }
+  } finally {
+    await releaseAutoClockOutLock(orgId);
+  }
+}
+
+async function autoClockOutStaleOpenPunchesAllOrgs(reason = 'catch_up_auto') {
+  const orgs = await dbAll('SELECT id, timezone FROM orgs');
+  for (const org of orgs || []) {
+    await autoClockOutStaleOpenPunchesForOrg({
+      orgId: org.id,
+      timeZone: org.timezone || APP_TIMEZONE,
+      reason
+    });
+  }
+}
+
+async function autoClockOutThresholdPunchesAllOrgs() {
+  const orgs = await dbAll('SELECT id, timezone FROM orgs');
+  for (const org of orgs || []) {
+    await autoClockOutThresholdPunchesForOrg({
+      orgId: org.id,
+      timeZone: org.timezone || APP_TIMEZONE
+    });
+  }
+}
+
+function getNextMidnightUtc(timeZone) {
+  const today = getTodayIsoDate(timeZone);
+  const nextDate = shiftIsoDate(today, 1);
+  const parts = String(nextDate).split('-').map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) {
+    return Date.now() + 24 * 60 * 60 * 1000;
+  }
+  const [year, month, day] = parts;
+  return getUtcTimestampForLocal({ year, month, day, hour: 0, minute: 0, second: 0 }, timeZone);
+}
+
+async function scheduleOrgMidnightAutoClockOut(orgId, timeZone) {
+  if (!orgId) return;
+  const tz = timeZone || (await getOrgTimezone(orgId));
+  const nextMidnightUtc = getNextMidnightUtc(tz);
+  const delayMs = Math.max(1000, nextMidnightUtc - Date.now());
+
+  const existingTimer = autoClockOutTimers.get(orgId);
+  if (existingTimer && existingTimer.timerId) {
+    clearTimeout(existingTimer.timerId);
+  }
+
+  const timerId = setTimeout(async () => {
+    await autoClockOutStaleOpenPunchesForOrg({
+      orgId,
+      timeZone: tz,
+      reason: 'midnight_auto'
+    });
+    const latestTz = await getOrgTimezone(orgId);
+    scheduleOrgMidnightAutoClockOut(orgId, latestTz);
   }, delayMs);
+
+  autoClockOutTimers.set(orgId, { timerId, timeZone: tz });
+}
+
+async function ensureOrgAutoClockOutSchedules() {
+  const orgs = await dbAll('SELECT id, timezone FROM orgs');
+  for (const org of orgs || []) {
+    const tz = org.timezone || APP_TIMEZONE;
+    const existingTimer = autoClockOutTimers.get(org.id);
+    if (!existingTimer || existingTimer.timeZone !== tz) {
+      scheduleOrgMidnightAutoClockOut(org.id, tz);
+    }
+  }
 }
 
 // Run a catch-up job on startup and hourly in case midnight was missed
 function scheduleAutoClockOutCatchUp() {
-  const runCatchUp = () => autoClockOutStaleOpenPunches('catch_up_auto');
+  const runCatchUp = async () => {
+    if (autoClockOutJobRunning) return;
+    autoClockOutJobRunning = true;
+    try {
+      await ensureOrgAutoClockOutSchedules();
+      await autoClockOutStaleOpenPunchesAllOrgs('catch_up_auto');
+      await autoClockOutThresholdPunchesAllOrgs();
+    } finally {
+      autoClockOutJobRunning = false;
+    }
+  };
   runCatchUp();
   setInterval(runCatchUp, 60 * 60 * 1000); // hourly
+}
+
+/* ───────── NOTIFICATION SCHEDULER ───────── */
+
+const NOTIFICATION_RETENTION_DAYS = NOTIFICATION_RETENTION_DAYS_ENV || 90;
+const PHOTO_RETENTION_DAYS = PHOTO_RETENTION_DAYS_ENV || 30;
+const AUDIT_LOG_RETENTION_DAYS = AUDIT_LOG_RETENTION_DAYS_ENV || 365;
+const IDEMPOTENCY_RETENTION_DAYS = IDEMPOTENCY_RETENTION_DAYS_ENV || 30;
+let notificationsJobRunning = false;
+
+function formatDateInTimeZone(dateObj, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(dateObj);
+  const year = parts.find(p => p.type === 'year')?.value;
+  const month = parts.find(p => p.type === 'month')?.value;
+  const day = parts.find(p => p.type === 'day')?.value;
+  return year && month && day ? `${year}-${month}-${day}` : null;
+}
+
+function parseSqliteDateToUtc(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(raw);
+  const iso = hasTz ? raw : `${raw.replace(' ', 'T')}Z`;
+  const dt = new Date(iso);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function getTimePartsInTimeZone(timeZone) {
+  const now = new Date();
+  const dateStr = formatDateInTimeZone(now, timeZone);
+  const dateParts = dateStr ? dateStr.split('-').map(Number) : [];
+  const year = dateParts[0] || 0;
+  const month = dateParts[1] || 0;
+  const day = dateParts[2] || 0;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    weekday: 'short'
+  }).formatToParts(now);
+  const hour = Number(parts.find(p => p.type === 'hour')?.value || 0);
+  const minute = Number(parts.find(p => p.type === 'minute')?.value || 0);
+  const weekdayStr = parts.find(p => p.type === 'weekday')?.value || 'Sun';
+  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    dateStr,
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    weekday: weekdayMap[weekdayStr] ?? 0
+  };
+}
+
+function parseTimeToMinutes(timeStr) {
+  if (!timeStr) return null;
+  const match = String(timeStr).trim().match(/^(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
+function ymdToUtcDays(dateStr) {
+  if (!dateStr) return null;
+  const parts = String(dateStr).split('-').map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return null;
+  return Math.floor(Date.UTC(parts[0], parts[1] - 1, parts[2]) / 86400000);
+}
+
+function utcDaysToYmd(days) {
+  const dt = new Date(days * 86400000);
+  const year = dt.getUTCFullYear();
+  const month = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(dt.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+async function wasNotificationSentRecently({ orgId, userId, type, timeZone, minDays }) {
+  const row = await dbGet(
+    `
+      SELECT created_at
+      FROM notifications
+      WHERE org_id = ? AND user_id = ? AND type = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `,
+    [orgId, userId, type]
+  );
+  if (!row || !row.created_at) return false;
+  const lastDateObj = parseSqliteDateToUtc(row.created_at);
+  if (!lastDateObj) return false;
+  const lastDate = formatDateInTimeZone(lastDateObj, timeZone);
+  const nowDate = formatDateInTimeZone(new Date(), timeZone);
+  const lastDays = ymdToUtcDays(lastDate);
+  const nowDays = ymdToUtcDays(nowDate);
+  if (lastDays == null || nowDays == null) return false;
+  return nowDays - lastDays < (minDays || 1);
+}
+
+function computePayPeriodForDate(parts, rules) {
+  const normalized = normalizePayrollRules(rules || {});
+  const length = normalized.pay_period_length_days || 7;
+  const startWeekday = normalized.pay_period_start_weekday || 1;
+  const anchorStr = normalized.pay_period_anchor_date || null;
+
+  const todayDays = ymdToUtcDays(`${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`);
+  if (todayDays == null) return null;
+
+  let startDays = todayDays;
+  if (length > 7 && anchorStr) {
+    const anchorDays = ymdToUtcDays(anchorStr);
+    if (anchorDays != null) {
+      const diff = todayDays - anchorDays;
+      const periods = Math.floor(diff / length);
+      startDays = anchorDays + periods * length;
+    }
+  } else {
+    const diff = (parts.weekday - startWeekday + 7) % 7;
+    startDays = todayDays - diff;
+  }
+
+  const endDays = startDays + length - 1;
+  return { start: utcDaysToYmd(startDays), end: utcDaysToYmd(endDays) };
+}
+
+async function countOpenTimeExceptions(orgId, startDate, endDate) {
+  const row = await dbGet(
+    `
+      SELECT COUNT(*) AS cnt
+      FROM time_punches
+      WHERE org_id = ?
+        AND exception_resolved = 0
+        AND clock_in_local_date >= ?
+        AND clock_in_local_date <= ?
+    `,
+    [orgId, startDate, endDate]
+  );
+  return Number(row?.cnt || 0);
+}
+
+async function countPayrollDueEntries(orgId, payPeriod) {
+  if (!payPeriod) return 0;
+  const row = await dbGet(
+    `
+      SELECT COUNT(*) AS cnt
+      FROM time_entries
+      WHERE org_id = ?
+        AND start_date >= ?
+        AND end_date <= ?
+        AND (paid IS NULL OR paid = 0)
+    `,
+    [orgId, payPeriod.start, payPeriod.end]
+  );
+  return Number(row?.cnt || 0);
+}
+
+async function runShipmentRemindersForOrg(orgId, timeZone) {
+  const prefsRows = await dbAll(
+    `
+      SELECT user_id, employee_id, statuses_json, shipment_ids_json,
+             project_ids_json, notify_time, remind_every_days, enabled
+      FROM shipment_notification_prefs
+      WHERE org_id = ? AND enabled = 1 AND notify_time IS NOT NULL AND notify_time != ''
+    `,
+    [orgId]
+  );
+  if (!prefsRows || !prefsRows.length) return;
+
+  const recipients = await loadNotificationRecipients(orgId);
+  const recipientMap = new Map(recipients.map(r => [r.user_id, r]));
+  const prefsMap = await loadNotificationPrefsMap(orgId);
+
+  const nowParts = getTimePartsInTimeZone(timeZone);
+  const nowMinutes = nowParts.hour * 60 + nowParts.minute;
+
+  for (const row of prefsRows) {
+    const notifyMinutes = parseTimeToMinutes(row.notify_time);
+    if (notifyMinutes == null) continue;
+    if (nowMinutes < notifyMinutes || nowMinutes >= notifyMinutes + 30) continue;
+
+    const remindEvery = Number(row.remind_every_days) || 1;
+    const alreadySent = await wasNotificationSentRecently({
+      orgId,
+      userId: row.user_id,
+      type: 'shipment_reminder',
+      timeZone,
+      minDays: remindEvery
+    });
+    if (alreadySent) continue;
+
+    const recipient = recipientMap.get(row.user_id);
+    if (!recipient) continue;
+    const perms = mapRecipientPerms(recipient);
+    if (!hasNotificationPerms(perms, 'shipment')) continue;
+
+    const userPrefs = prefsMap.get(row.user_id) || { ...DEFAULT_NOTIFICATION_PREFS };
+    if (!userPrefs.shipment_filters?.enabled) continue;
+
+    const prefParsed = mapNotificationPrefRow(row);
+    let statuses = prefParsed.statuses || [];
+    let projectIds = prefParsed.project_ids || [];
+    const shipmentIds = prefParsed.shipment_ids || [];
+
+    if (userPrefs.shipment_filters?.statuses?.length) {
+      statuses = statuses.length
+        ? statuses.filter(s => userPrefs.shipment_filters.statuses.includes(s))
+        : userPrefs.shipment_filters.statuses.slice();
+    }
+    if (userPrefs.shipment_filters?.project_ids?.length) {
+      projectIds = projectIds.length
+        ? projectIds.filter(id => userPrefs.shipment_filters.project_ids.includes(id))
+        : userPrefs.shipment_filters.project_ids.slice();
+    }
+
+    if (
+      userPrefs.shipment_filters?.statuses?.length &&
+      statuses.length === 0
+    ) {
+      continue;
+    }
+
+    const params = [orgId];
+    let where = 'WHERE org_id = ? AND IFNULL(is_archived, 0) = 0';
+
+    if (statuses.length) {
+      where += ` AND status IN (${statuses.map(() => '?').join(',')})`;
+      params.push(...statuses);
+    }
+    if (projectIds.length) {
+      where += ` AND project_id IN (${projectIds.map(() => '?').join(',')})`;
+      params.push(...projectIds);
+    }
+    if (shipmentIds.length) {
+      where += ` AND id IN (${shipmentIds.map(() => '?').join(',')})`;
+      params.push(...shipmentIds);
+    }
+
+    const countRow = await dbGet(
+      `SELECT COUNT(*) AS cnt FROM shipments ${where}`,
+      params
+    );
+    const count = Number(countRow?.cnt || 0);
+    const body = count
+      ? `${count} shipments match your reminder filters.`
+      : 'No shipments currently match your notification filters.';
+
+    await deliverNotificationToUser({
+      orgId,
+      userId: row.user_id,
+      prefs: userPrefs,
+      type: 'shipment_reminder',
+      title: 'Shipment reminder',
+      body,
+      data: {
+        count,
+        statuses,
+        project_ids: projectIds
+      }
+    });
+  }
+}
+
+async function runDailySummaryForOrg(orgId, timeZone) {
+  const prefsRows = await dbAll(
+    `
+      SELECT user_id, remind_time, remind_every_days
+      FROM notification_prefs
+      WHERE org_id = ? AND remind_time IS NOT NULL AND remind_time != ''
+    `,
+    [orgId]
+  );
+  if (!prefsRows || !prefsRows.length) return;
+
+  const prefsMap = await loadNotificationPrefsMap(orgId);
+  const recipients = await loadNotificationRecipients(orgId);
+  const recipientMap = new Map(recipients.map(r => [r.user_id, r]));
+
+  const nowParts = getTimePartsInTimeZone(timeZone);
+  const nowMinutes = nowParts.hour * 60 + nowParts.minute;
+
+  for (const row of prefsRows) {
+    const prefs = prefsMap.get(row.user_id) || { ...DEFAULT_NOTIFICATION_PREFS };
+    const remindMinutes = parseTimeToMinutes(prefs.remind_time);
+    if (remindMinutes == null) continue;
+    if (nowMinutes < remindMinutes || nowMinutes >= remindMinutes + 30) continue;
+
+    const remindEvery = Number(prefs.remind_every_days) || 1;
+    const alreadySent = await wasNotificationSentRecently({
+      orgId,
+      userId: row.user_id,
+      type: 'daily_summary',
+      timeZone,
+      minDays: remindEvery
+    });
+    if (alreadySent) continue;
+
+    const recipient = recipientMap.get(row.user_id);
+    if (!recipient) continue;
+    const perms = mapRecipientPerms(recipient);
+
+    const summaryParts = [];
+    let timeCount = null;
+    let payrollCount = null;
+
+    const includeTime =
+      hasNotificationPerms(perms, 'time') &&
+      prefs.time_filters?.enabled &&
+      (!prefs.time_filters.event_types?.length ||
+        prefs.time_filters.event_types.includes('TIME_EXCEPTION_OPEN'));
+
+    const includePayroll =
+      hasNotificationPerms(perms, 'payroll') &&
+      prefs.payroll_filters?.enabled &&
+      (!prefs.payroll_filters.event_types?.length ||
+        prefs.payroll_filters.event_types.includes('PAYROLL_RUN_DUE'));
+
+    if (includeTime) {
+      const endDate = nowParts.dateStr;
+      const endDays = ymdToUtcDays(endDate);
+      const startDate = endDays != null ? utcDaysToYmd(endDays - 6) : endDate;
+      timeCount = await countOpenTimeExceptions(orgId, startDate, endDate);
+      summaryParts.push(`${timeCount} open time exceptions`);
+    }
+
+    if (includePayroll) {
+      const rules = await loadPayrollRulesMap(orgId);
+      const payPeriod = computePayPeriodForDate(nowParts, rules || {});
+      payrollCount = await countPayrollDueEntries(orgId, payPeriod);
+      summaryParts.push(`${payrollCount} unpaid entries in current pay period`);
+    }
+
+    if (!summaryParts.length) continue;
+
+    const body = `Daily summary: ${summaryParts.join('; ')}.`;
+
+    await deliverNotificationToUser({
+      orgId,
+      userId: row.user_id,
+      prefs,
+      type: 'daily_summary',
+      title: 'Daily summary',
+      body,
+      data: {
+        time_count: timeCount,
+        payroll_count: payrollCount
+      }
+    });
+  }
+}
+
+async function runClockoutRemindersForOrg(orgId, timeZone) {
+  const prefsRows = await dbAll(
+    `
+      SELECT user_id, clockout_time, clockout_enabled
+      FROM notification_prefs
+      WHERE org_id = ? AND clockout_enabled = 1 AND clockout_time IS NOT NULL AND clockout_time != ''
+    `,
+    [orgId]
+  );
+  if (!prefsRows || !prefsRows.length) return;
+
+  const prefsMap = await loadNotificationPrefsMap(orgId);
+  const nowParts = getTimePartsInTimeZone(timeZone);
+  const nowMinutes = nowParts.hour * 60 + nowParts.minute;
+
+  for (const row of prefsRows) {
+    const prefs = prefsMap.get(row.user_id) || { ...DEFAULT_NOTIFICATION_PREFS };
+    const targetMinutes = parseTimeToMinutes(prefs.clockout_time);
+    if (targetMinutes == null) continue;
+    if (nowMinutes < targetMinutes || nowMinutes >= targetMinutes + 30) continue;
+
+    const alreadySent = await wasNotificationSentRecently({
+      orgId,
+      userId: row.user_id,
+      type: 'clockout_reminder',
+      timeZone,
+      minDays: 1
+    });
+    if (alreadySent) continue;
+
+    await deliverNotificationToUser({
+      orgId,
+      userId: row.user_id,
+      prefs,
+      type: 'clockout_reminder',
+      title: 'Clock-out reminder',
+      body: 'Reminder: review open punches and ensure workers are clocked out.',
+      data: { clockout_time: prefs.clockout_time || null }
+    });
+  }
+}
+
+async function purgeOldNotifications() {
+  try {
+    const notificationsExists = await tableExists('notifications');
+    if (!notificationsExists) return;
+    await dbRun(
+      `DELETE FROM notifications WHERE created_at < datetime('now', ?)`,
+      [`-${NOTIFICATION_RETENTION_DAYS} days`]
+    );
+    const deliveriesExists = await tableExists('notification_deliveries');
+    if (!deliveriesExists) return;
+    await dbRun(
+      `DELETE FROM notification_deliveries WHERE created_at < datetime('now', ?)`,
+      [`-${NOTIFICATION_RETENTION_DAYS} days`]
+    );
+  } catch (err) {
+    console.warn('Notification purge failed:', err.message || err);
+  }
+}
+
+async function purgeOldClockInPhotos() {
+  try {
+    const rows = await dbAll(
+      `
+        SELECT id, org_id, clock_in_photo_path
+        FROM time_punches
+        WHERE clock_in_photo_path IS NOT NULL
+          AND clock_in_ts < datetime('now', ?)
+      `,
+      [`-${PHOTO_RETENTION_DAYS} days`]
+    );
+    if (!rows || !rows.length) return;
+
+    const uploadsBase = path.join(__dirname, 'secure_uploads');
+
+    for (const row of rows) {
+      const relPath = row.clock_in_photo_path;
+      if (relPath) {
+        const fullPath = path.join(uploadsBase, relPath);
+        try {
+          await fsp.unlink(fullPath);
+        } catch (err) {
+          if (err.code !== 'ENOENT') {
+            console.warn('Clock-in photo purge failed:', err.message || err);
+          }
+        }
+      }
+
+      await dbRun(
+        `
+          UPDATE time_punches
+          SET clock_in_photo_path = NULL,
+              updated_at = datetime('now')
+          WHERE id = ? AND org_id = ?
+        `,
+        [row.id, row.org_id]
+      );
+    }
+  } catch (err) {
+    console.warn('Clock-in photo purge failed:', err.message || err);
+  }
+}
+
+async function purgeOldAuditLogs() {
+  try {
+    const cutoff = `-${AUDIT_LOG_RETENTION_DAYS} days`;
+    const tables = [
+      'audit_log',
+      'time_exception_actions',
+      'payroll_audit_log'
+    ];
+    for (const table of tables) {
+      const exists = await tableExists(table);
+      if (!exists) continue;
+      await dbRun(
+        `DELETE FROM ${table} WHERE created_at < datetime('now', ?)`,
+        [cutoff]
+      );
+    }
+  } catch (err) {
+    console.warn('Audit log purge failed:', err.message || err);
+  }
+}
+
+async function purgeOldIdempotencyKeys() {
+  try {
+    await dbRun(
+      `DELETE FROM idempotency_keys WHERE created_at < datetime('now', ?)`,
+      [`-${IDEMPOTENCY_RETENTION_DAYS} days`]
+    );
+  } catch (err) {
+    console.warn('Idempotency key purge failed:', err.message || err);
+  }
+}
+
+async function runNotificationSchedules() {
+  if (notificationsJobRunning) return;
+  notificationsJobRunning = true;
+  const lockKey = 'notification_schedule';
+  const lockTtlMs = 10 * 60 * 1000;
+  const gotLock = await acquireJobLock(lockKey, lockTtlMs);
+  if (!gotLock) {
+    notificationsJobRunning = false;
+    return;
+  }
+  try {
+    const orgs = await dbAll(
+      `SELECT id, timezone FROM orgs WHERE IFNULL(status, 'active') = 'active'`
+    );
+    for (const org of orgs || []) {
+      const tz = org.timezone || APP_TIMEZONE;
+      try {
+        await runShipmentRemindersForOrg(org.id, tz);
+        await runDailySummaryForOrg(org.id, tz);
+        await runClockoutRemindersForOrg(org.id, tz);
+      } catch (err) {
+        console.warn(
+          `Notification scheduler error for org ${org.id}:`,
+          err?.message || err
+        );
+      } finally {
+        await refreshJobLock(lockKey, lockTtlMs);
+      }
+    }
+  } catch (err) {
+    console.warn('Notification scheduler error:', err.message || err);
+  } finally {
+    notificationsJobRunning = false;
+    await releaseJobLock(lockKey);
+  }
+}
+
+function scheduleNotificationJobs() {
+  runNotificationSchedules();
+  setInterval(runNotificationSchedules, 5 * 60 * 1000);
 }
 
 
@@ -9447,27 +18255,108 @@ async function startServer() {
   if (db.ready) {
     await db.ready;
   }
+  try {
+    await ensureNameOnChecksColumns();
+  } catch (err) {
+    console.error('Error ensuring name_on_checks columns:', err);
+  }
 
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  app.listen(SERVER_PORT, () => {
+    console.log(`Server running on http://localhost:${SERVER_PORT}`);
 
-    // Start the midnight auto clock-out scheduler
-    scheduleMidnightAutoClockOut();
+    tableExists('time_punches')
+      .then(exists => {
+        if (exists) {
+          // Start per-org midnight scheduling and periodic catch-up
+          ensureOrgAutoClockOutSchedules();
+          scheduleAutoClockOutCatchUp();
 
-    // Start periodic catch-up so stale punches are auto-closed after outages
-    scheduleAutoClockOutCatchUp();
+          purgeOldClockInPhotos();
+          setInterval(purgeOldClockInPhotos, 24 * 60 * 60 * 1000);
+        } else {
+          console.log('Skipping auto clock-out jobs (time_punches table missing).');
+        }
+      })
+      .catch(err => {
+        console.warn('Auto clock-out check failed:', err.message);
+      });
 
-    // Purge expired payroll preflights on startup and hourly
-    purgeExpiredPayrollPreflights();
-    setInterval(purgeExpiredPayrollPreflights, 60 * 60 * 1000);
+    tableExists('payroll_preflights')
+      .then(exists => {
+        if (exists) {
+          purgeExpiredPayrollPreflights();
+          setInterval(purgeExpiredPayrollPreflights, 60 * 60 * 1000);
+        } else {
+          console.log('Skipping payroll preflight purge (table missing).');
+        }
+      })
+      .catch(err => {
+        console.warn('Payroll preflight check failed:', err.message);
+      });
+
+    tableExists('qbo_oauth_states')
+      .then(exists => {
+        if (exists) {
+          purgeExpiredQboOAuthStates();
+          setInterval(purgeExpiredQboOAuthStates, 60 * 60 * 1000);
+        } else {
+          console.log('Skipping QBO OAuth state purge (table missing).');
+        }
+      })
+      .catch(err => {
+        console.warn('QBO OAuth state check failed:', err.message);
+      });
+
+    tableExists('notification_prefs')
+      .then(exists => {
+        if (exists) {
+          scheduleNotificationJobs();
+        } else {
+          console.log('Skipping notification scheduler (notification_prefs table missing).');
+        }
+      })
+      .catch(err => {
+        console.warn('Notification scheduler check failed:', err.message);
+      });
+
+    tableExists('notifications')
+      .then(exists => {
+        if (exists) {
+          purgeOldNotifications();
+          // Run daily to avoid setInterval overflow on large delays.
+          setInterval(purgeOldNotifications, 24 * 60 * 60 * 1000);
+        } else {
+          console.log('Skipping notification purge (notifications table missing).');
+        }
+      })
+      .catch(err => {
+        console.warn('Notification purge check failed:', err.message);
+      });
+
+    tableExists('idempotency_keys')
+      .then(exists => {
+        if (exists) {
+          purgeOldIdempotencyKeys();
+          setInterval(purgeOldIdempotencyKeys, 7 * 24 * 60 * 60 * 1000);
+        } else {
+          console.log('Skipping idempotency key purge (table missing).');
+        }
+      })
+      .catch(err => {
+        console.warn('Idempotency purge check failed:', err.message);
+      });
+
+    purgeOldAuditLogs();
+    // Run daily to avoid timer overflow on long intervals.
+    setInterval(purgeOldAuditLogs, 24 * 60 * 60 * 1000);
   });
 
   if (ENABLE_IN_PROCESS_BACKUPS) {
     // Run a backup at startup
-    performDatabaseBackup();
+    runBackupWithLock();
 
     // Schedule daily backups every 24 hours
-    setInterval(performDatabaseBackup, 24 * 60 * 60 * 1000);
+    setInterval(runBackupWithLock, 24 * 60 * 60 * 1000);
   } else {
     console.log(
       'Skipping in-process backups (ENABLE_IN_PROCESS_BACKUPS is false). Use scripts/backup-once.js or an external scheduler.'

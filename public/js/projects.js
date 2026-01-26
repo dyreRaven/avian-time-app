@@ -49,7 +49,7 @@ function openProjectModal(project) {
   }
 
   if (tzSelect) {
-    tzSelect.value = project.project_timezone || 'America/Puerto_Rico';
+    tzSelect.value = project.project_timezone || '';
   }
 
   if (msgEl) {

@@ -6,17 +6,18 @@
 - Foreign keys enforce tenant consistency.
 
 ## Identity and Access
-- `orgs`: id, name, timezone, created_at.
-- `org_settings`: org_id, key, value (e.g., clock_in_photo_required, kiosk_enrollment_code_hash, time_exception_rules, payroll_rules, notifications, branding).
+- `orgs`: id, name, timezone, status, created_at, updated_at.
+- `org_settings`: org_id, key, value (e.g., clock_in_photo_required, kiosk_enrollment_code, time_exception_rules, payroll_rules, notifications, branding).
 - `users`: id, email, password_hash, created_at.
-- `user_orgs`: id, user_id, org_id, employee_id, is_super_admin, created_at.
+- `user_orgs`: id, user_id, org_id, employee_id, is_super_admin, login_enabled, created_at.
 - `employees`: id, org_id, name, nickname, name_on_checks, rate, active, pin_hash,
-  language, qbo_employee_id, qbo_vendor_id, worker_timekeeping,
+  language, employee_qbo_id, vendor_qbo_id, role_title, permission_template_id, worker_timekeeping,
   desktop_access, kiosk_admin_access, email, needs_qbo_sync,
   name_on_checks_updated_at, name_on_checks_qbo_updated_at,
   id_document_type, id_document_path, id_document_uploaded_at, id_document_uploaded_by, created_at.
 - `employee_permissions`: employee_id, see_shipments, modify_time,
-  view_time_reports, view_payroll, modify_pay_rates.
+  view_time_reports, view_payroll, modify_payroll, modify_pay_rates.
+- `permission_templates`: id, org_id, name, role_title, access_json, permissions_json, created_at, updated_at.
 - `audit_log`: id, org_id, actor_user_id, actor_employee_id, action, entity_type,
   entity_id, before_json, after_json, note, created_at.
 
@@ -24,25 +25,25 @@
 - `kiosks`: id, org_id, name, location, device_id, device_secret, project_id,
   last_seen_at, created_at.
 - `kiosk_sessions` (timesheets): id, org_id, kiosk_id, device_id, project_id, date,
-  created_by_employee_id, created_at, ended_at.
+  created_by_employee_id, geo_lat, geo_lng, geo_distance_m, geo_violation, created_at, ended_at.
 - `kiosk_foreman_days`: id, org_id, kiosk_id, foreman_employee_id, date, set_by_employee_id, created_at.
 - `time_punches`: id, org_id, client_id, employee_id, project_id,
-  clock_in_ts, clock_out_ts, clock_out_project_id,
+  clock_in_ts, clock_in_local_date, clock_out_ts, clock_out_local_date, clock_out_project_id,
   clock_in_lat, clock_in_lng, clock_out_lat, clock_out_lng,
   geo_distance_m, geo_violation,
-  clock_in_photo_path, device_id, foreman_employee_id,
+  clock_in_photo_path, device_id, kiosk_session_id, foreman_employee_id,
   auto_clock_out, auto_clock_out_reason,
   exception_resolved, exception_resolved_at, exception_resolved_by,
   exception_review_status, exception_review_note, exception_reviewed_by, exception_reviewed_at,
   employee_name_snapshot, project_name_snapshot,
-  time_entry_id, created_at.
+  time_entry_id, created_at, updated_at.
 - `time_entries`: id, org_id, employee_id, project_id, start_date, end_date,
   start_time, end_time, hours, total_pay, foreman_employee_id,
-  paid, paid_date,
+  paid, paid_date, payroll_run_id, payroll_check_id,
   approval_status, approved_at, approved_by_employee_id, approval_note,
   resolved, resolved_status, resolved_note, resolved_at, resolved_by,
   verified, verified_at, verified_by_employee_id,
-  employee_name_snapshot, project_name_snapshot.
+  employee_name_snapshot, project_name_snapshot, updated_at.
 - `time_exception_actions`: id, org_id, source_type (`punch` | `time_entry`), source_id,
   action (approve/modify/reject/create/verify/unverify/resolve/unresolve),
   actor_user_id, actor_employee_id, actor_name, note, changes_json (before/after), created_at.
@@ -58,7 +59,8 @@
 - `payroll_settings`: id, org_id, bank_account_name, expense_account_name,
   default_memo, line_description_template.
 - `payroll_runs`: id, org_id, start_date, end_date, created_by, created_at,
-  total_hours, total_pay, status, include_overtime, idempotency_key, last_attempt_id, last_error.
+  total_hours, total_pay, status, include_overtime, run_type, adjustment_reason,
+  idempotency_key, last_attempt_id, last_error.
 - `payroll_checks`: id, org_id, payroll_run_id, employee_id, total_hours, total_pay,
   qbo_txn_id, paid, paid_date, check_number, voided_at, voided_reason.
 - `payroll_run_attempts`: id, org_id, payroll_run_id, start_date, end_date,
@@ -68,8 +70,13 @@
 - `payroll_audit_log`: id, org_id, payroll_run_id, event_type, message,
   actor_employee_id, details_json, created_at.
 - `payroll_lock`: id, org_id, locked_by, locked_at.
+- `auto_clockout_lock`: org_id, locked_by, locked_at, locked_until.
+- `job_locks`: job_key, locked_by, locked_at, locked_until.
 - `name_on_checks_queue`: id, org_id, employee_id, desired_name, payee_type,
   payee_id, last_error, attempts, created_at, updated_at.
+- `payroll_preflights`: id, org_id, start_date, end_date, run_type,
+  payload_hash, snapshot_hash, snapshot_count, payload_json, expires_at,
+  created_by_employee_id, created_at.
 
 ## Shipments
 - `shipments`: id, org_id, title, po_number, vendor_id, vendor_name,
@@ -94,7 +101,7 @@
 - `shipment_comments`: id, org_id, shipment_id, body, created_by, created_at, is_deleted, deleted_by, deleted_at.
 - `shipment_templates`: id, org_id, name, title, vendor_id, freight_forwarder,
   destination, project_id, sku, quantity, total_price, price_per_item,
-  website_url, notes, created_by, created_at.
+  website_url, notes, created_by, created_at, updated_at.
 - `shipment_template_items`: id, org_id, template_id, description, sku, quantity,
   unit_price, line_total, vendor_name, created_at.
 - `shipment_notification_prefs`: id, org_id, user_id, employee_id,
@@ -103,6 +110,7 @@
 
 ## QuickBooks
 - `qbo_tokens`: id, org_id, access_token, refresh_token, expires_at, realm_id.
+- `qbo_oauth_states`: id, org_id, user_id, state, expires_at, created_at.
 
 ## Notifications
 - `notifications`: id, org_id, user_id, type, title, body, data_json,

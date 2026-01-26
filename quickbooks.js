@@ -10,23 +10,24 @@ const BANK_ACCOUNT_NAME = '1000 - Bank Accounts:1010 - Checking (Operating)';
 require('dotenv').config();
 const axios = require('axios');
 const { normalizePayrollRules, applyOvertimeAllocations, roundCurrency } = require('./lib/payroll-utils');
-
 const {
+  APP_TIMEZONE,
   QBO_CLIENT_ID,
   QBO_CLIENT_SECRET,
   QBO_REDIRECT_URI,
-  QBO_REALM_ID
-} = process.env;
+  QBO_API_BASE,
+  QBO_DEBUG,
+  SESSION_SECRET,
+  SESSION_ENCRYPTION_KEY
+} = require('./lib/config');
 
 const AUTH_BASE = 'https://appcenter.intuit.com/connect/oauth2';
 const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
-const API_BASE = 'https://sandbox-quickbooks.api.intuit.com/v3/company';
-let refreshPromise = null; // serialize refresh attempts so we don't race/overwrite
+const API_BASE = QBO_API_BASE;
+const refreshPromises = new Map(); // per-org refresh guards
 
 const deriveEncKey = () => {
-  const raw =
-    process.env.SESSION_ENCRYPTION_KEY ||
-    process.env.SESSION_SECRET;
+  const raw = SESSION_ENCRYPTION_KEY || SESSION_SECRET;
   if (!raw) return null;
   return crypto.createHash('sha256').update(String(raw)).digest();
 };
@@ -94,12 +95,13 @@ async function ensureNameOnChecksColumns() {
   });
 }
 
-// Load toggleable time exception rules from app_settings
-function loadExceptionRulesMap() {
+// Load toggleable time exception rules from org_settings
+function loadExceptionRulesMap(orgId) {
+  if (!orgId) return Promise.resolve(null);
   return new Promise(resolve => {
     db.get(
-      'SELECT value FROM app_settings WHERE key = ?',
-      ['time_exception_rules'],
+      'SELECT value FROM org_settings WHERE org_id = ? AND key = ?',
+      [orgId, 'time_exception_rules'],
       (err, row) => {
         if (err || !row || !row.value) return resolve(null);
         try {
@@ -113,11 +115,12 @@ function loadExceptionRulesMap() {
   });
 }
 
-function loadPayrollRulesMap() {
+function loadPayrollRulesMap(orgId) {
+  if (!orgId) return Promise.resolve(null);
   return new Promise(resolve => {
     db.get(
-      'SELECT value FROM app_settings WHERE key = ?',
-      ['payroll_rules'],
+      'SELECT value FROM org_settings WHERE org_id = ? AND key = ?',
+      [orgId, 'payroll_rules'],
       (err, row) => {
         if (err || !row || !row.value) return resolve(null);
         try {
@@ -144,15 +147,24 @@ function makeRuleChecker(rulesMap) {
   };
 }
 
+function normalizeQboResults(data, key) {
+  const raw = data && data.QueryResponse ? data.QueryResponse[key] : null;
+  if (!raw) return [];
+  return Array.isArray(raw) ? raw : [raw];
+}
+
 /* ───────── 1. AUTH URL (for "Connect to QuickBooks" button) ───────── */
 
-function getAuthUrl() {
+function getAuthUrl(state) {
+  if (!state) {
+    throw new Error('OAuth state is required for QuickBooks connect.');
+  }
   const params = new URLSearchParams({
     client_id: QBO_CLIENT_ID,
     redirect_uri: QBO_REDIRECT_URI,
     response_type: 'code',
     scope: 'com.intuit.quickbooks.accounting',
-    state: 'xyz123' // you can randomize this later if you want
+    state
   });
 
   return `${AUTH_BASE}?${params.toString()}`;
@@ -160,8 +172,16 @@ function getAuthUrl() {
 
 /* ───────── 2. PAYROLL SETTINGS LOADER ───────── */
 
-function getPayrollSettings() {
+function getPayrollSettings(orgId) {
   return new Promise((resolve, reject) => {
+    if (!orgId) {
+      return resolve({
+        bankAccountName: null,
+        expenseAccountName: null,
+        memoTemplate: 'Payroll {start} – {end}',
+        lineDescriptionTemplate: 'Labor {hours} hrs – {project}'
+      });
+    }
     db.get(
       `
         SELECT
@@ -170,8 +190,11 @@ function getPayrollSettings() {
           default_memo,
           line_description_template
         FROM payroll_settings
-        WHERE id = 1
+        WHERE org_id = ?
+        ORDER BY id DESC
+        LIMIT 1
       `,
+      [orgId],
       (err, row) => {
         if (err) return reject(err);
 
@@ -197,8 +220,14 @@ function getPayrollSettings() {
 function formatDateUS(dateInput) {
   if (!dateInput) return '';
 
-  const d = new Date(dateInput);
-  if (Number.isNaN(d.getTime())) return dateInput; // fallback
+  const raw = String(dateInput).trim();
+  const partsMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (partsMatch) {
+    return `${partsMatch[2]}/${partsMatch[3]}/${partsMatch[1]}`;
+  }
+
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw; // fallback
 
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
@@ -207,15 +236,161 @@ function formatDateUS(dateInput) {
   return `${mm}/${dd}/${yyyy}`;
 }
 
+function shiftIsoDate(dateStr, deltaDays) {
+  if (!dateStr) return dateStr;
+  const parts = String(dateStr).split('-').map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return dateStr;
+  const [year, month, day] = parts;
+  const dt = new Date(Date.UTC(year, month - 1, day + deltaDays));
+  return dt.toISOString().slice(0, 10);
+}
+
+function makeWeekStartResolver(tz) {
+  const dateFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const weekdayFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short'
+  });
+
+  const weekdayIndex = {
+    Mon: 0,
+    Tue: 1,
+    Wed: 2,
+    Thu: 3,
+    Fri: 4,
+    Sat: 5,
+    Sun: 6
+  };
+
+  return dateObj => {
+    if (!dateObj || Number.isNaN(dateObj.getTime())) return null;
+    const parts = dateFormatter.formatToParts(dateObj);
+    const y = parts.find(p => p.type === 'year')?.value;
+    const m = parts.find(p => p.type === 'month')?.value;
+    const d = parts.find(p => p.type === 'day')?.value;
+    if (!y || !m || !d) return null;
+    const dateStr = `${y}-${m}-${d}`;
+    const weekdayShort = weekdayFormatter.format(dateObj);
+    const idx = weekdayIndex[weekdayShort];
+    if (idx == null) return dateStr;
+    return shiftIsoDate(dateStr, -idx);
+  };
+}
+
+async function getOrgTimezone(orgId) {
+  if (!orgId) return APP_TIMEZONE || 'UTC';
+  return new Promise(resolve => {
+    db.get('SELECT timezone FROM orgs WHERE id = ?', [orgId], (err, row) => {
+      if (err || !row || !row.timezone) return resolve(APP_TIMEZONE || 'UTC');
+      resolve(row.timezone);
+    });
+  });
+}
+
+async function loadWeeklyHoursExceptionCounts({
+  orgId,
+  start = null,
+  end = null,
+  orgTimezone = APP_TIMEZONE,
+  weeklyHoursThreshold = null
+}) {
+  if (!orgId || !weeklyHoursThreshold) {
+    return { perEntry: new Map(), overWeeks: new Set() };
+  }
+
+  const tz = orgTimezone || APP_TIMEZONE || 'UTC';
+  const weekStart = makeWeekStartResolver(tz);
+  const startRange = start ? shiftIsoDate(start, -7) : null;
+  const endRange = end ? shiftIsoDate(end, 7) : null;
+
+  const params = [orgId];
+  let where =
+    'WHERE org_id = ? AND clock_in_ts IS NOT NULL AND clock_out_ts IS NOT NULL';
+  if (startRange) {
+    where += ' AND clock_in_local_date >= ?';
+    params.push(startRange);
+  }
+  if (endRange) {
+    where += ' AND clock_in_local_date <= ?';
+    params.push(endRange);
+  }
+
+  const punchRows = await new Promise((resolve, reject) => {
+    db.all(
+      `
+        SELECT
+          employee_id,
+          time_entry_id,
+          clock_in_ts,
+          clock_out_ts,
+          exception_review_status
+        FROM time_punches
+        ${where}
+      `,
+      params,
+      (err, rows) => (err ? reject(err) : resolve(rows || []))
+    );
+  });
+
+  const normalized = [];
+  const weekTotals = new Map();
+
+  for (const row of punchRows || []) {
+    const startTs = row.clock_in_ts ? new Date(row.clock_in_ts) : null;
+    const endTs = row.clock_out_ts ? new Date(row.clock_out_ts) : null;
+    if (!startTs || !endTs) continue;
+    if (Number.isNaN(startTs.getTime()) || Number.isNaN(endTs.getTime())) continue;
+    const hours = (endTs - startTs) / (1000 * 60 * 60);
+    if (!Number.isFinite(hours) || hours < 0) continue;
+    const weekKey = weekStart(startTs);
+    if (!weekKey) continue;
+
+    const employeeKey = `${row.employee_id}|${weekKey}`;
+    weekTotals.set(employeeKey, (weekTotals.get(employeeKey) || 0) + hours);
+
+    normalized.push({
+      employeeKey,
+      entryId: Number(row.time_entry_id) || null,
+      exceptionStatus: String(row.exception_review_status || '').toLowerCase()
+    });
+  }
+
+  const overWeeks = new Set();
+  weekTotals.forEach((hours, key) => {
+    if (hours > weeklyHoursThreshold) {
+      overWeeks.add(key);
+    }
+  });
+
+  const perEntry = new Map();
+  for (const row of normalized) {
+    if (!row.entryId || !overWeeks.has(row.employeeKey)) continue;
+    const current = perEntry.get(row.entryId) || { total: 0, unapproved: 0 };
+    current.total += 1;
+    if (!['approved', 'modified'].includes(row.exceptionStatus)) {
+      current.unapproved += 1;
+    }
+    perEntry.set(row.entryId, current);
+  }
+
+  return { perEntry, overWeeks };
+}
+
 /* ───────── 4. LIST QUICKBOOKS CLASSES ───────── */
 
-async function listClasses() {
-  const token = await getAccessToken();
+async function listClasses(orgId) {
+  const token = await getAccessToken(orgId);
   if (!token) {
     throw new Error('Not connected to QuickBooks');
   }
 
   const data = await qboQuery(
+    orgId,
     "SELECT Id, Name, FullyQualifiedName, Active " +
       "FROM Class " +
       "ORDER BY FullyQualifiedName"
@@ -227,8 +402,11 @@ async function listClasses() {
 
 /* ───────── 5. TOKEN STORAGE HELPERS (SQLite) ───────── */
 
-function saveTokens({ access_token, refresh_token, expires_in }) {
+function saveTokens({ orgId, access_token, refresh_token, expires_in, realm_id }) {
   // expires_in = seconds from now
+  if (!orgId) {
+    throw new Error('orgId is required to save QuickBooks tokens.');
+  }
   const expiresAt = Date.now() + (expires_in - 60) * 1000; // minus 60s for safety
 
   const encAccess = encryptValue(access_token);
@@ -236,20 +414,22 @@ function saveTokens({ access_token, refresh_token, expires_in }) {
 
   db.run(
     `
-      INSERT INTO qbo_tokens (id, access_token, refresh_token, expires_at)
-      VALUES (1, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
+      INSERT INTO qbo_tokens (org_id, access_token, refresh_token, expires_at, realm_id)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(org_id) DO UPDATE SET
         access_token  = excluded.access_token,
         refresh_token = excluded.refresh_token,
-        expires_at    = excluded.expires_at
+        expires_at    = excluded.expires_at,
+        realm_id      = COALESCE(excluded.realm_id, qbo_tokens.realm_id)
     `,
-    [encAccess, encRefresh, expiresAt]
+    [orgId, encAccess, encRefresh, expiresAt, realm_id || null]
   );
 }
 
-function getTokensFromDb() {
+function getTokensFromDb(orgId) {
   return new Promise((resolve, reject) => {
-    db.get('SELECT * FROM qbo_tokens LIMIT 1', (err, row) => {
+    if (!orgId) return resolve(null);
+    db.get('SELECT * FROM qbo_tokens WHERE org_id = ? LIMIT 1', [orgId], (err, row) => {
       if (err) return reject(err);
       if (!row) return resolve(null);
       const access = decryptValue(row.access_token) || row.access_token;
@@ -259,15 +439,27 @@ function getTokensFromDb() {
   });
 }
 
-function clearTokens() {
+function clearTokens(orgId) {
   return new Promise((resolve, reject) => {
-    db.run('DELETE FROM qbo_tokens', err => (err ? reject(err) : resolve()));
+    if (!orgId) return resolve();
+    db.run('DELETE FROM qbo_tokens WHERE org_id = ?', [orgId], err =>
+      err ? reject(err) : resolve()
+    );
+  });
+}
+
+function clearTokensForRealmId(realmId) {
+  return new Promise((resolve, reject) => {
+    if (!realmId) return resolve();
+    db.run('DELETE FROM qbo_tokens WHERE realm_id = ?', [realmId], err =>
+      err ? reject(err) : resolve()
+    );
   });
 }
 
 /* ───────── 6. EXCHANGE / REFRESH TOKENS ───────── */
 
-async function exchangeCodeForTokens(code) {
+async function exchangeCodeForTokens(code, { orgId, realmId } = {}) {
   const basicAuth = Buffer.from(
     `${QBO_CLIENT_ID}:${QBO_CLIENT_SECRET}`
   ).toString('base64');
@@ -285,11 +477,17 @@ async function exchangeCodeForTokens(code) {
     }
   });
 
-  saveTokens(res.data);
+  saveTokens({
+    orgId,
+    realm_id: realmId || null,
+    access_token: res.data.access_token,
+    refresh_token: res.data.refresh_token,
+    expires_in: res.data.expires_in
+  });
   return res.data;
 }
 
-async function refreshAccessToken(refreshToken) {
+async function refreshAccessToken(refreshToken, orgId) {
   const basicAuth = Buffer.from(
     `${QBO_CLIENT_ID}:${QBO_CLIENT_SECRET}`
   ).toString('base64');
@@ -306,14 +504,21 @@ async function refreshAccessToken(refreshToken) {
     }
   });
 
-  saveTokens(res.data);
+  const existing = await getTokensFromDb(orgId);
+  saveTokens({
+    orgId,
+    realm_id: existing?.realm_id || null,
+    access_token: res.data.access_token,
+    refresh_token: res.data.refresh_token,
+    expires_in: res.data.expires_in
+  });
   return res.data;
 }
 
 /* ───────── 7. GET A VALID ACCESS TOKEN (refresh if needed) ───────── */
 
-async function getAccessToken() {
-  const row = await getTokensFromDb();
+async function getAccessToken(orgId) {
+  const row = await getTokensFromDb(orgId);
   if (!row) {
     console.log('[QBO] No tokens found in qbo_tokens table');
     return null;
@@ -328,18 +533,20 @@ async function getAccessToken() {
     return null;
   }
 
-  const startedRefresh = !refreshPromise;
-  if (!refreshPromise) {
+  const existingPromise = refreshPromises.get(orgId);
+  const startedRefresh = !existingPromise;
+  if (!existingPromise) {
     console.log('[QBO] Access token expired; refreshing…');
-    refreshPromise = refreshAccessToken(row.refresh_token).finally(() => {
-      refreshPromise = null;
+    const promise = refreshAccessToken(row.refresh_token, orgId).finally(() => {
+      refreshPromises.delete(orgId);
     });
+    refreshPromises.set(orgId, promise);
   } else {
     console.log('[QBO] Access token expired; waiting on existing refresh…');
   }
 
   try {
-    const refreshed = await refreshPromise;
+    const refreshed = await refreshPromises.get(orgId);
     return refreshed?.access_token || null;
   } catch (err) {
     if (startedRefresh) {
@@ -352,7 +559,7 @@ async function getAccessToken() {
       if (status === 400 || status === 401) {
         console.warn('[QBO] Clearing stored tokens; please reconnect QuickBooks.');
         try {
-          await clearTokens();
+          await clearTokens(orgId);
         } catch (wipeErr) {
           console.warn(
             '[QBO] Failed to clear tokens after refresh error:',
@@ -365,19 +572,26 @@ async function getAccessToken() {
   }
 }
 
+async function getRealmId(orgId) {
+  const row = await getTokensFromDb(orgId);
+  return row && row.realm_id ? row.realm_id : null;
+}
+
 /* ───────── 8. GENERIC QBO QUERY HELPER ───────── */
 
-async function qboQuery(query) {
-  console.log('qboQuery called with query:', query);
+async function qboQuery(orgId, query) {
+  if (QBO_DEBUG) {
+    console.log('qboQuery called with query:', query);
+  }
 
-  const accessToken = await getAccessToken();
+  const accessToken = await getAccessToken(orgId);
   if (!accessToken) {
     throw new Error('Not connected to QuickBooks (no access token).');
   }
 
-  const realmId = QBO_REALM_ID;
+  const realmId = await getRealmId(orgId);
   if (!realmId) {
-    throw new Error('QBO_REALM_ID is not set in .env');
+    throw new Error('Not connected to QuickBooks (no realmId).');
   }
 
   const url = `${API_BASE}/${realmId}/query`;
@@ -393,11 +607,15 @@ async function qboQuery(query) {
     return res.data;
   } catch (err) {
     if (err.response) {
-      console.error(
-        'QBO query error:',
-        err.response.status,
-        JSON.stringify(err.response.data, null, 2)
-      );
+      if (QBO_DEBUG) {
+        console.error(
+          'QBO query error:',
+          err.response.status,
+          JSON.stringify(err.response.data, null, 2)
+        );
+      } else {
+        console.error('QBO query error:', err.response.status);
+      }
     } else {
       console.error('QBO query error:', err.message);
     }
@@ -405,15 +623,38 @@ async function qboQuery(query) {
   }
 }
 
+async function qboQueryAll(orgId, baseQuery, entityKey, maxResults = 1000, orderBy = 'Id') {
+  const results = [];
+  let startPosition = 1;
+  const hasOrder = /\border\s+by\b/i.test(baseQuery);
+  const orderedQuery = hasOrder ? baseQuery : `${baseQuery} ORDER BY ${orderBy}`;
+
+  while (true) {
+    const query = `${orderedQuery} STARTPOSITION ${startPosition} MAXRESULTS ${maxResults}`;
+    const data = await qboQuery(orgId, query);
+    const page = normalizeQboResults(data, entityKey);
+    if (page.length) {
+      results.push(...page);
+    }
+    if (page.length < maxResults) {
+      break;
+    }
+    startPosition += maxResults;
+  }
+
+  return results;
+}
+
 /* ───────── 9. LIST PAYROLL ACCOUNTS (BANK & EXPENSE) ───────── */
 
-async function listPayrollAccounts() {
-  const token = await getAccessToken();
+async function listPayrollAccounts(orgId) {
+  const token = await getAccessToken(orgId);
   if (!token) {
     throw new Error('Not connected to QuickBooks');
   }
 
   const data = await qboQuery(
+    orgId,
     "SELECT Id, Name, FullyQualifiedName, AccountType, SubAccount " +
       "FROM Account " +
       "WHERE AccountType IN ('Bank','Expense','Cost of Goods Sold','Other Expense') " +
@@ -436,69 +677,113 @@ async function listPayrollAccounts() {
 /* ───────── 10. SYNC HELPERS (VENDORS / PROJECTS / EMPLOYEES) ───────── */
 
 // Download Vendors from QuickBooks → store in vendors table
-async function syncVendors() {
-  const data = await qboQuery('SELECT Id, DisplayName, Active FROM Vendor');
-  const vendors = (data.QueryResponse && data.QueryResponse.Vendor) || [];
+async function syncVendors(orgId) {
+  if (!orgId) {
+    throw new Error('orgId is required for vendor sync.');
+  }
+  const active = await qboQueryAll(
+    orgId,
+    'SELECT Id, DisplayName, Active FROM Vendor WHERE Active = true',
+    'Vendor'
+  );
+  const inactive = await qboQueryAll(
+    orgId,
+    'SELECT Id, DisplayName, Active FROM Vendor WHERE Active = false',
+    'Vendor'
+  );
+  const vendorMap = new Map();
+  [...active, ...inactive].forEach(vendor => {
+    if (vendor && vendor.Id !== undefined && vendor.Id !== null) {
+      vendorMap.set(String(vendor.Id), vendor);
+    }
+  });
+  const vendors = Array.from(vendorMap.values());
 
   return new Promise((resolve, reject) => {
     db.serialize(() => {
-      // 1) Mark all QBO-backed vendors as inactive by default
-      db.run(
-        `UPDATE vendors SET active = 0 WHERE qbo_id IS NOT NULL`,
-        err => {
-          if (err) return reject(err);
+      let finished = false;
+      const rollback = err => {
+        if (finished) return;
+        finished = true;
+        db.run('ROLLBACK', () => reject(err));
+      };
+      const commit = count => {
+        if (finished) return;
+        finished = true;
+        db.run('COMMIT', err => (err ? reject(err) : resolve(count)));
+      };
+      db.run('BEGIN', err => {
+        if (err) return rollback(err);
+        // 1) Mark all QBO-backed vendors as inactive by default
+        db.run(
+          `UPDATE vendors SET active = 0 WHERE org_id = ? AND qbo_id IS NOT NULL`,
+          [orgId],
+          errUpdate => {
+            if (errUpdate) return rollback(errUpdate);
 
-          // 2) Upsert each vendor with the correct active flag from QBO
-          const upsertSql = `
-            INSERT INTO vendors (qbo_id, name, active)
-            VALUES (?, ?, ?)
-            ON CONFLICT(qbo_id) DO UPDATE SET
-              name = excluded.name,
-              active = excluded.active
-          `;
+            // 2) Upsert each vendor with the correct active flag from QBO
+            const upsertSql = `
+              INSERT INTO vendors (org_id, qbo_id, name, active)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(org_id, qbo_id) DO UPDATE SET
+                name = excluded.name,
+                active = excluded.active
+            `;
 
-          const stmt = db.prepare(upsertSql);
+            const stmt = db.prepare(upsertSql);
 
-          vendors.forEach(v => {
-            const name = v.DisplayName || '';
-            const isActive =
-              v.Active === undefined || v.Active === null
-                ? 1
-                : v.Active
-                ? 1
-                : 0;
+            vendors.forEach(v => {
+              const name = v.DisplayName || '';
+              const isActive =
+                v.Active === undefined || v.Active === null
+                  ? 1
+                  : v.Active
+                  ? 1
+                  : 0;
 
-            stmt.run([String(v.Id), name, isActive]);
-          });
+              stmt.run([orgId, String(v.Id), name, isActive], errRun => {
+                if (errRun) return rollback(errRun);
+              });
+            });
 
-          stmt.finalize(err2 => {
-            if (err2) return reject(err2);
-            resolve(vendors.length);
-          });
-        }
-      );
+            stmt.finalize(err2 => {
+              if (err2) return rollback(err2);
+              commit(vendors.length);
+            });
+          }
+        );
+      });
     });
   });
 }
 
 // Download Employees from QuickBooks and sync into employees table
-async function syncEmployeesFromQuickBooks() {
-  // Pull employees from QuickBooks (only the fields we care about)
-  const data = await qboQuery(
-    'SELECT Id, DisplayName, GivenName, FamilyName, Active, PrimaryEmailAddr FROM Employee'
+async function syncEmployeesFromQuickBooks(orgId) {
+  if (!orgId) {
+    throw new Error('orgId is required for employee sync.');
+  }
+  const baseQuery =
+    'SELECT Id, DisplayName, GivenName, FamilyName, Active, PrimaryEmailAddr, PrintOnCheckName, MetaData FROM Employee';
+  const active = await qboQueryAll(
+    orgId,
+    `${baseQuery} WHERE Active = true`,
+    'Employee'
   );
-
-  console.log(
-    '[QBO RAW EMPLOYEE RESPONSE]',
-    JSON.stringify(data, null, 2)
+  const inactive = await qboQueryAll(
+    orgId,
+    `${baseQuery} WHERE Active = false`,
+    'Employee'
   );
-
-  let raw = data.QueryResponse && data.QueryResponse.Employee;
-  const employees = Array.isArray(raw)
-    ? raw
-    : raw
-    ? [raw]
-    : [];
+  const employeeMap = new Map();
+  [...active, ...inactive].forEach(emp => {
+    if (emp && emp.Id !== undefined && emp.Id !== null) {
+      employeeMap.set(String(emp.Id), emp);
+    }
+  });
+  const employees = Array.from(employeeMap.values());
+  if (QBO_DEBUG) {
+    console.log(`[QBO] Loaded ${employees.length} employees from QuickBooks.`);
+  }
 
   return new Promise((resolve, reject) => {
     if (!employees.length) {
@@ -515,65 +800,81 @@ async function syncEmployeesFromQuickBooks() {
           name_on_checks_qbo_updated_at = ?,
           email = ?,
           active = ?
-        WHERE employee_qbo_id = ?
+        WHERE employee_qbo_id = ? AND org_id = ?
       `;
 
       const insertSql = `
         INSERT INTO employees (
+          org_id,
           employee_qbo_id,
           name,
           nickname,
           name_on_checks,
           rate,
           active,
-          pin,
-          require_photo,
-          is_admin,
-          uses_timekeeping,
+          pin_hash,
           email,
           language,
+          worker_timekeeping,
+          desktop_access,
+          kiosk_admin_access,
           name_on_checks_updated_at,
-          name_on_checks_qbo_updated_at
+          name_on_checks_qbo_updated_at,
+          needs_qbo_sync
         )
-        VALUES (?, ?, NULL, ?, 0, ?, NULL, 0, 0, 1, ?, 'en', ?, ?)
+        VALUES (?, ?, ?, NULL, ?, 0, ?, NULL, ?, 'en', 1, 0, 0, ?, ?, 0)
       `;
 
-      let processed = 0;
+      const getRow = (sql, params) =>
+        new Promise((resolve, reject) => {
+          db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
+        });
+      const runSql = (sql, params) =>
+        new Promise((resolve, reject) => {
+          db.run(sql, params, err => (err ? reject(err) : resolve()));
+        });
 
-      employees.forEach(emp => {
-        const qboId = String(emp.Id);
-        const qboPrintName = (emp.PrintOnCheckName || '').trim();
-        const displayName =
-          qboPrintName ||
-          emp.DisplayName ||
-          [emp.GivenName || '', emp.FamilyName || ''].join(' ').trim();
-        const qboUpdatedIso =
-          emp.MetaData && emp.MetaData.LastUpdatedTime
-            ? new Date(emp.MetaData.LastUpdatedTime).toISOString()
-            : null;
-        const qboUpdatedMs = qboUpdatedIso ? Date.parse(qboUpdatedIso) : 0;
+      const processEmployees = async () => {
+        await runSql('BEGIN IMMEDIATE');
+        let processed = 0;
+        try {
+          for (const emp of employees) {
+            const qboId = String(emp.Id);
+            const qboPrintName = (emp.PrintOnCheckName || '').trim();
+            const displayName =
+              qboPrintName ||
+              emp.DisplayName ||
+              [emp.GivenName || '', emp.FamilyName || ''].join(' ').trim();
+            const qboUpdatedIso =
+              emp.MetaData && emp.MetaData.LastUpdatedTime
+                ? new Date(emp.MetaData.LastUpdatedTime).toISOString()
+                : null;
+            const qboUpdatedMs = qboUpdatedIso ? Date.parse(qboUpdatedIso) : 0;
 
-        const email =
-          emp.PrimaryEmailAddr && emp.PrimaryEmailAddr.Address
-            ? emp.PrimaryEmailAddr.Address.trim()
-            : null;
+            const email =
+              emp.PrimaryEmailAddr && emp.PrimaryEmailAddr.Address
+                ? emp.PrimaryEmailAddr.Address.trim()
+                : null;
 
-        const isActive =
-          emp.Active === true || emp.Active === 'true' ? 1 : 0;
+            const isActive =
+              emp.Active === undefined || emp.Active === null
+                ? 1
+                : emp.Active === true || emp.Active === 'true'
+                ? 1
+                : 0;
 
-        db.get(
-          `
-            SELECT
-              name_on_checks,
-              name_on_checks_updated_at,
-              name_on_checks_qbo_updated_at
-            FROM employees
-            WHERE employee_qbo_id = ?
-            LIMIT 1
-          `,
-          [qboId],
-          (lookupErr, row) => {
-            if (lookupErr) return reject(lookupErr);
+            const row = await getRow(
+              `
+                SELECT
+                  name_on_checks,
+                  name_on_checks_updated_at,
+                  name_on_checks_qbo_updated_at
+                FROM employees
+                WHERE employee_qbo_id = ? AND org_id = ?
+                LIMIT 1
+              `,
+              [qboId, orgId]
+            );
 
             const localName = row ? (row.name_on_checks || '').trim() : '';
             const localUpdatedMs = row && row.name_on_checks_updated_at
@@ -597,61 +898,56 @@ async function syncEmployeesFromQuickBooks() {
             const finalQboUpdated = qboUpdatedIso || row?.name_on_checks_qbo_updated_at || null;
 
             if (row) {
-              db.run(
-                updateSql,
-                [
-                  displayName,
-                  finalNameOnChecks || null,
-                  finalLocalUpdated,
-                  finalQboUpdated,
-                  email,
-                  isActive,
-                  qboId
-                ],
-                function (errUpdate) {
-                  if (errUpdate) return reject(errUpdate);
-                  processed++;
-                  if (processed === employees.length) {
-                    resolve(processed);
-                  }
-                }
-              );
+              await runSql(updateSql, [
+                displayName,
+                finalNameOnChecks || null,
+                finalLocalUpdated,
+                finalQboUpdated,
+                email,
+                isActive,
+                qboId,
+                orgId
+              ]);
             } else {
-              db.run(
-                insertSql,
-                [
-                  qboId,
-                  displayName,
-                  finalNameOnChecks || null,
-                  isActive,
-                  email,
-                  null,
-                  qboUpdatedIso || null
-                ],
-                function (errInsert) {
-                  if (errInsert) return reject(errInsert);
-                  processed++;
-                  if (processed === employees.length) {
-                    resolve(processed);
-                  }
-                }
-              );
+              await runSql(insertSql, [
+                orgId,
+                qboId,
+                displayName,
+                finalNameOnChecks || null,
+                isActive,
+                email,
+                null,
+                qboUpdatedIso || null
+              ]);
             }
+            processed += 1;
           }
-        );
-      });
+
+          await runSql('COMMIT');
+          resolve(processed);
+        } catch (err) {
+          try {
+            await runSql('ROLLBACK');
+          } catch (rollbackErr) {
+            console.warn('[QBO] Employee sync rollback error:', rollbackErr.message || rollbackErr);
+          }
+          reject(err);
+        }
+      };
+
+      processEmployees().catch(reject);
     });
   });
 }
 
 /* ───────── Shared helper: set PrintOnCheckName for a payee ───────── */
-async function setPrintOnCheckName(payeeRef, desiredName) {
+async function setPrintOnCheckName(payeeRef, desiredName, orgId) {
   if (!payeeRef || !payeeRef.value || !desiredName) {
     return { ok: false, error: 'Missing payeeRef or desired name.' };
   }
 
-  const accessToken = await getAccessToken();
-  const realmId = QBO_REALM_ID;
+  const accessToken = await getAccessToken(orgId);
+  const realmId = await getRealmId(orgId);
   if (!accessToken || !realmId) {
     return { ok: false, error: 'Not connected to QuickBooks.' };
   }
@@ -660,6 +956,7 @@ async function setPrintOnCheckName(payeeRef, desiredName) {
 
   try {
     const data = await qboQuery(
+      orgId,
       `select Id, SyncToken, DisplayName, PrintOnCheckName from ${type} where Id = '${payeeRef.value}'`
     );
     const raw = data && data.QueryResponse && data.QueryResponse[type];
@@ -693,6 +990,76 @@ async function setPrintOnCheckName(payeeRef, desiredName) {
 
     return { ok: true };
   } catch (err) {
+    const status = err.response ? err.response.status : null;
+    let friendly = status ? `HTTP ${status}` : err.message;
+    if (err.response && err.response.data) {
+      const fault = err.response.data.Fault;
+      const firstError =
+        fault && Array.isArray(fault.Error) && fault.Error[0]
+          ? fault.Error[0]
+          : null;
+      if (firstError) {
+        if (firstError.Message) friendly = firstError.Message;
+        if (firstError.Detail) friendly += ' – ' + firstError.Detail;
+      }
+    }
+    if ((status === 401 || status === 403) && orgId) {
+      try {
+        await clearTokens(orgId);
+      } catch (clearErr) {
+        console.warn('[QBO] Failed to clear tokens after auth error:', clearErr.message || clearErr);
+      }
+    }
+    return { ok: false, error: friendly, status };
+  }
+}
+
+async function createEmployeeInQuickBooks({ displayName, givenName, familyName, email, orgId } = {}) {
+  const accessToken = await getAccessToken(orgId);
+  const realmId = await getRealmId(orgId);
+  if (!accessToken || !realmId) {
+    return { ok: false, error: 'Not connected to QuickBooks.' };
+  }
+
+  const finalDisplay =
+    (displayName && String(displayName).trim()) ||
+    `${givenName || ''} ${familyName || ''}`.trim();
+
+  const payload = {
+    DisplayName: finalDisplay,
+    GivenName: givenName,
+    FamilyName: familyName
+  };
+
+  if (email) {
+    payload.PrimaryEmailAddr = { Address: email };
+  }
+
+  try {
+    const url = `${API_BASE}/${realmId}/employee`;
+    const response = await axios.post(url, payload, {
+      params: { minorversion: 62 },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const employee = response?.data?.Employee;
+    if (!employee || !employee.Id) {
+      return { ok: false, error: 'QuickBooks response missing employee id.' };
+    }
+
+    return {
+      ok: true,
+      employee_qbo_id: String(employee.Id),
+      employee_qbo_name:
+        employee.DisplayName ||
+        employee.PrintOnCheckName ||
+        finalDisplay
+    };
+  } catch (err) {
     let friendly = err.response ? `HTTP ${err.response.status}` : err.message;
     if (err.response && err.response.data) {
       const fault = err.response.data.Fault;
@@ -714,68 +1081,115 @@ async function setPrintOnCheckName(payeeRef, desiredName) {
 
 
 // Download Customers (used as projects/jobs) → store in projects table
-async function syncProjects() {
-  // 1) Call QBO for active customers/jobs (projects)
-  const data = await qboQuery('SELECT * FROM Customer WHERE Active = true');
-  const customers =
-    (data.QueryResponse && data.QueryResponse.Customer) || [];
-  console.log(
-    `syncProjects: received ${customers.length} active customers from QBO.`
+async function syncProjects(orgId) {
+  if (!orgId) {
+    throw new Error('orgId is required for project sync.');
+  }
+  const baseQuery =
+    'SELECT Id, DisplayName, FullyQualifiedName, Active FROM Customer';
+  const active = await qboQueryAll(
+    orgId,
+    `${baseQuery} WHERE Active = true`,
+    'Customer'
   );
-
-  // 2) Mark all QBO-backed projects as inactive first
-  await new Promise((resolve, reject) => {
-    db.run(
-      `UPDATE projects SET active = 0 WHERE qbo_id IS NOT NULL`,
-      err => (err ? reject(err) : resolve())
-    );
+  const inactive = await qboQueryAll(
+    orgId,
+    `${baseQuery} WHERE Active = false`,
+    'Customer'
+  );
+  const customerMap = new Map();
+  [...active, ...inactive].forEach(cust => {
+    if (cust && cust.Id !== undefined && cust.Id !== null) {
+      customerMap.set(String(cust.Id), cust);
+    }
   });
+  const customers = Array.from(customerMap.values());
+  if (QBO_DEBUG) {
+    console.log(`syncProjects: received ${customers.length} customers from QBO.`);
+  }
 
-  // 3) Upsert each QBO customer as active=1
   const upsertSql = `
-    INSERT INTO projects (qbo_id, name, customer_name, active)
-    VALUES (?, ?, ?, 1)
-    ON CONFLICT(qbo_id) DO UPDATE SET
+    INSERT INTO projects (org_id, qbo_id, name, customer_name, active)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(org_id, qbo_id) DO UPDATE SET
       name = excluded.name,
       customer_name = excluded.customer_name,
-      active = 1
+      active = excluded.active
   `;
 
   await new Promise((resolve, reject) => {
     db.serialize(() => {
-      const stmt = db.prepare(upsertSql);
-customers.forEach(cust => {
-  const qboId = String(cust.Id);
-  const displayName = cust.DisplayName || cust.CompanyName || '';
+      let finished = false;
+      const rollback = err => {
+        if (finished) return;
+        finished = true;
+        db.run('ROLLBACK', () => reject(err));
+      };
+      const commit = () => {
+        if (finished) return;
+        finished = true;
+        db.run('COMMIT', err => (err ? reject(err) : resolve()));
+      };
 
-  let customerName = null;
-  const fq = cust.FullyQualifiedName || '';
+      db.run('BEGIN', err => {
+        if (err) return rollback(err);
 
-  if (fq) {
-    const parts = fq.split(':');
+        // 2) Mark all QBO-backed projects as inactive first
+        db.run(
+          `UPDATE projects SET active = 0 WHERE org_id = ? AND qbo_id IS NOT NULL`,
+          [orgId],
+          errUpdate => {
+            if (errUpdate) return rollback(errUpdate);
 
-    if (parts.length > 1) {
-      // Everything except the last segment = customer
-      // Last segment = the job/project (which is already displayName)
-      customerName = parts.slice(0, -1).join(':').trim();
-    } else {
-      // Top-level customer → don’t duplicate name in the customer column
-      customerName = null;
-    }
-  }
+            // 3) Upsert each QBO customer with active status
+            const stmt = db.prepare(upsertSql);
+            customers.forEach(cust => {
+              const qboId = String(cust.Id);
+              const displayName = cust.DisplayName || cust.CompanyName || '';
+              const isActive =
+                cust.Active === undefined || cust.Active === null
+                  ? 1
+                  : cust.Active
+                  ? 1
+                  : 0;
 
-  stmt.run(
-    [qboId, displayName, customerName],
-    err =>
-      err && console.error('Project upsert error:', err.message)
-  );
-});
+              let customerName = null;
+              const fq = cust.FullyQualifiedName || '';
 
-      stmt.finalize(err => (err ? reject(err) : resolve()));
+              if (fq) {
+                const parts = fq.split(':');
+
+                if (parts.length > 1) {
+                  // Everything except the last segment = customer
+                  // Last segment = the job/project (which is already displayName)
+                  customerName = parts.slice(0, -1).join(':').trim();
+                } else {
+                  // Top-level customer → don’t duplicate name in the customer column
+                  customerName = null;
+                }
+              }
+
+              stmt.run(
+                [orgId, qboId, displayName, customerName, isActive],
+                errRun => {
+                  if (errRun) return rollback(errRun);
+                }
+              );
+            });
+
+            stmt.finalize(err2 => {
+              if (err2) return rollback(err2);
+              commit();
+            });
+          }
+        );
+      });
     });
   });
 
-  console.log('syncProjects: upsert complete.');
+  if (QBO_DEBUG) {
+    console.log('syncProjects: upsert complete.');
+  }
   return customers.length;
 }
 
@@ -786,17 +1200,28 @@ async function getAccountIdByName(name, accessToken, realmId) {
   const query = `select Id from Account where FullyQualifiedName='${safe}'`;
   const url = `${API_BASE}/${realmId}/query`;
 
-  const res = await axios.get(url, {
-    params: { query, minorversion: 62 },
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json'
-    }
-  });
+  try {
+    const res = await axios.get(url, {
+      params: { query, minorversion: 62 },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json'
+      }
+    });
 
-  const data = res.data;
-  const acc = data?.QueryResponse?.Account?.[0];
-  return acc?.Id || null;
+    const data = res.data;
+    const acc = data?.QueryResponse?.Account?.[0];
+    return acc?.Id || null;
+  } catch (err) {
+    if ((err.response?.status === 401 || err.response?.status === 403) && realmId) {
+      try {
+        await clearTokensForRealmId(realmId);
+      } catch (clearErr) {
+        console.warn('[QBO] Failed to clear tokens after auth error:', clearErr.message || clearErr);
+      }
+    }
+    throw err;
+  }
 }
 
 async function getClassIdByName(name, accessToken, realmId) {
@@ -804,17 +1229,28 @@ async function getClassIdByName(name, accessToken, realmId) {
   const query = `select Id from Class where FullyQualifiedName='${safe}'`;
   const url = `${API_BASE}/${realmId}/query`;
 
-  const res = await axios.get(url, {
-    params: { query, minorversion: 62 },
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json'
-    }
-  });
+  try {
+    const res = await axios.get(url, {
+      params: { query, minorversion: 62 },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json'
+      }
+    });
 
-  const data = res.data;
-  const cls = data?.QueryResponse?.Class?.[0];
-  return cls?.Id || null;
+    const data = res.data;
+    const cls = data?.QueryResponse?.Class?.[0];
+    return cls?.Id || null;
+  } catch (err) {
+    if ((err.response?.status === 401 || err.response?.status === 403) && realmId) {
+      try {
+        await clearTokensForRealmId(realmId);
+      } catch (clearErr) {
+        console.warn('[QBO] Failed to clear tokens after auth error:', clearErr.message || clearErr);
+      }
+    }
+    throw err;
+  }
 }
 
 // Look for an already-queued (NeedToPrint) check for this payee so we can append lines
@@ -910,12 +1346,13 @@ function appendPayrollPrivateNote(baseMemo, runContext = {}) {
 /* ───────── 13. BUILD DRAFTS FROM time_entries (DB ONLY) ───────── */
 
 async function buildCheckDrafts(start, end, options = {}) {
+  const orgId = options.orgId;
   const { excludeEmployeeIds = [], includeOvertime = true } = options;
   const HOURS_EPSILON = 0.1; // keep in sync with payroll/time-entries endpoint
-  const payrollRulesRaw = await loadPayrollRulesMap();
+  const payrollRulesRaw = await loadPayrollRulesMap(orgId);
   const payrollRules = normalizePayrollRules(payrollRulesRaw);
 
-  const rulesMap = await loadExceptionRulesMap();
+  const rulesMap = await loadExceptionRulesMap(orgId);
   const isRuleEnabled = makeRuleChecker(rulesMap);
 
   const ruleMissingClockOut = isRuleEnabled('missing_clock_out');
@@ -926,11 +1363,18 @@ async function buildCheckDrafts(start, end, options = {}) {
   const ruleProjectMismatch = isRuleEnabled('project_mismatch');
   const ruleTinyPunch = isRuleEnabled('tiny_punch');
   const ruleGeoIn = isRuleEnabled('geofence_clock_in');
-  const ruleGeoOut = isRuleEnabled('geofence_clock_out');
   const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
   const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
   const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
   const ruleWeeklyHours = isRuleEnabled('weekly_hours');
+  const rawWeeklyThreshold =
+    rulesMap && rulesMap.weekly_hours_threshold != null
+      ? Number(rulesMap.weekly_hours_threshold)
+      : null;
+  const weeklyHoursThreshold =
+    Number.isFinite(rawWeeklyThreshold) && rawWeeklyThreshold > 0
+      ? rawWeeklyThreshold
+      : null;
 
   const punchExceptionConditions = [];
   if (ruleMissingClockOut) punchExceptionConditions.push('tp.clock_out_ts IS NULL');
@@ -943,8 +1387,11 @@ async function buildCheckDrafts(start, end, options = {}) {
     );
   }
   if (ruleAutoClockOut) punchExceptionConditions.push('tp.auto_clock_out IS NOT NULL AND tp.auto_clock_out != 0');
-  if (ruleGeoIn || ruleGeoOut) {
-    punchExceptionConditions.push('tp.geo_violation IS NOT NULL AND tp.geo_violation != 0');
+  if (ruleGeoIn) {
+    punchExceptionConditions.push(
+      `(tp.geo_violation IS NOT NULL AND tp.geo_violation != 0)
+       OR (ks.geo_violation IS NOT NULL AND ks.geo_violation != 0)`
+    );
   }
   if (ruleLongShift) {
     punchExceptionConditions.push(
@@ -960,8 +1407,8 @@ async function buildCheckDrafts(start, end, options = {}) {
   }
   if (ruleCrossesMidnight) {
     punchExceptionConditions.push(
-      `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
-        AND date(tp.clock_in_ts) != date(tp.clock_out_ts))`
+      `(tp.clock_in_local_date IS NOT NULL AND tp.clock_out_local_date IS NOT NULL
+        AND tp.clock_in_local_date != tp.clock_out_local_date)`
     );
   }
   if (ruleTinyPunch) {
@@ -970,19 +1417,7 @@ async function buildCheckDrafts(start, end, options = {}) {
         AND ((julianday(tp.clock_out_ts) - julianday(tp.clock_in_ts)) * 24.0 * 60) < 5)`
     );
   }
-  if (ruleWeeklyHours) {
-    punchExceptionConditions.push(
-      `(tp.clock_in_ts IS NOT NULL AND tp.clock_out_ts IS NOT NULL
-        AND (
-          SELECT SUM((julianday(tp2.clock_out_ts) - julianday(tp2.clock_in_ts)) * 24.0)
-          FROM time_punches tp2
-          WHERE tp2.employee_id = tp.employee_id
-            AND tp2.clock_in_ts IS NOT NULL
-            AND tp2.clock_out_ts IS NOT NULL
-            AND strftime('%Y-%W', tp2.clock_in_ts) = strftime('%Y-%W', tp.clock_in_ts)
-        ) > 50)`
-    );
-  }
+  // Weekly hours exceptions are evaluated separately with org timezone rules.
 
   const punchExceptionCase = punchExceptionConditions.length
     ? `CASE ${punchExceptionConditions.map(c => `WHEN ${c} THEN 1`).join(' ')} ELSE 0 END`
@@ -1026,8 +1461,9 @@ async function buildCheckDrafts(start, end, options = {}) {
             END
           ) AS punch_hours
         FROM time_entries t
-        LEFT JOIN time_punches tp ON tp.time_entry_id = t.id
-        WHERE t.start_date >= ? AND t.end_date <= ?
+        LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
+        LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = t.org_id
+        WHERE t.org_id = ? AND t.start_date >= ? AND t.end_date <= ?
           AND (t.paid IS NULL OR t.paid = 0)
         GROUP BY
           t.id,
@@ -1061,8 +1497,8 @@ async function buildCheckDrafts(start, end, options = {}) {
         p.qbo_id AS project_qbo_id,
         p.customer_name AS project_customer_name
       FROM entry_flags f
-      JOIN employees e ON f.employee_id = e.id
-      LEFT JOIN projects p ON f.project_id = p.id
+      JOIN employees e ON f.employee_id = e.id AND e.org_id = ?
+      LEFT JOIN projects p ON f.project_id = p.id AND p.org_id = ?
       WHERE
         (
           -- entry-level exception gate: allow when no exception OR approved
@@ -1076,7 +1512,7 @@ async function buildCheckDrafts(start, end, options = {}) {
         )
     `;
 
-  const params = [start, end];
+  const params = [orgId, start, end, orgId, orgId];
 
   if (excludeEmployeeIds.length) {
     const placeholders = excludeEmployeeIds.map(() => '?').join(',');
@@ -1092,12 +1528,29 @@ async function buildCheckDrafts(start, end, options = {}) {
         f.id
     `;
 
-  const rows = await new Promise((resolve, reject) => {
+  let rows = await new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
       if (err) return reject(err);
       resolve(rows);
     });
   });
+
+  if (ruleWeeklyHours && weeklyHoursThreshold && rows && rows.length) {
+    const orgTimezone = await getOrgTimezone(orgId);
+    const weeklyCounts = await loadWeeklyHoursExceptionCounts({
+      orgId,
+      start,
+      end,
+      orgTimezone,
+      weeklyHoursThreshold
+    });
+    rows = rows.filter(r => {
+      const entryId = Number(r.time_entry_id || 0);
+      if (!entryId) return false;
+      const counts = weeklyCounts.perEntry.get(entryId);
+      return !counts || counts.unapproved === 0;
+    });
+  }
 
   const entriesByEmployee = new Map();
   for (const r of rows) {
@@ -1192,6 +1645,7 @@ async function buildCheckDrafts(start, end, options = {}) {
 }
 
 async function computePayrollDraftsSnapshot(start, end, options = {}) {
+  const orgId = options.orgId;
   const excludeEmployeeIds = Array.isArray(options.excludeEmployeeIds)
     ? options.excludeEmployeeIds
     : [];
@@ -1200,7 +1654,11 @@ async function computePayrollDraftsSnapshot(start, end, options = {}) {
     : [];
   const includeOvertime =
     typeof options.includeOvertime === 'boolean' ? options.includeOvertime : true;
-  const drafts = await buildCheckDrafts(start, end, { excludeEmployeeIds, includeOvertime });
+  const drafts = await buildCheckDrafts(start, end, {
+    excludeEmployeeIds,
+    includeOvertime,
+    orgId
+  });
 
   let finalDrafts = drafts;
   if (onlyEmployeeIds.length) {
@@ -1239,9 +1697,13 @@ async function computePayrollDraftsSnapshot(start, end, options = {}) {
     and marks time_entries as paid. */
 
 async function createChecksForPeriod(start, end, options = {}) {
-  const accessToken = await getAccessToken();
-  const realmId = QBO_REALM_ID;
-  const settings = await getPayrollSettings();
+  const orgId = options.orgId;
+  if (!orgId) {
+    throw new Error('orgId is required for payroll check creation.');
+  }
+  const accessToken = await getAccessToken(orgId);
+  const realmId = await getRealmId(orgId);
+  const settings = await getPayrollSettings(orgId);
   const startUS = formatDateUS(start);
   const endUS = formatDateUS(end);
   const previewOnly = options.previewOnly === true;
@@ -1271,10 +1733,33 @@ async function createChecksForPeriod(start, end, options = {}) {
           description: l.description || '',
           expenseAccountName: l.expenseAccountName || null,
           className: l.className || null,
-          projectId: l.projectId || null
+          projectId: Number.isFinite(Number(l.projectId)) ? Number(l.projectId) : null
         }))
         .filter(l => l.employeeId && l.amount > 0)
     : [];
+  const customProjectIds = [
+    ...new Set(customLines.map(l => l.projectId).filter(id => Number.isFinite(id) && id > 0))
+  ];
+  const customProjectMap = new Map();
+  if (customProjectIds.length) {
+    const placeholders = customProjectIds.map(() => '?').join(',');
+    const rows = await new Promise((resolve, reject) => {
+      db.all(
+        `
+          SELECT id, qbo_id, name, customer_name
+          FROM projects
+          WHERE org_id = ? AND id IN (${placeholders})
+        `,
+        [orgId, ...customProjectIds],
+        (err, rows) => (err ? reject(err) : resolve(rows || []))
+      );
+    });
+    rows.forEach(row => {
+      if (row && row.id != null) {
+        customProjectMap.set(Number(row.id), row);
+      }
+    });
+  }
   const customLinesByEmployee = new Map();
   customLines.forEach(l => {
     if (!customLinesByEmployee.has(l.employeeId)) customLinesByEmployee.set(l.employeeId, []);
@@ -1321,14 +1806,21 @@ async function createChecksForPeriod(start, end, options = {}) {
      (used by /api/payroll/preview-checks)
   ──────────────────────────────────────────────── */
   if (!accessToken || !realmId) {
-    const drafts = await buildCheckDrafts(start, end, { excludeEmployeeIds, includeOvertime });
+    const drafts = await buildCheckDrafts(start, end, {
+      excludeEmployeeIds,
+      includeOvertime,
+      orgId
+    });
 
     drafts.forEach(draft => {
       const extras = customLinesByEmployee.get(draft.employee_id) || [];
       extras.forEach(line => {
+        const projectInfo = line.projectId ? customProjectMap.get(line.projectId) : null;
         draft.lines.push({
           project_id: line.projectId || `custom-${Date.now()}`,
-          project_name: line.description || '(Custom line)',
+          project_name: projectInfo?.name || line.description || '(Custom line)',
+          project_customer_name: projectInfo?.customer_name || null,
+          project_qbo_id: projectInfo?.qbo_id || null,
           project_hours: 0,
           project_pay: line.amount,
           is_custom: true,
@@ -1350,7 +1842,7 @@ async function createChecksForPeriod(start, end, options = {}) {
       draft.lines = draft.lines.map(line => ({
         ...line,
         description:
-          (overrideByLine.get(`${draft.employee_id}:${String(line.project_id)}`)?.description ||
+          ((line.is_custom ? null : overrideByLine.get(`${draft.employee_id}:${String(line.project_id)}`))?.description ||
             line.description_override ||
             buildLineDescription(
               effectiveLineTemplate,
@@ -1419,16 +1911,23 @@ async function createChecksForPeriod(start, end, options = {}) {
     return id;
   }
 
-  const drafts = await buildCheckDrafts(start, end, { excludeEmployeeIds, includeOvertime });
+  const drafts = await buildCheckDrafts(start, end, {
+    excludeEmployeeIds,
+    includeOvertime,
+    orgId
+  });
 
   // Attach any custom lines (UI-added)
   for (const draft of drafts) {
     const extras = customLinesByEmployee.get(draft.employee_id) || [];
     if (!extras.length) continue;
     extras.forEach(line => {
+      const projectInfo = line.projectId ? customProjectMap.get(line.projectId) : null;
       draft.lines.push({
         project_id: line.projectId || `custom-${Date.now()}`,
-        project_name: line.description || '(Custom line)',
+        project_name: projectInfo?.name || line.description || '(Custom line)',
+        project_customer_name: projectInfo?.customer_name || null,
+        project_qbo_id: projectInfo?.qbo_id || null,
         project_hours: 0,
         project_pay: line.amount,
         is_custom: true,
@@ -1449,12 +1948,14 @@ async function createChecksForPeriod(start, end, options = {}) {
 
   const results = [];
 
-  const ensurePayeePrintName = setPrintOnCheckName;
+  const ensurePayeePrintName = (payeeRef, desiredName) =>
+    setPrintOnCheckName(payeeRef, desiredName, orgId);
 
   // If we hit a "catastrophic" QBO error (network outage, 5xx, auth),
   // we stop sending further checks and just mark the remaining employees
   // as "not sent due to previous error".
   let fatalQboError = null;
+  let clearedTokens = false;
 
   /* ────────────────────────────────────────────────
      CREATE REAL CHECKS IN QUICKBOOKS
@@ -1506,21 +2007,21 @@ async function createChecksForPeriod(start, end, options = {}) {
 
     for (const line of draft.lines) {
       const lineKey = `${draft.employee_id}:${String(line.project_id)}`;
-      const lineOv = overrideByLine.get(lineKey);
-      const expenseNameForLine = lineOv?.expenseAccountName || effectiveExpenseName;
+      const lineOv = line.is_custom ? null : overrideByLine.get(lineKey);
+      const expenseNameForLine =
+        lineOv?.expenseAccountName || line.expense_account_name || effectiveExpenseName;
       const expenseIdForLine = await getExpenseAccountIdForName(expenseNameForLine);
       if (!expenseIdForLine) {
         lineErrors.push(`Expense account "${expenseNameForLine}" not found in QuickBooks.`);
         continue;
       }
-      const classNameForLine =
-        lineOv?.className ||
-        line.class_name ||
-        line.project_name_raw ||
-        line.project_name ||
-        null;
-      const classId = classNameForLine ? await getClassIdForName(classNameForLine) : null;
-      if (classNameForLine && !classId) {
+      const classNameForLine = lineOv?.className || line.class_name || null;
+      if (!classNameForLine) {
+        lineErrors.push('Class is required for this line.');
+        continue;
+      }
+      const classId = await getClassIdForName(classNameForLine);
+      if (!classId) {
         lineErrors.push(`Class "${classNameForLine}" not found in QuickBooks.`);
         continue;
       }
@@ -1694,6 +2195,15 @@ async function createChecksForPeriod(start, end, options = {}) {
       const isAuthOrRateLimit =
         status === 401 || status === 403 || status === 429;
 
+      if ((status === 401 || status === 403) && !clearedTokens) {
+        clearedTokens = true;
+        try {
+          await clearTokens(orgId);
+        } catch (clearErr) {
+          console.warn('[QBO] Failed to clear tokens after auth error:', clearErr.message || clearErr);
+        }
+      }
+
       if (isNetworkLevel || isServerError || isAuthOrRateLimit) {
         fatalQboError = friendly;
         // Note: we do NOT throw here; the loop will continue,
@@ -1720,6 +2230,8 @@ module.exports = {
   getAuthUrl,
   exchangeCodeForTokens,
   getAccessToken,
+  getRealmId,
+  clearTokens,
   syncVendors,
   syncProjects,
   createChecksForPeriod,
@@ -1727,6 +2239,7 @@ module.exports = {
   syncEmployeesFromQuickBooks,
   listPayrollAccounts,
   listClasses,
+  createEmployeeInQuickBooks,
   setPrintOnCheckName,
   ensureNameOnChecksColumns
 };

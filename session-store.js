@@ -3,6 +3,7 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const crypto = require('crypto');
+const { SESSION_ENCRYPTION_KEY, SESSION_SECRET } = require('./lib/config');
 
 module.exports = function createSQLiteStore(session, opts = {}) {
   const Store = session.Store;
@@ -25,9 +26,7 @@ module.exports = function createSQLiteStore(session, opts = {}) {
   });
 
   const deriveKey = () => {
-    const raw =
-      process.env.SESSION_ENCRYPTION_KEY ||
-      process.env.SESSION_SECRET;
+    const raw = SESSION_ENCRYPTION_KEY || SESSION_SECRET;
     if (!raw) return null;
     // Derive a 32-byte key
     return crypto.createHash('sha256').update(String(raw)).digest();

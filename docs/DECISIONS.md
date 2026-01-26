@@ -1,5 +1,7 @@
 # Decisions Log
 
+- 2026-01-24: Geofence enforcement is limited to kiosk clock-ins; timesheet creation checks the project geofence and flags session-level exceptions when outside; clock-out geofence checks are removed.
+- 2026-01-22: Accept sqlite3/node-gyp/tar audit findings as a build-time dependency-chain risk; keep sqlite3 for now, avoid npm install on production hosts when possible, and re-evaluate on upstream fixes or driver migration.
 - 2025-01-XX: Admin console access is only for designated admins.
 - 2025-01-XX: Super Admin can grant/revoke permissions and access toggles.
 - 2025-01-XX: Kiosk admin is a separate role; access can be desktop, kiosk, or both.

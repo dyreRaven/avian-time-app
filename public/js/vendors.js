@@ -82,14 +82,14 @@ function renderVendorsTable(filterTerm = '') {
     const tr = document.createElement('tr');
     const name = v.name || '';
 
-    const usesTimekeeping = !!v.uses_timekeeping;
+    const isForwarder = !!v.is_freight_forwarder;
 
 tr.innerHTML = `
   <td class="table-checkbox-col">
     <input
       type="checkbox"
       disabled
-      ${usesTimekeeping ? 'checked' : ''}
+      ${isForwarder ? 'checked' : ''}
     />
   </td>
   <td>${name}</td>
@@ -130,7 +130,6 @@ function openVendorModal(vendor) {
   const pinConfirmInput = document.getElementById('edit-vendor-pin-confirm');
   const pinStatusEl = document.getElementById('vendor-edit-pin-status');
   const forwarderCheckbox = document.getElementById('edit-vendor-is-freight-forwarder');
-  const usesTimekeepingCheckbox = document.getElementById('edit-vendor-uses-timekeeping');
 
   if (titleEl) {
     titleEl.textContent = `Vendor: ${vendor.name || ''}`;
@@ -142,15 +141,11 @@ function openVendorModal(vendor) {
     forwarderCheckbox.checked = !!vendor.is_freight_forwarder;
   }
 
-  if (usesTimekeepingCheckbox) {
-    usesTimekeepingCheckbox.checked = !!vendor.uses_timekeeping;
-  }
-
   // Reset PIN inputs + status each time
   if (pinInput) pinInput.value = '';
   if (pinConfirmInput) pinConfirmInput.value = '';
   if (pinStatusEl) {
-    pinStatusEl.textContent = vendor.pin
+    pinStatusEl.textContent = vendor.has_pin
       ? 'PIN is currently set for this vendor.'
       : 'No PIN set yet for this vendor.';
   }
@@ -176,7 +171,6 @@ async function saveVendorPinFromModal() {
   const pinConfirmInput = document.getElementById('edit-vendor-pin-confirm');
   const pinStatusEl = document.getElementById('vendor-edit-pin-status');
   const forwarderCheckbox = document.getElementById('edit-vendor-is-freight-forwarder');
-  const usesTimekeepingCheckbox = document.getElementById('edit-vendor-uses-timekeeping');
 
   if (!editingVendorId) {
     if (pinStatusEl) {
@@ -190,8 +184,8 @@ async function saveVendorPinFromModal() {
   const hasPinChange = !!(pin || pin2);
 
   if (hasPinChange) {
-    if (pin.length < 4) {
-      if (pinStatusEl) pinStatusEl.textContent = 'PIN must be at least 4 digits.';
+    if (!/^\d{4}$/.test(pin)) {
+      if (pinStatusEl) pinStatusEl.textContent = 'PIN must be exactly 4 digits.';
       return;
     }
 
@@ -202,8 +196,7 @@ async function saveVendorPinFromModal() {
   }
 
   const body = {
-    is_freight_forwarder: forwarderCheckbox && forwarderCheckbox.checked ? 1 : 0,
-    uses_timekeeping: usesTimekeepingCheckbox && usesTimekeepingCheckbox.checked ? 1 : 0
+    is_freight_forwarder: forwarderCheckbox && forwarderCheckbox.checked ? 1 : 0
   };
 
   if (hasPinChange) {
@@ -265,11 +258,9 @@ async function saveVendorGeneralSettings() {
 
   const nameInput = document.getElementById('edit-vendor-name');
   const forwarderCheckbox = document.getElementById('edit-vendor-is-freight-forwarder');
-  const usesTimekeepingCheckbox = document.getElementById('edit-vendor-uses-timekeeping');
 
   const body = {
-    is_freight_forwarder: forwarderCheckbox && forwarderCheckbox.checked ? 1 : 0,
-    uses_timekeeping: usesTimekeepingCheckbox && usesTimekeepingCheckbox.checked ? 1 : 0
+    is_freight_forwarder: forwarderCheckbox && forwarderCheckbox.checked ? 1 : 0
   };
 
   if (nameInput && nameInput.value.trim()) {

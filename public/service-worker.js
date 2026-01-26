@@ -1,18 +1,31 @@
 // public/service-worker.js
 
-const CACHE_NAME = 'avian-kiosk-cache-v1';
+const CACHE_NAME = 'avian-kiosk-cache-v2';
 
 // List of assets we want to cache for offline
 const OFFLINE_ASSETS = [
   '/',           // main app (optional)
   '/index.html', // main app shell (optional)
-  '/app.js',     // main app script (optional)
+  '/js/app.js',
+  '/js/app.js?v=reviewfix16',
   '/styles.css',
   '/kiosk',
   '/kiosk.html',
   '/kiosk.js',
-  '/manifest.json'
-  // Add icon paths here later if you have them, e.g. '/icons/avian-192.png'
+  '/kiosk-tablet.css',
+  '/kiosk-phone.css',
+  '/kiosk-admin.js',
+  '/kiosk-admin.js?v=20241211m',
+  '/kiosk-admin.css',
+  '/kiosk-admin.css?v=20241211m',
+  '/js/bcrypt.min.js',
+  '/js/offline-store.js',
+  '/js/notifications.js',
+  '/manifest.json',
+  '/images/logo.png',
+  '/images/back11.png',
+  '/icons/avian-192.png',
+  '/icons/avian-512.png'
 ];
 
 self.addEventListener('install', event => {
@@ -47,29 +60,92 @@ self.addEventListener('fetch', event => {
     return; // let the browser handle it normally
   }
 
+  if (request.method !== 'GET') {
+    return;
+  }
+
   // For navigation requests (user entering /kiosk, refreshing, etc),
-  // serve kiosk shell from cache when offline.
+  // serve cached shell immediately and update in the background.
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request).catch(() => {
-        // If network fails, show cached kiosk as fallback
-        return caches.match('/kiosk.html');
+      caches.match(request).then(cached => {
+        const fetchPromise = fetch(request)
+          .then(response => {
+            if (response && response.ok) {
+              const cloned = response.clone();
+              caches.open(CACHE_NAME).then(cache => cache.put(request, cloned));
+            }
+            return response;
+          })
+          .catch(() => cached || caches.match('/kiosk.html'));
+        return cached || fetchPromise;
       })
     );
     return;
   }
 
-  // For static assets (scripts, CSS, etc): cache-first strategy
+  // Stale-while-revalidate for static assets
   event.respondWith(
     caches.match(request).then(cached => {
-      if (cached) return cached;
-      return fetch(request).then(response => {
-        const cloned = response.clone();
-        caches.open(CACHE_NAME).then(cache => {
-          cache.put(request, cloned);
-        });
-        return response;
-      });
+      const fetchPromise = fetch(request)
+        .then(response => {
+          if (response && response.ok) {
+            const cloned = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(request, cloned));
+          }
+          return response;
+        })
+        .catch(() => cached);
+      return cached || fetchPromise;
+    })
+  );
+});
+
+self.addEventListener('push', event => {
+  let payload = {};
+  if (event.data) {
+    try {
+      payload = event.data.json();
+    } catch (err) {
+      payload = { body: event.data.text() };
+    }
+  }
+
+  const title = payload.title || 'Avian';
+  const options = {
+    body: payload.body || '',
+    data: { url: payload.url || '/' },
+    icon: '/icons/avian-192.png',
+    badge: '/icons/avian-192.png'
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const targetUrl = event.notification?.data?.url || '/';
+  const target = new URL(targetUrl, self.location.origin);
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      for (const client of list) {
+        try {
+          const current = new URL(client.url);
+          if (current.origin === target.origin && current.pathname === target.pathname && 'focus' in client) {
+            return client.focus();
+          }
+        } catch {
+          // ignore malformed URLs
+        }
+        if (client.url === target.href && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow(target.href);
+      }
+      return null;
     })
   );
 });

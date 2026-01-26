@@ -4,7 +4,7 @@ Reviewed `docs/REBUILD_SPEC.md` and aligned the build plan to the spec and reque
 
 ## Milestone Plan
 1. Foundations
-   - Repo scaffolding, env config, org/multi-tenant primitives, `org_settings` storage, baseline migrations/seeding.
+   - Repo scaffolding, env config, org/multi-tenant primitives, `org_settings` storage, baseline migrations (no dev seed; use bootstrap for first org).
 2. Auth/RBAC
    - Bootstrap (org + admin first/last name), login, org selection, session/CSRF, permission enforcement, admin/user management.
 3. Core data model + CRUD
@@ -159,3 +159,53 @@ Admin flow
 - Payroll preflight surfaces missing QBO links before create checks.
 - Kiosk worker cannot punch without active timesheet; admin flow to start day is clear.
 - Offline queues cover punches, PINs, time edits, shipment verify/comments, and settings changes.
+
+## QA + Rollout Plan
+### Test Plan (pre-release)
+- Auth/RBAC
+  - Bootstrap first org, then login and org selection (multi-org user).
+  - Verify kiosk-only admins redirect to kiosk and cannot access admin console.
+  - Verify CSRF token flow on state-changing requests.
+- Kiosk offline (core)
+  - Enroll kiosk with org enrollment code.
+  - Start day -> set active timesheet -> clock me in.
+  - Punches offline (with and without photos); confirm queue, idempotency, and sync on reconnect.
+  - PIN create/validate offline; ensure hash checks pass and syncs back.
+  - Offline conflicts for time edits with if_match_updated_at (expect 409 and manual reapply).
+- Timekeeping + exceptions
+  - Exceptions flagged per rules and grouped by category.
+  - Approvals required before payroll; approve all and individually; notes required only when rules apply.
+  - Auto clock-out: midnight, catch-up, daily_max, weekly_max; check org timezone boundaries.
+- Shipments
+  - Board/list/detail with status transitions and filters (tracking number search).
+  - Line-item storage location set and timeline entry on first storage set.
+  - Verification flow (kiosk admin) and report filters (last 30 days default).
+  - Documents upload/download/delete; verify permissions and 404 on missing files.
+- Payroll + QBO
+  - OAuth connect/disconnect; sync employees/vendors/projects/accounts/classes.
+  - Preflight -> create checks with idempotency; block when missing QBO links or approvals.
+  - Retry flows for partial failures; unpay behavior resets paid flags and paid_date.
+  - Name-on-checks sync: change name, verify QBO update, backoff retry, stop after 7 days.
+- Notifications
+  - In-app feed, mark-read, unread-only.
+  - Email and push (VAPID) preferences; test notification delivery.
+  - Scheduled reminders (shipments, time exceptions, payroll due, clock-out).
+- Retention/Backups
+  - Photo purge after 30 days; audit/notification/idempotency purge cadence.
+  - Daily backup contains DB + secure_uploads; monthly snapshot retained.
+  - Restore drill on staging with integrity check.
+
+### Migration Rehearsal (legacy -> rebuild)
+- N/A until legacy data exists.
+
+### Parallel Run
+- Operate legacy + rebuild for one payroll period.
+- Compare time entry totals, payroll totals, and QBO check outputs.
+- Validate shipments tracking, verification, and reports match legacy.
+
+### Cutover Checklist
+- Freeze legacy edits; take final backup.
+- Run final migration; validate counts and totals.
+- Enable rebuild production; verify QBO auth and sync status.
+- Communicate cutover to admins; disable legacy write access (read-only).
+- Monitor jobs and error logs for 48 hours.

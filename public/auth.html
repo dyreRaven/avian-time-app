@@ -72,22 +72,62 @@
     <span>Stay Signed In</span>
   </label>
 
+  <label class="checkbox-inline auth-remember">
+    <input type="checkbox" id="login-force-desktop" />
+    <span>Open the admin console on this device</span>
+  </label>
+
   <button type="submit" class="btn primary w-full">
     Sign in
   </button>
 </form>
 
 
-            <!-- Register form (hidden by default) -->
+            <!-- Bootstrap form (hidden by default) -->
             <form
-              id="register-form"
+              id="bootstrap-form"
               class="stack-vert hidden"
               autocomplete="on"
             >
               <label>
-                <span class="field-label">Email</span>
+                <span class="field-label">Organization name</span>
                 <input
-                  id="register-email"
+                  id="bootstrap-org-name"
+                  type="text"
+                  required
+                  autocomplete="organization"
+                />
+              </label>
+
+              <label>
+                <span class="field-label">Organization timezone</span>
+                <select id="bootstrap-org-timezone" required></select>
+              </label>
+
+              <label>
+                <span class="field-label">Admin first name</span>
+                <input
+                  id="bootstrap-admin-first-name"
+                  type="text"
+                  required
+                  autocomplete="given-name"
+                />
+              </label>
+
+              <label>
+                <span class="field-label">Admin last name</span>
+                <input
+                  id="bootstrap-admin-last-name"
+                  type="text"
+                  required
+                  autocomplete="family-name"
+                />
+              </label>
+
+              <label>
+                <span class="field-label">Admin email</span>
+                <input
+                  id="bootstrap-email"
                   type="email"
                   required
                   autocomplete="email"
@@ -97,10 +137,9 @@
               <label>
                 <span class="field-label">Password</span>
                 <input
-                  id="register-password"
+                  id="bootstrap-password"
                   type="password"
                   required
-                  minlength="6"
                   autocomplete="new-password"
                 />
               </label>
@@ -108,51 +147,33 @@
               <label>
                 <span class="field-label">Confirm password</span>
                 <input
-                  id="register-password-confirm"
+                  id="bootstrap-password-confirm"
                   type="password"
                   required
-                  minlength="6"
                   autocomplete="new-password"
                 />
               </label>
 
               <button type="submit" class="btn primary w-full">
-                Create account
+                Create company admin
               </button>
             </form>
 
             <p id="auth-message" class="message auth-message"></p>
 
-            <div id="register-confirm-modal" class="auth-confirm-modal hidden">
-  <div class="auth-confirm-title">We found an employee with this email</div>
-  <p id="confirm-employee-text" class="auth-confirm-text"></p>
-  <div class="auth-confirm-actions">
-    <button
-      id="confirm-employee-yes"
-      type="button"
-      class="btn primary btn-sm"
-    >
-      Yes, that’s me
-    </button>
-    <button
-      id="confirm-employee-no"
-      type="button"
-      class="btn secondary btn-sm"
-    >
-      No, that’s not me
-    </button>
-  </div>
-</div>
-
+            <div id="org-select" class="auth-org-select hidden">
+              <div class="auth-org-title">Select organization</div>
+              <div id="org-select-list" class="stack-vert"></div>
+            </div>
 
             <div class="auth-toggle">
-              <span id="auth-toggle-text">Don’t have an account?</span>
+              <span id="auth-toggle-text">First time here?</span>
               <button
                 id="auth-toggle-btn"
                 type="button"
                 class="btn tertiary"
               >
-                Create one
+                Create company admin
               </button>
             </div>
           </div>

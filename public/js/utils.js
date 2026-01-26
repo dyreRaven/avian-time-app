@@ -1,8 +1,51 @@
 
 /* ───────── 1. CORE HELPERS ───────── */
 
+const CSRF_TOKEN_KEY = 'avian_csrf_token_v1';
+let csrfToken = null;
+
+function loadCsrfToken() {
+  if (csrfToken) return csrfToken;
+  try {
+    const stored = localStorage.getItem(CSRF_TOKEN_KEY);
+    if (stored) csrfToken = stored;
+  } catch {
+    // ignore storage failures
+  }
+  return csrfToken;
+}
+
+function storeCsrfToken(token) {
+  if (!token) return;
+  csrfToken = token;
+  try {
+    localStorage.setItem(CSRF_TOKEN_KEY, token);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function getCsrfHeader() {
+  const token = loadCsrfToken();
+  if (!token) return {};
+  return { 'X-CSRF-Token': token };
+}
+
 async function fetchJSON(url, options = {}) {
-  const res = await fetch(url, options);
+  const opts = Object.assign({ credentials: 'same-origin' }, options);
+  const method = (opts.method || 'GET').toUpperCase();
+  const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+  const headers = new Headers(opts.headers || {});
+
+  const token = loadCsrfToken();
+  if (unsafe && token && !headers.get('X-CSRF-Token')) {
+    headers.set('X-CSRF-Token', token);
+  }
+  opts.headers = headers;
+
+  const res = await fetch(url, opts);
+  const nextToken = res.headers.get('X-CSRF-Token');
+  if (nextToken) storeCsrfToken(nextToken);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = data.error || data.message || 'Request failed';
@@ -60,6 +103,56 @@ function formatHoursMinutes(hours) {
 function formatMoney(value) {
   const num = Number(value) || 0;
   return '$' + num.toFixed(2);
+}
+
+function makeClientId(prefix = 'c') {
+  if (crypto && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return (
+    `${prefix}_` +
+    Date.now().toString(36) +
+    '_' +
+    Math.random().toString(36).slice(2)
+  );
+}
+
+const SETTINGS_QUEUE_KEY = 'avian_settings_update_queue_v1';
+
+function loadSettingsQueue() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSettingsQueue(queue) {
+  try {
+    localStorage.setItem(SETTINGS_QUEUE_KEY, JSON.stringify(queue || []));
+  } catch {
+    // ignore
+  }
+}
+
+function replaceSettingsQueueTypes(types, items) {
+  const typeSet = new Set(types || []);
+  const current = loadSettingsQueue();
+  const keep = current.filter(entry => entry && !typeSet.has(entry.type));
+  saveSettingsQueue(keep.concat(items || []));
+}
+
+function queueSettingsUpdate(type, payload) {
+  const next = [{
+    client_id: makeClientId('settings'),
+    type,
+    payload,
+    queued_at: new Date().toISOString()
+  }];
+  replaceSettingsQueueTypes([type], next);
 }
 
 function computeHoursFromDateTimes(startDate, startTime, endDate, endTime) {

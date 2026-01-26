@@ -14,8 +14,13 @@
 - GET  `/api/auth/me`
 - GET  `/api/auth/orgs`
 - POST `/api/auth/select-org`
+- POST `/api/auth/ui-mode`
 - POST `/api/auth/change-password`
+- GET  `/api/auth/users` [super admin]
 - POST `/api/auth/users` [super admin] (create user)
+- POST `/api/auth/users/:id/reset-password` [super admin]
+- POST `/api/auth/users/:id/disable` [super admin]
+- POST `/api/auth/users/:id/enable` [super admin]
 
 ## QuickBooks
 - GET  `/api/status`
@@ -36,25 +41,30 @@
 - POST `/api/employees/:id/pin` [view_payroll or kiosk device]
 - POST `/api/employees/:id/language` [kiosk device]
 - POST `/api/employees/:id/name-on-checks` [view_payroll or kiosk device]
+- GET  `/api/employees/:id/id-document` [view_payroll]
 - DELETE `/api/employees/:id/id-document` [view_payroll]
-- POST `/api/employees/:id/link-qbo` [view_payroll]
-- POST `/api/employees/:id/qbo-create` [view_payroll]
-- POST `/api/employees/:id/unlink-qbo` [view_payroll]
+- POST `/api/employees/:id/link-qbo` [view_payroll + super admin]
+- POST `/api/employees/:id/qbo-create` [view_payroll + super admin]
+- POST `/api/employees/:id/unlink-qbo` [view_payroll + super admin]
 - GET  `/api/kiosk/employees` [kiosk]
 - POST `/api/kiosk/employees` [kiosk admin]
 
 ## Permissions and Settings
+- GET  `/api/permission-templates` [super admin]
+- POST `/api/permission-templates` [super admin]
+- PUT  `/api/permission-templates/:id` [super admin]
+- DELETE `/api/permission-templates/:id` [super admin]
 - GET  `/api/settings` [view_payroll]
 - POST `/api/settings` [view_payroll]
 - GET  `/api/kiosk/settings` [kiosk]
 
 ## Vendors
-- GET  `/api/vendors?status=active|inactive` [view_payroll]
+- GET  `/api/vendors?status=active|inactive` [view_payroll or see_shipments]
 - POST `/api/vendors/:id` [view_payroll]
 - POST `/api/vendors/:id/pin` [view_payroll]
 
 ## Projects
-- GET  `/api/projects?status=active|inactive` [view_payroll]
+- GET  `/api/projects?status=active|inactive` [view_payroll or see_shipments]
 - POST `/api/projects` [view_payroll]
 - GET  `/api/kiosk/projects` [kiosk]
 
@@ -96,7 +106,7 @@
 - GET  `/api/payroll/account-options` [view_payroll]
 - GET  `/api/payroll/classes` [view_payroll]
 - GET  `/api/payroll/settings` [view_payroll]
-- POST `/api/payroll/settings` [view_payroll]
+- POST `/api/payroll/settings` [modify_payroll]
 - GET  `/api/payroll-summary` [view_payroll]
 - GET  `/api/payroll/time-entries` [view_payroll]
 - POST `/api/payroll/preflight-checks` [modify_payroll]

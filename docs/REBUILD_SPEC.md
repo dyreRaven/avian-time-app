@@ -18,18 +18,28 @@
 - Photos retained for 30 days only.
 - Employees cannot self-register. Only super admins can create accounts (bootstrap allowed).
 
-## Environment & Seeds
+## Environment
 - DB_PATH: SQLite file path for the rebuild DB (default `rebuild.db` in repo root).
-- Seed inputs (used by the dev seed script only): SEED_ORG_NAME, SEED_ORG_TIMEZONE, SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD, SEED_ADMIN_NAME, SEED_COMPANY_EMAIL.
-- Seed script runs only when SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD are provided; otherwise it exits without changes.
+- APP_TIMEZONE: server fallback timezone for app-level jobs (default America/Puerto_Rico).
+- PORT: server port (default 3000).
+- SESSION_SECRET: required in production (32+ chars) for sessions.
+- SESSION_ENCRYPTION_KEY: optional; used to encrypt sessions and QBO tokens at rest (falls back to SESSION_SECRET if unset).
+- COOKIE_SECURE: true/false to force secure cookies (default: true in prod).
+- COOKIE_SAMESITE: lax/strict/none (default: strict in prod, lax in dev).
+- ENABLE_IN_PROCESS_BACKUPS: true/false to run daily backups in the web process (default false).
+- QuickBooks: QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI (realm_id is stored per org after OAuth); optional QBO_API_BASE (defaults to production) and QBO_DEBUG (logs QBO queries in dev).
+- APNs: APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID.
+- There is no dev seed flow in the rebuild. Testing uses the production bootstrap flow.
 
 ## Definitions
 - Organization (org): tenant boundary. All data is scoped by org_id.
-- Orgs are created during bootstrap with name + timezone (timezone stored on `orgs`); org settings live in `org_settings`.
+- Orgs are created during bootstrap with name + timezone; orgs also carry status and timestamps. Org settings live in `org_settings`.
+- Org status values: active | suspended | archived (default active).
 - User: global account that can belong to multiple orgs via membership; active org is stored in the session.
 - Desktop Admin: has access to the admin console at /.
 - Kiosk Admin: has access to /kiosk-admin only.
 - Worker: timekeeping only in /kiosk.
+- UI mode: session flag (`desktop` | `kiosk`) that controls which UI a signed-in admin sees on a given device.
 
 ## Roles and Access
 ### Access Toggles and Membership Flags
@@ -37,6 +47,7 @@
 - kiosk_admin_access: can access kiosk admin dashboard.
 - worker_timekeeping: can clock in/out in kiosk.
 - is_super_admin: per-org membership flag (stored on user_orgs; grants/revokes permissions and manages org settings).
+- login_enabled: per-org membership flag (stored on user_orgs) that controls whether a super admin login can sign in.
 
 ### Permissions (legacy set)
 - see_shipments
@@ -47,8 +58,10 @@
 - modify_pay_rates
 
 ### Rules
-- Super Admin toggles these permissions per admin (no named role templates by default).
+- Super Admin toggles these permissions per admin; templates are optional starting points and do not auto-sync after apply.
 - Kiosk admin access is separate from desktop access.
+- Role templates are per-org presets for access + permissions; applying a template copies values and remains editable afterward.
+- Optional role_title can be stored per employee for labeling (e.g., Foreman, Superintendent).
 - Settings page is visible to desktop admins; access-control section is visible to super admins only.
 - All API endpoints are gated server-side by permissions.
 - view_payroll is read-only for payroll screens; modify_payroll is required to run checks or unpay.
@@ -64,9 +77,9 @@
 
 ## Route Gating
 - /auth: public; handles sign-in, bootstrap (first user only), and org selection.
-- /: requires desktop_access; non-desktop users stay on /auth.
+- /: requires desktop_access and ui_mode=desktop; if ui_mode=kiosk, redirect to /kiosk.
 - /kiosk: public shell; device must be enrolled to submit punches; worker PIN must have worker_timekeeping.
-- /kiosk-admin: requires kiosk_admin_access (PIN-gated on device).
+- /kiosk-admin: requires kiosk_admin_access (PIN-gated on device or session).
 - /auth/qbo: requires a super admin session with view_payroll; callback validates OAuth state.
 - /api/*: session + permissions or kiosk device secret as defined in API contracts; UI gating is not sufficient.
 
@@ -81,9 +94,13 @@
 - If a user belongs to multiple orgs, they pick the active org at login (org switcher in admin UI).
 - When multiple orgs exist, login returns the org list and requires selection before continuing.
 - Org selection sets the active org in session (via `/api/auth/select-org`).
-- Users can change password in Settings.
+- Only super admins have email/password logins; kiosk admins sign in on devices using their PIN.
+- Super admins can create logins for other super admins in Settings (requires linking to an active employee with desktop_access).
+- Super admins can reset passwords and disable/enable logins (login_enabled) for other super admins in Settings.
+- Users can change their own password in Settings.
 - Users can be linked to employees per org for permissions and kiosk identity.
 - Desktop access gates / (admin console); kiosk-only users are routed to /kiosk.
+- UI mode defaults to kiosk on tablets (touch + small viewport) and desktop on non-tablet devices; super admins can explicitly switch to desktop mode on a tablet.
 
 ## Admin Console
 ### Admin Console Shell: Navigation
@@ -132,12 +149,15 @@
 ### Employees
 - Table with search and active/inactive toggle.
 - Create/edit employee with: name, nickname, email, name_on_checks, rate, language (en/es/ht; default en), timekeeping access, desktop access, kiosk admin access, permission toggles.
+- Language is required for every employee; if missing/invalid, the UI defaults to English and shows an admin warning until corrected.
+- Employees list shows a missing-language count and a quick filter to view only employees with missing/invalid language.
 - Kiosk shipments access if enabled.
 - Rate changes require `modify_pay_rates` permission; kiosk rate unlock is PIN + timeout gated (10-minute window).
 - QBO linking and pending list: Sync Now pulls QBO employees into the list. Local-only employees (manual or kiosk-created) are flagged needs_qbo_sync and appear in a pending list (linking disabled unless QBO is connected).
 - Pending list shows the reason: missing IDs vs needs_qbo_sync (use the needs_qbo_sync flag).
 - Linking UI: searchable picker of synced QBO Employees/Vendors with manual ID entry fallback; suggested matches by name/email when available. If a manual ID is not found in the last sync list, show a warning but allow link. Optional "Create in QBO" creates the employee in QBO and links it.
 - Pending list actions: Link, Create in QBO, or Mark Inactive; list shows reason tags and last synced state.
+- QBO link/create/unlink actions are super admin only.
 - Create in QBO button is shown only after an employees Sync Now has completed; if duplicate matches are returned, show them inline and require the admin to link instead of create.
 - Create in QBO requires given_name + family_name; display_name/email optional. If a duplicate match is detected (email or exact name), return matches and require explicit linking instead of create.
 - Duplicate protection: if a QBO ID is already linked to another employee, block linking with a clear error that names the conflicting employee; admin must unlink first.
@@ -159,6 +179,7 @@
 - Kiosk admin rate edit: requires modify_pay_rates + PIN unlock; unlock is per-admin session and expires after 10 minutes of inactivity or sign-out.
 - ID document: store captured ID image (driver’s license or passport) with upload metadata; visible to desktop admins only.
 - ID images are retained until manually deleted (no auto-purge on deactivation).
+- Desktop admins can view ID images via `GET /api/employees/:id/id-document` (view_payroll only).
 
 ### Vendors
 - QBO-synced list with search and active toggle.
@@ -178,7 +199,7 @@
 - QBO sync updates only QBO-owned fields and preserves project_timezone + geofence edits.
 - Geofence is advisory only (flag violations, do not block punches).
 - Geofence validation: lat/lng must be provided together; if radius is blank, default to 120m (~400ft).
-- Geofence enforcement: only runs when a project has lat/lng/radius and GPS is available; violations create exception flags (clock-in/out outside geofence).
+- Geofence enforcement: runs on kiosk clock-ins and kiosk timesheet creation when a project has lat/lng/radius and GPS is available; violations create exception flags (clock-in outside geofence or kiosk outside geofence).
 
 ### Shipments
 - Board with status columns and drag/drop.
@@ -210,6 +231,7 @@
 - Filters by employee, project, date range.
 - Manual time entry create (single-day; start/end times required; hours computed from times) requires a change note.
 - Manual time entry edit requires a change note; edits recalc total_pay using the current employee rate.
+- All time entries must include start_time/end_time (HH:MM, org timezone). Punch-based entries must derive and persist these times (see docs/TIME_ENTRY_INTEGRITY.md).
 - Export CSV/PDF using current filters (default to today when empty).
 - CSV columns: Employee, Project, Start Date, End Date, Start Time, End Time, Hours, Total Pay, Paid, Paid Date, Geo Violation, Auto Clock-out.
 - PDF columns: Date, Time, Employee, Project, Hours, Paid.
@@ -243,7 +265,7 @@
 - Payroll is blocked until all time entries in the selected period are approved by a super admin (weekly approval requirement).
 - Create checks requires a valid preflight_id and must match the preflight payload (start/end + overrides/lines); reject if expired or mismatched.
 - Create checks validates that eligible time entries match the preflight snapshot; if changed, return a conflict and require a new preflight.
-- Create checks uses a DB lock + idempotency key and runs a backup before sending to QBO.
+- Create checks uses a DB lock + idempotency key and runs a backup before sending to QBO; if the backup fails or is skipped due to a lock, the run proceeds but returns a warning and logs PAYROLL_BACKUP_WARNING in payroll_audit_log.
 - Create checks always creates new checks (no merge into existing queued checks); include payroll_run_id in a QBO note/memo for reconciliation.
 - Successful checks mark time_entries paid and attach payroll_run_id (and payroll_check_id when available); failed employees remain unpaid and can be retried.
 - Historical backfill: only needed if importing legacy payroll runs/checks. Run `scripts/backfill-payroll-run-links.js --apply` once after the import to link paid time_entries to their payroll_run_id/payroll_check_id.
@@ -282,6 +304,7 @@
 - Clicking a card opens the shipment detail modal for full edit.
 - Delete action is a soft archive (is_archived=1, archived_at set); board/list exclude archived rows by default.
 - Status "Archived" is a normal status value for non-archived shipments; if status=Archived is selected, include archived rows (is_archived=1) and return archived shipments only.
+- Archive action sets status="Archived", is_archived=1, and appends a status/timeline entry.
 - Detail view shows overview, payments, timeline, documents, comments, and line item verification.
 - Detail fetch uses /api/shipments/:id (shipment + items; verification_json parsed to verification, or fallback to verified/notes).
 - Create requires title + project; default status Pre-Order; project/vendor name snapshot stored on the shipment.
@@ -322,7 +345,7 @@
   - Customs & Clearing Proof of Payment -> customs_paid.
   - Removing the proof prompts to mark unpaid; vendor paid stays manual.
 - Optional payment ledger entries (shipment_payments) support due/paid tracking per shipment.
-- Payments tab lists ledger entries and allows add-only via /api/shipments/:id/payments (no edit/delete in legacy).
+- Payments tab lists ledger entries and allows add-only via /api/shipments/:id/payments (no edit/delete in legacy); endpoints require view_payroll.
 - Ledger entries do not auto-update shipment paid flags/amounts; summary fields remain the canonical board/report values.
 - Ledger entries are admin-only and online-only (not queued for offline sync).
 
@@ -424,6 +447,7 @@
 - Shipment settings (default daily late fee: org_settings.storage_daily_late_fee_default; default is null/0 until set).
 - Notification settings.
 - Kiosk enrollment code (super admin only): view/copy/rotate; rotation affects new enrollments only and does not invalidate existing devices.
+- Enrollment code is stored in org_settings.kiosk_enrollment_code (6-digit numeric; normalize by stripping non-digits).
 - Org settings store access rules, exception rule toggles, and org profile fields (name/email); org timezone is stored on `orgs`.
 - Legacy settings workers_see_shipments/workers_see_time are removed; use permissions instead.
 
@@ -439,11 +463,11 @@
 - If photo is required and the camera is unavailable, block the punch and show an error.
 - Clock in/out uses a single action; mode is determined server-side by whether the employee already has an open punch.
 - Kiosk UI may call `/api/kiosk/open-punch` to set button state; if offline, default to clock-in.
-- Clock in/out requires an active kiosk timesheet for today on this device + project (set by kiosk admin). If missing, show an error and prompt for admin PIN; if the PIN is a kiosk admin, route to Start Day with an optional "clock me in" checkbox.
+- Clock in/out requires an active kiosk timesheet for the punch date/time on this device + project (set by kiosk admin). Offline punches sync using the original project and are accepted if a timesheet was active at the punch time; later project switches do not block sync. If no matching timesheet exists, show an error and prompt for admin PIN; if the PIN is a kiosk admin, route to Start Day with an optional "clock me in" checkbox.
 - Worker screen shows a prominent Active Project banner; when admins switch active timesheets, show a confirmation.
 - Punch payload includes client_id (idempotency), device_timestamp (device clock), optional lat/lng + photo, and device_id + device_secret.
-- Clock-in: create a time_punch, attach foreman-of-day if set, compute geofence distance and flag violations (never block); store photo (JPEG) as clock_in_photo_path when provided.
-- Clock-out: close the open punch, capture clock-out lat/lng, and create a time entry using the employee rate; duration rounds up to the next minute; project mismatch is flagged as an exception.
+- Clock-in: create a time_punch, attach foreman-of-day if set, compute geofence distance for kiosk clock-ins and flag violations (never block); store photo (JPEG) as clock_in_photo_path when provided.
+- Clock-out: close the open punch, capture clock-out lat/lng, and create a time entry using the employee rate; duration rounds up to the next minute; clock-out always uses the original punch project (no cross-project clock-out).
 - Offline queue with sync on reconnect; duplicate client_id returns alreadyProcessed without side effects.
 - Admin long-press entry to kiosk admin login.
 - Kiosk admin login uses the admin’s employee PIN and requires kiosk_admin_access.
@@ -451,8 +475,10 @@
 - Kiosk name/location are optional and can be set later by a super admin in the admin console.
 - The kiosk ID/device_id is shown only in the kiosk Settings screen for reference.
 - Enrollment is required to create a kiosk record; unknown device_id with no enrollment_code returns an error (no placeholder kiosk creation).
-- If device_secret mismatches for an enrolled device, the server returns the canonical device_secret for re-sync; enrollment_code is not required for refresh.
+- If device_secret is missing or mismatches for an enrolled device, the server returns 400/403 and requires re-enrollment with the org enrollment code (device_secret is never returned on mismatch).
+- Enrollment is blocked for orgs with status != active (return 403).
 - device_id is generated locally and reused; device_secret is returned by the server and stored on the device for offline auth.
+- Kiosk uses the org timezone returned by registration for all “today” calculations (timesheets, daily UI).
 - The kiosk can re-check-in using device_id + device_secret to refresh kiosk config and timesheets; enrollment code is only needed for first-time enrollment or to re-key the device.
 - device_id is globally unique; a device cannot be enrolled into multiple orgs.
 - Pending PIN updates queued when offline.
@@ -468,6 +494,7 @@
 ## Kiosk Admin
 ### Timesheets
 - Start new timesheet for device (select project); new timesheet becomes the active timesheet for new punches.
+- Starting a timesheet checks kiosk GPS against the project geofence when available; if outside, require confirmation and flag the session so all associated time entries show geofence exceptions.
 - Optional "clock me in now" on Start Day creates the timesheet and immediately clocks the admin in.
 - Multiple open timesheets can exist (one per project); starting a new one does not close earlier ones.
 - Admin can switch the active timesheet; switching only affects new punches.
@@ -526,6 +553,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Shipment reminders use shipment_notification_prefs filters (status/project/shipment), but deliveries still respect email/push toggles and category filters from notification_prefs.
 - Per-channel on/off toggles act as a global opt-out for that channel.
 - Store push subscriptions per user/device; allow revoke from Settings; browser permission required for push alerts.
+- GET /api/notifications/prefs returns push_public_key so clients can subscribe to push.
 - notification_deliveries logs per-channel attempts and errors.
 - Time notification event_types (time_filters_json): TIME_EXCEPTION_OPEN, TIME_EXCEPTION_REVIEWED, TIME_EXCEPTION_RESOLVED, TIME_ENTRY_MANUAL_CREATED, TIME_ENTRY_MANUAL_EDITED.
 - Payroll notification event_types (payroll_filters_json): PAYROLL_RUN_DUE, PAYROLL_RUN_STARTED, PAYROLL_RUN_SUCCESS, PAYROLL_RUN_PARTIAL, PAYROLL_RUN_FAILURE, PAYROLL_FATAL_ERROR, PAYROLL_QBO_ERROR, PAYROLL_UNPAY.
@@ -544,7 +572,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Auto clock-out thresholds (configurable per org; super admin can set or disable):
   - daily_max_hours (auto clock-out + discrepancy flag when exceeded).
   - weekly_max_hours (auto clock-out + discrepancy flag when exceeded).
-- Geofence clock-in/out mismatch (flag only; do not block punches).
+- Geofence clock-in mismatch and timesheet geofence mismatch (flag only; do not block punches).
 - Auto clock-out (midnight job + hourly catch-up).
 - Manual entry with no punches.
 - Manual vs punches mismatch (epsilon 0.10h).
@@ -566,7 +594,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 
 ## Time Exception Rules (Settings)
 - Stored in org_settings.time_exception_rules (JSON).
-- Toggle keys for each exception rule (missing_clock_out, long_shift, multi_day, crosses_midnight, no_project, project_mismatch, tiny_punch, geofence_clock_in, geofence_clock_out, auto_clock_out, manual_no_punches, manual_hours_mismatch, weekly_hours).
+- Toggle keys for each exception rule (missing_clock_out, long_shift, multi_day, crosses_midnight, no_project, project_mismatch, tiny_punch, geofence_clock_in, auto_clock_out, manual_no_punches, manual_hours_mismatch, weekly_hours).
 - weekly_hours_threshold: numeric hours for weekly discrepancy flag; null/0 disables.
 - auto_clockout_daily_max_hours: numeric hours for daily auto clock-out + discrepancy; null/0 disables.
 - auto_clockout_weekly_max_hours: numeric hours for weekly auto clock-out + discrepancy; null/0 disables.
@@ -589,8 +617,10 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Cache strategy: app shell + static assets with stale-while-revalidate; data caches include employees, projects, current timesheets, shipment summaries, last viewed shipment details.
 - Cache TTL: mark data stale after 24h; show "stale data" banner when rendering cached lists.
 - Offline indicator + pending-sync counter in kiosk/admin headers.
+- If an org is suspended, kiosks block once they can reach the server; fully offline devices may continue using cached data until they reconnect.
 - Queue storage: IndexedDB preferred; localStorage fallback for small queues.
 - Queue: punches, PIN updates, time edits, shipment verification, shipment comments, settings changes.
+- Offline storage requires IndexedDB on kiosk devices; if unavailable, block offline punches/PINs and show an error.
 - Background sync attempts on reconnect + periodic retry (30s); exponential backoff per item.
 - Idempotency: client_id per action; server dedupes using idempotency_keys (org_id + scope + client_id) and returns alreadyProcessed without side effects.
 - Conflict resolution: updates that include if_match_updated_at and are stale return 409 + current server snapshot; client logs conflict and prompts for manual reapply.
@@ -599,11 +629,12 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 ### Offline Queues (Rebuild)
 - Kiosk punches queue (`avian_kiosk_offline_punches_v1`): array of `{ client_id, employee_id, project_id, lat, lng, device_timestamp, photo_base64, device_id, device_secret, queued_at }` synced to `POST /api/kiosk/punch`.
 - Kiosk pending PIN queue (`avian_kiosk_pending_pins_v1`): array of `{ client_id, employee_id, pin, created_at, device_id, device_secret }` synced to `POST /api/employees/:id/pin` with `allowOverride=true` (PIN is 4-digit numeric; clear locally after success).
-- Kiosk time edit queue (`avian_kiosk_time_edit_queue_v1`): array of `{ client_id, time_entry_id, payload, queued_at, employee_id, device_id, device_secret }` synced to `POST /api/time-entries/:id` (payload matches the edit request; note required).
+- Kiosk time edit queue (`avian_kiosk_time_edit_queue_v1`): array of `{ client_id, time_entry_id, payload, queued_at, employee_id, device_id, device_secret }` synced to `POST /api/time-entries/:id` (payload matches the edit request; note required). If `time_entry_id` is blank, treat as a create and sync to `POST /api/time-entries`. `employee_id/device_id/device_secret` are included for kiosk-originated edits and may be omitted for session-based admin edits.
+- Kiosk time exception review queue (`avian_kiosk_time_review_queue_v1`): array of `{ client_id, exception_id, payload, queued_at, employee_id, device_id, device_secret }` synced to `POST /api/time-exceptions/:id/review` (payload matches the review request; note required).
 - Kiosk admin shipment verification queue (`avian_kiosk_verify_queue_v1`): array of `{ client_id, shipment_id, items: [ { shipment_item_id, verification } ], queued_at, employee_id, device_id, device_secret }` synced to `POST /api/shipments/:id/verify-items`.
 - Kiosk shipment comments queue (`avian_kiosk_shipment_comment_queue_v1`): array of `{ client_id, shipment_id, body, queued_at, employee_id, device_id, device_secret }` synced to `POST /api/shipments/:id/comments`.
 - Shipments admin update queue (`avian_shipments_update_queue`): array of `{ id, client_id, if_match_updated_at, payload, queued_at }` where `payload` matches `PUT /api/shipments/:id`; new shipment creation and document uploads are blocked while offline.
-- Settings changes queue (`avian_settings_update_queue_v1`): array of `{ client_id, payload, queued_at }` where payload matches `PUT /api/notifications/prefs` or `PUT /api/shipments/notifications`.
+- Settings changes queue (`avian_settings_update_queue_v1`): array of `{ client_id, type, payload, queued_at }` where `type` is `notifications_prefs` or `shipments_notifications` and payload matches the corresponding `PUT /api/notifications/prefs` or `PUT /api/shipments/notifications`.
 - Shipments board cache (`avian_shipments_board_cache`): `{ at, data }` snapshot used to render the board when offline.
 - Sync behavior: attempt on `online` plus a 30s retry loop; remove on success; keep on network/auth errors; drop on hard validation errors (example: missing timesheet) to avoid blocking the queue.
 
@@ -616,11 +647,11 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Store last sync timestamps per entity in org_settings (qbo_last_sync_employees_at, qbo_last_sync_vendors_at, qbo_last_sync_projects_at, qbo_last_sync_payroll_accounts_at).
 - Sync is idempotent and safe to repeat; no background auto-retry for sync jobs.
 - Sync operations are not atomic; partial updates can occur if a run fails mid-way (rerun to reconcile).
-- Sync endpoints should be single-flight per org; concurrent sync requests return 409 "Sync already in progress".
+- Sync endpoints should be single-flight per org (DB-backed lock); concurrent sync requests return 409 "Sync already in progress".
 - Error handling: if QBO returns 401/403, clear tokens and show disconnected; if 429 or 5xx, surface a retryable error and back off (example: 10s → 30s → 2m); honor Retry-After when present.
-- Employee sync: upsert by employee_qbo_id; updates name, email, active, and name_on_checks (QBO wins if its LastUpdatedTime is newer than local name_on_checks_updated_at/name_on_checks_qbo_updated_at); preserves rate, access flags, PIN, language, and worker_timekeeping; new QBO employees default to rate 0, worker_timekeeping=true, language=en.
-- Vendor sync: upsert by qbo_id; updates name + active; preserves freight_forwarder flag and PIN; local-only vendors untouched.
-- Project sync: upsert by qbo_id; updates name + customer_name + active; preserves geofence/timezone; QBO inactive or missing projects are set inactive.
+- Employee sync: upsert by employee_qbo_id; updates name, email, active, and name_on_checks (QBO wins if its LastUpdatedTime is newer than local name_on_checks_updated_at/name_on_checks_qbo_updated_at); preserves rate, access flags, PIN, language, and worker_timekeeping; new QBO employees default to rate 0, worker_timekeeping=true, language=en. Pulls active + inactive employees and paginates results.
+- Vendor sync: upsert by qbo_id; updates name + active; preserves freight_forwarder flag and PIN; local-only vendors untouched. Pulls active + inactive vendors and paginates results.
+- Project sync: upsert by qbo_id; updates name + customer_name + active; preserves geofence/timezone; QBO inactive or missing projects are set inactive. Pulls active + inactive customers/jobs and paginates results.
 - Payroll account/class sync: live fetch for dropdowns; no DB writes.
 - Create checks with per-employee error handling.
 - Name on checks updates with retry queue.
@@ -639,11 +670,12 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 
 ## Retention
 - Clock-in photos: 30 days (purge daily).
-- Audit logs (audit_log, time_exception_actions, payroll_audit_log): 1 year (configurable; purge monthly).
+- Audit logs (audit_log, time_exception_actions, payroll_audit_log): 1 year (configurable; purge daily).
 - In-app notifications + delivery logs: 90 days (configurable; purge monthly).
 - Idempotency keys: 30 days (purge weekly).
 - ID document images: retained until manually deleted; delete clears id_document_* fields even if the file is already missing.
 - Shipment documents: retained until manually deleted; archiving does not remove docs; missing files return 404 on download and can be removed via delete.
+- Retention windows are configurable via env: NOTIFICATION_RETENTION_DAYS, PHOTO_RETENTION_DAYS, AUDIT_LOG_RETENTION_DAYS, IDEMPOTENCY_RETENTION_DAYS.
 
 ## System Jobs
 - Auto clock-out at midnight with hourly catch-up.
@@ -651,10 +683,11 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
   - Runs at org-local midnight (orgs.timezone); catch-up runs hourly and on restart.
   - Closes open punches where clock_out_ts is null and clock_in_date is before today (org timezone).
   - If auto clock-out thresholds are set, also closes open punches that exceed daily_max_hours or push the employee over weekly_max_hours.
-  - Sets clock_out_ts to the job run time, auto_clock_out=1, auto_clock_out_reason = "midnight_auto" or "catch_up_auto", and clock_out_project_id = project_id.
-  - For threshold-based closes, auto_clock_out_reason = "daily_max" or "weekly_max".
+- For midnight/catch-up closes, sets clock_out_ts to org-local end-of-day (23:59:59) of the clock-in date to avoid cross-day entries; auto_clock_out=1, auto_clock_out_reason = "midnight_auto" or "catch_up_auto", and clock_out_project_id = project_id.
+- For threshold-based closes, clock_out_ts is the job run time and auto_clock_out_reason = "daily_max" or "weekly_max".
   - Creates a time_entry linked to the punch (time_entry_id), with start_date/end_date from clock_in/clock_out dates, hours rounded up to the next minute, and total_pay from the employee rate.
   - Leaves lat/lng empty for auto clock-out; exceptions will include the auto clock-out flag.
+  - Uses a per-org DB lock (auto_clockout_lock) with a short TTL to prevent concurrent runs across instances; the lock is refreshed during long runs and expires automatically if a job crashes.
 - Name on checks retry queue processor (QBO sync):
   - Retries failed name_on_checks updates to QBO for linked employees.
   - Backoff schedule per employee: 10m, 1h, 6h, 24h; stop after 7 days and surface as a warning in the employee profile.
@@ -664,14 +697,20 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
   - No background retry job; admin triggers retry from Payroll UI.
   - Retry uses the same start/end period and attaches to originalPayrollRunId.
   - Use fromAttemptId to auto-retry only failed employees from a prior attempt; otherwise pass onlyEmployeeIds manually.
+  - Retry preflight must match the failed-employee subset: when using fromAttemptId, the request must include onlyEmployeeIds matching the failed list (otherwise return 409 with the failed IDs).
   - Retries replace payroll_checks for the targeted employees and mark their time entries paid only on success.
   - If QBO auth fails (401/403), require reconnect before retry; if QBO is rate-limited or unavailable, show a retryable error and honor Retry-After when present.
 - Backups (optional):
   - Daily full backup (server scheduler or external cron); run an on-demand backup before payroll create checks.
   - Retention default: keep last 30 daily backups plus 12 monthly snapshots (configurable).
   - Include DB + upload storage (shipment documents, ID images, clock-in photos).
+  - Use SQLite backup API when available; otherwise fall back to VACUUM INTO. If both fail, the backup fails (no unsafe file copy).
+  - Backup failures are logged; payroll create-checks continues but returns a warning if the pre-check backup fails.
+  - Super admin can trigger a manual "Backup Now" from Settings (POST /api/admin/backup); it uses the same job lock and returns a lock-busy error if another backup is running.
   - Restore expectations: support a full restore into a new environment; restore is not partial per-tenant.
   - Verify backups monthly (test restore to a staging folder + integrity check).
+- Job locking (multi-instance safety):
+  - Scheduled jobs that can cause duplicate work (notifications, backups, name-on-checks retries) use a shared DB lock (job_locks) with TTL + refresh while running.
 
 ## Multi-Tenant
 - All data scoped by org_id.
@@ -707,7 +746,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Payroll.
 - Payroll Reports.
 - Shipment Verification Report.
-- Settings.
+- Settings (company info, access control, admin accounts, payroll rules, time exception rules).
 
 ### Kiosk Worker Screens (/kiosk)
 - Enrollment / device setup (enter enrollment code only; required if the device is not enrolled).

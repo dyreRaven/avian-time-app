@@ -1,5 +1,190 @@
 # Change Log
 
+- 2026-01-26: Added extra spacing beneath the admin header before the Timesheets content.
+- 2026-01-26: Unified timesheet toolbar/button corner radii to match the project card styling.
+- 2026-01-26: Moved the filter icon to sit before the date selector in the timesheet toolbar.
+- 2026-01-26: Moved the filter icon beside the date picker and placed the New Timesheet button in the toolbar actions.
+- 2026-01-26: Reverted the header/toolbar swap so the title sits above the date picker and the New Timesheet button returns to the header.
+- 2026-01-26: Added a dash between the timesheets title and date, and extended the underline to match the full heading width.
+- 2026-01-26: Swapped the positions of the New Timesheet button and the filter control.
+- 2026-01-26: Swapped the timesheets title/date line with the date picker pill placement.
+- 2026-01-26: Shifted the timesheet chevron further right by another half inch.
+- 2026-01-26: Polished the kiosk clock-in screen with a framed card, green header panel, and deeper clock-in button styling.
+- 2026-01-26: Shifted the timesheet chevron further right to align with the card edge.
+- 2026-01-26: Aligned the timesheet chevron with the metrics row instead of the card center.
+- 2026-01-26: Nudged the timesheet chevron upward to clear the time-range pill.
+- 2026-01-26: Extended the timesheet time-range pill further so it reaches the chevron edge.
+- 2026-01-26: Forced the timesheet time-range pill to expand fully under the chevron.
+- 2026-01-26: Widened the timesheet time-range pill to extend further under the chevron.
+- 2026-01-26: Removed the Today label/checkmark from the kiosk admin timesheets list.
+- 2026-01-26: Increased the timesheet card header height by expanding the column header padding.
+- 2026-01-26: Lightened the timesheet time-pill typography and nudged its text inset left.
+- 2026-01-26: Aligned timesheet project text to the pill edge and extended the time-range pill under the chevron.
+- 2026-01-26: Restored the timesheet time-range pill and aligned project text to the pill text inset.
+- 2026-01-26: Removed the timesheet search bar and online/synced pills, and restored the Filter button label in kiosk admin.
+- 2026-01-26: Increased the size and edge alignment of the timesheet detail chevron.
+- 2026-01-26: Centered the timesheet detail chevron on the right edge of each timesheet card.
+- 2026-01-26: Moved the timesheet detail chevron inline with the total entries metric.
+- 2026-01-26: Added the timesheet workers slide-up sheet and per-card detail arrow to view current workers.
+- 2026-01-26: Removed the per-timesheet workers icon button from kiosk admin cards.
+- 2026-01-26: Removed dash/chevron artifacts from kiosk admin timesheets and restored open punch/total entry metrics in the list.
+- 2026-01-26: Refined the kiosk admin Timesheets view to match the reference layout (hours/clock-ins columns, time-range status, calendar icon) and refreshed the bottom nav with icon pills.
+- 2026-01-26: Redirected kiosk-mode auth sign-ins directly to /kiosk to avoid bouncing back to the sign-in screen.
+- 2026-01-24: Matched the language pill background to the white input styling.
+- 2026-01-24: Lowered the kiosk form stack between the date header and clock-in button.
+- 2026-01-24: Unified kiosk clock-in typography to match the reference font style.
+- 2026-01-24: Swapped the clock-in ring to a soft warm gray palette.
+- 2026-01-24: Tuned the clock-in ring colors to a warmer sand/stone palette.
+- 2026-01-24: Increased the drop shadow depth beneath the kiosk clock-in button.
+- 2026-01-24: Added layered shadows to the kiosk clock-in button for a deeper 3D look.
+- 2026-01-24: Moved the kiosk clock-in button upward to align with the curve.
+- 2026-01-24: Swapped the kiosk clock-in background to latest.png.
+- 2026-01-24: Restyled the kiosk language controls into a single segmented toggle.
+- 2026-01-24: Warmed the kiosk white surfaces to better match the reference tone.
+- 2026-01-24: Brightened kiosk UI surfaces to a cleaner white.
+- 2026-01-24: Swapped the kiosk clock-in background to sp.png.
+- 2026-01-24: Restyled the kiosk clock-in action as the circular badge button.
+- 2026-01-24: Refreshed the kiosk background art asset.
+- 2026-01-24: Aligned the kiosk background art to the bottom and scaled it to fit width.
+- 2026-01-24: Updated timesheet card time pills to show start/end times or an Ongoing status.
+- 2026-01-24: Expanded the timesheet time pill to span the full card width.
+- 2026-01-24: Moved the timesheet time pill below the header row so it spans the card width.
+- 2026-01-24: Scaled the kiosk background art to fit the viewport dimensions.
+- 2026-01-24: Swapped the kiosk clock-in background to newart.png.
+- 2026-01-24: Nudged the kiosk clock-in button downward to align with the background curve.
+- 2026-01-24: Swapped the kiosk clock-in button and language pill positions.
+- 2026-01-24: Simplified geofence enforcement to kiosk clock-ins, added timesheet geofence confirmation with session-level flags, and captured GPS for kiosk admin punches.
+- 2026-01-24: Restored the person icon inside the kiosk employee dropdown.
+- 2026-01-24: Lifted the kiosk logo/date stack toward the top and refined the employee select pill styling.
+- 2026-01-24: Removed the kiosk clock-in content card background so content sits directly on the art.
+- 2026-01-24: Removed the glassmorphic kiosk panel treatment and aligned the clock-in select field with the reference pill style.
+- 2026-01-24: Removed the overlay tint on the kiosk clock-in background.
+- 2026-01-24: Set the kiosk clock-in background to the new art image.
+- 2026-01-24: Dropped the outer card wrapper from the kiosk admin Timesheets view to leave only page background + cards.
+- 2026-01-24: Lightened the kiosk admin background and timesheet card palette to better match the reference screen.
+- 2026-01-24: Further brightened kiosk admin backgrounds and card surfaces to reduce purple tint.
+- 2026-01-24: Moved the timesheet creator name under the project title in kiosk admin cards.
+- 2026-01-24: Prefixed the timesheet creator line with “Created by” in kiosk admin cards.
+- 2026-01-24: Reduced the timesheet column header height in kiosk admin cards.
+- 2026-01-24: Kept the “Entries today” header on one line in the timesheet columns.
+- 2026-01-24: Matched the kiosk admin background tint and timesheet card surfaces to the reference palette.
+- 2026-01-24: Updated kiosk admin timesheet cards to match the rounded, pill-accented reference styling.
+- 2026-01-24: Attached the timesheet column header styling to the first card for a single-panel look.
+- 2026-01-24: Refined kiosk admin Timesheets containers/backgrounds to match the reference layout.
+- 2026-01-24: Tweaked the kiosk admin Timesheets styling to better align with the reference layout.
+- 2026-01-24: Localized kiosk worker clock-in/out and PIN UI copy for English, Spanish, and Haitian Creole.
+- 2026-01-24: Wired the kiosk admin timesheets date picker and search field to filter the list.
+- 2026-01-24: Hid kiosk clocked-in status banner on name selection and added clock-out summary details (start/end/date/hours) after punching out.
+- 2026-01-24: Reset kiosk admin Timesheets styling to match the reference layout.
+- 2026-01-24: Made the kiosk clock-out button red when an employee is clocked in.
+- 2026-01-24: Kept the kiosk employee select icon visible after choosing a name.
+- 2026-01-24: Defaulted kiosk PIN fields to hidden until the eye toggle is pressed.
+- 2026-01-23: Restyled the kiosk admin Current Workers view to match the new layout reference.
+- 2026-01-23: Restyled the kiosk admin Timesheets view to match the new layout reference.
+- 2026-01-23: Split kiosk admin Timesheets and Current Workers into separate tabs.
+- 2026-01-23: Fixed the Current Timesheet header date to reflect the active timesheet date.
+- 2026-01-23: Trimmed kiosk PIN modal height on tablets to reduce bottom whitespace.
+- 2026-01-23: Moved timesheet instructions into a help popover tied to the date heading.
+- 2026-01-23: Swapped timesheet filter controls into a hamburger menu popover.
+- 2026-01-23: Restyled the kiosk admin PIN modal to match the clock-in PIN modal.
+- 2026-01-23: Increased the kiosk admin PIN modal height to avoid scrolling.
+- 2026-01-23: Moved the timesheet help icon to the leading edge of the heading.
+- 2026-01-23: Moved the kiosk admin online/synced pills under the timesheets list.
+- 2026-01-23: Swapped the timesheet filter menu icon to a funnel.
+- 2026-01-23: Moved the no-timesheets notice above the create controls and restyled it as a green banner.
+- 2026-01-23: Switched the kiosk admin status footer into two compact pills aligned left.
+- 2026-01-23: Moved the timesheet help prompt into a bottom-left Help? pill and pushed status pills to the bottom-right.
+- 2026-01-23: Expanded the timesheet help text to explain active timesheets.
+- 2026-01-23: Added guidance about using another tablet to set a different active project.
+- 2026-01-23: Fixed Current Workers date label to use the org timezone.
+- 2026-01-23: Synced kiosk admin timezone from the server to keep the Current Workers date accurate.
+- 2026-01-23: Simplified the timesheet filter to Active/All/Inactive and added the date header.
+- 2026-01-23: Switched the timesheet filter menu to quick-pick buttons.
+- 2026-01-23: Replaced the timesheet help popover with a full help modal section.
+- 2026-01-23: Corrected the help modal guidance about switching active projects.
+- 2026-01-23: Refined the help modal copy about clocking workers into another project.
+- 2026-01-23: Clarified the no-timesheets banner text with step-by-step guidance.
+- 2026-01-23: Added spacing between the project dropdown and create-timesheet action.
+- 2026-01-23: Promoted the project label in the timesheet create panel to a header style.
+- 2026-01-23: Moved the no-timesheets banner into the timesheet create panel above the project selector.
+- 2026-01-23: Added extra spacing below the project dropdown and create-timesheet button.
+- 2026-01-23: Matched the kiosk admin back button color to the active workers tag.
+- 2026-01-23: Increased spacing above the create-timesheet button and below the project dropdown.
+- 2026-01-23: Cleaned up kiosk admin timesheets layout (filters, status chips, and workers table styling).
+- 2026-01-23: Added kiosk clock-in header with brand + live date/time.
+- 2026-01-23: Scaled kiosk clock-in layout to fill more of the screen.
+- 2026-01-23: Increased kiosk clock-in spacing and lifted language pill position.
+- 2026-01-23: Increased header spacing and lifted kiosk language buttons higher.
+- 2026-01-23: Tightened the clock-in button-to-language spacing.
+- 2026-01-23: Lowered the kiosk logo/content stack without moving the language buttons.
+- 2026-01-23: Swapped kiosk header typography to Manrope.
+- 2026-01-23: Swapped kiosk diamond background to black diamond artwork.
+- 2026-01-23: Swapped kiosk diamond background to diamond2 artwork.
+- 2026-01-23: Reintroduced a glassmorphic panel for the kiosk logo + form area.
+- 2026-01-23: Updated kiosk background to the new diamondblack artwork.
+- 2026-01-23: Restored kiosk background to the original diamond.
+- 2026-01-23: Centered the kiosk glass panel vertically within the screen.
+- 2026-01-23: Added a person icon to the kiosk name dropdown and hid the employee label.
+- 2026-01-23: Added a clock icon to the kiosk clock-in button.
+- 2026-01-23: Moved the active project label below the clock-in button.
+- 2026-01-23: Moved kiosk language buttons into the glass panel.
+- 2026-01-23: Bolded the kiosk date/time and aligned updates to the minute.
+- 2026-01-23: Removed kiosk header text and enlarged the date/time display.
+- 2026-01-23: Updated org timezone to America/St_Thomas for kiosk timekeeping.
+- 2026-01-23: Set kiosk clock-in button to match the diamond teal.
+- 2026-01-23: Swapped kiosk background to back.jpg.
+- 2026-01-23: Swapped kiosk background to geo.jpg.
+- 2026-01-23: Replaced kiosk background with the updated back.jpg.
+- 2026-01-23: Restored kiosk background to the diamond.
+- 2026-01-23: Neutralized kiosk overlay tints for a cleaner white glass effect.
+- 2026-01-23: Cleaned up the kiosk PIN modal layout and fixed cancel behavior.
+- 2026-01-23: Stabilized kiosk PIN modal sizing for small screens.
+- 2026-01-23: Made the kiosk PIN modal glassmorphic with a lighter backdrop.
+- 2026-01-23: Showed the diamond background behind the PIN modal.
+- 2026-01-23: Left-aligned the PIN modal and restyled it with the core teal palette.
+- 2026-01-23: Centered the PIN modal within the screen.
+- 2026-01-23: Reduced kiosk PIN modal height and spacing for a tighter centered container.
+- 2026-01-23: Restyled the PIN modal back to white and improved keyboard-safe sizing.
+- 2026-01-23: Replaced the PIN show/hide text with an inline eye toggle icon.
+- 2026-01-23: Fixed PIN modal backdrop clicks so buttons don’t close the modal.
+- 2026-01-23: Prevented PIN modal clicks from bubbling to the backdrop.
+- 2026-01-23: Removed PIN modal backdrop click-to-close to avoid accidental dismissals.
+- 2026-01-23: Stabilized the PIN toggle so it keeps focus and doesn’t lock the modal.
+- 2026-01-23: Removed the PIN modal title text.
+- 2026-01-23: Increased PIN modal name size and spacing above the PIN input.
+- 2026-01-23: Reduced excess whitespace in the PIN modal.
+- 2026-01-23: Trimmed extra bottom padding in the PIN modal.
+- 2026-01-23: Removed remaining bottom padding in the PIN modal.
+- 2026-01-23: Reduced PIN modal bottom padding further.
+- 2026-01-23: Removed the "Ready to clock in" status message on employee selection.
+- 2026-01-23: Refreshed kiosk clock-in screen styling (palette, layout, and motion polish).
+- 2026-01-23: Fixed kiosk admin UI script parse error so the project dropdown and timesheet controls render.
+- 2026-01-23: Fixed kiosk admin init collision with utils.js CSRF token const so nav buttons respond.
+- 2026-01-23: Fixed Employees UI script load error caused by duplicate const declarations.
+- 2026-01-23: Populated start/end times for punch-based time entries (clock-out, auto clock-out, exception sync).
+- 2026-01-23: Added kiosk punch dedupe guard (reuse client_id + recent clock-out suppression).
+- 2026-01-23: Hardened kiosk punches (in-flight lock, intended-mode validation, server time for online punches).
+- 2026-01-23: Hardened upload path resolution to prevent path traversal for shipment/ID documents.
+- 2026-01-23: Fixed shipment detail "Edit" to open the edit modal instead of closing due to cleared state.
+- 2026-01-23: Enabled kiosk offline queue fallback to localStorage when IndexedDB is unavailable.
+- 2026-01-23: Added cached offline punch status to show clock-out state when offline.
+- 2026-01-23: Added TRUST_PROXY support so secure cookies work behind HTTPS proxies (ngrok).
+- 2026-01-22: Validated QuickBooks OAuth envs, removed unused QBO_REALM_ID config, and surfaced notification config status (APNs flagged unsupported).
+- 2026-01-22: Added auth rate limits, session regeneration, and CSRF token-only enforcement with client header handling.
+- 2026-01-22: Added restore script and README instructions for backup restores.
+- 2026-01-22: Pinned Node version and removed unused bcryptjs dependency.
+- 2026-01-22: Added placeholder lint/test scripts and documented dev scripts.
+- 2026-01-22: Moved session storage to a separate SQLite database (SESSION_DB_PATH).
+- 2026-01-22: Resolved DB_PATH and SESSION_DB_PATH to absolute paths in config.
+- 2026-01-22: Expanded .gitignore to exclude backups/uploads/DB artifacts.
+- 2026-01-22: Removed tracked backup/upload/DB artifacts from the git index.
+- 2026-01-22: Blocked payroll preflight when unresolved time exceptions exist.
+- 2026-01-22: Validated geofence ranges and persisted clock-out geofence violations on kiosk punch close.
+- 2026-01-22: Enforced consistent password minimums across bootstrap/change/create/reset and updated bootstrap-admin to create org + admin using required envs.
+- 2026-01-22: Deferred name-on-checks column helper until after migrations to avoid fresh-DB errors.
+- 2026-01-22: Hardened uploads with content sniffing, enforced attachment downloads, and hid payment documents for non-payroll users.
+- 2026-01-22: Allowed kiosk admin GET device auth to accept admin_id in query params.
+- 2026-01-22: Secured prod cookie defaults, added retention envs to .env, updated service worker/PWA icons, scheduled notification retention daily, and loaded .env in scripts.
 - 2025-01-XX: Created rebuild workspace and spec docs.
 - 2025-01-XX: Expanded rebuild spec with full scope and legacy defaults.
 - 2025-01-XX: Updated spec to match legacy permission toggles and multi-tenant plan.

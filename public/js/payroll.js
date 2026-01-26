@@ -55,6 +55,25 @@ function canModifyPayrollReports() {
   return perms.modify_payroll === true || perms.modify_payroll === 'true';
 }
 
+function applyPayrollSettingsAccess() {
+  const canEdit = canModifyPayrollReports();
+  const fieldIds = [
+    'payroll-bank-account',
+    'payroll-expense-account',
+    'payroll-memo-template',
+    'payroll-line-desc-template'
+  ];
+  fieldIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !canEdit;
+  });
+  const saveBtn = document.getElementById('payroll-settings-save');
+  if (saveBtn) {
+    saveBtn.disabled = !canEdit;
+    saveBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
+  }
+}
+
 function setReportsMessage(text, isError = false) {
   const msgEl = document.getElementById('reports-message');
   if (!msgEl) return;
@@ -119,20 +138,154 @@ function getProjectLabel(projectId, projectName, customerName) {
   return match.customer_name ? `${match.customer_name} : ${match.name}` : (match.name || '');
 }
 
-function setDefaultBillingCycleDates() {
+function parseYmd(value) {
+  if (!value) return null;
+  const str = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+  const [y, m, d] = str.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return { year: y, month: m, day: d };
+}
+
+function ymdToUtcDays({ year, month, day }) {
+  return Math.floor(Date.UTC(year, month - 1, day) / 86400000);
+}
+
+function utcDaysToYmd(days) {
+  const dt = new Date(days * 86400000);
+  return {
+    year: dt.getUTCFullYear(),
+    month: dt.getUTCMonth() + 1,
+    day: dt.getUTCDate()
+  };
+}
+
+function formatYmd({ year, month, day }) {
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `${year}-${mm}-${dd}`;
+}
+
+function getTodayPartsInTimeZone(timeZone) {
+  const now = new Date();
+  const dateStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(now);
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const weekdayStr = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short'
+  }).format(now);
+  const weekdayMap = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6
+  };
+  const weekday = weekdayMap[weekdayStr] ?? 0;
+  return { year, month, day, weekday };
+}
+
+function normalizePayrollRulesForDefaults(rawRules) {
+  const parsed = rawRules && typeof rawRules === 'object' ? rawRules : {};
+  const lengthRaw = Math.floor(Number(parsed.pay_period_length_days || 7));
+  const length = lengthRaw >= 1 && lengthRaw <= 31 ? lengthRaw : 7;
+  const weekdayRaw = Math.floor(Number(parsed.pay_period_start_weekday || 1));
+  const startWeekday = weekdayRaw >= 0 && weekdayRaw <= 6 ? weekdayRaw : 1;
+  const anchor = parseYmd(parsed.pay_period_anchor_date);
+  return {
+    pay_period_length_days: length,
+    pay_period_start_weekday: startWeekday,
+    pay_period_anchor_date: anchor
+  };
+}
+
+async function loadPayrollDefaultsContext() {
+  const existingRules = window.CURRENT_PAYROLL_RULES || null;
+  const existingTimezone = window.CURRENT_ORG_TIMEZONE || null;
+  if (existingRules && existingTimezone) {
+    return { rules: existingRules, timezone: existingTimezone };
+  }
+
+  const [meRes, settingsRes] = await Promise.all([
+    fetch('/api/auth/me'),
+    fetch('/api/settings')
+  ]);
+
+  let timezone = existingTimezone;
+  if (meRes.ok) {
+    const meData = await meRes.json();
+    timezone = meData?.org?.timezone || timezone;
+    window.CURRENT_ORG_TIMEZONE = timezone;
+    window.CURRENT_PAYROLL_RULES = window.CURRENT_PAYROLL_RULES || null;
+  }
+
+  if (settingsRes.ok) {
+    const settingsData = await settingsRes.json();
+    const rules = settingsData?.settings?.payroll_rules || null;
+    if (rules) {
+      window.CURRENT_PAYROLL_RULES = rules;
+    }
+  }
+
+  return {
+    rules: window.CURRENT_PAYROLL_RULES || null,
+    timezone: window.CURRENT_ORG_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone
+  };
+}
+
+async function setDefaultBillingCycleDates() {
   const startInput = document.getElementById('payroll-start');
   const endInput = document.getElementById('payroll-end');
-  const today = new Date();
-  const day = today.getDay(); // 0=Sun ... 5=Fri
-  const diffToLastFriday = (day + 7 - 5) % 7;
-  const startDate = new Date(today);
-  startDate.setDate(today.getDate() - diffToLastFriday);
-  const endDate = new Date(startDate);
-  endDate.setDate(startDate.getDate() + 6);
-  const fmt = d => d.toISOString().slice(0, 10);
-  if (startInput) startInput.value = fmt(startDate);
-  if (endInput) endInput.value = fmt(endDate);
-  currentPayrollRange = { start: fmt(startDate), end: fmt(endDate) };
+  if (!startInput || !endInput) return;
+  if (startInput.value && endInput.value) return;
+
+  try {
+    const context = await loadPayrollDefaultsContext();
+    const normalized = normalizePayrollRulesForDefaults(context.rules || {});
+    const tz = context.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const todayParts = getTodayPartsInTimeZone(tz);
+    const todayDays = ymdToUtcDays(todayParts);
+    const length = normalized.pay_period_length_days;
+
+    let startDays = todayDays;
+    if (length > 7 && normalized.pay_period_anchor_date) {
+      const anchorDays = ymdToUtcDays(normalized.pay_period_anchor_date);
+      const diff = todayDays - anchorDays;
+      const periods = Math.floor(diff / length);
+      startDays = anchorDays + periods * length;
+    } else {
+      const diff = (todayParts.weekday - normalized.pay_period_start_weekday + 7) % 7;
+      startDays = todayDays - diff;
+    }
+
+    const endDays = startDays + length - 1;
+    const start = formatYmd(utcDaysToYmd(startDays));
+    const end = formatYmd(utcDaysToYmd(endDays));
+
+    startInput.value = start;
+    endInput.value = end;
+    currentPayrollRange = { start, end };
+  } catch (err) {
+    console.warn('Failed to compute payroll default dates, falling back.', err);
+    const today = new Date();
+    const day = today.getDay();
+    const diffToLastFriday = (day + 7 - 5) % 7;
+    const startDate = new Date(today);
+    startDate.setDate(today.getDate() - diffToLastFriday);
+    const endDate = new Date(startDate);
+    endDate.setDate(startDate.getDate() + 6);
+    const fmt = d => d.toISOString().slice(0, 10);
+    startInput.value = fmt(startDate);
+    endInput.value = fmt(endDate);
+    currentPayrollRange = { start: fmt(startDate), end: fmt(endDate) };
+  }
 }
 
 function validatePayrollDates(start, end) {
@@ -174,7 +327,7 @@ async function runPayrollPreflightWithConfirm(payload, options) {
     showPayrollLoading();
     const res = await fetch('/api/payroll/preflight-checks', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
       body: JSON.stringify({ ...payload, previewOnly: true })
     });
     preflightData = await res.json();
@@ -335,6 +488,10 @@ async function loadPayrollSettings() {
 }
 
 async function savePayrollSettings() {
+  if (!canModifyPayrollReports()) {
+    alert('You do not have permission to modify payroll settings.');
+    return;
+  }
   const bankSelect = document.getElementById('payroll-bank-account');
   const expenseSelect = document.getElementById('payroll-expense-account');
   const memoInput = document.getElementById('payroll-memo-template');
@@ -348,7 +505,7 @@ async function savePayrollSettings() {
   };
   const res = await fetch('/api/payroll/settings', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
     body: JSON.stringify(payload)
   });
   const data = await res.json();
@@ -564,7 +721,7 @@ function bindInlineTimeEntryEditor() {
       try {
         const res = await fetch(`/api/time-entries/${entryId}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
           body: JSON.stringify({
             employee_id: empId,
             project_id: projId,
@@ -1139,7 +1296,7 @@ async function createChecksForCurrentRange() {
         amount: Number(l.amount),
         expenseAccountName: l.expenseAccountName || null,
         className: l.className || null,
-        projectId: l.id
+        projectId: l.projectId || null
       }))
   );
   const unchecked = Array.from(document.querySelectorAll('.payroll-send-checkbox'))
@@ -1268,7 +1425,7 @@ async function createChecksForCurrentRange() {
       showPayrollLoading();
       res = await fetch('/api/payroll/create-checks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
         body: JSON.stringify(createPayload)
       });
       data = await res.json();
@@ -1318,6 +1475,7 @@ async function createChecksForCurrentRange() {
     lastPayrollRunStatus = data.status || null;
     lastPayrollRunType = runType;
     lastPayrollAdjustmentReason = adjustmentReason;
+    const backupWarnings = Array.isArray(data.warnings) ? data.warnings : [];
     if (!data.ok) {
       let msg = data.error || data.reason || 'Unknown error creating checks.';
       if (data.fatal_qbo_error) {
@@ -1326,6 +1484,9 @@ async function createChecksForCurrentRange() {
       if (Array.isArray(data.results) && data.results.length) {
         const failed = data.results.filter(r => r && r.ok === false);
         if (failed.length) msg += '\n\nFailed:\n' + failed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
+      }
+      if (backupWarnings.length) {
+        msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
       }
       alert('Could not create checks:\n\n' + msg);
       if (retryBtn) retryBtn.disabled = !(data.results || []).some(r => r && r.ok === false);
@@ -1342,6 +1503,9 @@ async function createChecksForCurrentRange() {
     if (failed.length) msg += '\n\nFailed:\n' + failed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
     if (warnings.length) {
       msg += '\n\nDiscrepancies:\n' + warnings.map(w => `• ${w.employee} – ${w.message}`).join('\n');
+    }
+    if (backupWarnings.length) {
+      msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
     }
     if (data.fatal_qbo_error) {
       msg += `\n\nFatal QuickBooks error (run stopped early):\n${data.fatal_qbo_error}`;
@@ -1442,7 +1606,7 @@ async function retryFailedChecksForCurrentRun() {
       showPayrollLoading();
       res = await fetch('/api/payroll/create-checks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
         body: JSON.stringify(createPayload)
       });
       data = await res.json();
@@ -1493,6 +1657,7 @@ async function retryFailedChecksForCurrentRun() {
     lastPayrollRunStatus = data.status || null;
     lastPayrollRunType = runType;
     lastPayrollAdjustmentReason = adjustmentReason;
+    const backupWarnings = Array.isArray(data.warnings) ? data.warnings : [];
     if (!data.ok) {
       let msg = data.error || data.reason || 'Unknown error.';
       if (data.fatal_qbo_error) {
@@ -1501,6 +1666,9 @@ async function retryFailedChecksForCurrentRun() {
       if (Array.isArray(data.results) && data.results.length) {
         const stillFailed = data.results.filter(r => r && r.ok === false);
         if (stillFailed.length) msg += '\n\nStill failing:\n' + stillFailed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
+      }
+      if (backupWarnings.length) {
+        msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
       }
       alert('Could not retry checks:\n\n' + msg);
       if (retryBtn) retryBtn.disabled = !(data.results || []).some(r => r && r.ok === false);
@@ -1517,6 +1685,9 @@ async function retryFailedChecksForCurrentRun() {
     if (failedAgain.length) msg += '\n\nStill failing:\n' + failedAgain.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
     if (warnings.length) {
       msg += '\n\nDiscrepancies:\n' + warnings.map(w => `• ${w.employee} – ${w.message}`).join('\n');
+    }
+    if (backupWarnings.length) {
+      msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
     }
     if (data.fatal_qbo_error) {
       msg += `\n\nFatal QuickBooks error (run stopped early):\n${data.fatal_qbo_error}`;
@@ -1552,7 +1723,7 @@ function setupPayrollActions() {
       try {
         const res = await fetch('/api/payroll/unpay', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
           body: JSON.stringify({ payrollRunId, employeeId: empId, reason })
         });
         const data = await res.json();
@@ -1588,6 +1759,7 @@ function initPayrollUiTab() {
   }
   setDefaultBillingCycleDates();
   loadPayrollSettings();
+  applyPayrollSettingsAccess();
   setupPayrollActions();
 }
 

@@ -33,12 +33,20 @@
       </div>
 
       <div class="form-field">
+        <label for="edit-employee-role-title">Role title (optional)</label>
+        <input id="edit-employee-role-title" type="text" />
+      </div>
+
+      <div class="form-field">
         <label for="edit-employee-language">Preferred language</label>
         <select id="edit-employee-language">
           <option value="en">English</option>
           <option value="es">Spanish</option>
           <option value="ht">Haitian Creole</option>
         </select>
+        <div id="employee-language-warning" class="pill pill-warn hidden">
+          Language missing — defaulting to English
+        </div>
       </div>
 
       <div class="form-field">
@@ -50,37 +58,73 @@
         <label for="edit-employee-rate">Hourly Rate</label>
         <input id="edit-employee-rate" type="number" min="0" step="0.01" />
       </div>
+
+      <div class="form-field">
+        <label for="edit-employee-template">Role template (optional)</label>
+        <select id="edit-employee-template"></select>
+      </div>
     </div>
 
     <!-- ACCESS -->
-   <div class="modal-section">
-  <h2>Access</h2>
-  <div class="two-col">
-    <label class="checkbox-inline">
-      <input
-        type="checkbox"
-        id="edit-employee-uses-timekeeping"
-      />
-      Timekeeping Access
-    </label>
+    <div class="modal-section">
+      <h2>Access</h2>
+      <div class="two-col">
+        <label class="checkbox-inline">
+          <input
+            type="checkbox"
+            id="edit-employee-worker-timekeeping"
+          />
+          Worker timekeeping
+        </label>
 
-    <label class="checkbox-inline">
-      <input
-        id="edit-employee-is-admin"
-        type="checkbox"
-      />
-      Admin Access
-    </label>
+        <label class="checkbox-inline">
+          <input
+            id="edit-employee-desktop-access"
+            type="checkbox"
+          />
+          Desktop admin access
+        </label>
 
-    <label class="checkbox-inline">
-      <input
-        id="edit-employee-can-view-shipments"
-        type="checkbox"
-      />
-      Can view Shipments in kiosk admin
-    </label>
-  </div>
-</div>
+        <label class="checkbox-inline">
+          <input
+            id="edit-employee-kiosk-admin-access"
+            type="checkbox"
+          />
+          Kiosk admin access
+        </label>
+      </div>
+    </div>
+
+    <!-- PERMISSIONS -->
+    <div class="modal-section">
+      <h2>Permissions</h2>
+      <div class="two-col">
+        <label class="checkbox-inline">
+          <input id="edit-employee-perm-see-shipments" type="checkbox" />
+          See shipments
+        </label>
+        <label class="checkbox-inline">
+          <input id="edit-employee-perm-modify-time" type="checkbox" />
+          Modify/approve/reject time
+        </label>
+        <label class="checkbox-inline">
+          <input id="edit-employee-perm-view-time-reports" type="checkbox" />
+          View time reports
+        </label>
+        <label class="checkbox-inline">
+          <input id="edit-employee-perm-view-payroll" type="checkbox" />
+          View payroll info
+        </label>
+        <label class="checkbox-inline">
+          <input id="edit-employee-perm-modify-payroll" type="checkbox" />
+          Modify payroll
+        </label>
+        <label class="checkbox-inline">
+          <input id="edit-employee-perm-modify-pay-rates" type="checkbox" />
+          Modify pay rates
+        </label>
+      </div>
+    </div>
 
 
 <!-- TIME EXCEPTION REVIEW MODAL -->
@@ -132,8 +176,8 @@
 
     <div class="form-field">
       <label for="te-review-note">Notes</label>
-      <textarea id="te-review-note" rows="3" placeholder="Required when rejecting or modifying"></textarea>
-      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when rejecting or modifying an exception.</p>
+      <textarea id="te-review-note" rows="3" placeholder="Required when approving, rejecting, or modifying"></textarea>
+      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when approving, rejecting, or modifying an exception.</p>
     </div>
 
     <p id="te-review-message" class="message"></p>
@@ -223,9 +267,14 @@
   <div class="modal-card modal-card-wide">
     <div class="modal-header">
       <h3 id="shipment-detail-title">Shipment</h3>
-      <button id="shipment-detail-close" class="icon-button" type="button" aria-label="Close shipment details">
-        ×
-      </button>
+      <div class="modal-header-actions">
+        <button id="shipment-detail-edit" class="btn secondary btn-sm" type="button">
+          Edit
+        </button>
+        <button id="shipment-detail-close" class="icon-button" type="button" aria-label="Close shipment details">
+          ×
+        </button>
+      </div>
     </div>
 
     <div class="ship-detail-tabs" style="display:flex; gap:8px; margin-bottom:10px;">
@@ -321,16 +370,6 @@
         </label>
       </div>
 
-      <div class="form-field checkbox-field">
-        <label>
-          <input
-            id="edit-vendor-uses-timekeeping"
-            type="checkbox"
-          />
-          Uses timekeeping (can clock in)
-        </label>
-      </div>
-
     </div>
 
     <p id="vendor-edit-pin-status" class="message"></p>
@@ -391,7 +430,7 @@
       </div>
 
       <div class="form-field">
-        <label for="project-edit-timezone">Time zone</label>
+        <label for="project-edit-timezone">Time zone (leave blank for org default)</label>
         <select id="project-edit-timezone">
           <option value="">(select time zone)</option>
           <option value="America/Puerto_Rico">AST (America/Puerto_Rico)</option>
@@ -572,6 +611,7 @@
     <!-- 🌟 SINGLE FORM STARTS HERE -->
     <form id="shipment-create-form">
       <input type="hidden" id="shipment-id" />
+      <input type="hidden" id="shipment-updated-at" />
 
       <div class="shipment-modal-body">
         <div id="shipment-form" class="shipment-form-grid">
@@ -969,6 +1009,16 @@
   <div class="shipment-items-footer">
     <span>Items total:</span>
     <span id="shipment-items-total-display">$0.00</span>
+  </div>
+  <div class="shipment-items-footer shipment-items-override">
+    <label for="shipment-total-price-override">Total price (override)</label>
+    <input
+      type="number"
+      id="shipment-total-price-override"
+      min="0"
+      step="0.01"
+      placeholder="Use items total"
+    />
   </div>
 
   <div

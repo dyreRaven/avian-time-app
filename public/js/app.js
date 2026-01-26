@@ -61,6 +61,12 @@ function setupSidebarNavigation() {
         initTimeExceptionsIfNeeded();
       }
 
+      if (sectionKey === 'notifications') {
+        if (typeof window.initNotificationsSection === 'function') {
+          window.initNotificationsSection();
+        }
+      }
+
       // Layout debug for the active section
       debugSectionLayout(sectionKey);
     });
@@ -99,6 +105,7 @@ function debugSectionLayout(sectionKey) {
 async function checkStatus() {
   try {
     const data = await fetchJSON('/api/status');
+    window.QBO_STATUS = data;
     const el = document.getElementById('qb-status');
     if (data.qbConnected) {
       el.textContent = '🔗 Connected to QuickBooks. Click “Connect” to refresh authorization.';
@@ -202,7 +209,10 @@ async function backgroundSyncPayrollAccounts() {
   window.__payrollAccountsSynced = true;
 
   try {
-    await fetch('/api/sync/payroll-accounts', { method: 'POST' });
+    await fetch('/api/sync/payroll-accounts', {
+      method: 'POST',
+      headers: getCsrfHeader()
+    });
     // If payroll settings loader is available, refresh options
     if (typeof loadPayrollSettings === 'function') {
       await loadPayrollSettings();
@@ -210,6 +220,27 @@ async function backgroundSyncPayrollAccounts() {
   } catch (err) {
     console.warn('[PAYROLL] Background payroll account sync failed:', err);
   }
+}
+
+const qboSyncBackoff = window.QBO_SYNC_BACKOFF || {};
+window.QBO_SYNC_BACKOFF = qboSyncBackoff;
+
+function resetQboSyncBackoff(route) {
+  if (!route) return;
+  delete qboSyncBackoff[route];
+}
+
+function computeQboSyncBackoffSeconds(route, retryAfterHeader) {
+  if (!route) return 0;
+  const existing = qboSyncBackoff[route] || { count: 0 };
+  const schedule = [10, 30, 120];
+  const fallbackSeconds = schedule[Math.min(existing.count, schedule.length - 1)];
+  const retryAfterSeconds = Number.isFinite(Number(retryAfterHeader))
+    ? Math.max(0, Number(retryAfterHeader))
+    : 0;
+  const seconds = retryAfterSeconds || fallbackSeconds;
+  qboSyncBackoff[route] = { count: existing.count + 1, until: Date.now() + seconds * 1000 };
+  return seconds;
 }
 
 
@@ -220,6 +251,7 @@ async function syncRoute(route, onSuccess) {
   const projectsBtn = document.getElementById('sync-projects');
   const accountsBtn = document.getElementById('sync-accounts');
   const connectBtn  = document.getElementById('connect');
+  let delayUnlockMs = 0;
 
   // ✅ include employeesBtn here
   const allButtons = [employeesBtn, vendorsBtn, projectsBtn, accountsBtn, connectBtn].filter(Boolean);
@@ -238,8 +270,26 @@ async function syncRoute(route, onSuccess) {
       btn.disabled = true;
     });
 
-    const data = await fetchJSON(route, { method: 'POST' });
-    alert(data.message || 'Sync complete.');
+    const res = await fetch(route, {
+      method: 'POST',
+      headers: getCsrfHeader()
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data && data.retryable) {
+        const retryAfter = res.headers.get('Retry-After');
+        const backoffSeconds = computeQboSyncBackoffSeconds(route, retryAfter);
+        delayUnlockMs = backoffSeconds * 1000;
+        const msg = data.error || data.message || 'QuickBooks sync is temporarily unavailable.';
+        throw new Error(`${msg} Please retry in ${backoffSeconds} seconds.`);
+      }
+      const msg = data.error || data.message || 'Sync failed.';
+      throw new Error(msg);
+    }
+    resetQboSyncBackoff(route);
+    const fallbackMessage =
+      typeof data.count === 'number' ? `Synced ${data.count} record(s).` : 'Sync complete.';
+    alert(data.message || fallbackMessage);
 
     // After syncing from QuickBooks, reload what depends on it
     if (route === '/api/sync/vendors' || route === '/api/sync/employees') {
@@ -265,9 +315,17 @@ async function syncRoute(route, onSuccess) {
     if (indicator) {
       indicator.style.display = 'none';
     }
-    allButtons.forEach(btn => {
-      btn.disabled = false;
-    });
+    if (delayUnlockMs > 0) {
+      setTimeout(() => {
+        allButtons.forEach(btn => {
+          btn.disabled = false;
+        });
+      }, delayUnlockMs);
+    } else {
+      allButtons.forEach(btn => {
+        btn.disabled = false;
+      });
+    }
   }
 }
 
@@ -279,6 +337,7 @@ function updateManualTimeHoursPreview() {
   const endTimeInput   = document.getElementById('te-end-time');
   const hoursInput     = document.getElementById('te-hours');
   const noteInput      = document.getElementById('te-note');
+  const updatedAtInput = document.getElementById('te-updated-at');
   const origBlock      = document.getElementById('te-original');
   const origDateEl     = document.getElementById('te-original-date');
   const origProjEl     = document.getElementById('te-original-project');
@@ -320,8 +379,8 @@ async function loadTimeEntriesTable(filters = {}) {
   const heading = document.getElementById('time-entries-heading');
   if (!tbody) return;
 
-  // columns: Entry ID, Employee, Project, Date, Hours, Pay, Paid?, Paid on
-  tbody.innerHTML = '<tr><td colspan="8">Loading...</td></tr>';
+  // columns: Entry ID, Employee, Project, Date, Hours, Pay, Paid?, Paid on, Approval
+  tbody.innerHTML = '<tr><td colspan="9">Loading...</td></tr>';
 
   const hasFilters = !!(
     filters.start ||
@@ -350,7 +409,7 @@ async function loadTimeEntriesTable(filters = {}) {
 
     if (!entries.length) {
       tbody.innerHTML =
-        '<tr><td colspan="8">(no time entries for this selection)</td></tr>';
+        '<tr><td colspan="9">(no time entries for this selection)</td></tr>';
       return;
     }
 
@@ -391,6 +450,29 @@ async function loadTimeEntriesTable(filters = {}) {
 
       const paidDateLabel = e.paid_date ? formatDateUS(e.paid_date) : '';
 
+      const approvalStatus =
+        String(e.approval_status || '').toLowerCase() === 'approved'
+          ? 'Approved'
+          : 'Pending';
+      const approvedBy =
+        e.approved_by_name ||
+        (e.approved_by_employee_id ? `#${e.approved_by_employee_id}` : '—');
+      const approvedAt = e.approved_at ? formatDateTimeLocal(e.approved_at) : '';
+      const canApprove = !!window.CURRENT_IS_SUPER_ADMIN;
+      let approvalHtml = `<div>${approvalStatus}</div>`;
+      if (approvalStatus === 'Approved') {
+        approvalHtml += `<div class="text-xs text-gray-600">by ${escapeHTML(approvedBy)}</div>`;
+        if (approvedAt) {
+          approvalHtml += `<div class="text-xs text-gray-600">${escapeHTML(approvedAt)}</div>`;
+        }
+      } else if (canApprove) {
+        approvalHtml += `
+          <button class="btn primary btn-xs te-approve-btn" data-approve-id="${e.id}">
+            Approve
+          </button>
+        `;
+      }
+
       // ─────────────────────────────────────────────
       // BUILD THE TABLE ROW
       // ─────────────────────────────────────────────
@@ -403,6 +485,7 @@ async function loadTimeEntriesTable(filters = {}) {
         <td>$${Number(e.total_pay || 0).toFixed(2)}</td>
         <td>${paidLabel}</td>
         <td>${paidDateLabel}</td>
+        <td>${approvalHtml}</td>
       `;
 
       // store raw values on the row for editing
@@ -414,7 +497,8 @@ async function loadTimeEntriesTable(filters = {}) {
       tr.dataset.endDate    = e.end_date || '';
       tr.dataset.hours      = e.hours != null ? String(e.hours) : '';
       tr.dataset.startTime  = e.start_time || '';
-tr.dataset.endTime    = e.end_time || '';
+      tr.dataset.endTime    = e.end_time || '';
+      tr.dataset.updatedAt  = e.updated_at || '';
 
       // clicking a row loads it into the form for editing
       tr.addEventListener('click', () => {
@@ -424,11 +508,103 @@ tr.dataset.endTime    = e.end_time || '';
       tbody.appendChild(tr);
     });
 
+    tbody.querySelectorAll('.te-approve-btn').forEach(btn => {
+      btn.addEventListener('click', handleTimeEntryApproveClick);
+    });
+
   } catch (err) {
     console.error('Error loading time entries:', err.message);
     tbody.innerHTML =
-      '<tr><td colspan="8">Error loading time entries</td></tr>';
+      '<tr><td colspan="9">Error loading time entries</td></tr>';
   }
+}
+
+async function handleTimeEntryApproveClick(evt) {
+  evt.stopPropagation();
+  const btn = evt.currentTarget;
+  const id = btn?.getAttribute('data-approve-id');
+  if (!id) return;
+
+  const row = btn.closest('tr');
+  const updatedAt = row?.dataset?.updatedAt || '';
+
+  const noteInput = window.prompt(
+    'Add a note if needed (required for discrepancies or manual edits). Leave blank for clean entries.'
+  );
+  if (noteInput === null) return;
+  const note = noteInput.trim();
+
+  try {
+    const payload = {};
+    if (note) payload.note = note;
+    if (updatedAt) payload.if_match_updated_at = updatedAt;
+    await fetchJSON(`/api/time-entries/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const filters = getTimeEntryFiltersFromUi();
+    if (hasActiveTimeEntryFilters(filters)) {
+      await loadTimeEntriesTable(filters);
+    } else {
+      await loadTimeEntriesTable();
+    }
+  } catch (err) {
+    window.alert(err?.message || 'Failed to approve time entry.');
+  }
+}
+
+async function approveAllTimeEntries() {
+  if (!window.CURRENT_IS_SUPER_ADMIN) {
+    window.alert('Super admin access required.');
+    return;
+  }
+
+  const filters = getTimeEntryFiltersFromUi();
+  const today = new Date().toISOString().slice(0, 10);
+  const start = filters.start || today;
+  const end = filters.end || start;
+
+  const confirmed = window.confirm(
+    `Approve all clean entries from ${start} to ${end}? Entries requiring a note will be skipped.`
+  );
+  if (!confirmed) return;
+
+  try {
+    const payload = {
+      start,
+      end
+    };
+    if (filters.employee_id) payload.employee_id = filters.employee_id;
+    if (filters.project_id) payload.project_id = filters.project_id;
+
+    const resp = await fetchJSON('/api/time-entries/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const approvedCount = resp?.approved_count || 0;
+    const skippedCount = Array.isArray(resp?.skipped) ? resp.skipped.length : 0;
+    window.alert(
+      `Approved ${approvedCount} entries. Skipped ${skippedCount} entries that require a note.`
+    );
+
+    if (hasActiveTimeEntryFilters(filters)) {
+      await loadTimeEntriesTable(filters);
+    } else {
+      await loadTimeEntriesTable();
+    }
+  } catch (err) {
+    window.alert(err?.message || 'Bulk approve failed.');
+  }
+}
+
+function applyTimeEntryApprovalAccess() {
+  const approveAllBtn = document.getElementById('te-approve-all');
+  if (!approveAllBtn) return;
+  approveAllBtn.style.display = window.CURRENT_IS_SUPER_ADMIN ? 'inline-flex' : 'none';
 }
 
 function getTimeEntryFiltersFromUi() {
@@ -509,10 +685,12 @@ async function loadTimeEntryIntoFormFromRow(row) {
   const endTimeInput   = document.getElementById('te-end-time');
   const hoursInput     = document.getElementById('te-hours');
   const noteInput      = document.getElementById('te-note');
+  const updatedAtInput = document.getElementById('te-updated-at');
   const msgEl          = document.getElementById('time-entry-message');
 
 
   if (idInput) idInput.value = row.dataset.entryId || '';
+  if (updatedAtInput) updatedAtInput.value = row.dataset.updatedAt || '';
 
   if (employeeSelect && row.dataset.employeeId) {
     employeeSelect.value = String(row.dataset.employeeId);
@@ -611,6 +789,89 @@ async function loadOpenPunches() {
   }
 }
 
+// Offline queue for time entry edits.
+const TIME_EDIT_QUEUE_KEY = 'avian_kiosk_time_edit_queue_v1';
+
+function loadTimeEditQueue() {
+  try {
+    const raw = localStorage.getItem(TIME_EDIT_QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTimeEditQueue(queue) {
+  try {
+    localStorage.setItem(TIME_EDIT_QUEUE_KEY, JSON.stringify(queue || []));
+  } catch {
+    // ignore
+  }
+}
+
+function queueTimeEdit(entry) {
+  const q = loadTimeEditQueue();
+  const timeEntryId = entry && entry.time_entry_id ? String(entry.time_entry_id) : '';
+  const filtered = timeEntryId
+    ? q.filter(item => String(item.time_entry_id || '') !== timeEntryId)
+    : q;
+  filtered.push(entry);
+  saveTimeEditQueue(filtered);
+}
+
+function isTimeEditConnectionIssue(err) {
+  const msg = err && err.message ? String(err.message) : '';
+  return !navigator.onLine || /network|failed to fetch|offline/i.test(msg);
+}
+
+async function syncTimeEditQueue() {
+  if (!navigator.onLine) return;
+  const q = loadTimeEditQueue();
+  if (!q.length) return;
+
+  const remaining = [];
+
+  for (const entry of q) {
+    if (!entry || !entry.payload) continue;
+    const url = entry.time_entry_id
+      ? `/api/time-entries/${encodeURIComponent(entry.time_entry_id)}`
+      : '/api/time-entries';
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+        body: JSON.stringify(entry.payload)
+      });
+
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          remaining.push(entry);
+          break;
+        }
+        if (res.status >= 500) {
+          remaining.push(entry);
+          break;
+        }
+        if (res.status === 409) {
+          remaining.push(entry);
+          break;
+        }
+        // Drop hard validation errors so the queue doesn't block.
+        continue;
+      }
+    } catch (err) {
+      if (isTimeEditConnectionIssue(err)) {
+        remaining.push(entry);
+        break;
+      }
+    }
+  }
+
+  saveTimeEditQueue(remaining);
+}
+
 async function saveTimeEntry() {
   const idInput        = document.getElementById('te-id');
   const employeeSelect = document.getElementById('te-employee');
@@ -619,6 +880,8 @@ async function saveTimeEntry() {
   const hoursInput     = document.getElementById('te-hours');
   const startTimeInput = document.getElementById('te-start-time');
   const endTimeInput   = document.getElementById('te-end-time');
+  const noteInput      = document.getElementById('te-note');
+  const updatedAtInput = document.getElementById('te-updated-at');
   const msgEl          = document.getElementById('time-entry-message');
 
   // Basic field values
@@ -663,9 +926,11 @@ async function saveTimeEntry() {
     msgEl.style.color = 'black';
   }
 
-  if (isEdit && !change_note.trim()) {
+  if (!change_note.trim()) {
     if (msgEl) {
-      msgEl.textContent = 'A note is required when editing an entry.';
+      msgEl.textContent = isEdit
+        ? 'A note is required when editing an entry.'
+        : 'A note is required when creating a manual entry.';
       msgEl.style.color = 'red';
     }
     return;
@@ -679,14 +944,31 @@ async function saveTimeEntry() {
     start_time,
     end_time,
     hours,
-    change_note: isEdit ? `${new Date().toISOString()} - ${change_note.trim()}` : undefined,
-    change_recorded_at: isEdit ? new Date().toISOString() : undefined,
-    change_recorded_by: isEdit ? 'Web admin' : undefined
+    note: change_note.trim(),
+    client_id: makeClientId(isEdit ? 'time_edit' : 'time_create')
   };
+  if (isEdit && updatedAtInput && updatedAtInput.value) {
+    payload.if_match_updated_at = updatedAtInput.value;
+  }
 
   let url = '/api/time-entries';
   if (isEdit) {
     url = `/api/time-entries/${encodeURIComponent(idInput.value)}`;
+  }
+
+  if (!navigator.onLine) {
+    queueTimeEdit({
+      client_id: payload.client_id,
+      time_entry_id: isEdit ? idInput.value : null,
+      payload,
+      queued_at: new Date().toISOString()
+    });
+    if (msgEl) {
+      msgEl.textContent = 'Saved offline — will sync when back online.';
+      msgEl.style.color = '#b45309';
+    }
+    resetTimeEntryFormToNewMode();
+    return;
   }
 
   try {
@@ -717,6 +999,20 @@ async function saveTimeEntry() {
     }
   } catch (err) {
     console.error('Error saving time entry:', err);
+    if (isTimeEditConnectionIssue(err)) {
+      queueTimeEdit({
+        client_id: payload.client_id,
+        time_entry_id: isEdit ? idInput.value : null,
+        payload,
+        queued_at: new Date().toISOString()
+      });
+      if (msgEl) {
+        msgEl.textContent = 'Saved offline — will sync when back online.';
+        msgEl.style.color = '#b45309';
+      }
+      resetTimeEntryFormToNewMode();
+      return;
+    }
     if (msgEl) {
       msgEl.textContent = 'Error saving time entry: ' + err.message;
       msgEl.style.color = 'red';
@@ -747,6 +1043,7 @@ function resetTimeEntryFormToNewMode() {
   if (endTimeInput)   endTimeInput.value = '';
   if (hoursInput)     hoursInput.value = '';
   if (noteInput)      noteInput.value = '';
+  if (updatedAtInput) updatedAtInput.value = '';
   if (origBlock)      origBlock.classList.add('hidden');
 
   if (msgEl) {
@@ -1007,7 +1304,9 @@ function handleTimeExceptionActionChange() {
   if (!reviewAction) return;
 
   const needNote =
-    reviewAction.value === 'modify' || reviewAction.value === 'reject';
+    reviewAction.value === 'approve' ||
+    reviewAction.value === 'modify' ||
+    reviewAction.value === 'reject';
   if (note) note.required = needNote;
   if (noteHelp) noteHelp.classList.toggle('hidden', !needNote);
   if (newBlock) newBlock.classList.toggle('hidden', reviewAction.value !== 'modify');
@@ -1421,9 +1720,10 @@ async function submitTimeExceptionReview() {
     if (!confirmed) return;
   }
 
-  if ((action === 'modify' || action === 'reject') && !note) {
+  if ((action === 'approve' || action === 'modify' || action === 'reject') && !note) {
     if (msgEl) {
-      msgEl.textContent = 'A note is required when rejecting or modifying an exception.';
+      msgEl.textContent =
+        'A note is required when approving, rejecting, or modifying an exception.';
       msgEl.style.color = 'red';
     }
     return;
@@ -1766,8 +2066,8 @@ async function ensureTimeExceptionModalReady() {
     </div>
     <div class="form-field te-review-notes">
       <label for="te-review-note">Notes</label>
-      <textarea id="te-review-note" rows="3" placeholder="Required when rejecting or modifying"></textarea>
-      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when rejecting or modifying an exception.</p>
+      <textarea id="te-review-note" rows="3" placeholder="Required when approving, rejecting, or modifying"></textarea>
+      <p id="te-review-note-help" class="text-sm text-gray-600 hidden">Required when approving, rejecting, or modifying an exception.</p>
     </div>
     <p id="te-review-message" class="message"></p>
     <div class="te-review-actions">
@@ -1959,14 +2259,29 @@ if (connectBtn) {
   const settingsFields = {
     company_name: document.getElementById('settings-company-name'),
     company_email: document.getElementById('settings-company-email'),
-    workers_see_shipments: document.getElementById('settings-workers-see-shipments'),
-    workers_see_time: document.getElementById('settings-workers-see-time'),
-    daily_fee: document.getElementById('settings-daily-fee'),
-    kiosk_require_photo: document.getElementById('settings-kiosk-require-photo')
+    storage_daily_late_fee_default: document.getElementById('settings-storage-daily-fee'),
+    clock_in_photo_required: document.getElementById('settings-clock-in-photo-required')
+  };
+  const payrollRuleFields = {
+    pay_period_length_days: document.getElementById('settings-pay-period-length'),
+    pay_period_start_weekday: document.getElementById('settings-pay-period-weekday'),
+    pay_period_anchor_date: document.getElementById('settings-pay-period-anchor'),
+    overtime_enabled: document.getElementById('settings-overtime-enabled'),
+    overtime_daily_threshold_hours: document.getElementById('settings-overtime-daily-threshold'),
+    overtime_weekly_threshold_hours: document.getElementById('settings-overtime-weekly-threshold'),
+    overtime_multiplier: document.getElementById('settings-overtime-multiplier'),
+    double_time_enabled: document.getElementById('settings-doubletime-enabled'),
+    double_time_daily_threshold_hours: document.getElementById('settings-doubletime-daily-threshold'),
+    double_time_multiplier: document.getElementById('settings-doubletime-multiplier')
   };
   const exceptionRuleCheckboxes = Array.from(
     document.querySelectorAll('[data-exception-rule]')
   );
+  const exceptionRuleFields = {
+    weekly_hours_threshold: document.getElementById('settings-weekly-hours-threshold'),
+    auto_clockout_daily_max_hours: document.getElementById('settings-auto-clockout-daily-max'),
+    auto_clockout_weekly_max_hours: document.getElementById('settings-auto-clockout-weekly-max')
+  };
   const passwordFields = {
     current: document.getElementById('settings-password-current'),
     next: document.getElementById('settings-password-new'),
@@ -1974,11 +2289,452 @@ if (connectBtn) {
   };
   const passwordSaveBtn = document.getElementById('settings-password-save');
   const passwordStatus = document.getElementById('settings-password-status');
+  const backupCard = document.getElementById('settings-backup-card');
+  const backupBtn = document.getElementById('settings-backup-now');
+  const backupStatus = document.getElementById('settings-backup-status');
+  const adminUsersCard = document.getElementById('settings-admin-users-card');
+  const adminUsersBody = document.getElementById('settings-admin-users-body');
+  const adminUserEmployee = document.getElementById('settings-admin-user-employee');
+  const adminUserEmail = document.getElementById('settings-admin-user-email');
+  const adminUserPassword = document.getElementById('settings-admin-user-password');
+  const adminUserPasswordConfirm = document.getElementById('settings-admin-user-password-confirm');
+  const adminUserCreateBtn = document.getElementById('settings-admin-user-create');
+  const adminUserStatus = document.getElementById('settings-admin-user-status');
+  const roleTemplatesCard = document.getElementById('settings-role-templates-card');
+  const roleTemplatesBody = document.getElementById('settings-role-templates-body');
+  const templateNameInput = document.getElementById('settings-template-name');
+  const templateRoleTitleInput = document.getElementById('settings-template-role-title');
+  const templateAccessWorker = document.getElementById('settings-template-worker-timekeeping');
+  const templateAccessDesktop = document.getElementById('settings-template-desktop-access');
+  const templateAccessKiosk = document.getElementById('settings-template-kiosk-admin-access');
+  const templatePermSeeShipments = document.getElementById('settings-template-perm-see-shipments');
+  const templatePermModifyTime = document.getElementById('settings-template-perm-modify-time');
+  const templatePermViewTime = document.getElementById('settings-template-perm-view-time-reports');
+  const templatePermViewPayroll = document.getElementById('settings-template-perm-view-payroll');
+  const templatePermModifyPayroll = document.getElementById('settings-template-perm-modify-payroll');
+  const templatePermModifyRates = document.getElementById('settings-template-perm-modify-pay-rates');
+  const templateSaveBtn = document.getElementById('settings-template-save');
+  const templateClearBtn = document.getElementById('settings-template-clear');
+  const templateDeleteBtn = document.getElementById('settings-template-delete');
+  const templateStatus = document.getElementById('settings-template-status');
+  let editingTemplateId = null;
+  let permissionTemplates = [];
 
   function setPasswordStatus(text, color) {
     if (!passwordStatus) return;
     passwordStatus.textContent = text || '';
     passwordStatus.style.color = color || '';
+  }
+
+  function setBackupStatus(text, color) {
+    if (!backupStatus) return;
+    backupStatus.textContent = text || '';
+    backupStatus.style.color = color || '';
+  }
+
+  function setAdminUserStatus(text, color) {
+    if (!adminUserStatus) return;
+    adminUserStatus.textContent = text || '';
+    adminUserStatus.style.color = color || '';
+  }
+
+  function applyBackupCardVisibility() {
+    if (!backupCard) return;
+    if (window.CURRENT_IS_SUPER_ADMIN) {
+      backupCard.classList.remove('hidden');
+    } else {
+      backupCard.classList.add('hidden');
+    }
+  }
+
+  function applyAdminUsersVisibility() {
+    if (!adminUsersCard) return;
+    if (window.CURRENT_IS_SUPER_ADMIN) {
+      adminUsersCard.classList.remove('hidden');
+    } else {
+      adminUsersCard.classList.add('hidden');
+    }
+  }
+
+  function applyRoleTemplatesVisibility() {
+    if (!roleTemplatesCard) return;
+    if (window.CURRENT_IS_SUPER_ADMIN) {
+      roleTemplatesCard.classList.remove('hidden');
+    } else {
+      roleTemplatesCard.classList.add('hidden');
+    }
+  }
+
+  function setTemplateStatus(text, color) {
+    if (!templateStatus) return;
+    templateStatus.textContent = text || '';
+    templateStatus.style.color = color || '';
+  }
+
+  function clearTemplateForm() {
+    editingTemplateId = null;
+    if (templateNameInput) templateNameInput.value = '';
+    if (templateRoleTitleInput) templateRoleTitleInput.value = '';
+    if (templateAccessWorker) templateAccessWorker.checked = false;
+    if (templateAccessDesktop) templateAccessDesktop.checked = false;
+    if (templateAccessKiosk) templateAccessKiosk.checked = false;
+    if (templatePermSeeShipments) templatePermSeeShipments.checked = false;
+    if (templatePermModifyTime) templatePermModifyTime.checked = false;
+    if (templatePermViewTime) templatePermViewTime.checked = false;
+    if (templatePermViewPayroll) templatePermViewPayroll.checked = false;
+    if (templatePermModifyPayroll) templatePermModifyPayroll.checked = false;
+    if (templatePermModifyRates) templatePermModifyRates.checked = false;
+    if (templateDeleteBtn) templateDeleteBtn.disabled = true;
+    if (templateSaveBtn) templateSaveBtn.textContent = 'Save template';
+  }
+
+  function collectTemplatePayload() {
+    const name = templateNameInput ? templateNameInput.value.trim() : '';
+    if (!name) {
+      throw new Error('Template name is required.');
+    }
+    return {
+      name,
+      role_title: templateRoleTitleInput ? templateRoleTitleInput.value.trim() || null : null,
+      access: {
+        worker_timekeeping: !!templateAccessWorker?.checked,
+        desktop_access: !!templateAccessDesktop?.checked,
+        kiosk_admin_access: !!templateAccessKiosk?.checked
+      },
+      permissions: {
+        see_shipments: !!templatePermSeeShipments?.checked,
+        modify_time: !!templatePermModifyTime?.checked,
+        view_time_reports: !!templatePermViewTime?.checked,
+        view_payroll: !!templatePermViewPayroll?.checked,
+        modify_payroll: !!templatePermModifyPayroll?.checked,
+        modify_pay_rates: !!templatePermModifyRates?.checked
+      }
+    };
+  }
+
+  function renderRoleTemplates(templates = []) {
+    if (!roleTemplatesBody) return;
+    if (!templates.length) {
+      roleTemplatesBody.innerHTML = '<tr><td colspan="3">(no templates yet)</td></tr>';
+      return;
+    }
+    roleTemplatesBody.innerHTML = '';
+    templates.forEach(template => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${template.name || ''}</td>
+        <td>${template.role_title || '—'}</td>
+        <td>
+          <button class="btn secondary btn-sm" data-template-action="edit" data-template-id="${template.id}">Edit</button>
+          <button class="btn danger btn-sm" data-template-action="delete" data-template-id="${template.id}">Delete</button>
+        </td>
+      `;
+      roleTemplatesBody.appendChild(tr);
+    });
+  }
+
+  async function loadRoleTemplates({ force = false } = {}) {
+    if (!window.CURRENT_IS_SUPER_ADMIN) return;
+    if (!force && permissionTemplates.length) {
+      renderRoleTemplates(permissionTemplates);
+      return;
+    }
+    try {
+      const res = await fetchJSON('/api/permission-templates');
+      permissionTemplates = (res && res.templates) || [];
+      renderRoleTemplates(permissionTemplates);
+    } catch (err) {
+      console.error('Error loading templates', err);
+      if (roleTemplatesBody) {
+        roleTemplatesBody.innerHTML = '<tr><td colspan="3">(error loading templates)</td></tr>';
+      }
+    }
+  }
+
+  function fillTemplateForm(template) {
+    if (!template) return;
+    editingTemplateId = template.id;
+    if (templateNameInput) templateNameInput.value = template.name || '';
+    if (templateRoleTitleInput) templateRoleTitleInput.value = template.role_title || '';
+    if (templateAccessWorker) templateAccessWorker.checked = !!template.access?.worker_timekeeping;
+    if (templateAccessDesktop) templateAccessDesktop.checked = !!template.access?.desktop_access;
+    if (templateAccessKiosk) templateAccessKiosk.checked = !!template.access?.kiosk_admin_access;
+    if (templatePermSeeShipments) templatePermSeeShipments.checked = !!template.permissions?.see_shipments;
+    if (templatePermModifyTime) templatePermModifyTime.checked = !!template.permissions?.modify_time;
+    if (templatePermViewTime) templatePermViewTime.checked = !!template.permissions?.view_time_reports;
+    if (templatePermViewPayroll) templatePermViewPayroll.checked = !!template.permissions?.view_payroll;
+    if (templatePermModifyPayroll) templatePermModifyPayroll.checked = !!template.permissions?.modify_payroll;
+    if (templatePermModifyRates) templatePermModifyRates.checked = !!template.permissions?.modify_pay_rates;
+    if (templateDeleteBtn) templateDeleteBtn.disabled = false;
+    if (templateSaveBtn) templateSaveBtn.textContent = 'Update template';
+  }
+
+  function getAdminUserStatus(user) {
+    const enabled =
+      user.login_enabled === true ||
+      user.login_enabled === 1 ||
+      user.login_enabled === '1';
+    const employeeActive = !!user.employee_active;
+    const desktopAccess = !!user.desktop_access;
+    if (!enabled) return 'Disabled';
+    if (!user.is_super_admin) return 'Blocked (not super admin)';
+    if (!employeeActive) return 'Blocked (inactive employee)';
+    if (!desktopAccess) return 'Blocked (no desktop access)';
+    return 'Enabled';
+  }
+
+  function renderAdminUsers(users = []) {
+    if (!adminUsersBody) return;
+    if (!users.length) {
+      adminUsersBody.innerHTML = '<tr><td colspan="4">(no admin accounts yet)</td></tr>';
+      return;
+    }
+    adminUsersBody.innerHTML = '';
+    users.forEach(user => {
+      const isSelf = Number(window.CURRENT_USER?.id) === Number(user.user_id);
+      const enabled =
+        user.login_enabled === true ||
+        user.login_enabled === 1 ||
+        user.login_enabled === '1';
+      const canEnable = !!user.employee_active && !!user.desktop_access;
+      const tr = document.createElement('tr');
+
+      const emailCell = document.createElement('td');
+      const emailText = user.email || '';
+      emailCell.textContent = isSelf && emailText ? `${emailText} (you)` : emailText;
+
+      const employeeCell = document.createElement('td');
+      employeeCell.textContent = user.employee_name || '—';
+
+      const statusCell = document.createElement('td');
+      statusCell.textContent = getAdminUserStatus(user);
+
+      const actionsCell = document.createElement('td');
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'btn secondary btn-sm';
+      resetBtn.textContent = 'Reset password';
+      resetBtn.dataset.userId = user.user_id;
+      resetBtn.dataset.userEmail = emailText;
+      resetBtn.dataset.userAction = 'reset';
+
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'btn secondary btn-sm';
+      toggleBtn.dataset.userId = user.user_id;
+      toggleBtn.dataset.userEmail = emailText;
+      toggleBtn.dataset.userAction = enabled ? 'disable' : 'enable';
+      toggleBtn.textContent = enabled ? 'Disable login' : 'Enable login';
+      if (!enabled && !canEnable) {
+        toggleBtn.disabled = true;
+        toggleBtn.title = 'Employee must be active with desktop access to enable login.';
+      }
+
+      actionsCell.appendChild(resetBtn);
+      actionsCell.appendChild(document.createTextNode(' '));
+      actionsCell.appendChild(toggleBtn);
+
+      tr.appendChild(emailCell);
+      tr.appendChild(employeeCell);
+      tr.appendChild(statusCell);
+      tr.appendChild(actionsCell);
+      adminUsersBody.appendChild(tr);
+    });
+  }
+
+  async function loadAdminUsers() {
+    if (!adminUsersBody || !window.CURRENT_IS_SUPER_ADMIN) return;
+    try {
+      const data = await fetchJSON('/api/auth/users');
+      renderAdminUsers((data && data.users) || []);
+    } catch (err) {
+      console.error('Error loading admin accounts', err);
+      adminUsersBody.innerHTML = '<tr><td colspan="4">(error loading accounts)</td></tr>';
+    }
+  }
+
+  async function handleAdminUserAction(event) {
+    if (!adminUsersBody) return;
+    const button = event.target.closest('button[data-user-action]');
+    if (!button) return;
+    if (button.disabled) return;
+
+    const action = button.dataset.userAction;
+    const userId = Number(button.dataset.userId);
+    const userEmail = button.dataset.userEmail || 'this user';
+
+    if (!userId || !action) return;
+
+    const originalText = button.textContent || '';
+    button.disabled = true;
+
+    try {
+      if (action === 'reset') {
+        const next = window.prompt(
+          `Enter a new password for ${userEmail} (min 8 characters):`,
+          ''
+        );
+        if (next === null) return;
+        const confirm = window.prompt(`Confirm the new password for ${userEmail}:`, '');
+        if (confirm === null) return;
+        if (next !== confirm) {
+          setAdminUserStatus('Passwords do not match.', 'crimson');
+          return;
+        }
+        if (next.length < 8) {
+          setAdminUserStatus('Password must be at least 8 characters.', '#b45309');
+          return;
+        }
+        await fetchJSON(`/api/auth/users/${userId}/reset-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ new_password: next })
+        });
+        setAdminUserStatus(`Password reset for ${userEmail}.`, 'green');
+      } else if (action === 'disable') {
+        const ok = window.confirm(
+          `Disable login for ${userEmail}? They will no longer be able to sign in.`
+        );
+        if (!ok) return;
+        await fetchJSON(`/api/auth/users/${userId}/disable`, { method: 'POST' });
+        setAdminUserStatus(`Login disabled for ${userEmail}.`, 'green');
+        await loadAdminUsers();
+      } else if (action === 'enable') {
+        const ok = window.confirm(
+          `Enable login for ${userEmail}? This grants super admin sign-in access.`
+        );
+        if (!ok) return;
+        await fetchJSON(`/api/auth/users/${userId}/enable`, { method: 'POST' });
+        setAdminUserStatus(`Login enabled for ${userEmail}.`, 'green');
+        await loadAdminUsers();
+      }
+    } catch (err) {
+      console.error('Admin user action error:', err);
+      setAdminUserStatus(err?.message || 'Action failed.', 'crimson');
+    } finally {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+
+  if (adminUsersBody) {
+    adminUsersBody.addEventListener('click', handleAdminUserAction);
+  }
+
+  if (roleTemplatesBody) {
+    roleTemplatesBody.addEventListener('click', async event => {
+      const btn = event.target.closest('button[data-template-action]');
+      if (!btn) return;
+      const action = btn.dataset.templateAction;
+      const id = Number(btn.dataset.templateId);
+      if (!id) return;
+
+      const template = permissionTemplates.find(t => Number(t.id) === id);
+      if (!template) {
+        setTemplateStatus('Template not found.', 'crimson');
+        return;
+      }
+
+      if (action === 'edit') {
+        fillTemplateForm(template);
+        setTemplateStatus(`Editing ${template.name}.`, '#111827');
+        return;
+      }
+
+      if (action === 'delete') {
+        const ok = window.confirm(`Delete template "${template.name}"?`);
+        if (!ok) return;
+        try {
+          await fetchJSON(`/api/permission-templates/${id}`, { method: 'DELETE' });
+          setTemplateStatus(`Deleted ${template.name}.`, 'green');
+          clearTemplateForm();
+          await loadRoleTemplates({ force: true });
+          if (typeof window.reloadPermissionTemplates === 'function') {
+            await window.reloadPermissionTemplates({ force: true });
+          }
+        } catch (err) {
+          console.error('Delete template error', err);
+          setTemplateStatus(err?.message || 'Failed to delete template.', 'crimson');
+        }
+      }
+    });
+  }
+
+  if (templateSaveBtn) {
+    templateSaveBtn.addEventListener('click', async () => {
+      try {
+        const payload = collectTemplatePayload();
+        if (editingTemplateId) {
+          await fetchJSON(`/api/permission-templates/${editingTemplateId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          setTemplateStatus('Template updated.', 'green');
+        } else {
+          await fetchJSON('/api/permission-templates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          setTemplateStatus('Template created.', 'green');
+        }
+        clearTemplateForm();
+        await loadRoleTemplates({ force: true });
+        if (typeof window.reloadPermissionTemplates === 'function') {
+          await window.reloadPermissionTemplates({ force: true });
+        }
+      } catch (err) {
+        console.error('Save template error', err);
+        setTemplateStatus(err?.message || 'Failed to save template.', 'crimson');
+      }
+    });
+  }
+
+  if (templateClearBtn) {
+    templateClearBtn.addEventListener('click', () => {
+      clearTemplateForm();
+      setTemplateStatus('', '');
+    });
+  }
+
+  if (templateDeleteBtn) {
+    templateDeleteBtn.addEventListener('click', async () => {
+      if (!editingTemplateId) return;
+      const current = permissionTemplates.find(t => Number(t.id) === Number(editingTemplateId));
+      const label = current ? current.name : 'this template';
+      const ok = window.confirm(`Delete ${label}?`);
+      if (!ok) return;
+      try {
+        await fetchJSON(`/api/permission-templates/${editingTemplateId}`, { method: 'DELETE' });
+        setTemplateStatus('Template deleted.', 'green');
+        clearTemplateForm();
+        await loadRoleTemplates({ force: true });
+        if (typeof window.reloadPermissionTemplates === 'function') {
+          await window.reloadPermissionTemplates({ force: true });
+        }
+      } catch (err) {
+        console.error('Delete template error', err);
+        setTemplateStatus(err?.message || 'Failed to delete template.', 'crimson');
+      }
+    });
+  }
+
+  async function loadAdminUserEmployees() {
+    if (!adminUserEmployee || !window.CURRENT_IS_SUPER_ADMIN) return;
+    adminUserEmployee.innerHTML = '<option value="">Select employee</option>';
+    try {
+      const list = await fetchJSON('/api/employees?status=active');
+      const eligible = (list || []).filter(emp => emp && emp.desktop_access);
+      eligible.forEach(emp => {
+        const option = document.createElement('option');
+        option.value = emp.id;
+        option.textContent = `${emp.name || '(Unnamed)'}${emp.email ? ` — ${emp.email}` : ''}`;
+        adminUserEmployee.appendChild(option);
+      });
+    } catch (err) {
+      console.error('Error loading employee list for admin accounts', err);
+    }
   }
 
   function clearPasswordInputs() {
@@ -1987,19 +2743,15 @@ if (connectBtn) {
     if (passwordFields.confirm) passwordFields.confirm.value = '';
   }
 
-  function deriveCurrentAdminAccess(accessMap = {}) {
-    const defaults = { modify_pay_rates: false, modify_payroll: false };
-    const emp = typeof CURRENT_EMPLOYEE !== 'undefined' ? CURRENT_EMPLOYEE : null;
-    if (!emp || !emp.id) return defaults;
-    const perms = accessMap[emp.id] || accessMap[String(emp.id)] || {};
+  function deriveCurrentAdminAccess(perms = {}) {
     const fallbackModifyPayroll =
       typeof perms.modify_payroll === 'undefined'
         ? (perms.view_payroll === true || perms.view_payroll === 'true')
         : (perms.modify_payroll === true || perms.modify_payroll === 'true');
     return {
-      ...defaults,
       modify_pay_rates: perms.modify_pay_rates === true || perms.modify_pay_rates === 'true',
-      modify_payroll: fallbackModifyPayroll
+      modify_payroll: fallbackModifyPayroll,
+      view_payroll: perms.view_payroll === true || perms.view_payroll === 'true'
     };
   }
 
@@ -2031,6 +2783,35 @@ if (connectBtn) {
           : defaultState;
       cb.checked = enabled;
     });
+
+    const normalizeThreshold = value => {
+      const num = Number(value);
+      return Number.isFinite(num) && num > 0 ? num : '';
+    };
+
+    if (exceptionRuleFields.weekly_hours_threshold) {
+      const raw =
+        parsed && Object.prototype.hasOwnProperty.call(parsed, 'weekly_hours_threshold')
+          ? parsed.weekly_hours_threshold
+          : '';
+      exceptionRuleFields.weekly_hours_threshold.value = normalizeThreshold(raw);
+    }
+
+    if (exceptionRuleFields.auto_clockout_daily_max_hours) {
+      const raw =
+        parsed && Object.prototype.hasOwnProperty.call(parsed, 'auto_clockout_daily_max_hours')
+          ? parsed.auto_clockout_daily_max_hours
+          : '';
+      exceptionRuleFields.auto_clockout_daily_max_hours.value = normalizeThreshold(raw);
+    }
+
+    if (exceptionRuleFields.auto_clockout_weekly_max_hours) {
+      const raw =
+        parsed && Object.prototype.hasOwnProperty.call(parsed, 'auto_clockout_weekly_max_hours')
+          ? parsed.auto_clockout_weekly_max_hours
+          : '';
+      exceptionRuleFields.auto_clockout_weekly_max_hours.value = normalizeThreshold(raw);
+    }
   }
 
   function collectExceptionRuleSettings() {
@@ -2040,17 +2821,175 @@ if (connectBtn) {
       if (!key) return;
       map[key] = !!cb.checked;
     });
+
+    const normalizeThreshold = field => {
+      if (!field) return null;
+      const raw = String(field.value || '').trim();
+      if (!raw) return null;
+      const num = Number(raw);
+      return Number.isFinite(num) && num > 0 ? num : null;
+    };
+
+    map.weekly_hours_threshold = normalizeThreshold(
+      exceptionRuleFields.weekly_hours_threshold
+    );
+    map.auto_clockout_daily_max_hours = normalizeThreshold(
+      exceptionRuleFields.auto_clockout_daily_max_hours
+    );
+    map.auto_clockout_weekly_max_hours = normalizeThreshold(
+      exceptionRuleFields.auto_clockout_weekly_max_hours
+    );
     return map;
   }
 
-  async function loadAccessControl(accessMap = {}) {
+  function normalizePayrollRuleNumber(value, fallback) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : fallback;
+  }
+
+  function applyPayrollRulesToUI(rawValue) {
+    if (!payrollRuleFields.pay_period_length_days) return;
+    let parsed = null;
+    if (typeof rawValue === 'string') {
+      try {
+        parsed = JSON.parse(rawValue);
+      } catch {
+        parsed = null;
+      }
+    } else if (rawValue && typeof rawValue === 'object') {
+      parsed = rawValue;
+    }
+
+    const defaults = {
+      pay_period_length_days: 7,
+      pay_period_start_weekday: 1,
+      pay_period_anchor_date: '',
+      overtime_enabled: false,
+      overtime_daily_threshold_hours: 8,
+      overtime_weekly_threshold_hours: 40,
+      overtime_multiplier: 1.5,
+      double_time_enabled: false,
+      double_time_daily_threshold_hours: 12,
+      double_time_multiplier: 2.0
+    };
+
+    const resolved = {
+      pay_period_length_days: normalizePayrollRuleNumber(
+        parsed?.pay_period_length_days,
+        defaults.pay_period_length_days
+      ),
+      pay_period_start_weekday: normalizePayrollRuleNumber(
+        parsed?.pay_period_start_weekday,
+        defaults.pay_period_start_weekday
+      ),
+      pay_period_anchor_date: parsed?.pay_period_anchor_date || defaults.pay_period_anchor_date,
+      overtime_enabled: asBool(parsed?.overtime_enabled, defaults.overtime_enabled),
+      overtime_daily_threshold_hours: normalizePayrollRuleNumber(
+        parsed?.overtime_daily_threshold_hours,
+        defaults.overtime_daily_threshold_hours
+      ),
+      overtime_weekly_threshold_hours: normalizePayrollRuleNumber(
+        parsed?.overtime_weekly_threshold_hours,
+        defaults.overtime_weekly_threshold_hours
+      ),
+      overtime_multiplier: normalizePayrollRuleNumber(
+        parsed?.overtime_multiplier,
+        defaults.overtime_multiplier
+      ),
+      double_time_enabled: asBool(parsed?.double_time_enabled, defaults.double_time_enabled),
+      double_time_daily_threshold_hours: normalizePayrollRuleNumber(
+        parsed?.double_time_daily_threshold_hours,
+        defaults.double_time_daily_threshold_hours
+      ),
+      double_time_multiplier: normalizePayrollRuleNumber(
+        parsed?.double_time_multiplier,
+        defaults.double_time_multiplier
+      )
+    };
+
+    payrollRuleFields.pay_period_length_days.value = resolved.pay_period_length_days;
+    payrollRuleFields.pay_period_start_weekday.value = resolved.pay_period_start_weekday;
+    payrollRuleFields.pay_period_anchor_date.value = resolved.pay_period_anchor_date || '';
+    payrollRuleFields.overtime_enabled.checked = resolved.overtime_enabled;
+    payrollRuleFields.overtime_daily_threshold_hours.value = resolved.overtime_daily_threshold_hours;
+    payrollRuleFields.overtime_weekly_threshold_hours.value = resolved.overtime_weekly_threshold_hours;
+    payrollRuleFields.overtime_multiplier.value = resolved.overtime_multiplier;
+    payrollRuleFields.double_time_enabled.checked = resolved.double_time_enabled;
+    payrollRuleFields.double_time_daily_threshold_hours.value = resolved.double_time_daily_threshold_hours;
+    payrollRuleFields.double_time_multiplier.value = resolved.double_time_multiplier;
+
+    updatePayrollRulesUIState();
+
+    window.CURRENT_PAYROLL_RULES = { ...resolved };
+  }
+
+  function updatePayrollRulesUIState() {
+    const lengthVal = Number(payrollRuleFields.pay_period_length_days?.value || 7);
+    const usesAnchor = lengthVal > 7;
+    if (payrollRuleFields.pay_period_anchor_date) {
+      payrollRuleFields.pay_period_anchor_date.disabled = !usesAnchor;
+    }
+    const overtimeOn = payrollRuleFields.overtime_enabled?.checked;
+    ['overtime_daily_threshold_hours', 'overtime_weekly_threshold_hours', 'overtime_multiplier'].forEach(key => {
+      if (payrollRuleFields[key]) payrollRuleFields[key].disabled = !overtimeOn;
+    });
+    const doubleOn = payrollRuleFields.double_time_enabled?.checked;
+    ['double_time_daily_threshold_hours', 'double_time_multiplier'].forEach(key => {
+      if (payrollRuleFields[key]) payrollRuleFields[key].disabled = !doubleOn;
+    });
+  }
+
+  function collectPayrollRulesSettings() {
+    if (!payrollRuleFields.pay_period_length_days) return null;
+    const lengthDays = Math.floor(
+      normalizePayrollRuleNumber(payrollRuleFields.pay_period_length_days.value, 7)
+    );
+    const safeLength = lengthDays >= 1 && lengthDays <= 31 ? lengthDays : 7;
+    const startWeekday = Math.floor(
+      normalizePayrollRuleNumber(payrollRuleFields.pay_period_start_weekday.value, 1)
+    );
+    const safeWeekday = startWeekday >= 0 && startWeekday <= 6 ? startWeekday : 1;
+    const anchorDate = (payrollRuleFields.pay_period_anchor_date.value || '').trim() || null;
+
+    return {
+      pay_period_length_days: safeLength,
+      pay_period_start_weekday: safeWeekday,
+      pay_period_anchor_date: anchorDate,
+      overtime_enabled: !!payrollRuleFields.overtime_enabled?.checked,
+      overtime_daily_threshold_hours: normalizePayrollRuleNumber(
+        payrollRuleFields.overtime_daily_threshold_hours?.value,
+        8
+      ),
+      overtime_weekly_threshold_hours: normalizePayrollRuleNumber(
+        payrollRuleFields.overtime_weekly_threshold_hours?.value,
+        40
+      ),
+      overtime_multiplier: normalizePayrollRuleNumber(
+        payrollRuleFields.overtime_multiplier?.value,
+        1.5
+      ),
+      double_time_enabled: !!payrollRuleFields.double_time_enabled?.checked,
+      double_time_daily_threshold_hours: normalizePayrollRuleNumber(
+        payrollRuleFields.double_time_daily_threshold_hours?.value,
+        12
+      ),
+      double_time_multiplier: normalizePayrollRuleNumber(
+        payrollRuleFields.double_time_multiplier?.value,
+        2.0
+      )
+    };
+  }
+
+  async function loadAccessControl() {
     const tbody = document.getElementById('settings-access-body');
     if (!tbody) return;
 
     tbody.innerHTML = '<tr><td colspan="7">(loading admins…)</td></tr>';
     try {
-      const employees = await fetchJSON('/api/employees');
-      const admins = (employees || []).filter(e => e.is_admin);
+      const employees = await fetchJSON('/api/employees?status=active');
+      const admins = (employees || []).filter(
+        e => e.desktop_access || e.kiosk_admin_access
+      );
       if (!admins.length) {
         tbody.innerHTML = '<tr><td colspan="7">(no admins found)</td></tr>';
         return;
@@ -2058,11 +2997,15 @@ if (connectBtn) {
 
       tbody.innerHTML = '';
       admins.forEach(admin => {
-        const perms = accessMap[admin.id] || {};
-        const canModifyPayroll =
-          typeof perms.modify_payroll === 'undefined'
-            ? (perms.view_payroll === true || perms.view_payroll === 'true')
-            : (perms.modify_payroll === true || perms.modify_payroll === 'true');
+        const perms = {
+          see_shipments: !!admin.see_shipments,
+          modify_time: !!admin.modify_time,
+          view_time_reports: !!admin.view_time_reports,
+          view_payroll: !!admin.view_payroll,
+          modify_payroll: !!admin.modify_payroll,
+          modify_pay_rates: !!admin.modify_pay_rates
+        };
+        const canModifyPayroll = perms.modify_payroll;
         const tr = document.createElement('tr');
         tr.dataset.adminId = admin.id;
         tr.innerHTML = `
@@ -2084,34 +3027,72 @@ if (connectBtn) {
 
   async function loadSettings() {
     try {
+      try {
+        const meRes = await fetch('/api/auth/me');
+        if (meRes.ok) {
+          const meData = await meRes.json();
+          window.CURRENT_EMPLOYEE = meData.employee || null;
+          window.CURRENT_USER = meData.user || null;
+          window.CURRENT_IS_SUPER_ADMIN = !!meData?.membership?.is_super_admin;
+          window.CURRENT_ORG = meData.org || null;
+          window.CURRENT_ORG_TIMEZONE = meData?.org?.timezone || null;
+          const currentAccess = deriveCurrentAdminAccess(meData.permissions || {});
+          window.CURRENT_ACCESS_PERMS = {
+            ...(window.CURRENT_ACCESS_PERMS || {}),
+            ...currentAccess
+          };
+          if (typeof applyTimeEntryApprovalAccess === 'function') {
+            applyTimeEntryApprovalAccess();
+          }
+          if (typeof applyRateAccessToEmployees === 'function') {
+            applyRateAccessToEmployees(window.CURRENT_ACCESS_PERMS);
+          }
+          if (typeof applySuperAdminAccessToEmployees === 'function') {
+            applySuperAdminAccessToEmployees(window.CURRENT_IS_SUPER_ADMIN);
+          }
+          applyBackupCardVisibility();
+          applyAdminUsersVisibility();
+          applyRoleTemplatesVisibility();
+          if (window.CURRENT_IS_SUPER_ADMIN) {
+            loadAdminUsers();
+            loadAdminUserEmployees();
+            loadRoleTemplates({ force: true });
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to load current user context', err);
+      }
+
       const res = await fetchJSON('/api/settings');
       const data = (res && res.settings) || {};
 
       if (settingsFields.company_name) settingsFields.company_name.value = data.company_name || '';
       if (settingsFields.company_email) settingsFields.company_email.value = data.company_email || '';
-      if (settingsFields.workers_see_shipments) settingsFields.workers_see_shipments.checked =
-        data.workers_see_shipments === 'true' || data.workers_see_shipments === true;
-      if (settingsFields.workers_see_time) settingsFields.workers_see_time.checked =
-        data.workers_see_time === 'true' || data.workers_see_time === true;
-      if (settingsFields.daily_fee) settingsFields.daily_fee.value = data.daily_fee || '';
-      if (settingsFields.kiosk_require_photo) {
-        settingsFields.kiosk_require_photo.checked = asBool(data.kiosk_require_photo);
+      if (settingsFields.storage_daily_late_fee_default) {
+        const fee =
+          data.storage_daily_late_fee_default === null ||
+          typeof data.storage_daily_late_fee_default === 'undefined'
+            ? ''
+            : data.storage_daily_late_fee_default;
+        settingsFields.storage_daily_late_fee_default.value = fee;
+      }
+      if (settingsFields.clock_in_photo_required) {
+        settingsFields.clock_in_photo_required.checked = asBool(data.clock_in_photo_required);
       }
       applyExceptionRulesToUI(data.time_exception_rules);
+      applyPayrollRulesToUI(data.payroll_rules);
 
-      const accessMap =
-        typeof data.access_admins === 'string'
-          ? JSON.parse(data.access_admins || '{}')
-          : (data.access_admins || {});
-      const currentAccess = deriveCurrentAdminAccess(accessMap);
-      window.CURRENT_ACCESS_PERMS = {
-        ...(window.CURRENT_ACCESS_PERMS || {}),
-        ...currentAccess
-      };
-      if (typeof applyRateAccessToEmployees === 'function') {
-        applyRateAccessToEmployees(window.CURRENT_ACCESS_PERMS);
+      const accessCard = document.getElementById('settings-access-card');
+      if (accessCard && !window.CURRENT_IS_SUPER_ADMIN) {
+        accessCard.classList.add('hidden');
       }
-      await loadAccessControl(accessMap);
+      const payrollRulesCard = document.getElementById('settings-payroll-rules-card');
+      if (payrollRulesCard && !window.CURRENT_IS_SUPER_ADMIN) {
+        payrollRulesCard.classList.add('hidden');
+      }
+      if (window.CURRENT_IS_SUPER_ADMIN) {
+        await loadAccessControl();
+      }
     } catch (err) {
       console.warn('Failed to load settings', err);
       if (settingsStatus) {
@@ -2139,22 +3120,48 @@ if (connectBtn) {
   }
 
   async function saveSettings() {
+    const rawStorageFee = settingsFields.storage_daily_late_fee_default?.value || '';
+    const storageFee =
+      rawStorageFee.trim() === '' ? null : Number(rawStorageFee);
     const payload = {
       company_name: settingsFields.company_name?.value || '',
       company_email: settingsFields.company_email?.value || '',
-      workers_see_shipments: settingsFields.workers_see_shipments?.checked || false,
-      workers_see_time: settingsFields.workers_see_time?.checked || false,
-      daily_fee: settingsFields.daily_fee?.value || '',
-      kiosk_require_photo: settingsFields.kiosk_require_photo?.checked || false,
-      time_exception_rules: JSON.stringify(collectExceptionRuleSettings()),
-      access_admins: JSON.stringify(collectAccessControl())
+      storage_daily_late_fee_default: Number.isNaN(storageFee) ? null : storageFee,
+      clock_in_photo_required: settingsFields.clock_in_photo_required?.checked || false,
+      time_exception_rules: collectExceptionRuleSettings()
     };
+    if (window.CURRENT_IS_SUPER_ADMIN) {
+      const payrollRulesPayload = collectPayrollRulesSettings();
+      if (payrollRulesPayload) {
+        if (payrollRulesPayload.pay_period_length_days > 7 && !payrollRulesPayload.pay_period_anchor_date) {
+          if (settingsStatus) {
+            settingsStatus.textContent = 'Payroll rules: anchor date is required when the pay period exceeds 7 days.';
+            settingsStatus.style.color = '#b91c1c';
+          }
+          return;
+        }
+        payload.payroll_rules = payrollRulesPayload;
+      }
+    }
     try {
       await fetchJSON('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+
+      if (window.CURRENT_IS_SUPER_ADMIN) {
+        const accessMap = collectAccessControl();
+        await Promise.all(
+          Object.entries(accessMap).map(([id, perms]) =>
+            fetchJSON('/api/employees', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id, ...perms })
+            })
+          )
+        );
+      }
 
       if (typeof window.clearShipmentSettingsCache === 'function') {
         window.clearShipmentSettingsCache();
@@ -2175,6 +3182,16 @@ if (connectBtn) {
         settingsStatus.style.color = 'crimson';
       }
     }
+  }
+
+  if (payrollRuleFields.pay_period_length_days) {
+    payrollRuleFields.pay_period_length_days.addEventListener('input', updatePayrollRulesUIState);
+  }
+  if (payrollRuleFields.overtime_enabled) {
+    payrollRuleFields.overtime_enabled.addEventListener('change', updatePayrollRulesUIState);
+  }
+  if (payrollRuleFields.double_time_enabled) {
+    payrollRuleFields.double_time_enabled.addEventListener('change', updatePayrollRulesUIState);
   }
 
   loadSettings();
@@ -2229,6 +3246,86 @@ if (connectBtn) {
 
   if (passwordSaveBtn) {
     passwordSaveBtn.addEventListener('click', changePassword);
+  }
+
+  async function runManualBackup() {
+    if (!backupBtn) return;
+    const originalText = backupBtn.textContent || 'Backup Now';
+    backupBtn.disabled = true;
+    backupBtn.textContent = 'Running…';
+    setBackupStatus('Running backup…', '');
+
+    try {
+      await fetchJSON('/api/admin/backup', { method: 'POST' });
+      setBackupStatus('Backup completed.', 'green');
+    } catch (err) {
+      console.error('Manual backup error:', err);
+      setBackupStatus(err.message || 'Backup failed.', 'crimson');
+    } finally {
+      backupBtn.disabled = false;
+      backupBtn.textContent = originalText;
+    }
+  }
+
+  if (backupBtn) {
+    backupBtn.addEventListener('click', runManualBackup);
+  }
+
+  async function createAdminUser() {
+    if (!adminUserCreateBtn) return;
+    const employeeId = adminUserEmployee ? Number(adminUserEmployee.value) : null;
+    const email = adminUserEmail ? String(adminUserEmail.value || '').trim() : '';
+    const password = adminUserPassword ? String(adminUserPassword.value || '') : '';
+    const confirm = adminUserPasswordConfirm ? String(adminUserPasswordConfirm.value || '') : '';
+
+    if (!employeeId) {
+      setAdminUserStatus('Select an employee to link.', '#b45309');
+      return;
+    }
+    if (!email) {
+      setAdminUserStatus('Login email is required.', '#b45309');
+      return;
+    }
+    if (password || confirm) {
+      if (password !== confirm) {
+        setAdminUserStatus('Passwords do not match.', 'crimson');
+        return;
+      }
+      if (password.length < 8) {
+        setAdminUserStatus('Password must be at least 8 characters.', '#b45309');
+        return;
+      }
+    }
+
+    adminUserCreateBtn.disabled = true;
+    setAdminUserStatus('Saving account…', '');
+
+    const payload = {
+      email,
+      employee_id: employeeId
+    };
+    if (password) payload.password = password;
+
+    try {
+      await fetchJSON('/api/auth/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      setAdminUserStatus('Admin login saved.', 'green');
+      if (adminUserPassword) adminUserPassword.value = '';
+      if (adminUserPasswordConfirm) adminUserPasswordConfirm.value = '';
+      await loadAdminUsers();
+    } catch (err) {
+      console.error('Error saving admin login', err);
+      setAdminUserStatus(err.message || 'Failed to save admin login.', 'crimson');
+    } finally {
+      adminUserCreateBtn.disabled = false;
+    }
+  }
+
+  if (adminUserCreateBtn) {
+    adminUserCreateBtn.addEventListener('click', createAdminUser);
   }
 
 
@@ -2365,6 +3462,7 @@ if (connectBtn) {
   const timeFilterProject   = document.getElementById('te-filter-project');
   const timeFilterStart     = document.getElementById('te-filter-start');
   const timeFilterEnd       = document.getElementById('te-filter-end');
+  const approveAllBtn       = document.getElementById('te-approve-all');
 
   if (timeFilterApplyBtn) {
     timeFilterApplyBtn.addEventListener('click', () => {
@@ -2386,6 +3484,11 @@ if (connectBtn) {
 
       loadTimeEntriesTable({});
     });
+  }
+
+  if (approveAllBtn) {
+    approveAllBtn.addEventListener('click', approveAllTimeEntries);
+    applyTimeEntryApprovalAccess();
   }
 
   // ───────── Live open punches ─────────
@@ -2542,6 +3645,17 @@ function debugVisibleBackdrops() {
 
 window.debugVisibleBackdrops = debugVisibleBackdrops;
 
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', () => {
+    syncTimeEditQueue();
+  });
+} else {
+  syncTimeEditQueue();
+}
+window.addEventListener('online', () => {
+  syncTimeEditQueue();
+});
+
 const logoutButtons = document.querySelectorAll('.logout-btn');
 
 if (logoutButtons.length) {
@@ -2549,7 +3663,7 @@ if (logoutButtons.length) {
     try {
       await fetch('/api/auth/logout', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json', ...getCsrfHeader() }
       });
     } catch (err) {
       console.error('Logout error:', err);

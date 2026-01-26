@@ -7,6 +7,8 @@ let shipmentsBoardData = {
 let currentStatusFilter = "";
 let draggingShipmentId = null;
 let currentVerificationRow = null;
+let currentShipmentDetailId = null;
+let currentShipmentDetail = null;
 
 
 const SHIPMENT_STATUS_ICONS = {
@@ -25,12 +27,15 @@ const SHIPMENT_STATUS_ICONS = {
 // ───────── CURRENT USER / EMPLOYEE CONTEXT ─────────
 let CURRENT_USER = null;
 let CURRENT_EMPLOYEE = null;
+let CURRENT_PERMS = null;
 
 const DEFAULT_NOTIFICATION_PREF = {
   enabled: false,
   statuses: [],
+  project_ids: [],
   shipment_ids: [],
-  notify_time: ''
+  notify_time: '',
+  remind_every_days: 1
 };
 let shipmentNotificationPref = { ...DEFAULT_NOTIFICATION_PREF };
 let shipmentNotificationTimer = null;
@@ -38,6 +43,8 @@ let lastShipmentNotificationKey = '';
 let itemVerificationEditMode = false;
 let shipmentSettingsCache = null;
 let shipmentSettingsPromise = null;
+let shipmentsProjectsCache = [];
+let shipmentTemplatesCache = [];
 
 // Fire once on load; result is cached in global vars above.
 async function loadCurrentUserContext() {
@@ -50,8 +57,10 @@ async function loadCurrentUserContext() {
 
     CURRENT_USER = data.user || null;
     CURRENT_EMPLOYEE = data.employee || null;
+    CURRENT_PERMS = data.permissions || null;
 
     console.log('[SHIPMENTS] Current user:', CURRENT_USER, CURRENT_EMPLOYEE);
+    applyShipmentPaymentsVisibility();
   } catch (err) {
     console.warn('[SHIPMENTS] Failed to load current user:', err);
   }
@@ -64,12 +73,36 @@ function isCurrentUserAdmin() {
   return !!(CURRENT_EMPLOYEE && CURRENT_EMPLOYEE.is_admin);
 }
 
+function canViewShipmentPayments() {
+  if (CURRENT_PERMS == null) return true;
+  return !!CURRENT_PERMS.view_payroll;
+}
+
+function applyShipmentPaymentsVisibility() {
+  const paymentsTab = document.querySelector('.ship-detail-tab[data-tab="payments"]');
+  const paymentsPanel = document.getElementById('ship-detail-payments');
+  const permsKnown = CURRENT_PERMS != null;
+  const allow = canViewShipmentPayments();
+
+  if (paymentsTab) {
+    paymentsTab.classList.toggle('hidden', permsKnown && !allow);
+  }
+  if (permsKnown && !allow && paymentsTab && paymentsTab.classList.contains('active')) {
+    setShipmentDetailTab('overview');
+  }
+  if (paymentsPanel && permsKnown && !allow) {
+    paymentsPanel.classList.add('hidden');
+  }
+}
 function normalizeClientNotificationPref(pref) {
   return {
     enabled: !!(pref && pref.enabled),
     statuses: Array.isArray(pref?.statuses) ? pref.statuses : [],
+    project_ids: Array.isArray(pref?.project_ids) ? pref.project_ids : [],
     shipment_ids: Array.isArray(pref?.shipment_ids) ? pref.shipment_ids : [],
-    notify_time: pref && pref.notify_time ? pref.notify_time : ''
+    notify_time: pref && pref.notify_time ? pref.notify_time : '',
+    remind_every_days:
+      pref && pref.remind_every_days != null ? Number(pref.remind_every_days) || 1 : 1
   };
 }
 
@@ -78,6 +111,55 @@ function showNotificationMessage(text, color) {
   if (!msg) return;
   msg.textContent = text || '';
   if (color) msg.style.color = color;
+}
+
+function isShipmentNotificationConnectionIssue(err) {
+  const msg = err && err.message ? String(err.message) : '';
+  return !navigator.onLine || /network|failed to fetch|offline/i.test(msg);
+}
+
+async function syncShipmentNotificationPrefsQueue() {
+  if (!navigator.onLine) return;
+  const queue = loadSettingsQueue();
+  if (!queue.length) return;
+
+  const remaining = [];
+
+  for (const entry of queue) {
+    if (!entry || entry.type !== 'shipments_notifications') {
+      continue;
+    }
+    try {
+      const res = await fetch('/api/shipments/notifications', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+        body: JSON.stringify(entry.payload || {})
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          remaining.push(entry);
+          break;
+        }
+        if (res.status >= 500) {
+          remaining.push(entry);
+          break;
+        }
+        continue;
+      }
+      applyShipmentNotificationPrefToUI(
+        data.preference || entry.payload || DEFAULT_NOTIFICATION_PREF
+      );
+      await maybeStartShipmentNotificationTimer(true);
+    } catch (err) {
+      if (isShipmentNotificationConnectionIssue(err)) {
+        remaining.push(entry);
+        break;
+      }
+    }
+  }
+
+  replaceSettingsQueueTypes(['shipments_notifications'], remaining);
 }
 
 function renderNotificationStatusCheckboxes(statuses = []) {
@@ -168,13 +250,54 @@ function refreshShipmentNotificationOptions() {
   };
 }
 
+function refreshShipmentNotificationProjects(projects = []) {
+  const select = document.getElementById('shipment-notify-projects');
+  if (!select) return;
+
+  const selected = new Set(shipmentNotificationPref.project_ids || []);
+  select.innerHTML = '';
+
+  if (!projects.length) {
+    const opt = document.createElement('option');
+    opt.disabled = true;
+    opt.textContent = '(projects will appear once loaded)';
+    select.appendChild(opt);
+    return;
+  }
+
+  projects
+    .slice()
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    .forEach(row => {
+      const opt = document.createElement('option');
+      opt.value = row.id;
+      opt.textContent = row.name || `Project ${row.id}`;
+      opt.selected = selected.has(row.id);
+      select.appendChild(opt);
+    });
+
+  select.onchange = () => {
+    const ids = Array.from(select.selectedOptions || [])
+      .map(opt => Number(opt.value))
+      .filter(n => Number.isFinite(n));
+    shipmentNotificationPref.project_ids = ids;
+  };
+}
+
 function collectShipmentNotificationForm() {
   const enabled = document.getElementById('shipment-notify-enabled')?.checked || false;
   const time = document.getElementById('shipment-notify-time')?.value || '';
+  const remindEveryRaw = Number(
+    document.getElementById('shipment-notify-remind')?.value || 1
+  );
 
   const statuses = Array.from(
     document.querySelectorAll('#shipment-notify-statuses input[type="checkbox"]:checked')
   ).map(cb => cb.value);
+
+  const projectIds = Array.from(
+    document.getElementById('shipment-notify-projects')?.selectedOptions || []
+  ).map(opt => Number(opt.value)).filter(n => Number.isFinite(n));
 
   const shipmentIds = Array.from(
     document.getElementById('shipment-notify-shipments')?.selectedOptions || []
@@ -183,8 +306,13 @@ function collectShipmentNotificationForm() {
   return {
     enabled,
     statuses,
+    project_ids: projectIds,
     shipment_ids: shipmentIds,
-    notify_time: time
+    notify_time: time,
+    remind_every_days:
+      Number.isFinite(remindEveryRaw) && remindEveryRaw >= 1
+        ? Math.floor(remindEveryRaw)
+        : 1
   };
 }
 
@@ -194,9 +322,11 @@ function applyShipmentNotificationPrefToUI(pref) {
 
   const enabledToggle = document.getElementById('shipment-notify-enabled');
   const timeInput     = document.getElementById('shipment-notify-time');
+  const remindInput   = document.getElementById('shipment-notify-remind');
 
   if (enabledToggle) enabledToggle.checked = !!normalized.enabled;
   if (timeInput) timeInput.value = normalized.notify_time || '';
+  if (remindInput) remindInput.value = normalized.remind_every_days || 1;
 
   // Re-render statuses with the current selection baked in
   const sourceStatuses =
@@ -206,6 +336,7 @@ function applyShipmentNotificationPrefToUI(pref) {
 
   renderNotificationStatusCheckboxes(sourceStatuses);
   refreshShipmentNotificationOptions();
+  refreshShipmentNotificationProjects(shipmentsProjectsCache || []);
 }
 
 async function ensureNotificationPermission() {
@@ -229,6 +360,10 @@ function getShipmentsMatchingNotification(pref) {
     ? new Set(pref.statuses)
     : new Set(Object.keys(map));
 
+  const limitToProjects =
+    Array.isArray(pref.project_ids) && pref.project_ids.length > 0;
+  const projectIds = new Set(pref.project_ids || []);
+
   const limitToIds =
     Array.isArray(pref.shipment_ids) && pref.shipment_ids.length > 0;
   const ids = new Set(pref.shipment_ids || []);
@@ -239,6 +374,7 @@ function getShipmentsMatchingNotification(pref) {
     (list || []).forEach(sh => {
       const status = sh.status || statusKey || '';
       if (statuses.size && !statuses.has(status)) return;
+      if (limitToProjects && !projectIds.has(sh.project_id)) return;
       if (limitToIds && !ids.has(sh.id)) return;
       results.push(sh);
     });
@@ -339,17 +475,15 @@ async function maybeStartShipmentNotificationTimer(forcePing = false) {
 async function loadShipmentNotificationPrefs() {
   const panel = document.getElementById('shipments-notify-panel');
   if (panel) {
-    panel.classList.add('hidden');
+    panel.classList.remove('hidden');
   }
-  // Notifications are not used in the web app; skip loading entirely.
-  return;
 
   try {
     const res = await fetch('/api/shipments/notifications');
     const data = await res.json().catch(() => ({}));
 
     if (res.status === 403) {
-      panel.classList.add('hidden');
+      if (panel) panel.classList.add('hidden');
       return;
     }
 
@@ -370,12 +504,19 @@ async function saveShipmentNotificationPrefs() {
   const btn = document.getElementById('shipment-notify-save');
 
   try {
+    if (!navigator.onLine) {
+      queueSettingsUpdate('shipments_notifications', payload);
+      applyShipmentNotificationPrefToUI(payload);
+      await maybeStartShipmentNotificationTimer(true);
+      showNotificationMessage('Saved offline — will sync when back online.', '#b45309');
+      return;
+    }
     if (btn) btn.disabled = true;
     showNotificationMessage('Saving notification preferences...', '');
 
     const res = await fetch('/api/shipments/notifications', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
       body: JSON.stringify(payload)
     });
 
@@ -392,6 +533,13 @@ async function saveShipmentNotificationPrefs() {
     showNotificationMessage('Notification preferences saved.', 'green');
   } catch (err) {
     console.error('Error saving shipment notification prefs:', err);
+    if (isShipmentNotificationConnectionIssue(err)) {
+      queueSettingsUpdate('shipments_notifications', payload);
+      applyShipmentNotificationPrefToUI(payload);
+      await maybeStartShipmentNotificationTimer(true);
+      showNotificationMessage('Saved offline — will sync when back online.', '#b45309');
+      return;
+    }
     showNotificationMessage(err.message, 'crimson');
   } finally {
     if (btn) btn.disabled = false;
@@ -695,7 +843,8 @@ function appendVerificationHistory(vMeta, prevStatus, newStatus) {
     to_status: newStatus || '',
     by_employee_id: currentEmpId,
     by_name: currentName,
-    notes: vMeta.notes || null   // best-effort; may be null
+    notes: vMeta.notes || null,   // best-effort; may be null
+    storage_override: vMeta.storage_override || ''
   });
 }
 
@@ -1357,12 +1506,16 @@ if (lineDisplay) {
 
   const totalDisplay = document.getElementById('shipment-items-total-display');
   const totalHidden = document.getElementById('shipment-total-price');
+  const totalOverride = document.getElementById('shipment-total-price-override');
 
   if (totalDisplay) {
     totalDisplay.textContent = formatMoney(total);
   }
   if (totalHidden) {
     totalHidden.value = total ? total.toFixed(2) : '';
+  }
+  if (totalOverride && !totalOverride.value) {
+    totalOverride.placeholder = total ? total.toFixed(2) : '0.00';
   }
 }
 
@@ -1630,11 +1783,16 @@ function initShipmentItemsSection() {
   const container = document.getElementById('shipment-items-rows');
   const totalDisplay = document.getElementById('shipment-items-total-display');
   const totalHidden = document.getElementById('shipment-total-price');
+  const totalOverride = document.getElementById('shipment-total-price-override');
   const vendorApplyAll = document.getElementById('shipment-vendor-apply-all');
 
   if (container) container.innerHTML = '';
   if (totalDisplay) totalDisplay.textContent = '$0.00';
   if (totalHidden) totalHidden.value = '';
+  if (totalOverride) {
+    totalOverride.value = '';
+    totalOverride.placeholder = 'Use items total';
+  }
   if (vendorApplyAll) vendorApplyAll.checked = false;
 
   // Always start with one blank row
@@ -2079,6 +2237,7 @@ function maybeMarkPaidAfterUpload(meta = {}) {
 
 const SHIPMENTS_CACHE_KEY = 'avian_shipments_board_cache';
 const SHIPMENTS_QUEUE_KEY = 'avian_shipments_update_queue';
+const SHIPMENTS_COMMENTS_QUEUE_KEY = 'avian_kiosk_shipment_comment_queue_v1';
 
 // Report column configuration
 const SHIP_REPORT_COLUMNS = [
@@ -2150,19 +2309,51 @@ function saveShipmentsUpdateQueue(queue) {
   } catch {}
 }
 
-// Add/replace a pending update for a given shipment id
 function queueShipmentUpdate(shipmentId, payload) {
   const q = getShipmentsUpdateQueue();
+  const clientId =
+    payload && payload.client_id ? String(payload.client_id) : makeClientId('ship');
+  const ifMatch =
+    payload && payload.if_match_updated_at ? payload.if_match_updated_at : null;
+  const nextPayload = {
+    ...(payload || {}),
+    client_id: clientId
+  };
+  if (ifMatch) {
+    nextPayload.if_match_updated_at = ifMatch;
+  }
 
   // For simplicity, keep only the latest update per shipment
   const without = q.filter(entry => entry.id !== shipmentId);
   without.push({
     id: shipmentId,
-    payload,
-    queued_at: new Date().toISOString()
+    client_id: clientId,
+    if_match_updated_at: ifMatch,
+    payload: nextPayload,
+    queued_at: new Date().toISOString(),
+    blocked: false,
+    conflict: null
   });
 
   saveShipmentsUpdateQueue(without);
+  renderShipmentQueueStatus();
+}
+
+function renderShipmentQueueStatus() {
+  const msgEl = document.getElementById('shipments-board-message');
+  if (!msgEl) return;
+  const q = getShipmentsUpdateQueue();
+  const blocked = q.filter(entry => entry && entry.blocked);
+  if (blocked.length) {
+    msgEl.textContent =
+      'Offline shipment edits need review before they can sync.';
+    msgEl.style.color = '#b45309';
+    msgEl.dataset.queueWarning = 'true';
+  } else if (msgEl.dataset.queueWarning === 'true') {
+    msgEl.textContent = '';
+    msgEl.style.color = '';
+    msgEl.dataset.queueWarning = 'false';
+  }
 }
 
 async function syncShipmentsUpdateQueue() {
@@ -2172,46 +2363,138 @@ async function syncShipmentsUpdateQueue() {
   if (!q.length) return;
 
   const remaining = [];
+  let hadChanges = false;
 
   for (const entry of q) {
-    const { id, payload } = entry;
+    const { id } = entry || {};
     if (!id) continue;
+    if (entry.blocked) {
+      remaining.push(entry);
+      continue;
+    }
+
+    const payload = {
+      ...(entry.payload || {}),
+      client_id: entry.client_id || makeClientId('ship')
+    };
+    if (entry.if_match_updated_at && !payload.if_match_updated_at) {
+      payload.if_match_updated_at = entry.if_match_updated_at;
+    }
 
     try {
-      await fetchJSON(`/api/shipments/${encodeURIComponent(id)}`, {
+      const res = await fetch(`/api/shipments/${encodeURIComponent(id)}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
         body: JSON.stringify(payload)
       });
-      // If we get here, that entry synced successfully → do not re-add
+
+      if (res.status === 409) {
+        const data = await res.json().catch(() => ({}));
+        remaining.push({
+          ...entry,
+          blocked: true,
+          conflict: data.current || data.shipment || data || null
+        });
+        continue;
+      }
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || data.message || 'Failed to sync shipment.');
+      }
+
+      await res.json().catch(() => ({}));
+      hadChanges = true;
     } catch (err) {
       console.warn('[SHIPMENTS OFFLINE] Failed to sync shipment', id, err);
-      // keep it in the queue to try again later
       remaining.push(entry);
     }
   }
 
   saveShipmentsUpdateQueue(remaining);
+  renderShipmentQueueStatus();
 
-  // Optionally reload board if anything changed
-  if (remaining.length === 0 && typeof loadShipmentsBoard === 'function') {
+  if (hadChanges && typeof loadShipmentsBoard === 'function') {
     try {
       await loadShipmentsBoard();
     } catch {}
   }
 }
 
-// Whenever the browser comes back online, try to flush queue
+function getShipmentCommentsQueue() {
+  try {
+    const raw = localStorage.getItem(SHIPMENTS_COMMENTS_QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveShipmentCommentsQueue(queue) {
+  try {
+    localStorage.setItem(SHIPMENTS_COMMENTS_QUEUE_KEY, JSON.stringify(queue));
+  } catch {}
+}
+
+function queueShipmentComment({ shipmentId, body }) {
+  if (!shipmentId || !body) return;
+  const q = getShipmentCommentsQueue();
+  q.push({
+    client_id: makeClientId('comment'),
+    shipment_id: shipmentId,
+    body,
+    queued_at: new Date().toISOString()
+  });
+  saveShipmentCommentsQueue(q);
+}
+
+async function syncShipmentCommentsQueue() {
+  if (!isOnline()) return;
+  const q = getShipmentCommentsQueue();
+  if (!q.length) return;
+
+  const remaining = [];
+
+  for (const entry of q) {
+    if (!entry || !entry.shipment_id || !entry.body) continue;
+    try {
+      await fetchJSON(`/api/shipments/${encodeURIComponent(entry.shipment_id)}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          body: entry.body,
+          client_id: entry.client_id
+        })
+      });
+    } catch (err) {
+      console.warn('[SHIPMENTS OFFLINE] Failed to sync comment', entry, err);
+      remaining.push(entry);
+    }
+  }
+
+  saveShipmentCommentsQueue(remaining);
+}
+
+// Whenever the browser comes back online, try to flush queues
 window.addEventListener('online', () => {
   syncShipmentsUpdateQueue();
+  syncShipmentCommentsQueue();
+  syncShipmentNotificationPrefsQueue();
 });
 
 
 async function loadShipmentsSection() {
   await Promise.all([
     loadShipmentsBoard(),
-    loadShipmentsFilters()
+    loadShipmentsFilters(),
+    loadShipmentTemplates()
   ]);
+  renderShipmentQueueStatus();
+  syncShipmentsUpdateQueue();
+  syncShipmentCommentsQueue();
+  syncShipmentNotificationPrefsQueue();
 }
 
 async function loadShipmentsFilters() {
@@ -2220,6 +2503,9 @@ async function loadShipmentsFilters() {
       fetchJSON('/api/vendors?status=active'),
       fetchJSON('/api/projects?status=active')
     ]);
+
+    shipmentsProjectsCache = Array.isArray(projects) ? projects : [];
+    refreshShipmentNotificationProjects(shipmentsProjectsCache);
 
     // Top-of-board filters
     const vendorFilter  = document.getElementById('shipments-filter-vendor');
@@ -2312,6 +2598,231 @@ const forwarderSelect = document.getElementById('shipment-forwarder');
     }
   } catch (err) {
     console.error('Error loading shipment filters:', err);
+  }
+}
+
+function showShipmentTemplateMessage(text, color) {
+  const msg = document.getElementById('shipment-templates-message');
+  if (!msg) return;
+  msg.textContent = text || '';
+  if (color) msg.style.color = color;
+}
+
+async function loadShipmentTemplates() {
+  const body = document.getElementById('shipment-templates-body');
+  if (body) {
+    body.innerHTML = '<tr><td colspan="4">Loading templates…</td></tr>';
+  }
+
+  try {
+    const data = await fetchJSON('/api/shipments/templates');
+    shipmentTemplatesCache = Array.isArray(data.templates) ? data.templates : [];
+    renderShipmentTemplates(shipmentTemplatesCache);
+  } catch (err) {
+    console.error('Error loading shipment templates:', err);
+    if (body) {
+      body.innerHTML = '<tr><td colspan="4">Failed to load templates.</td></tr>';
+    }
+  }
+}
+
+function renderShipmentTemplates(templates = []) {
+  const body = document.getElementById('shipment-templates-body');
+  if (!body) return;
+
+  if (!Array.isArray(templates) || !templates.length) {
+    body.innerHTML = '<tr><td colspan="4">(no templates yet)</td></tr>';
+    return;
+  }
+
+  body.innerHTML = '';
+  templates.forEach(tpl => {
+    const tr = document.createElement('tr');
+    const vendorName = tpl.vendor_name || '—';
+    const projectName = tpl.project_name || '—';
+
+    tr.innerHTML = `
+      <td>${escapeHTML(tpl.name || 'Template')}</td>
+      <td>${escapeHTML(vendorName)}</td>
+      <td>${escapeHTML(projectName)}</td>
+      <td>
+        <button class="btn secondary btn-sm" data-template-use="${tpl.id}">Use</button>
+        <button class="btn danger btn-sm" data-template-delete="${tpl.id}">Delete</button>
+      </td>
+    `;
+    body.appendChild(tr);
+  });
+}
+
+function buildTemplatePayloadFromForm(name) {
+  const vendorIdRaw = document.getElementById('shipment-vendor')?.value || '';
+  const projectIdRaw = document.getElementById('shipment-project')?.value || '';
+  const itemsRaw = collectShipmentItemsFromForm();
+  const items = itemsRaw.map(it => ({
+    description: it.description || null,
+    sku: it.sku || null,
+    quantity: Number(it.quantity) || 0,
+    unit_price: Number(it.unit_price) || 0,
+    line_total: Number(it.line_total) || 0,
+    vendor_name: it.vendor_name || null
+  }));
+  const itemsTotal = items.reduce((sum, it) => sum + (Number(it.line_total) || 0), 0);
+  const totalOverrideRaw =
+    document.getElementById('shipment-total-price-override')?.value || '';
+  const totalOverride =
+    totalOverrideRaw !== '' ? Number(totalOverrideRaw) : null;
+  const finalTotal =
+    totalOverride != null && !Number.isNaN(totalOverride)
+      ? totalOverride
+      : (itemsTotal > 0 ? itemsTotal : null);
+
+  return {
+    name: name || null,
+    title: document.getElementById('shipment-title')?.value.trim() || null,
+    vendor_id: vendorIdRaw ? Number(vendorIdRaw) : null,
+    freight_forwarder: document.getElementById('shipment-forwarder')?.value || null,
+    destination: document.getElementById('shipment-destination')?.value.trim() || null,
+    project_id: projectIdRaw ? Number(projectIdRaw) : null,
+    sku: document.getElementById('shipment-sku')?.value.trim() || null,
+    quantity: null,
+    total_price: finalTotal != null ? finalTotal.toFixed(2) : null,
+    price_per_item: null,
+    website_url: document.getElementById('shipment-website-url')?.value.trim() || null,
+    notes: document.getElementById('shipment-notes')?.value.trim() || null,
+    items
+  };
+}
+
+async function saveShipmentTemplateFromForm() {
+  if (!isOnline()) {
+    showShipmentTemplateMessage('Templates require an online connection.', 'crimson');
+    return;
+  }
+
+  const nameInput = document.getElementById('shipment-template-name');
+  const name = nameInput ? nameInput.value.trim() : '';
+  if (!name) {
+    showShipmentTemplateMessage('Template name is required.', 'crimson');
+    return;
+  }
+
+  try {
+    showShipmentTemplateMessage('Saving template...', '');
+    const payload = buildTemplatePayloadFromForm(name);
+    await fetchJSON('/api/shipments/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (nameInput) nameInput.value = '';
+    await loadShipmentTemplates();
+    showShipmentTemplateMessage('Template saved.', 'green');
+  } catch (err) {
+    console.error('Error saving shipment template:', err);
+    showShipmentTemplateMessage(err.message || 'Failed to save template.', 'crimson');
+  }
+}
+
+function applyShipmentTemplateById(id) {
+  if (!id) return;
+  let template = shipmentTemplatesCache.find(t => Number(t.id) === Number(id));
+  if (!template) {
+    loadShipmentTemplates().then(() => {
+      template = shipmentTemplatesCache.find(t => Number(t.id) === Number(id));
+      if (template) applyShipmentTemplateToForm(template);
+    });
+    return;
+  }
+  applyShipmentTemplateToForm(template);
+}
+
+function applyShipmentTemplateToForm(template) {
+  if (!template) return;
+
+  openShipmentCreateModal();
+
+  const titleInput = document.getElementById('shipment-title');
+  const vendorSelect = document.getElementById('shipment-vendor');
+  const projectSelect = document.getElementById('shipment-project');
+  const forwarderSelect = document.getElementById('shipment-forwarder');
+  const destinationInput = document.getElementById('shipment-destination');
+  const skuInput = document.getElementById('shipment-sku');
+  const websiteInput = document.getElementById('shipment-website-url');
+  const notesInput = document.getElementById('shipment-notes');
+  const totalOverrideInput = document.getElementById('shipment-total-price-override');
+
+  if (titleInput) titleInput.value = template.title || '';
+  if (destinationInput) destinationInput.value = template.destination || '';
+  if (skuInput) skuInput.value = template.sku || '';
+  if (websiteInput) websiteInput.value = template.website_url || '';
+  if (notesInput) notesInput.value = template.notes || '';
+  if (totalOverrideInput) {
+    totalOverrideInput.value =
+      template.total_price != null ? Number(template.total_price).toFixed(2) : '';
+  }
+
+  if (projectSelect) {
+    projectSelect.value =
+      template.project_id != null ? String(template.project_id) : '';
+  }
+
+  if (vendorSelect) {
+    if (template.vendor_id != null) {
+      vendorSelect.value = String(template.vendor_id);
+    } else if (template.vendor_name) {
+      const match = Array.from(vendorSelect.options).find(
+        opt => opt.textContent.trim() === template.vendor_name.trim()
+      );
+      vendorSelect.value = match ? match.value : '';
+    } else {
+      vendorSelect.value = '';
+    }
+  }
+
+  if (forwarderSelect) {
+    forwarderSelect.value = template.freight_forwarder || '';
+  }
+
+  const rowsContainer = document.getElementById('shipment-items-rows');
+  if (rowsContainer) {
+    rowsContainer.innerHTML = '';
+    if (Array.isArray(template.items) && template.items.length) {
+      template.items.forEach(item => {
+        addShipmentItemRow({
+          description: item.description,
+          sku: item.sku,
+          quantity: item.quantity != null ? Number(item.quantity) : '',
+          unit_price: item.unit_price != null ? Number(item.unit_price) : '',
+          line_total: item.line_total != null ? Number(item.line_total) : 0,
+          vendor_name: item.vendor_name || ''
+        });
+      });
+    } else {
+      addShipmentItemRow();
+    }
+  }
+
+  recalcShipmentItemsTotal();
+  syncVerifyAllCheckboxState();
+}
+
+async function deleteShipmentTemplate(id) {
+  if (!id) return;
+  const ok = await showYesNoPrompt('Delete this template? This cannot be undone.', {
+    yesLabel: 'Delete template',
+    noLabel: 'Keep it',
+    tone: 'danger'
+  });
+  if (!ok) return;
+
+  try {
+    await fetchJSON(`/api/shipments/templates/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+    await loadShipmentTemplates();
+  } catch (err) {
+    console.error('Error deleting template:', err);
+    showShipmentTemplateMessage(err.message || 'Failed to delete template.', 'crimson');
   }
 }
 
@@ -2783,10 +3294,12 @@ function openShipmentCreateModal() {
   const form     = document.getElementById('shipment-create-form');
   const msgEl    = document.getElementById('shipment-create-status');
   const idInput  = document.getElementById('shipment-id');
+  const updatedAtInput = document.getElementById('shipment-updated-at');
   const storageDueInput     = document.getElementById('shipment-storage-due-date');
   const storageDailyInput   = document.getElementById('shipment-storage-daily-fee');
   const storageEstimate     = document.getElementById('shipment-storage-fees-estimate');
   const storageEstimateHelp = document.getElementById('shipment-storage-fees-helper');
+  const totalOverrideInput  = document.getElementById('shipment-total-price-override');
   const header   = modal ? modal.querySelector('h3') : null;
 
   // NEW fields for post-pickup + payments
@@ -2800,6 +3313,7 @@ function openShipmentCreateModal() {
   const customsPaidAmt    = document.getElementById('shipment-customs-paid-amount');
 
   if (form) form.reset();
+  if (updatedAtInput) updatedAtInput.value = '';
 
   // Reset total paid display + hidden numeric
   const totalPaidDisplay = document.getElementById('shipment-total-paid-display');
@@ -2807,6 +3321,7 @@ function openShipmentCreateModal() {
 
   if (totalPaidDisplay) totalPaidDisplay.value = '';
   if (totalPaidHidden)  totalPaidHidden.value  = '';
+  if (totalOverrideInput) totalOverrideInput.value = '';
 
   // Reset message
   if (msgEl) {
@@ -2922,6 +3437,7 @@ function openShipmentCreateModal() {
 async function saveShipmentFromModal() {
   const msgEl   = document.getElementById('shipment-create-status');
   const idInput = document.getElementById('shipment-id');
+  const updatedAtInput = document.getElementById('shipment-updated-at');
   const shipmentId = idInput && idInput.value ? idInput.value : null;
 
   if (msgEl) {
@@ -2932,6 +3448,14 @@ async function saveShipmentFromModal() {
   // Collect items and compute total
   const items = collectShipmentItemsFromForm();
   const itemsTotal = items.reduce((sum, it) => sum + (Number(it.line_total) || 0), 0);
+  const totalOverrideRaw =
+    document.getElementById('shipment-total-price-override')?.value || '';
+  const totalOverride =
+    totalOverrideRaw !== '' ? Number(totalOverrideRaw) : null;
+  const finalTotal =
+    totalOverride != null && !Number.isNaN(totalOverride)
+      ? totalOverride
+      : (itemsTotal > 0 ? itemsTotal : null);
 
   // Required fields
   const titleInput   = document.getElementById('shipment-title');
@@ -2953,8 +3477,6 @@ async function saveShipmentFromModal() {
     document.getElementById('shipment-website-url')?.value.trim() || '';
 
   // NEW: post-pickup + payments fields
-  const storageRoomInput    = document.getElementById('shipment-storage-room');
-  const storageDetInput     = document.getElementById('shipment-storage-details');
   const storageDueInput     = document.getElementById('shipment-storage-due-date');
   const storageDailyInput   = document.getElementById('shipment-storage-daily-fee');
   const pickedUpByInput     = document.getElementById('shipment-picked-up-by');
@@ -2967,8 +3489,6 @@ async function saveShipmentFromModal() {
   const customsPaidChk      = document.getElementById('shipment-customs-paid');
   const customsPaidAmtInput = document.getElementById('shipment-customs-paid-amount');
 
-  const storageRoom    = storageRoomInput?.value.trim() || '';
-  const storageDetails = storageDetInput?.value.trim() || '';
   const storageDueDate = storageDueInput?.value || '';
   const storageDailyFeeRaw = storageDailyInput?.value || '';
   const storageDailyFee =
@@ -3057,7 +3577,7 @@ async function saveShipmentFromModal() {
     quantity: null,
     price_per_item: null,
 
-    total_price: itemsTotal ? itemsTotal.toFixed(2) : null,
+    total_price: finalTotal != null ? finalTotal.toFixed(2) : null,
     expected_ship_date:
       document.getElementById('shipment-expected-ship-date')?.value || '',
     expected_arrival_date:
@@ -3068,8 +3588,6 @@ async function saveShipmentFromModal() {
       document.getElementById('shipment-bol-number')?.value.trim() || '',
 
     // Storage + pickup
-    storage_room:    storageRoom || null,
-    storage_details: storageDetails || null,
     storage_due_date: storageDueDate || null,
     storage_daily_late_fee: storageDailyFee != null ? storageDailyFee : null,
     picked_up_by:    pickedUpBy || null,
@@ -3092,6 +3610,10 @@ async function saveShipmentFromModal() {
     notes: document.getElementById('shipment-notes')?.value.trim() || '',
     status: statusRaw,
   };
+
+  if (shipmentId && updatedAtInput && updatedAtInput.value) {
+    payload.if_match_updated_at = updatedAtInput.value;
+  }
  // 🔹 If offline and this is a *new* shipment → block (too messy to safely create)
   if (!isOnline() && !shipmentId) {
     if (msgEl) {
@@ -3169,9 +3691,11 @@ function openShipmentEditModal(shipment, items = []) {
   const modal    = document.getElementById('shipment-create-modal');
   const backdrop = document.getElementById('shipment-create-backdrop');
   const idInput  = document.getElementById('shipment-id');
+  const updatedAtInput = document.getElementById('shipment-updated-at');
   const header   = modal ? modal.querySelector('h3') : null;
 
   if (idInput) idInput.value = shipment.id;
+  if (updatedAtInput) updatedAtInput.value = shipment.updated_at || '';
   if (header) header.textContent = 'Edit Shipment';
 
   // Enable documents UI
@@ -3198,10 +3722,9 @@ function openShipmentEditModal(shipment, items = []) {
   const expArriveInput   = document.getElementById('shipment-expected-arrival-date');
   const trackingInput    = document.getElementById('shipment-tracking-number');
   const bolInput         = document.getElementById('shipment-bol-number');
-  const storageRoomInput = document.getElementById('shipment-storage-room');
-  const storageDetInput  = document.getElementById('shipment-storage-details');
   const storageDueInput  = document.getElementById('shipment-storage-due-date');
   const storageDailyInput= document.getElementById('shipment-storage-daily-fee');
+  const totalOverrideInput = document.getElementById('shipment-total-price-override');
 
   // Payments + pickup
   const pickedUpByInput   = document.getElementById('shipment-picked-up-by');
@@ -3270,14 +3793,16 @@ function openShipmentEditModal(shipment, items = []) {
   if (expArriveInput)   expArriveInput.value   = shipment.expected_arrival_date || '';
   if (trackingInput)    trackingInput.value    = shipment.tracking_number || '';
   if (bolInput)         bolInput.value         = shipment.bol_number || '';
-  if (storageRoomInput) storageRoomInput.value = shipment.storage_room || '';
-  if (storageDetInput)  storageDetInput.value  = shipment.storage_details || '';
   if (storageDueInput)  storageDueInput.value  = shipment.storage_due_date || '';
   if (storageDailyInput)
     storageDailyInput.value =
       shipment.storage_daily_late_fee != null
         ? Number(shipment.storage_daily_late_fee).toFixed(2)
         : '';
+  if (totalOverrideInput) {
+    totalOverrideInput.value =
+      shipment.total_price != null ? Number(shipment.total_price).toFixed(2) : '';
+  }
   updateStorageFeeEstimate();
 
   // Post-pickup + payments
@@ -3425,6 +3950,7 @@ async function uploadShipmentDocuments(shipmentId) {
   try {
     await fetch(`/api/shipments/${encodeURIComponent(shipmentId)}/documents`, {
       method: 'POST',
+      headers: getCsrfHeader(),
       body: formData
       // No Content-Type header on purpose – browser sets multipart boundary
     });
@@ -3557,16 +4083,9 @@ card.innerHTML = `
   </div>
 `;
 
-      card.addEventListener('click', async () => {
-  try {
-    const data = await fetchJSON(`/api/shipments/${sh.id}`);
-    if (data && data.shipment) {
-      openShipmentEditModal(data.shipment, data.items || []);
-    }
-  } catch (err) {
-    alert('Error loading shipment: ' + err.message);
-  }
-});
+      card.addEventListener('click', () => {
+        openShipmentDetail(sh.id);
+      });
 
       card.addEventListener('dragstart', onShipmentDragStart);
       card.addEventListener('dragend', onShipmentDragEnd);
@@ -3637,15 +4156,8 @@ card.innerHTML = `
   </div>
 `;
 
-      card.addEventListener('click', async () => {
-        try {
-          const data = await fetchJSON(`/api/shipments/${sh.id}`);
-          if (data && data.shipment) {
-            openShipmentEditModal(data.shipment, data.items || []);
-          }
-        } catch (err) {
-          alert('Error loading shipment: ' + err.message);
-        }
+      card.addEventListener('click', () => {
+        openShipmentDetail(sh.id);
       });
 
       card.addEventListener('dragstart', onShipmentDragStart);
@@ -3810,6 +4322,57 @@ function initVerifierTooltip() {
   });
 }
 
+function setShipmentDetailTab(tab) {
+  const tabs = document.querySelectorAll('.ship-detail-tab');
+  tabs.forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+
+  ['overview', 'payments', 'timeline', 'documents', 'comments'].forEach(key => {
+    const panel = document.getElementById(`ship-detail-${key}`);
+    if (panel) panel.classList.toggle('hidden', key !== tab);
+  });
+}
+
+function closeShipmentDetailModal() {
+  const modal = document.getElementById('shipment-detail-modal');
+  const backdrop = document.getElementById('shipment-detail-backdrop');
+  if (modal) modal.classList.add('hidden');
+  if (backdrop) backdrop.classList.add('hidden');
+  currentShipmentDetailId = null;
+  currentShipmentDetail = null;
+}
+
+function setupShipmentDetailTabs() {
+  const tabButtons = document.querySelectorAll('.ship-detail-tab');
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      setShipmentDetailTab(btn.dataset.tab || 'overview');
+    });
+  });
+
+  const closeBtn = document.getElementById('shipment-detail-close');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      closeShipmentDetailModal();
+    });
+  }
+
+  const editBtn = document.getElementById('shipment-detail-edit');
+  if (editBtn) {
+    editBtn.addEventListener('click', () => {
+      if (currentShipmentDetail && currentShipmentDetail.shipment) {
+        const detail = currentShipmentDetail;
+        closeShipmentDetailModal();
+        openShipmentEditModal(
+          detail.shipment,
+          detail.items || []
+        );
+      }
+    });
+  }
+}
+
 
 function setupShipmentsUI() {
   const search = document.getElementById('shipments-search');
@@ -3836,8 +4399,10 @@ function setupShipmentsUI() {
     search.addEventListener('input', () => {
       // If the shipment modal is open, ignore any “mystery” input (autofill)
       const backdrop = document.getElementById('shipment-create-backdrop');
+      const detailBackdrop = document.getElementById('shipment-detail-backdrop');
       const modalOpen =
-        backdrop && !backdrop.classList.contains('hidden');
+        (backdrop && !backdrop.classList.contains('hidden')) ||
+        (detailBackdrop && !detailBackdrop.classList.contains('hidden'));
 
       if (modalOpen) {
         // Ignore autofill while editing a shipment
@@ -3901,7 +4466,49 @@ function setupShipmentsUI() {
     });
   }
 
+  const notifyProjectsSelect = document.getElementById('shipment-notify-projects');
+  if (notifyProjectsSelect) {
+    notifyProjectsSelect.addEventListener('change', () => {
+      const ids = Array.from(notifyProjectsSelect.selectedOptions || [])
+        .map(opt => Number(opt.value))
+        .filter(n => Number.isFinite(n));
+      shipmentNotificationPref.project_ids = ids;
+    });
+  }
+
+  const notifyRemindInput = document.getElementById('shipment-notify-remind');
+  if (notifyRemindInput) {
+    notifyRemindInput.addEventListener('change', () => {
+      const val = Number(notifyRemindInput.value || 1);
+      shipmentNotificationPref.remind_every_days =
+        Number.isFinite(val) && val >= 1 ? Math.floor(val) : 1;
+    });
+  }
+
   loadShipmentNotificationPrefs();
+
+  const templateSaveBtn = document.getElementById('shipment-template-save');
+  if (templateSaveBtn) {
+    templateSaveBtn.addEventListener('click', () => {
+      saveShipmentTemplateFromForm();
+    });
+  }
+
+  const templatesBody = document.getElementById('shipment-templates-body');
+  if (templatesBody) {
+    templatesBody.addEventListener('click', (evt) => {
+      const useBtn = evt.target.closest('button[data-template-use]');
+      const deleteBtn = evt.target.closest('button[data-template-delete]');
+      if (useBtn) {
+        const id = useBtn.getAttribute('data-template-use');
+        if (id) applyShipmentTemplateById(Number(id));
+      }
+      if (deleteBtn) {
+        const id = deleteBtn.getAttribute('data-template-delete');
+        if (id) deleteShipmentTemplate(Number(id));
+      }
+    });
+  }
 
   // Custom status dropdown
   const statusBtn = document.getElementById('status-dropdown-btn');
@@ -4074,21 +4681,41 @@ if (headerVendorSelect && headerVendorApplyAll) {
   setupShipmentPaymentListeners();
   setupItemVerificationModal();
   initVerifierTooltip();
+  setupShipmentDetailTabs();
 }
 
 
 
 async function openShipmentDetail(id) {
   const backdrop = document.getElementById('shipment-detail-backdrop');
+  const modal = document.getElementById('shipment-detail-modal');
   const titleEl = document.getElementById('shipment-detail-title');
   const overviewEl = document.getElementById('ship-detail-overview');
-  if (!backdrop || !overviewEl) return;
+  const paymentsEl = document.getElementById('ship-detail-payments');
+  const timelineEl = document.getElementById('ship-detail-timeline');
+  const docsEl = document.getElementById('ship-detail-documents');
+  const commentsEl = document.getElementById('ship-detail-comments');
+
+  if (!backdrop || !modal || !overviewEl) return;
+
+  currentShipmentDetailId = id;
+  currentShipmentDetail = null;
+  setShipmentDetailTab('overview');
 
   overviewEl.innerHTML = 'Loading…';
+  if (paymentsEl) paymentsEl.innerHTML = 'Loading…';
+  if (timelineEl) timelineEl.innerHTML = 'Loading…';
+  if (docsEl) docsEl.innerHTML = 'Loading…';
+  if (commentsEl) commentsEl.innerHTML = 'Loading…';
 
-try {
+  backdrop.classList.remove('hidden');
+  modal.classList.remove('hidden');
+
+  try {
     const data = await fetchJSON(`/api/shipments/${id}`);
-    const s = data.shipment;
+    const s = data.shipment || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    currentShipmentDetail = { shipment: s, items };
 
     const trackingHtml = buildTrackingLink(
       s.tracking_number,
@@ -4103,37 +4730,51 @@ try {
     const expectedArrival = s.expected_arrival_date
       ? formatDateUS(s.expected_arrival_date)
       : '—';
-
+    const pickupDue = s.storage_due_date
+      ? formatDateUS(s.storage_due_date)
+      : '—';
+    const pickupBy = s.picked_up_by || '—';
+    const pickupDate = s.picked_up_date
+      ? formatDateUS(s.picked_up_date)
+      : '';
 
     if (titleEl) {
-      titleEl.textContent = `${s.title || 'Shipment'} · ${s.status}`;
+      titleEl.textContent = `${s.title || 'Shipment'}${s.status ? ` · ${s.status}` : ''}`;
     }
 
     overviewEl.innerHTML = `
       <div class="form-grid">
         <div class="form-field">
           <label>Vendor</label>
-          <div>${s.vendor_name || '—'}</div>
+          <div>${escapeHTML(s.vendor_name || '—')}</div>
         </div>
         <div class="form-field">
           <label>Forwarder</label>
-          <div>${s.freight_forwarder || '—'}</div>
+          <div>${escapeHTML(s.freight_forwarder || '—')}</div>
         </div>
         <div class="form-field">
           <label>Destination</label>
-          <div>${s.destination || '—'}</div>
+          <div>${escapeHTML(s.destination || '—')}</div>
         </div>
         <div class="form-field">
           <label>Project</label>
-          <div>${s.customer_name ? (s.customer_name + ' – ') : ''}${s.project_name || ''}</div>
+          <div>${escapeHTML(s.customer_name ? (s.customer_name + ' – ') : '')}${escapeHTML(s.project_name || '')}</div>
         </div>
-                <div class="form-field">
+        <div class="form-field">
           <label>Tracking #</label>
           <div>${trackingHtml}</div>
         </div>
         <div class="form-field">
           <label>BOL #</label>
-          <div>${s.bol_number || '—'}</div>
+          <div>${escapeHTML(s.bol_number || '—')}</div>
+        </div>
+        <div class="form-field">
+          <label>PO #</label>
+          <div>${escapeHTML(s.po_number || '—')}</div>
+        </div>
+        <div class="form-field">
+          <label>Total price</label>
+          <div>${s.total_price != null ? formatMoney(s.total_price) : '—'}</div>
         </div>
         <div class="form-field">
           <label>Expected ship</label>
@@ -4144,32 +4785,541 @@ try {
           <div>${expectedArrival}</div>
         </div>
 
-                <div class="form-field">
-          <label>Storage</label>
-          <div>${s.storage_room || '—'}<br>${s.storage_details || ''}</div>
+        <div class="form-field">
+          <label>Pickup Due</label>
+          <div>${pickupDue}</div>
         </div>
         <div class="form-field">
-  <label>Verification</label>
-  <div>
-    ${s.items_verified ? '✅ All line items marked Verified' : '— (see line items)'}
-  </div>
-</div>
+          <label>Picked Up</label>
+          <div>${escapeHTML(pickupBy)}${pickupDate ? ` (${pickupDate})` : ''}</div>
+        </div>
+        <div class="form-field">
+          <label>Verification</label>
+          <div>
+            ${s.items_verified ? '✅ All line items marked Verified' : '— (see line items)'}
+          </div>
+        </div>
 
         <div class="form-field">
           <label>Website</label>
-          <div>${s.website_url ? `<a href="${s.website_url}" target="_blank">${s.website_url}</a>` : '—'}</div>
+          <div>${s.website_url ? `<a href="${escapeHTML(s.website_url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(s.website_url)}</a>` : '—'}</div>
         </div>
 
         <div class="form-field" style="grid-column:1 / -1;">
           <label>Notes</label>
-          <div>${s.notes || '—'}</div>
+          <div>${escapeHTML(s.notes || '—')}</div>
         </div>
+      </div>
+      <div class="ship-detail-items">
+        <h4>Line items</h4>
+        ${renderShipmentItemsTable(items)}
       </div>
     `;
 
-    backdrop.classList.remove('hidden');
+    const paymentsAllowed = canViewShipmentPayments();
+    if (CURRENT_PERMS != null && !paymentsAllowed && paymentsEl) {
+      paymentsEl.innerHTML = '<p class="small-muted">Payment details require payroll access.</p>';
+      paymentsEl.classList.remove('hidden');
+    }
+
+    await Promise.all([
+      paymentsAllowed ? loadShipmentPayments(id, s) : Promise.resolve(),
+      loadShipmentTimeline(id),
+      loadShipmentDocumentsDetail(id),
+      loadShipmentComments(id)
+    ]);
   } catch (err) {
     overviewEl.innerHTML = 'Error loading shipment: ' + err.message;
+    if (paymentsEl) paymentsEl.innerHTML = '';
+    if (timelineEl) timelineEl.innerHTML = '';
+    if (docsEl) docsEl.innerHTML = '';
+    if (commentsEl) commentsEl.innerHTML = '';
+  }
+}
+
+function renderShipmentItemsTable(items = []) {
+  if (!items.length) {
+    return '<p class="small-muted">(No items on this shipment.)</p>';
+  }
+
+  const rows = items.map(it => {
+    const status =
+      (it.verification && it.verification.status) ||
+      (it.verified ? 'verified' : '');
+    const storage =
+      (it.verification && it.verification.storage_override) || '';
+    const notes =
+      (it.verification && it.verification.notes) ||
+      it.notes ||
+      '';
+
+    return `
+      <tr>
+        <td>${escapeHTML(it.description || '—')}</td>
+        <td>${escapeHTML(it.sku || '—')}</td>
+        <td>${escapeHTML(it.vendor_name || '—')}</td>
+        <td class="num">${Number(it.quantity) || 0}</td>
+        <td class="num">${formatMoney(it.unit_price || 0)}</td>
+        <td class="num">${formatMoney(it.line_total || 0)}</td>
+        <td>${escapeHTML(status || '—')}</td>
+        <td>${escapeHTML(storage || '—')}</td>
+        <td>${escapeHTML(notes || '')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="table-wrapper">
+      <table class="ship-detail-table">
+        <thead>
+          <tr>
+            <th>Description</th>
+            <th>SKU</th>
+            <th>Vendor</th>
+            <th class="num">Qty</th>
+            <th class="num">Unit</th>
+            <th class="num">Line total</th>
+            <th>Status</th>
+            <th>Storage</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadShipmentTimeline(shipmentId) {
+  const panel = document.getElementById('ship-detail-timeline');
+  if (!panel || !shipmentId) return;
+
+  try {
+    const data = await fetchJSON(`/api/shipments/${shipmentId}/timeline`);
+    const rows = Array.isArray(data.timeline) ? data.timeline : [];
+    panel.innerHTML = renderShipmentTimeline(rows);
+  } catch (err) {
+    panel.innerHTML = `<p class="small-muted">Failed to load timeline: ${escapeHTML(err.message || '')}</p>`;
+  }
+}
+
+function renderShipmentTimeline(rows = []) {
+  if (!rows.length) {
+    return '<p class="small-muted">(No timeline events yet.)</p>';
+  }
+
+  const items = rows.map(ev => {
+    const when = formatDateTimeLocal(ev.created_at);
+    let label = escapeHTML(ev.event_type || 'event');
+    if (ev.event_type === 'status_change') {
+      label = `Status: ${escapeHTML(ev.old_status || '—')} → ${escapeHTML(ev.new_status || '—')}`;
+    } else if (ev.event_type === 'storage_location_set') {
+      label = 'Storage location set';
+    }
+    const note = ev.note ? `<div class="ship-detail-note">${escapeHTML(ev.note)}</div>` : '';
+    const actor = ev.created_by_name
+      ? `<span class="ship-detail-meta">by ${escapeHTML(ev.created_by_name)}</span>`
+      : '';
+    return `
+      <div class="ship-detail-timeline-item">
+        <div class="ship-detail-timeline-header">
+          <strong>${label}</strong>
+          <span class="ship-detail-meta">${escapeHTML(when || '')}</span>
+        </div>
+        ${actor}
+        ${note}
+      </div>
+    `;
+  }).join('');
+
+  return `<div class="ship-detail-timeline-list">${items}</div>`;
+}
+
+async function loadShipmentDocumentsDetail(shipmentId) {
+  const panel = document.getElementById('ship-detail-documents');
+  if (!panel || !shipmentId) return;
+
+  try {
+    const data = await fetchJSON(`/api/shipments/${shipmentId}/documents`);
+    const docs = Array.isArray(data.documents) ? data.documents : [];
+    panel.innerHTML = renderShipmentDocumentsDetail(docs);
+
+    panel.querySelectorAll('button[data-doc-delete]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const docId = btn.getAttribute('data-doc-delete');
+        if (!docId) return;
+        const ok = await showYesNoPrompt('Delete this document?', {
+          yesLabel: 'Delete document',
+          noLabel: 'Keep it',
+          tone: 'danger'
+        });
+        if (!ok) return;
+        try {
+          await fetchJSON(
+            `/api/shipments/${encodeURIComponent(shipmentId)}/documents/${encodeURIComponent(docId)}`,
+            { method: 'DELETE' }
+          );
+          await loadShipmentDocumentsDetail(shipmentId);
+        } catch (err) {
+          alert('Error deleting document: ' + err.message);
+        }
+      });
+    });
+  } catch (err) {
+    panel.innerHTML = `<p class="small-muted">Failed to load documents: ${escapeHTML(err.message || '')}</p>`;
+  }
+}
+
+function renderShipmentDocumentsDetail(docs = []) {
+  if (!docs.length) {
+    return '<p class="small-muted">(No documents uploaded yet.)</p>';
+  }
+
+  const rows = docs.map(doc => {
+    const label = doc.doc_label || doc.doc_type || '';
+    const title = doc.title || doc.original_name || 'Document';
+    const link = doc.url || doc.file_path || '#';
+    const date = formatDateTimeLocal(doc.uploaded_at);
+    return `
+      <div class="ship-detail-doc-row">
+        <div>
+          <a href="${escapeHTML(link)}" target="_blank" rel="noopener noreferrer">${escapeHTML(title)}</a>
+          ${label ? `<span class="ship-detail-tag">${escapeHTML(label)}</span>` : ''}
+          <div class="ship-detail-meta">${escapeHTML(date || '')}</div>
+        </div>
+        <button class="btn danger btn-sm" data-doc-delete="${doc.id}">Delete</button>
+      </div>
+    `;
+  }).join('');
+
+  return `<div class="ship-detail-docs">${rows}</div>`;
+}
+
+async function loadShipmentPayments(shipmentId, shipment) {
+  const panel = document.getElementById('ship-detail-payments');
+  if (!panel || !shipmentId) return;
+
+  try {
+    const data = await fetchJSON(`/api/shipments/${shipmentId}/payments`);
+    const rows = Array.isArray(data.payments) ? data.payments : [];
+    panel.innerHTML = renderShipmentPayments(rows, shipment);
+
+    const form = panel.querySelector('#ship-detail-payment-form');
+    if (form) {
+      form.addEventListener('submit', async (evt) => {
+        evt.preventDefault();
+        await submitShipmentPayment(shipmentId);
+      });
+    }
+  } catch (err) {
+    panel.innerHTML = `<p class="small-muted">Failed to load payments: ${escapeHTML(err.message || '')}</p>`;
+  }
+}
+
+function renderShipmentPayments(rows = [], shipment = {}) {
+  const vendorPaidLabel = shipment.vendor_paid ? 'Paid' : 'Unpaid';
+  const shipperPaidLabel = shipment.shipper_paid ? 'Paid' : 'Unpaid';
+  const customsPaidLabel = shipment.customs_paid ? 'Paid' : 'Unpaid';
+
+  const list = rows.length
+    ? rows.map(row => {
+        const type = row.type || 'other';
+        const amount = formatMoney(row.amount || 0);
+        const status = row.status || 'Pending';
+        const due = row.due_date ? formatDateUS(row.due_date) : '—';
+        const paid = row.paid_date ? formatDateUS(row.paid_date) : '—';
+        const invoice = row.invoice_number || '—';
+        const notes = row.notes || '';
+        const created = formatDateTimeLocal(row.created_at);
+        const createdBy = row.created_by_name ? `by ${row.created_by_name}` : '';
+        return `
+          <div class="ship-detail-payment-row">
+            <div class="ship-detail-payment-main">
+              <strong>${escapeHTML(type)}</strong> · ${amount} · ${escapeHTML(status)}
+              <div class="ship-detail-meta">Due ${escapeHTML(due)} · Paid ${escapeHTML(paid)} · Invoice ${escapeHTML(invoice)}</div>
+              ${notes ? `<div class="ship-detail-note">${escapeHTML(notes)}</div>` : ''}
+              <div class="ship-detail-meta">${escapeHTML(created || '')} ${escapeHTML(createdBy)}</div>
+            </div>
+          </div>
+        `;
+      }).join('')
+    : '<p class="small-muted">(No payment ledger entries yet.)</p>';
+
+  return `
+    <div class="ship-detail-pay-summary">
+      <div><strong>Vendor:</strong> ${vendorPaidLabel} ${shipment.vendor_paid_amount != null ? `(${formatMoney(shipment.vendor_paid_amount)})` : ''}</div>
+      <div><strong>Forwarder:</strong> ${shipperPaidLabel} ${shipment.shipper_paid_amount != null ? `(${formatMoney(shipment.shipper_paid_amount)})` : ''}</div>
+      <div><strong>Customs:</strong> ${customsPaidLabel} ${shipment.customs_paid_amount != null ? `(${formatMoney(shipment.customs_paid_amount)})` : ''}</div>
+      <div><strong>Total paid:</strong> ${shipment.total_paid != null ? formatMoney(shipment.total_paid) : '—'}</div>
+    </div>
+
+    <form id="ship-detail-payment-form" class="ship-detail-form">
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="ship-payment-type">Type</label>
+          <select id="ship-payment-type">
+            <option value="vendor">Vendor</option>
+            <option value="shipper">Forwarder</option>
+            <option value="customs">Customs</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="ship-payment-amount">Amount</label>
+          <input id="ship-payment-amount" type="number" step="0.01" min="0" required />
+        </div>
+        <div class="form-field">
+          <label for="ship-payment-currency">Currency</label>
+          <input id="ship-payment-currency" type="text" value="USD" />
+        </div>
+        <div class="form-field">
+          <label for="ship-payment-status">Status</label>
+          <select id="ship-payment-status">
+            <option value="Pending">Pending</option>
+            <option value="Paid">Paid</option>
+            <option value="Partial">Partial</option>
+            <option value="Void">Void</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="ship-payment-due">Due date</label>
+          <input id="ship-payment-due" type="date" />
+        </div>
+        <div class="form-field">
+          <label for="ship-payment-paid">Paid date</label>
+          <input id="ship-payment-paid" type="date" />
+        </div>
+        <div class="form-field">
+          <label for="ship-payment-invoice">Invoice #</label>
+          <input id="ship-payment-invoice" type="text" />
+        </div>
+        <div class="form-field">
+          <label for="ship-payment-notes">Notes</label>
+          <input id="ship-payment-notes" type="text" />
+        </div>
+      </div>
+      <div class="ship-detail-actions">
+        <button type="submit" class="btn primary btn-sm">Add payment</button>
+        <span id="ship-payment-message" class="message"></span>
+      </div>
+    </form>
+    <div class="ship-detail-payment-list">${list}</div>
+  `;
+}
+
+async function submitShipmentPayment(shipmentId) {
+  const messageEl = document.getElementById('ship-payment-message');
+  const amountEl = document.getElementById('ship-payment-amount');
+  const amount = amountEl ? Number(amountEl.value) : null;
+  if (!amount || Number.isNaN(amount)) {
+    if (messageEl) {
+      messageEl.textContent = 'Amount is required.';
+      messageEl.style.color = 'crimson';
+    }
+    return;
+  }
+
+  const payload = {
+    type: document.getElementById('ship-payment-type')?.value || null,
+    amount,
+    currency: document.getElementById('ship-payment-currency')?.value || 'USD',
+    status: document.getElementById('ship-payment-status')?.value || 'Pending',
+    due_date: document.getElementById('ship-payment-due')?.value || null,
+    paid_date: document.getElementById('ship-payment-paid')?.value || null,
+    invoice_number: document.getElementById('ship-payment-invoice')?.value || null,
+    notes: document.getElementById('ship-payment-notes')?.value || null
+  };
+
+  try {
+    if (messageEl) {
+      messageEl.textContent = 'Saving...';
+      messageEl.style.color = '';
+    }
+    await fetchJSON(`/api/shipments/${encodeURIComponent(shipmentId)}/payments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (amountEl) amountEl.value = '';
+    const dueEl = document.getElementById('ship-payment-due');
+    const paidEl = document.getElementById('ship-payment-paid');
+    const invoiceEl = document.getElementById('ship-payment-invoice');
+    const notesEl = document.getElementById('ship-payment-notes');
+    if (dueEl) dueEl.value = '';
+    if (paidEl) paidEl.value = '';
+    if (invoiceEl) invoiceEl.value = '';
+    if (notesEl) notesEl.value = '';
+    if (messageEl) {
+      messageEl.textContent = 'Payment added.';
+      messageEl.style.color = 'green';
+    }
+    await loadShipmentPayments(shipmentId, currentShipmentDetail?.shipment || {});
+  } catch (err) {
+    if (messageEl) {
+      messageEl.textContent = err.message || 'Failed to add payment.';
+      messageEl.style.color = 'crimson';
+    }
+  }
+}
+
+async function loadShipmentComments(shipmentId) {
+  const panel = document.getElementById('ship-detail-comments');
+  if (!panel || !shipmentId) return;
+
+  if (!isOnline()) {
+    const queued = getShipmentCommentsQueue().filter(
+      entry => Number(entry.shipment_id) === Number(shipmentId)
+    );
+    panel.innerHTML = renderShipmentComments([], queued);
+    return;
+  }
+
+  try {
+    const data = await fetchJSON(`/api/shipments/${shipmentId}/comments`);
+    const comments = Array.isArray(data.comments) ? data.comments : [];
+    const queued = getShipmentCommentsQueue().filter(
+      entry => Number(entry.shipment_id) === Number(shipmentId)
+    );
+    panel.innerHTML = renderShipmentComments(comments, queued);
+
+    const form = panel.querySelector('#ship-detail-comment-form');
+    if (form) {
+      form.addEventListener('submit', async (evt) => {
+        evt.preventDefault();
+        await submitShipmentComment(shipmentId);
+      });
+    }
+
+    panel.querySelectorAll('button[data-comment-delete]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const commentId = btn.getAttribute('data-comment-delete');
+        if (!commentId) return;
+        if (!isOnline()) {
+          alert('Comment deletion requires an online connection.');
+          return;
+        }
+        const ok = await showYesNoPrompt('Delete this comment?', {
+          yesLabel: 'Delete comment',
+          noLabel: 'Keep it',
+          tone: 'danger'
+        });
+        if (!ok) return;
+        try {
+          await fetchJSON(
+            `/api/shipments/${encodeURIComponent(shipmentId)}/comments/${encodeURIComponent(commentId)}`,
+            { method: 'DELETE' }
+          );
+          await loadShipmentComments(shipmentId);
+        } catch (err) {
+          alert('Error deleting comment: ' + err.message);
+        }
+      });
+    });
+  } catch (err) {
+    panel.innerHTML = `<p class="small-muted">Failed to load comments: ${escapeHTML(err.message || '')}</p>`;
+  }
+}
+
+function renderShipmentComments(comments = [], queued = []) {
+  const pendingRows = queued.map(entry => ({
+    body: entry.body,
+    created_at: entry.queued_at,
+    pending: true
+  }));
+  const rows = [...comments, ...pendingRows].sort((a, b) => {
+    const at = new Date(a.created_at || 0).getTime();
+    const bt = new Date(b.created_at || 0).getTime();
+    return at - bt;
+  });
+
+  const list = rows.length
+    ? rows.map(row => {
+        const when = formatDateTimeLocal(row.created_at);
+        const pendingTag = row.pending ? '<span class="ship-detail-tag">Pending</span>' : '';
+        const author = row.created_by_name
+          ? `by ${row.created_by_name}`
+          : (row.created_by ? `by #${row.created_by}` : '');
+        const deleteBtn = !row.pending
+          ? `<button class="btn danger btn-sm" data-comment-delete="${row.id}">Delete</button>`
+          : '';
+        return `
+          <div class="ship-detail-comment-row ${row.pending ? 'pending' : ''}">
+            <div class="ship-detail-comment-main">
+              <div class="ship-detail-comment-meta">
+                <span>${escapeHTML(when || '')}</span>
+                <span>${escapeHTML(author || '')}</span>
+                ${pendingTag}
+              </div>
+              <div class="ship-detail-comment-body">${escapeHTML(row.body || '')}</div>
+            </div>
+            ${deleteBtn}
+          </div>
+        `;
+      }).join('')
+    : '<p class="small-muted">(No comments yet.)</p>';
+
+  return `
+    <form id="ship-detail-comment-form" class="ship-detail-form">
+      <div class="form-field">
+        <label for="ship-detail-comment-body">Add comment</label>
+        <textarea id="ship-detail-comment-body" rows="3" placeholder="Write a comment…"></textarea>
+      </div>
+      <div class="ship-detail-actions">
+        <button type="submit" class="btn primary btn-sm">Add comment</button>
+        <span id="ship-comment-message" class="message"></span>
+      </div>
+    </form>
+    <div class="ship-detail-comment-list">${list}</div>
+  `;
+}
+
+async function submitShipmentComment(shipmentId) {
+  const input = document.getElementById('ship-detail-comment-body');
+  const messageEl = document.getElementById('ship-comment-message');
+  const body = input ? input.value.trim() : '';
+  if (!body) {
+    if (messageEl) {
+      messageEl.textContent = 'Comment cannot be empty.';
+      messageEl.style.color = 'crimson';
+    }
+    return;
+  }
+
+  if (!isOnline()) {
+    queueShipmentComment({ shipmentId, body });
+    if (input) input.value = '';
+    if (messageEl) {
+      messageEl.textContent = 'Comment queued for sync.';
+      messageEl.style.color = '#b45309';
+    }
+    await loadShipmentComments(shipmentId);
+    return;
+  }
+
+  try {
+    if (messageEl) {
+      messageEl.textContent = 'Saving...';
+      messageEl.style.color = '';
+    }
+    await fetchJSON(`/api/shipments/${encodeURIComponent(shipmentId)}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        body,
+        client_id: makeClientId('comment')
+      })
+    });
+    if (input) input.value = '';
+    if (messageEl) {
+      messageEl.textContent = 'Comment added.';
+      messageEl.style.color = 'green';
+    }
+    await loadShipmentComments(shipmentId);
+  } catch (err) {
+    if (messageEl) {
+      messageEl.textContent = err.message || 'Failed to add comment.';
+      messageEl.style.color = 'crimson';
+    }
   }
 }
 
@@ -4307,7 +5457,7 @@ async function applyDefaultStorageLateFeeFromSettings() {
   if (!feeInput || (feeInput.value && feeInput.value.trim() !== '')) return;
 
   const settings = await loadShipmentSettingsCached();
-  const dailyFeeRaw = settings ? settings.daily_fee : null;
+  const dailyFeeRaw = settings ? settings.storage_daily_late_fee_default : null;
   const dailyFeeNum = Number(dailyFeeRaw);
 
   if (Number.isNaN(dailyFeeNum) || dailyFeeNum < 0) return;

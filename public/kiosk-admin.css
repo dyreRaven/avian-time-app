@@ -2916,7 +2916,8 @@ input[type="checkbox"]:disabled {
   gap: 8px;
 }
 
-#ka-view-live,
+#ka-view-timesheets,
+#ka-view-workers,
 #ka-view-time,
 #ka-view-settings {
   padding: 16px;
@@ -3849,7 +3850,7 @@ body {
   margin: 0;
   padding: 0;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: var(--slate-100);
+  background: #fbfbfd;
   color: var(--slate-800);
 }
 
@@ -3862,7 +3863,10 @@ body {
   width: 100vw;
   flex: 1;
   padding: 0 18px 18px;
-  background: #ffffff;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(245, 244, 249, 0.45), transparent 60%),
+    radial-gradient(circle at 82% 12%, rgba(244, 244, 248, 0.35), transparent 65%),
+    linear-gradient(180deg, #fdfdff 0%, #fbfbfd 55%, #fafbfe 100%);
   overflow-x: auto;
 }
 
@@ -3909,6 +3913,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  margin-bottom: 32px;
 }
 
 .ka-header-left {
@@ -3954,7 +3959,7 @@ body {
 .ka-header-back-link {
   font-size: 0.95rem;
   font-weight: 700;
-  color: #ecfdf5;
+  color: var(--slate-700);
   cursor: pointer;
   letter-spacing: 0.03em;
   display: inline-flex;
@@ -3962,21 +3967,21 @@ body {
   gap: 8px;
   padding: 8px 12px;
   user-select: none;
-  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-600));
-  border: 1px solid var(--emerald-500);
+  background: var(--slate-200);
+  border: 1px solid var(--slate-300);
   border-radius: 999px;
-  box-shadow: 0 10px 22px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.12);
   transition: transform 0.12s ease, box-shadow 0.18s ease, background-color 0.12s ease;
 }
 
 .ka-header-back-link:hover {
-  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-600));
-  box-shadow: 0 14px 30px rgba(16, 185, 129, 0.4);
+  background: var(--slate-300);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18);
   transform: translateY(-1px);
 }
 .ka-header-back-link:active {
   transform: translateY(1px);
-  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.18);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
 }
 
 /* =========================================
@@ -4748,33 +4753,212 @@ body {
 ========================================= */
 .ka-bottom-nav {
   position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  bottom: 16px;
+  left: 18px;
+  right: 18px;
   height: 72px;
-  background: #0c816d;
-  border-top: 1px solid #0e9a71;
-  display: flex;
-  align-items: center;
-  justify-content: space-around;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 22px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px;
   z-index: 100;
+  backdrop-filter: blur(10px);
 }
 
 .ka-bottom-nav button {
-  flex: 1;
-  height: 100%;
   border: none;
   background: transparent;
-  color: white;
-  font-size: 0.85rem;
+  color: #475569;
+  font-size: 0.78rem;
   font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-transform: none;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 16px;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
-.ka-bottom-nav button.active { background: rgba(255,255,255,0.15); }
-.ka-bottom-nav button:active { background: rgba(255,255,255,0.25); }
+.ka-bottom-nav button.active {
+  background: #2f6a63;
+  color: #ffffff;
+  box-shadow: 0 12px 22px rgba(47, 106, 99, 0.35);
+}
+
+.ka-bottom-nav button:active { transform: translateY(1px); }
+
+.ka-nav-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ka-nav-icon svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.ka-nav-label {
+  line-height: 1;
+}
+
+/* =========================================
+   TIMESHEET WORKERS SHEET
+========================================= */
+.ka-sheet {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 160;
+  pointer-events: none;
+}
+
+.ka-sheet.hidden {
+  display: none;
+}
+
+.ka-sheet.is-open {
+  pointer-events: auto;
+}
+
+.ka-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.28);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.ka-sheet.is-open .ka-sheet-backdrop {
+  opacity: 1;
+}
+
+.ka-sheet-panel {
+  position: relative;
+  width: min(680px, 100%);
+  margin: 0 12px;
+  background: #ffffff;
+  border-radius: 22px 22px 0 0;
+  padding: 10px 18px calc(20px + env(safe-area-inset-bottom));
+  box-shadow: 0 -18px 40px rgba(15, 23, 42, 0.18);
+  transform: translateY(100%);
+  transition: transform 0.25s ease;
+  max-height: min(80vh, 620px);
+  display: flex;
+  flex-direction: column;
+}
+
+.ka-sheet.is-open .ka-sheet-panel {
+  transform: translateY(0);
+}
+
+.ka-sheet.dragging .ka-sheet-panel {
+  transition: none;
+}
+
+.ka-sheet-handle {
+  width: 48px;
+  height: 5px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  margin: 6px auto 10px;
+  touch-action: none;
+}
+
+.ka-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ka-sheet-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.ka-sheet-sub {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.ka-sheet-close {
+  border: none;
+  background: #f1f5f9;
+  color: #475569;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+
+.ka-sheet-body {
+  margin-top: 8px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.ka-sheet-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.ka-sheet-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name duration"
+    "clockin duration";
+  gap: 4px 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(236, 233, 244, 0.9);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 252, 254, 0.98));
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.05);
+}
+
+.ka-sheet-item-name {
+  grid-area: name;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.ka-sheet-item-clockin {
+  grid-area: clockin;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.ka-sheet-item-duration {
+  grid-area: duration;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #2f6a63;
+  align-self: center;
+  justify-self: end;
+}
 
 
 /* =========================================
@@ -4823,7 +5007,8 @@ body {
 /* =========================================
    VIEW LAYOUT – match "Current Workers"
 ========================================= */
-#ka-view-live,
+#ka-view-timesheets,
+#ka-view-workers,
 #ka-view-time,
 #ka-view-settings {
   max-width: none;
@@ -4865,7 +5050,7 @@ body {
 ========================================= */
 
 /* Make the live view a centered flex container */
-#ka-view-live {
+#ka-view-workers {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -5116,6 +5301,7 @@ body {
 
   .ka-header {
     padding: 10px 8px;
+    margin-bottom: 28px;
   }
 
   .ka-title-main {
@@ -5159,6 +5345,7 @@ body {
     flex-direction: column;
     align-items: flex-start;
     gap: 6px;
+    margin-bottom: 22px;
   }
 
   .ka-header-right {
@@ -5282,13 +5469,27 @@ body {
 
   /* Bottom nav: phone friendly */
   .ka-bottom-nav {
-    height: 52px;
-    padding: 0 4px;
+    height: 64px;
+    bottom: 10px;
+    left: 10px;
+    right: 10px;
+    padding: 6px;
+    border-radius: 18px;
+    gap: 4px;
   }
 
   .ka-bottom-nav button {
-    font-size: 0.75rem;
-    letter-spacing: 0.08em;
+    font-size: 0.68rem;
+  }
+
+  .ka-nav-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .ka-nav-icon svg {
+    width: 18px;
+    height: 18px;
   }
 }
 
@@ -5342,8 +5543,9 @@ body {
     box-sizing: border-box;
   }
 
-  #ka-view-live,
-    #ka-view-time,
+  #ka-view-timesheets,
+  #ka-view-workers,
+  #ka-view-time,
   #ka-view-settings {
     max-width: 100vw;
     padding: 12px 0 60px;
@@ -8768,7 +8970,8 @@ body {
 }
 
 /* Pull the Timesheets/Current Workers section up slightly */
-#ka-view-live {
+#ka-view-timesheets,
+#ka-view-workers {
   margin-top: -8px;
 }
 
@@ -8804,18 +9007,374 @@ body {
 .ka-session-create {
   margin-top: 10px;
 }
-#ka-session-create .ka-session-actions-row {
-  margin-top: 18px;
-  gap: 12px;
-}
 #ka-session-list {
   margin-top: 14px;
   margin-bottom: 24px;
 }
 
+#ka-sessions-card .card-header {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--slate-200);
+  align-items: flex-start;
+}
+
+#ka-sessions-card .card-header > div:first-child {
+  max-width: 62%;
+}
+
+#ka-sessions-card .card-sub {
+  max-width: 52ch;
+  line-height: 1.45;
+}
+
+#ka-sessions-card .ka-session-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+#ka-sessions-card .ka-session-filter {
+  display: grid;
+  gap: 6px;
+}
+
+#ka-sessions-card .ka-session-filter .ka-session-label,
+#ka-sessions-card .ka-session-inline label[for="ka-project-select"] {
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--slate-500);
+}
+
+#ka-session-create .ka-session-inline label[for="ka-project-select"] {
+  font-size: 0.85rem;
+  letter-spacing: 0.14em;
+  color: var(--slate-700);
+  font-weight: 700;
+}
+
+#ka-project-select {
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid var(--slate-200);
+  background: #ffffff;
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.08);
+  padding: 0 36px 0 12px;
+}
+
+#ka-session-create #ka-project-select {
+  margin-bottom: 16px;
+}
+
+.ka-filter-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ka-filter-toggle {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  border: 1px solid var(--slate-200);
+  background: #ffffff;
+  color: var(--slate-700);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+}
+
+.ka-filter-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+.ka-filter-toggle:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.4);
+  outline-offset: 2px;
+}
+
+.ka-filter-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(320px, 80vw);
+  padding: 14px;
+  border-radius: var(--ka-timesheet-control-radius, 14px);
+  background: #ffffff;
+  border: 1px solid var(--slate-200);
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.18);
+  display: grid;
+  gap: 12px;
+  z-index: 40;
+}
+
+.ka-filter-date {
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--slate-500);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--slate-200);
+}
+
+.ka-filter-options {
+  display: grid;
+  gap: 8px;
+}
+
+.ka-filter-option {
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: var(--ka-timesheet-control-radius, 10px);
+  border: 1px solid var(--slate-200);
+  background: #f8fafc;
+  color: var(--slate-700);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ka-filter-option:hover {
+  background: #eef2f7;
+}
+
+.ka-filter-option.is-active {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #0f766e;
+  box-shadow: 0 10px 18px rgba(12, 129, 109, 0.12);
+}
+
+.ka-filter-option:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.4);
+  outline-offset: 2px;
+}
+
+#ka-session-create {
+  background: #f8fafc;
+  border: 1px solid var(--slate-200);
+  border-radius: 16px;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+#ka-session-create .ka-session-actions-row {
+  margin-top: 0;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+#ka-session-create .ka-session-actions-row .btn {
+  height: 42px;
+}
+
+#ka-sessions-card .ka-header-status {
+  margin-right: 0;
+  justify-content: flex-end;
+  background: #f8fafc;
+  border: 1px solid var(--slate-200);
+  border-radius: 999px;
+  padding: 4px 6px;
+}
+
+#ka-sessions-card .ka-header-status .ka-pill {
+  background: transparent;
+  border-color: transparent;
+  padding: 4px 8px;
+}
+
+#ka-sessions-card .ka-header-status.ka-session-status-footer {
+  margin-top: 6px;
+  justify-content: flex-end;
+  align-self: center;
+  margin-left: auto;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+#ka-sessions-card .ka-header-status.ka-session-status-footer .ka-pill {
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  padding: 3px 8px;
+  font-size: 0.68rem;
+}
+
+#ka-session-list .ka-status {
+  background: #f8fafc;
+  border: 1px dashed var(--slate-200);
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: var(--slate-500);
+}
+
+#ka-session-list .ka-status-error {
+  color: var(--slate-600);
+  border-color: var(--slate-200);
+}
+
+.ka-session-empty {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #ecfdf3;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  font-weight: 600;
+  box-shadow: 0 12px 22px rgba(12, 129, 109, 0.18);
+}
+
+.ka-timesheet-heading-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ka-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ka-help-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--slate-200);
+  background: #ffffff;
+  color: var(--slate-600);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
+}
+
+.ka-help-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ka-help-btn:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.4);
+  outline-offset: 2px;
+}
+
+.ka-help-pill {
+  width: auto;
+  height: auto;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  background: #ecfdf5;
+  color: #0f766e;
+  border-color: #a7f3d0;
+  box-shadow: none;
+}
+
+.ka-session-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ka-help-modal {
+  width: min(720px, 92vw);
+}
+
+.ka-help-body {
+  display: grid;
+  gap: 16px;
+  color: var(--slate-700);
+}
+
+.ka-help-section h4 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--slate-800);
+}
+
+.ka-help-section ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  line-height: 1.5;
+}
+
+#ka-live-card .card-header {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+#ka-live-card .card-header.ka-live-header {
+  position: static;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--slate-200);
+  margin-bottom: 16px;
+}
+
+#ka-live-card h2 {
+  text-align: left;
+  margin-top: 0;
+}
+
+#ka-live-card .ka-live-header-left {
+  max-width: 65%;
+}
+
+#ka-live-card .ka-live-header-top {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+#ka-live-card .ka-live-header-right {
+  position: static;
+  align-items: flex-end;
+  text-align: right;
+  margin-left: auto;
+}
+
+#ka-live-card .table-wrap {
+  border: 1px solid var(--slate-200);
+  background: #ffffff;
+}
+
+#ka-live-card table thead th {
+  background: #f8fafc;
+  color: var(--slate-500);
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 /* Global spacing for timesheet creation controls */
 #ka-session-create .ka-session-inline {
-  margin-bottom: 24px;
+  margin-bottom: 0;
+}
+
+#ka-session-create .ka-session-inline:first-child {
+  margin-bottom: 12px;
 }
 
 /* Tablet layout adjustments for timesheet controls */
@@ -8827,7 +9386,11 @@ body {
     gap: 10px;
     flex-wrap: wrap;
     align-items: center;
-    margin-bottom: 20px;
+    margin-bottom: 0;
+  }
+
+  #ka-session-create .ka-session-inline:first-child {
+    margin-bottom: 12px;
   }
   #ka-session-create .ka-session-inline label[for="ka-project-select"] {
     grid-column: auto;
@@ -8847,4 +9410,840 @@ body {
   justify-content: flex-start;
   margin-top: 36px;
   gap: 14px;
+}
+
+.ka-header-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-right: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.ka-session-status {
+  margin-right: 0;
+}
+
+.ka-pill {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #ecfdf5;
+  color: #0f766e;
+  border: 1px solid #a7f3d0;
+}
+
+.ka-pill.is-offline {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.ka-pill.has-pending {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
+
+@media (max-width: 700px) {
+  #ka-sessions-card .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  #ka-sessions-card .card-header > div:first-child {
+    max-width: 100%;
+  }
+
+  #ka-sessions-card .ka-session-actions {
+    align-items: flex-start;
+    width: 100%;
+  }
+
+  #ka-session-filter,
+  #ka-project-select {
+    width: 100%;
+  }
+
+  .ka-filter-panel {
+    right: auto;
+    left: 0;
+    width: min(320px, 88vw);
+  }
+
+  #ka-live-card .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  #ka-live-card .ka-live-header-right {
+    align-items: flex-start;
+    text-align: left;
+    width: 100%;
+  }
+}
+
+.ka-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.ka-info-label {
+  font-size: 0.85rem;
+  color: #6b7280;
+}
+
+.ka-info-value {
+  font-weight: 600;
+  color: #111827;
+  word-break: break-all;
+}
+
+/* =========================================
+   CURRENT WORKERS VIEW – REFRESHED LAYOUT
+========================================= */
+#ka-view-workers {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(12, 129, 109, 0.08), transparent 48%),
+    radial-gradient(circle at 92% 18%, rgba(148, 163, 184, 0.16), transparent 52%),
+    #f7f6fb;
+  border-radius: 22px;
+  padding-top: 26px;
+}
+
+#ka-view-workers #ka-live-card {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  min-height: 0;
+}
+
+#ka-view-workers #ka-live-card .card-header.ka-live-header {
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 14px;
+  margin-bottom: 18px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+#ka-view-workers .ka-live-header-left {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#ka-view-workers .ka-live-header-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+#ka-view-workers #ka-live-title {
+  font-size: 1.45rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0;
+  position: relative;
+  padding-bottom: 10px;
+}
+
+#ka-view-workers #ka-live-title::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 120px;
+  height: 3px;
+  background: #0c816d;
+  border-radius: 999px;
+  opacity: 0.7;
+}
+
+#ka-view-workers #ka-live-date-label {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #64748b;
+}
+
+#ka-view-workers .ka-live-header-right {
+  align-items: flex-start;
+  text-align: left;
+  position: static;
+  margin-left: 0;
+}
+
+#ka-view-workers #ka-live-count-tag {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #64748b;
+}
+
+#ka-view-workers .table-wrap {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+#ka-view-workers .data-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0 14px;
+}
+
+#ka-view-workers .data-table thead {
+  display: none;
+}
+
+#ka-view-workers .data-table tbody tr {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "name duration"
+    "clockin clockin";
+  gap: 6px 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid #e2e8f0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), #ffffff);
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
+}
+
+#ka-view-workers .data-table tbody tr[data-ka-placeholder="1"] {
+  display: block;
+  padding: 14px 16px;
+}
+
+#ka-view-workers .data-table tbody td {
+  border: none;
+  padding: 0;
+}
+
+#ka-view-workers .data-table tbody tr:not([data-ka-placeholder="1"]) td:nth-child(1) {
+  grid-area: name;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+#ka-view-workers .data-table tbody tr:not([data-ka-placeholder="1"]) td:nth-child(2) {
+  grid-area: clockin;
+  font-size: 0.9rem;
+  color: #64748b;
+}
+
+#ka-view-workers .data-table tbody tr:not([data-ka-placeholder="1"]) td:nth-child(2)::before {
+  content: "Clocked in ";
+  color: #94a3b8;
+}
+
+#ka-view-workers .data-table tbody tr:not([data-ka-placeholder="1"]) td:nth-child(3) {
+  grid-area: duration;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #0f766e;
+  justify-self: end;
+}
+
+#ka-view-workers .data-table tbody tr:not([data-ka-placeholder="1"]) td:nth-child(4) {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  #ka-view-workers {
+    padding-top: 18px;
+    border-radius: 16px;
+  }
+}
+
+/* =========================================
+   TIMESHEETS VIEW – RESET
+========================================= */
+#ka-view-timesheets {
+  background: transparent;
+  border-radius: 0;
+  padding-top: 20px;
+  margin-top: 12px;
+  --ka-timesheet-surface: rgba(255, 255, 255, 0.84);
+  --ka-timesheet-border: rgba(148, 163, 184, 0.32);
+  --ka-timesheet-shadow: 0 18px 32px rgba(15, 23, 42, 0.08);
+  --ka-timesheet-pill-bg: rgba(255, 255, 255, 0.82);
+  --ka-timesheet-pill-border: rgba(148, 163, 184, 0.32);
+  --ka-timesheet-pill-shadow: 0 10px 20px rgba(15, 23, 42, 0.05);
+  --ka-timesheet-card-pad-left: 18px;
+  --ka-timesheet-card-pad-right: 112px;
+  --ka-timesheet-chevron-shift: 96px;
+  --ka-timesheet-control-radius: 20px;
+  --ka-timesheet-metric-shift: 40px;
+  --ka-timesheet-header-shift: -16px;
+  --ka-timesheet-pill-extend: 64px;
+}
+
+#ka-sessions-card {
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 0;
+  position: relative;
+  border: none;
+}
+
+.ka-timesheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+#ka-timesheet-heading {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 1.45rem;
+  font-weight: 600;
+  color: #1f2937;
+  position: relative;
+  padding-bottom: 10px;
+}
+
+#ka-timesheet-heading::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 3px;
+  background: #0c816d;
+  border-radius: 999px;
+  opacity: 0.7;
+}
+
+.ka-timesheet-sep {
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.ka-timesheet-date {
+  font-weight: 500;
+  color: #6b7280;
+}
+
+#ka-start-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--ka-timesheet-control-radius);
+  padding: 8px 18px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  background: linear-gradient(135deg, #2f6a63, #2b5d57);
+  color: #ffffff;
+  box-shadow: 0 14px 24px rgba(47, 106, 99, 0.22);
+  width: auto;
+  min-width: 180px;
+  flex: 0 0 auto;
+}
+
+#ka-start-new-btn::before {
+  content: "+";
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.ka-timesheet-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.ka-timesheet-date-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  background: var(--ka-timesheet-pill-bg);
+  border: 1px solid var(--ka-timesheet-pill-border);
+  border-radius: var(--ka-timesheet-control-radius);
+  box-shadow: var(--ka-timesheet-pill-shadow);
+}
+
+.ka-timesheet-date-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 6px 16px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #334155;
+  min-width: 210px;
+  text-align: center;
+  border-radius: var(--ka-timesheet-control-radius);
+}
+
+.ka-timesheet-calendar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: #64748b;
+}
+
+.ka-timesheet-calendar svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.ka-timesheet-nav {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--ka-timesheet-control-radius);
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.ka-timesheet-nav svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.ka-timesheet-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+#ka-session-filter-toggle {
+  height: 38px;
+  width: 38px;
+  min-width: 38px;
+  padding: 0;
+  border-radius: var(--ka-timesheet-control-radius);
+  border: 1px solid var(--ka-timesheet-pill-border);
+  background: var(--ka-timesheet-pill-bg);
+  box-shadow: var(--ka-timesheet-pill-shadow);
+  gap: 6px;
+  justify-content: center;
+}
+
+#ka-session-filter-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+#ka-session-filter-toggle .ka-filter-label {
+  display: none;
+}
+
+.ka-timesheet-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--ka-timesheet-pill-border);
+  background: var(--ka-timesheet-pill-bg);
+  color: #64748b;
+  min-width: 240px;
+  height: 38px;
+  flex: 1;
+  box-shadow: var(--ka-timesheet-pill-shadow);
+}
+
+.ka-timesheet-search input {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 0.9rem;
+  color: #475569;
+  width: 100%;
+}
+
+.ka-timesheet-search-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.ka-timesheet-section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #0f766e;
+  margin: 8px 0 14px;
+}
+
+.ka-timesheet-check {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid #a7f3d0;
+  background: #ecfdf5;
+  color: #0f766e;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ka-timesheet-check svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ka-timesheet-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px 150px;
+  gap: 12px;
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  padding: 12px var(--ka-timesheet-card-pad-right) 12px var(--ka-timesheet-card-pad-left);
+  border: 1px solid rgba(236, 233, 244, 0.85);
+  border-bottom: 1px solid rgba(236, 233, 244, 0.7);
+  border-radius: 20px 20px 0 0;
+  background: linear-gradient(180deg, rgba(254, 254, 255, 0.98), rgba(251, 251, 254, 0.98));
+  box-shadow: none;
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+.ka-timesheet-columns span:nth-child(2),
+.ka-timesheet-columns span:nth-child(3) {
+  text-align: right;
+  justify-self: end;
+  transform: translateX(var(--ka-timesheet-header-shift));
+}
+
+#ka-view-timesheets .card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#ka-session-create {
+  background: var(--ka-timesheet-surface);
+  border: 1px solid var(--ka-timesheet-border);
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+}
+
+#ka-session-empty {
+  margin-bottom: 12px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #64748b;
+  font-weight: 500;
+}
+
+#ka-project-select {
+  height: 44px;
+  border-radius: var(--ka-timesheet-control-radius);
+  border: 1px solid var(--ka-timesheet-pill-border);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: none;
+}
+
+#ka-session-create .ka-session-actions-row .btn {
+  height: 44px;
+  border-radius: var(--ka-timesheet-control-radius);
+  padding: 0 18px;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+#ka-session-list {
+  display: grid;
+  gap: 18px;
+  margin: 0;
+}
+
+#ka-session-list .ka-session-row:first-child {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-top: none;
+  margin-top: -1px;
+}
+
+#ka-view-timesheets .ka-session-row {
+  border-radius: 20px;
+  border: 1px solid rgba(236, 233, 244, 0.9);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 252, 254, 0.98));
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.05);
+}
+
+#ka-view-timesheets .ka-session-row {
+  position: relative;
+}
+
+#ka-view-timesheets .ka-session-main {
+  padding: 18px var(--ka-timesheet-card-pad-right) 16px var(--ka-timesheet-card-pad-left);
+  gap: 12px;
+  position: static;
+}
+
+#ka-view-timesheets .ka-session-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px 150px;
+  gap: 12px;
+  align-items: center;
+  position: relative;
+}
+
+#ka-view-timesheets .ka-session-active-icon {
+  display: none;
+}
+
+#ka-view-timesheets .ka-session-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+#ka-view-timesheets .ka-session-info-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#ka-view-timesheets .ka-session-label {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+#ka-view-timesheets .ka-session-owner {
+  font-size: 0.95rem;
+  color: #7a8798;
+  white-space: nowrap;
+}
+
+#ka-view-timesheets .ka-session-meta {
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-size: 0.9rem;
+  color: #475569;
+}
+
+#ka-view-timesheets .ka-session-time-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 0 0 calc(100% + var(--ka-timesheet-card-pad-right) + var(--ka-timesheet-pill-extend));
+  padding: 8px 16px 8px 12px;
+  border-radius: var(--ka-timesheet-control-radius);
+  background: var(--ka-timesheet-pill-bg);
+  border: 1px solid var(--ka-timesheet-pill-border);
+  box-shadow: var(--ka-timesheet-pill-shadow);
+  width: calc(100% + var(--ka-timesheet-card-pad-right) + var(--ka-timesheet-pill-extend));
+  margin-right: calc(-1 * (var(--ka-timesheet-card-pad-right) + var(--ka-timesheet-pill-extend)));
+}
+
+#ka-view-timesheets .ka-session-time {
+  color: #1f2937;
+  font-weight: 400;
+}
+
+#ka-view-timesheets .ka-session-time-divider {
+  color: #94a3b8;
+}
+
+#ka-view-timesheets .ka-help-btn,
+#ka-view-timesheets .ka-help-pill {
+  border-radius: var(--ka-timesheet-control-radius);
+}
+
+
+#ka-view-timesheets .ka-session-ongoing {
+  color: #2f6a63;
+  font-weight: 400;
+}
+
+#ka-view-timesheets .ka-session-complete {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+#ka-view-timesheets .ka-session-complete svg {
+  width: 16px;
+  height: 16px;
+  color: #2f6a63;
+}
+
+#ka-view-timesheets .ka-session-meta-right {
+  display: contents;
+}
+
+#ka-view-timesheets .ka-session-metric {
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  justify-self: end;
+  transform: translateX(var(--ka-timesheet-metric-shift));
+}
+
+#ka-view-timesheets .ka-session-detail-btn {
+  width: 58px;
+  height: 58px;
+  border: none;
+  background: transparent;
+  color: #c0c6d1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  position: absolute;
+  right: calc(-1 * (var(--ka-timesheet-card-pad-right) - 20px + var(--ka-timesheet-chevron-shift)));
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+}
+
+#ka-view-timesheets .ka-session-detail-btn:hover {
+  color: #6b7280;
+}
+
+#ka-view-timesheets .ka-session-detail-btn:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.35);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+#ka-view-timesheets .ka-session-detail-btn svg {
+  width: 34px;
+  height: 34px;
+  display: block;
+}
+
+#ka-view-timesheets .ka-session-metric-label {
+  display: none;
+}
+
+#ka-view-timesheets .ka-session-metric-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #2f6a63;
+  font-variant-numeric: tabular-nums;
+}
+
+
+#ka-view-timesheets .ka-session-meta-right .ka-session-metric:nth-child(2) .ka-session-metric-value {
+  color: #64748b;
+}
+
+
+@media (max-width: 700px) {
+  #ka-view-timesheets {
+    padding-top: 18px;
+    margin-top: 8px;
+    --ka-timesheet-card-pad-right: 72px;
+    --ka-timesheet-card-pad-left: 16px;
+    --ka-timesheet-chevron-shift: 48px;
+    --ka-timesheet-metric-shift: 18px;
+    --ka-timesheet-header-shift: -8px;
+    --ka-timesheet-pill-extend: 32px;
+  }
+
+  .ka-timesheet-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  #ka-start-new-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .ka-timesheet-toolbar {
+    align-items: flex-start;
+  }
+
+  .ka-timesheet-date-picker,
+  .ka-timesheet-toolbar-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .ka-timesheet-search {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .ka-timesheet-columns {
+    grid-template-columns: 1fr minmax(120px, 1fr) minmax(120px, 1fr);
+  }
+
+  #ka-view-timesheets .ka-session-head {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+
+  #ka-view-timesheets .ka-session-meta-right {
+    justify-items: start;
+  }
+
+  #ka-view-timesheets .ka-session-metric {
+    align-items: flex-start;
+    text-align: left;
+    justify-self: start;
+  }
 }
