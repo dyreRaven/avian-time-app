@@ -1,5 +1,77 @@
 # Change Log
 
+- 2026-01-27: Matched the Current Workers no-punches card styling to the timesheet empty-state card.
+- 2026-01-27: Increased the size of the Current Workers empty-state card for "no punches today".
+- 2026-01-27: Pulled the Current Workers empty-state card upward to reduce the gap under the divider.
+- 2026-01-27: Tightened Current Workers empty-state spacing by reducing header/section gaps and the empty table row spacing.
+- 2026-01-27: Reduced the Current Workers top margins further to tighten the empty-state card spacing under the header.
+- 2026-01-27: Reduced the Current Workers section top margin to bring the empty-state card closer to the divider.
+- 2026-01-27: Reduced the top margin above the Current Workers empty-state card so it sits just below the divider.
+- 2026-01-27: Replaced the kiosk admin sidebar name line with "Avian Group" and increased its size.
+- 2026-01-27: Added a settings icon to the kiosk admin sidebar menu.
+- 2026-01-27: Updated the kiosk admin sidebar to show clock-in status next to the admin name and the active project below it.
+- 2026-01-27: Restored the dash separator in the kiosk admin sidebar clocked-in row and kept the status icon aligned with the name.
+- 2026-01-27: Set the kiosk admin sidebar active project line to the brand accent green.
+- 2026-01-27: Widened the kiosk admin hamburger button and bars.
+- 2026-01-27: Clicking the X on the kiosk admin start-timesheet prompt now cancels before creating the timesheet.
+- 2026-01-27: Reduced the Current Workers header bottom spacing so the empty-state card sits closer to the divider.
+- 2026-01-27: Tightened the Current Workers empty-state spacing under the header divider.
+- 2026-01-27: Centered the Current Workers active count pill with the header title text.
+- 2026-01-27: Nudged the kiosk admin header logo up slightly in size.
+- 2026-01-27: Increased the kiosk admin header logo to a medium size after reducing it too far.
+- 2026-01-27: Removed the extra divider under Current Workers and lifted the active workers count pill above the remaining line.
+- 2026-01-27: Reduced the kiosk admin header logo size after testing a larger version.
+- 2026-01-27: Doubled the kiosk admin header logo size.
+- 2026-01-27: Added more spacing beneath the green underline on the kiosk admin title.
+- 2026-01-27: Tightened the timesheets empty-state spacing and increased the gap above the green underline.
+- 2026-01-27: Tightened the top spacing above the timesheets card to reduce empty-state whitespace.
+- 2026-01-27: Increased the kiosk admin header logo size.
+- 2026-01-27: Added a full-width divider line beneath the kiosk admin view title underline.
+- 2026-01-27: Removed the header divider line and kept the underline beneath the kiosk admin view title.
+- 2026-01-27: Nudged the kiosk admin view title/date right for improved alignment.
+- 2026-01-27: Left-aligned the kiosk admin view title/date and increased its size.
+- 2026-01-27: Centered the kiosk admin header logo and added a notifications bell on the right.
+- 2026-01-27: Placed the kiosk admin view title/date beneath the header with a bold green underline.
+- 2026-01-27: Restored the kiosk admin header layout with the hamburger on the left and logo on the right.
+- 2026-01-27: Increased bottom-nav icon sizes further for better legibility.
+- 2026-01-27: Pushed the active bottom-nav label further down to clear the notch.
+- 2026-01-27: Lowered the bottom-nav labels so the active title clears the notch.
+- 2026-01-27: Added the logo to the top-right of the kiosk admin header.
+- 2026-01-27: Centered the kiosk admin header title/date and increased its size.
+- 2026-01-27: Increased bottom-nav label spacing and weight for icons and text.
+- 2026-01-27: Removed the moving top-edge shimmer by shifting the bottom-nav shadow to the container and disabling SVG drop-shadow filtering.
+- 2026-01-27: Increased bottom-nav icon sizes, re-centered the active icon in the diamond, and swapped Clock In to a clock icon.
+- 2026-01-27: Sharpened the bottom-nav diamond further and updated the nav green to the brand accent (#0c816d).
+- 2026-01-27: Moved kiosk admin view titles into the header with per-view dates.
+- 2026-01-27: Sharpened the bottom-nav diamond by reducing its corner radius.
+- 2026-01-27: Enlarged the bottom-nav notch again and raised the diamond indicator.
+- 2026-01-27: Enlarged the bottom-nav notch and softened its corners to better match the diamond.
+- 2026-01-27: Added a divider line under the kiosk admin header.
+- 2026-01-27: Updated the sliding notch to a diamond-matched cutout with straight edges.
+- 2026-01-27: Moved the kiosk admin title block to the left and swapped the hamburger menu to the top-right.
+- 2026-01-27: Removed the kiosk admin header logo, moved the hamburger menu to the top-left, and shifted the admin title block to the top-right.
+
+- 2026-01-27: Removed the kiosk admin hamburger menu button border/shadow to eliminate the white tile.
+- 2026-01-27: Lifted the kiosk admin header upward to reduce top whitespace.
+- 2026-01-27: Removed the white background fill from the kiosk admin hamburger menu button.
+- 2026-01-27: Rebuilt the bottom nav background as an SVG with a true concave notch that follows the active tab.
+- 2026-01-27: Swapped the kiosk admin header hamburger menu to the top-right and moved the logo to the top-left.
+- 2026-01-27: Moved the kiosk admin title block next to the hamburger menu and shifted the logo to the top-right.
+- 2026-01-27: Enlarged the bottom-nav notch cutout around the diamond.
+- 2026-01-27: Swapped the kiosk admin bottom nav to the logo green to emphasize the diamond cutout.
+- 2026-01-27: Restyled the kiosk admin Current Workers view to match the Timesheets page palette and card styling.
+- 2026-01-27: Current Workers now defaults to the active project unless opened from a timesheet card's chevron.
+- 2026-01-27: Current Workers shows "None active" when no active timesheet is set.
+- 2026-01-27: Current Workers header now matches the timesheets date format and each worker card shows its project.
+- 2026-01-27: Removed the "None active" sublabel and aligned the Current Workers count on the header line (right-aligned).
+- 2026-01-27: Moved the hamburger to the left and replaced the header menu with a full-height sidebar that includes the logo and admin name.
+- 2026-01-27: Replaced the "Clocked in" text in the sidebar with a status dot icon beside the admin name.
+- 2026-01-27: Moved the sidebar "Admin Kiosk" title and admin name to the right of the logo.
+
+- 2026-01-27: Adjusted the bottom-nav cutout to read as a true notch (tinted bar + inset shadow).
+- 2026-01-27: Refined the bottom-nav diamond cutout so it reads as a carved notch.
+- 2026-01-27: Added a sliding cutout notch behind the diamond in the bottom nav.
+- 2026-01-27: Switched the kiosk admin page background to solid white.
 - 2026-01-27: Lifted the active bottom-nav icon so it centers precisely in the diamond.
 - 2026-01-27: Centered active bottom-nav icons within the sliding diamond highlight.
 - 2026-01-27: Reordered the bottom nav so Clock In is first and Timesheets is third.

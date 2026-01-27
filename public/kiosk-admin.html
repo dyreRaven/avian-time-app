@@ -6,7 +6,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/kiosk-admin.css?v=20260126an" />
+  <link rel="stylesheet" href="/kiosk-admin.css?v=20260127a" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#10b981" />
 
@@ -30,27 +30,64 @@
           <span></span>
           <span></span>
         </button>
-        <div id="ka-header-menu-panel" class="ka-header-menu-panel hidden" role="menu">
-          <button type="button" class="ka-header-menu-item" data-ka-menu="settings" role="menuitem">
-            Settings
-          </button>
+      </div>
+    </div>
+    <div class="ka-header-logo">
+      <img src="/images/logo.png" alt="Avian Group logo" />
+    </div>
+    <div class="ka-header-right">
+      <button type="button" class="ka-header-bell" aria-label="Notifications">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M6.5 8.5a5.5 5.5 0 0 1 11 0c0 5 2 6.5 2 6.5H4.5s2-1.5 2-6.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+          <path d="M10 18a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+  <div class="ka-header-subtitle">
+    <div class="ka-header-page-title">
+      <span id="ka-header-view-title">Timesheets</span>
+      <span class="ka-header-page-sep hidden" id="ka-header-view-sep">—</span>
+      <span class="ka-header-page-date hidden" id="ka-header-view-date"></span>
+    </div>
+    <div class="ka-header-pill-slot" id="ka-header-pill-slot"></div>
+  </div>
+  <div id="ka-sidebar-backdrop" class="ka-sidebar-backdrop hidden" aria-hidden="true"></div>
+  <aside id="ka-header-menu-panel" class="ka-sidebar hidden" role="menu" aria-hidden="true">
+    <div class="ka-sidebar-header">
+      <div class="ka-sidebar-brand">
+        <div class="ka-logo">
+          <img src="/images/logo.png" alt="Avian Group logo" />
+        </div>
+        <div class="ka-sidebar-brand-text">
+          <div class="ka-sidebar-title">Admin Kiosk</div>
+          <div class="ka-sidebar-sub" id="ka-kiosk-name">Avian Group</div>
+        </div>
+      </div>
+      <div class="ka-sidebar-clocked-row">
+        <div class="ka-sidebar-clocked-details">
+          <div class="ka-sidebar-clocked-main">
+            <span class="ka-clocked-icon" id="ka-sidebar-clocked-icon" aria-hidden="true"></span>
+            <div class="ka-sidebar-clocked-name" id="ka-sidebar-clocked-in">Loading…</div>
+          </div>
+          <div class="ka-sidebar-clocked-project">
+            <span class="ka-sidebar-clocked-project-label" id="ka-sidebar-clocked-project-label">Loading…</span>
+          </div>
         </div>
       </div>
     </div>
-    <div class="ka-header-center">
-      <div class="ka-logo">
-        <img src="/images/logo.png" alt="Avian Group logo" />
-      </div>
+    <div class="ka-sidebar-actions">
+      <button type="button" class="ka-header-menu-item" data-ka-menu="settings" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+            <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.96l.02.03a2 2 0 0 1-2.83 2.83l-.03-.02a1.8 1.8 0 0 0-1.96-.36 1.8 1.8 0 0 0-1.05 1.64V21a2 2 0 0 1-4 0v-.04a1.8 1.8 0 0 0-1.05-1.64 1.8 1.8 0 0 0-1.96.36l-.03.02a2 2 0 0 1-2.83-2.83l.02-.03a1.8 1.8 0 0 0 .36-1.96 1.8 1.8 0 0 0-1.64-1.05H3a2 2 0 0 1 0-4h.04a1.8 1.8 0 0 0 1.64-1.05 1.8 1.8 0 0 0-.36-1.96l-.02-.03a2 2 0 0 1 2.83-2.83l.03.02a1.8 1.8 0 0 0 1.96.36 1.8 1.8 0 0 0 1.05-1.64V3a2 2 0 0 1 4 0v.04a1.8 1.8 0 0 0 1.05 1.64 1.8 1.8 0 0 0 1.96-.36l.03-.02a2 2 0 0 1 2.83 2.83l-.02.03a1.8 1.8 0 0 0-.36 1.96 1.8 1.8 0 0 0 1.64 1.05H21a2 2 0 0 1 0 4h-.04a1.8 1.8 0 0 0-1.64 1.05Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Settings</span>
+      </button>
     </div>
-    <div class="ka-header-right">
-      <div class="ka-header-title">
-        <div class="ka-title-main">ADMIN KIOSK</div>
-        <div class="ka-title-sub" id="ka-kiosk-name">Loading admin...</div>
-      </div>
-    </div>
-
-
-  </header>
+  </aside>
 <p id="ka-kiosk-status" class="ka-status"></p>
 <div id="ka-modal-toast" class="ka-modal-toast hidden"></div>
 <div id="ka-clockin-prompt" class="ka-sticky-prompt" role="alert">
@@ -108,15 +145,6 @@
        ============================ -->
 <section id="ka-view-timesheets">
   <div id="ka-sessions-card">
-    <div class="ka-timesheet-header">
-      <div class="ka-timesheet-heading-wrap">
-        <h2 id="ka-timesheet-heading">
-          <span class="ka-timesheet-title">Timesheets</span>
-          <span class="ka-timesheet-sep">—</span>
-          <span class="ka-timesheet-date" id="ka-timesheet-date"></span>
-        </h2>
-      </div>
-    </div>
     <div class="ka-timesheet-toolbar">
       <div class="ka-filter-menu">
         <button
@@ -241,12 +269,7 @@
 <section id="ka-view-workers" class="hidden">
   <div class="card" id="ka-live-card">
     <div class="card-header ka-live-header">
-      <div class="ka-live-header-left">
-        <div class="ka-live-header-top">
-          <h2 id="ka-live-title">Current Workers</h2>
-        </div>
-        <p id="ka-live-date-label" class="card-sub">—</p>
-      </div>
+      <div class="ka-live-header-left"></div>
       <div class="ka-live-header-right">
         <span id="ka-live-count-tag" class="ka-tag gray">0 Active workers</span>
       </div>
@@ -280,7 +303,6 @@
 <section id="ka-view-shipments" class="hidden">
   <div id="ka-shipments-card" class="card">
     <div class="card-header">
-      <h2>Shipments – Ready to Pick Up</h2>
       <div class="card-header-actions">
         <button id="ka-shipments-refresh" class="btn secondary btn-sm ka-ship-refresh" type="button">
           Refresh
@@ -330,7 +352,6 @@
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="ka-time-title">Time Entries</h2>
           <p class="card-sub">
             View and verify time entries for this kiosk over any date range.
             Paid entries are locked for editing but can still be verified for accuracy.
@@ -433,7 +454,6 @@
        ============================ -->
   <section id="ka-view-settings" class="hidden">
   <div class="card">
-  <div class="card-header"><h2>Settings</h2></div>
   <div class="card-body">
 
     <div id="ka-admin-settings-block" class="ka-settings-grid">
@@ -760,12 +780,15 @@
      NEW BOTTOM NAVIGATION
      ============================ -->
 <nav class="ka-bottom-nav">
+  <svg class="ka-nav-bg" aria-hidden="true" focusable="false" preserveAspectRatio="none">
+    <path class="ka-nav-bg-path"></path>
+  </svg>
   <div class="ka-nav-diamond" aria-hidden="true"></div>
   <button type="button" data-ka-action="clockin">
     <span class="ka-nav-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M10 5h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
-        <path d="M4 12h10M8 8l-4 4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+        <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+        <path d="M12 8v4l2.5 1.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
     </span>
     <span class="ka-nav-label">Clock In</span>
@@ -836,7 +859,7 @@
 <script src="/js/utils.js"></script>
 <script src="/js/bcrypt.min.js"></script>
 <script src="/js/offline-store.js"></script>
-<script src="/kiosk-admin.js?v=20260126an"></script>
+<script src="/kiosk-admin.js?v=20260127a"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
