@@ -14,6 +14,12 @@ const KIOSK_CACHE_KEY = 'avian_kiosk_config_cache_v1';
 const ORG_SUSPENDED_KEY = 'avian_kiosk_org_suspended_v1';
 const DEFAULT_TIMEZONE = 'America/Puerto_Rico';
 let offlineStorageSupported = true;
+const PIN_THROTTLE_START_AFTER = 3;
+const PIN_THROTTLE_BASE_MS = 1000;
+const PIN_THROTTLE_MAX_MS = 8000;
+const PIN_CRYPTO_VERSION = 'v1';
+const PIN_CRYPTO_SALT = 'avian-kiosk-pin-v1';
+const PIN_CRYPTO_ITERATIONS = 50000;
 
 const LANG_COPY = {
   en: {
@@ -29,8 +35,8 @@ const LANG_COPY = {
     projectLabel: 'Project',
     projectLabelWithId: 'Project {{id}}',
     employeeProjectLine: '{{name}} — Project: {{project}}',
-    tapIn: 'Clock In',
-    tapOut: 'Tap to Clock Out',
+    tapIn: 'CLOCK IN',
+    tapOut: 'CLOCK OUT',
     selectYourNameStatus: 'Select your name.',
     projectNotSet: 'Project not set for this tablet. See your supervisor to clock in.',
     timesheetNotSet: 'No timesheet set for this tablet today. See your supervisor to choose a project first.',
@@ -109,8 +115,8 @@ const LANG_COPY = {
     projectLabel: 'Proyecto',
     projectLabelWithId: 'Proyecto {{id}}',
     employeeProjectLine: '{{name}} — Proyecto: {{project}}',
-    tapIn: 'Registrar entrada',
-    tapOut: 'Registrar salida',
+    tapIn: 'REGISTRAR ENTRADA',
+    tapOut: 'REGISTRAR SALIDA',
     selectYourNameStatus: 'Seleccione su nombre.',
     projectNotSet: 'Proyecto no está configurado para esta tableta. Consulte a su supervisor para registrar entrada.',
     timesheetNotSet: 'No hay parte de trabajo para esta tableta hoy. Pida a su supervisor que elija un proyecto primero.',
@@ -185,12 +191,13 @@ const LANG_COPY = {
     employeeLabel: 'Anplwaye',
     languageLabel: 'Lang',
     projectActiveLabel: 'Pwojè aktif:',
-    projectNotSetLabel: 'Pa gen pwojè mete',
+    projectNotSetLabel: 'Pa gen pwojè asiyen',
     projectLabel: 'Pwojè',
     projectLabelWithId: 'Pwojè {{id}}',
     employeeProjectLine: '{{name}} — Pwojè: {{project}}',
-    tapIn: 'Komanse travay',
-    tapOut: 'Fini travay',
+    // Chosen CTA: "FÈ PONTAJ" is short and natural for clocking in/out.
+    tapIn: 'FÈ PONTAJ',
+    tapOut: 'FÈ PONTAJ',
     selectYourNameStatus: 'Tanpri chwazi non ou.',
     projectNotSet: 'Pa gen pwojè sa sou tablet sa; fòk ou wè ak sipèvizè ou pou anrejistre lè ou antre.',
     timesheetNotSet: 'Pa gen fèy travay pou jodi a sou tablet sa. Wè sipèvizè a pou chwazi yon pwojè anvan.',
@@ -293,6 +300,8 @@ let currentEmployee = null;
 let currentLanguage = DEFAULT_LANGUAGE;
 let manualLanguageOverride = null;
 let manualLanguageEmployeeId = null;
+let employeeSelectStartValue = '';
+let employeeSelectChanged = false;
 let pinValidated = false;
 let currentPhotoBase64 = null;
 let cameraStream = null;
@@ -312,6 +321,26 @@ let offlineSyncTimerId = null;
 let offlineSyncInFlight = false;
 let syncWarning = null;
 let punchInFlight = false;
+
+const EN_WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const EN_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const ES_WEEKDAYS = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
+const ES_MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sept', 'oct', 'nov', 'dic'];
+const HT_WEEKDAYS = ['lendi', 'madi', 'mèkredi', 'jedi', 'vandredi', 'samdi', 'dimanch'];
+const HT_MONTHS = [
+  'janvye',
+  'fevriye',
+  'mas',
+  'avril',
+  'me',
+  'jen',
+  'jiyè',
+  'out',
+  'septanm',
+  'oktòb',
+  'novanm',
+  'desanm'
+];
 let lastPunchMeta = null;
 let kioskEnrolled = false;
 let clockInPhotoRequired = loadClockInPhotoRequired() ?? false;
@@ -483,6 +512,160 @@ function canUseLocalStorage() {
   }
 }
 
+const pinThrottleState = {
+  worker: { fails: 0, nextAllowedAt: 0, timer: null },
+  admin: { fails: 0, nextAllowedAt: 0, timer: null }
+};
+
+function computePinThrottleDelay(fails) {
+  if (fails < PIN_THROTTLE_START_AFTER) return 0;
+  const step = Math.min(fails - PIN_THROTTLE_START_AFTER, 3);
+  const delay = PIN_THROTTLE_BASE_MS * Math.pow(2, step);
+  return Math.min(delay, PIN_THROTTLE_MAX_MS);
+}
+
+function getPinThrottleRemaining(kind) {
+  const state = pinThrottleState[kind];
+  if (!state) return 0;
+  const remaining = state.nextAllowedAt - Date.now();
+  return remaining > 0 ? remaining : 0;
+}
+
+function schedulePinThrottle(kind, elements, delayMs) {
+  const state = pinThrottleState[kind];
+  if (!state || delayMs <= 0) return;
+  if (state.timer) clearTimeout(state.timer);
+  elements.forEach(el => {
+    if (el) el.disabled = true;
+  });
+  state.timer = setTimeout(() => {
+    elements.forEach(el => {
+      if (el) el.disabled = false;
+    });
+    state.timer = null;
+  }, delayMs);
+}
+
+function registerPinFailure(kind, elements = []) {
+  const state = pinThrottleState[kind];
+  if (!state) return 0;
+  state.fails += 1;
+  const delay = computePinThrottleDelay(state.fails);
+  if (delay > 0) {
+    state.nextAllowedAt = Date.now() + delay;
+    schedulePinThrottle(kind, elements, delay);
+  }
+  return delay;
+}
+
+function resetPinFailures(kind) {
+  const state = pinThrottleState[kind];
+  if (!state) return;
+  state.fails = 0;
+  state.nextAllowedAt = 0;
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+}
+
+function enforcePinThrottle(kind, elements = []) {
+  const remaining = getPinThrottleRemaining(kind);
+  if (remaining <= 0) return false;
+  schedulePinThrottle(kind, elements, remaining);
+  return true;
+}
+
+const pinCryptoKeyCache = {
+  secret: null,
+  promise: null
+};
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  bytes.forEach(b => {
+    binary += String.fromCharCode(b);
+  });
+  return btoa(binary);
+}
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    out[i] = binary.charCodeAt(i);
+  }
+  return out;
+}
+
+async function getPinCryptoKey(secret) {
+  if (!secret || !window.crypto || !window.crypto.subtle) return null;
+  if (pinCryptoKeyCache.secret === secret && pinCryptoKeyCache.promise) {
+    return pinCryptoKeyCache.promise;
+  }
+  const enc = new TextEncoder();
+  const baseKey = await window.crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  );
+  const keyPromise = window.crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: enc.encode(PIN_CRYPTO_SALT),
+      iterations: PIN_CRYPTO_ITERATIONS,
+      hash: 'SHA-256'
+    },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+  pinCryptoKeyCache.secret = secret;
+  pinCryptoKeyCache.promise = keyPromise;
+  return keyPromise;
+}
+
+async function encryptPinForStore(pin, secret) {
+  if (!pin || !secret || !window.crypto || !window.crypto.subtle) return null;
+  const key = await getPinCryptoKey(secret);
+  if (!key) return null;
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const enc = new TextEncoder();
+  const cipherBuf = await window.crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    enc.encode(String(pin))
+  );
+  const cipherBytes = new Uint8Array(cipherBuf);
+  return `${PIN_CRYPTO_VERSION}:${bytesToBase64(iv)}:${bytesToBase64(cipherBytes)}`;
+}
+
+async function decryptPinFromStore(token, secret) {
+  if (!token || !secret || !window.crypto || !window.crypto.subtle) return null;
+  const parts = String(token).split(':');
+  if (parts.length !== 3 || parts[0] !== PIN_CRYPTO_VERSION) return null;
+  const key = await getPinCryptoKey(secret);
+  if (!key) return null;
+  try {
+    const iv = base64ToBytes(parts[1]);
+    const data = base64ToBytes(parts[2]);
+    const plainBuf = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      data
+    );
+    if (window.TextDecoder) {
+      return new TextDecoder().decode(plainBuf);
+    }
+    const bytes = new Uint8Array(plainBuf);
+    return Array.from(bytes).map(b => String.fromCharCode(b)).join('');
+  } catch {
+    return null;
+  }
+}
 
 
 
@@ -542,6 +725,20 @@ function makeClientId() {
       Date.now().toString(36) +
       '_' +
       Math.random().toString(36).slice(2);
+}
+
+async function verifyAdminPinWithServer(adminId, pin) {
+  if (!adminId || !pin) return false;
+  try {
+    const res = await fetchJSON('/api/kiosk/admin/verify-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_id: adminId, pin })
+    });
+    return !!(res && res.ok);
+  } catch (err) {
+    return false;
+  }
 }
 
 function getRecentPunchClientId(employeeId, intendedMode) {
@@ -632,16 +829,49 @@ function savePendingPins(list) {
   updateOfflineIndicator();
 }
 
-function addPendingPinUpdate(update) {
+async function migratePendingPins() {
+  const list = loadPendingPins();
+  if (!list.length) return;
+  let changed = false;
+  for (const item of list) {
+    if (item && item.pin && !item.pin_cipher) {
+      const secret =
+        (item.device_secret || '').trim() ||
+        getOrCreateDeviceSecret();
+      try {
+        const cipher = await encryptPinForStore(item.pin, secret);
+        if (cipher) {
+          item.pin_cipher = cipher;
+          delete item.pin;
+          changed = true;
+        }
+      } catch {
+        // ignore encryption failures
+      }
+    }
+  }
+  if (changed) savePendingPins(list);
+}
+
+async function addPendingPinUpdate(update) {
   // update = { employee_id, pin }
   const list = loadPendingPins();
+  const deviceId = kioskDeviceId || getOrCreateDeviceId();
+  const deviceSecret = getOrCreateDeviceSecret();
+  let pinCipher = null;
+  try {
+    const secret = deviceSecret;
+    pinCipher = await encryptPinForStore(update.pin, secret);
+  } catch {
+    pinCipher = null;
+  }
   list.push({
     client_id: makeClientId(),
     employee_id: update.employee_id,
-    pin: update.pin,
+    ...(pinCipher ? { pin_cipher: pinCipher } : { pin: update.pin }),
     created_at: new Date().toISOString(),
-    device_id: kioskDeviceId || getOrCreateDeviceId(),
-    device_secret: getOrCreateDeviceSecret()
+    device_id: deviceId,
+    device_secret: deviceSecret
   });
   savePendingPins(list);
 }
@@ -938,25 +1168,89 @@ function formatNumber(value, options = {}) {
   }
 }
 
-function formatKioskDateTime(now) {
-  const safeTime = now instanceof Date ? now : new Date();
+function getZonedDateParts(value) {
+  const safeTime = value instanceof Date ? value : new Date(value);
   const tz = kioskTimezone || DEFAULT_TIMEZONE;
-  const locale = getLocaleForLanguage(currentLanguage);
-  try {
-    const datePart = new Intl.DateTimeFormat(locale, {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      timeZone: tz
-    }).format(safeTime);
-    const timePart = new Intl.DateTimeFormat(locale, {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'numeric',
+    day: 'numeric',
+    timeZone: tz
+  }).formatToParts(safeTime);
+  let weekdayPart = '';
+  let monthPart = '';
+  let dayPart = '';
+  for (const part of parts) {
+    if (part.type === 'weekday') weekdayPart = part.value;
+    if (part.type === 'month') monthPart = part.value;
+    if (part.type === 'day') dayPart = part.value;
+  }
+  const weekdayIndex = {
+    Mon: 0,
+    Tue: 1,
+    Wed: 2,
+    Thu: 3,
+    Fri: 4,
+    Sat: 5,
+    Sun: 6
+  }[weekdayPart] ?? safeTime.getDay();
+  const monthIndex = Math.max(0, Math.min(11, Number(monthPart || 1) - 1));
+  return {
+    safeTime,
+    day: Number(dayPart),
+    weekdayIndex,
+    monthIndex
+  };
+}
+
+function formatTimeForLocale(value, lang) {
+  const safeTime = value instanceof Date ? value : new Date(value);
+  const tz = kioskTimezone || DEFAULT_TIMEZONE;
+  if (lang === 'ht') {
+    return new Intl.DateTimeFormat('en-US', {
       hour: 'numeric',
       minute: '2-digit',
+      hour12: false,
       timeZone: tz
     }).format(safeTime);
-    return `${datePart} - ${timePart}`;
+  }
+  const parts = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: tz
+  }).formatToParts(safeTime);
+  let hour = '';
+  let minute = '';
+  let dayPeriod = '';
+  for (const part of parts) {
+    if (part.type === 'hour') hour = part.value;
+    if (part.type === 'minute') minute = part.value;
+    if (part.type === 'dayPeriod') dayPeriod = part.value;
+  }
+  if (lang === 'es') {
+    const suffix = dayPeriod.toLowerCase() === 'pm' ? 'p. m.' : 'a. m.';
+    return `${hour}:${minute} ${suffix}`;
+  }
+  const suffix = dayPeriod.toLowerCase() === 'pm' ? 'PM' : 'AM';
+  return `${hour}:${minute} ${suffix}`;
+}
+
+function formatKioskDateTime(now) {
+  const safeTime = now instanceof Date ? now : new Date();
+  const locale = getLocaleForLanguage(currentLanguage);
+  try {
+    const { day, weekdayIndex, monthIndex } = getZonedDateParts(safeTime);
+    const timePart = formatTimeForLocale(safeTime, currentLanguage);
+    if (currentLanguage === 'es') {
+      return `${ES_WEEKDAYS[weekdayIndex]}, ${day} ${ES_MONTHS[monthIndex]} – ${timePart}`;
+    }
+    if (currentLanguage === 'ht') {
+      return `${HT_WEEKDAYS[weekdayIndex]} ${day} ${HT_MONTHS[monthIndex]} – ${timePart}`;
+    }
+    return `${EN_WEEKDAYS[weekdayIndex]}, ${EN_MONTHS[monthIndex]} ${day} – ${timePart}`;
   } catch {
-    return safeTime.toLocaleString();
+    return safeTime.toLocaleString(locale);
   }
 }
 
@@ -964,17 +1258,18 @@ function formatKioskDate(value) {
   if (!value) return getCopy('summaryUnknown');
   const safeTime = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(safeTime.getTime())) return getCopy('summaryUnknown');
-  const tz = kioskTimezone || DEFAULT_TIMEZONE;
   const locale = getLocaleForLanguage(currentLanguage);
   try {
-    return new Intl.DateTimeFormat(locale, {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      timeZone: tz
-    }).format(safeTime);
+    const { day, weekdayIndex, monthIndex } = getZonedDateParts(safeTime);
+    if (currentLanguage === 'es') {
+      return `${ES_WEEKDAYS[weekdayIndex]}, ${day} ${ES_MONTHS[monthIndex]}`;
+    }
+    if (currentLanguage === 'ht') {
+      return `${HT_WEEKDAYS[weekdayIndex]} ${day} ${HT_MONTHS[monthIndex]}`;
+    }
+    return `${EN_WEEKDAYS[weekdayIndex]}, ${EN_MONTHS[monthIndex]} ${day}`;
   } catch {
-    return safeTime.toLocaleDateString();
+    return safeTime.toLocaleDateString(locale);
   }
 }
 
@@ -1188,7 +1483,24 @@ function setPunchButtonLabel(button, label) {
   if (!button) return;
   const labelEl = button.querySelector('.kiosk-btn-label');
   if (labelEl) {
+    const isSpanish = currentLanguage === 'es';
+    labelEl.classList.toggle('kiosk-btn-label-es', isSpanish);
     labelEl.textContent = label;
+    if (isSpanish) {
+      labelEl.style.fontSize = 'clamp(0.8rem, 3.1vw, 1rem)';
+      labelEl.style.letterSpacing = '0.09em';
+      labelEl.style.lineHeight = '1.1';
+      labelEl.style.whiteSpace = 'pre-line';
+      labelEl.style.textAlign = 'center';
+      labelEl.style.width = '100%';
+    } else {
+      labelEl.style.fontSize = '';
+      labelEl.style.letterSpacing = '';
+      labelEl.style.lineHeight = '';
+      labelEl.style.whiteSpace = '';
+      labelEl.style.textAlign = '';
+      labelEl.style.width = '';
+    }
   } else {
     button.textContent = label;
   }
@@ -1220,7 +1532,13 @@ function setLanguage(lang) {
   const nextLang = normalizeLanguage(lang);
   currentLanguage = nextLang;
   document.documentElement.lang = nextLang;
+  document.body && document.body.setAttribute('data-lang', nextLang);
   applyGreeting();
+  const punchBtn = document.getElementById('kiosk-punch');
+  if (punchBtn) {
+    const mode = punchBtn.dataset.mode === 'clock_out' ? 'tapOut' : 'tapIn';
+    setPunchButtonLabel(punchBtn, getCopy(mode));
+  }
   const placeholder = getCopy('placeholder');
   const empLabel = document.getElementById('kiosk-employee-label');
   if (empLabel) empLabel.textContent = getCopy('employeeLabel');
@@ -1737,18 +2055,23 @@ function hideAdminLoginModal() {
   if (status) status.textContent = '';
 }
 
-function submitAdminLogin() {
+async function submitAdminLogin() {
   const empSelect = document.getElementById('admin-login-employee');
   const pinInput = document.getElementById('admin-login-pin');
   const status = document.getElementById('admin-login-status');
+  const continueBtn = document.getElementById('admin-login-continue');
 
   if (!empSelect || !pinInput || !status) return;
 
   const id = empSelect.value;
   const entered = (pinInput.value || '').trim();
+  const controls = [pinInput, continueBtn].filter(Boolean);
 
   if (!id) {
     status.textContent = getCopy('selectYourNameStatus');
+    return;
+  }
+  if (enforcePinThrottle('admin', controls)) {
     return;
   }
   if (!entered) {
@@ -1769,14 +2092,21 @@ function submitAdminLogin() {
     return;
   }
 
-  const pinOk = storedHash
+  let pinOk = storedHash
     ? verifyPinHash(entered, storedHash)
     : storedPin === entered;
 
+  if (!pinOk && navigator.onLine) {
+    pinOk = await verifyAdminPinWithServer(id, entered);
+  }
+
   if (!pinOk) {
+    registerPinFailure('admin', controls);
     status.textContent = getCopy('pinStatusIncorrect');
     return;
   }
+
+  resetPinFailures('admin');
 
   // ✅ Success – close login and go to kiosk admin dashboard in the SAME tab
   status.textContent = '';
@@ -2052,10 +2382,12 @@ function retakePhoto() {
 async function submitPin() {
   const pinInput = document.getElementById('pin-input');
   const pinConfirmInput = document.getElementById('pin-confirm-input');
+  const pinContinueBtn = document.getElementById('pin-continue');
   const employee = currentEmployee;
 
   if (!employee || !pinInput) return;
 
+  const pinControls = [pinInput, pinContinueBtn].filter(Boolean);
   const entered = pinInput.value.trim();
   const storedHash = employee.pin_hash || '';
   const storedPin = (employee.pin || '').trim();
@@ -2065,6 +2397,9 @@ async function submitPin() {
   if (hasPin) {
     // 1. PIN VALIDATION
     if (!pinValidated) {
+      if (enforcePinThrottle('worker', pinControls)) {
+        return;
+      }
       if (!entered) {
         setPinError(getCopy('pinStatusEnterPin'));
         return;
@@ -2075,6 +2410,7 @@ async function submitPin() {
         : entered === storedPin;
 
       if (!pinOk) {
+        registerPinFailure('worker', pinControls);
         setPinError(getCopy('pinStatusIncorrect'));
         pinInput.value = '';
 
@@ -2086,6 +2422,7 @@ async function submitPin() {
         return;
       }
 
+      resetPinFailures('worker');
       pinValidated = true;
       pinInput.value = '';
 
@@ -2177,7 +2514,7 @@ async function submitPin() {
         setPinError(getCopy('offlineUnsupported'));
         return;
       }
-      addPendingPinUpdate({ employee_id: employee.id, pin: pin1 });
+      await addPendingPinUpdate({ employee_id: employee.id, pin: pin1 });
 
       const pinHash = hashPin(pin1);
       if (pinHash) {
@@ -2456,13 +2793,23 @@ async function syncPendingEmployees() {
     const deviceId = item.device_id || kioskDeviceId || getOrCreateDeviceId();
     const deviceSecret =
       item.device_secret || getOrCreateDeviceSecret();
+    const pin =
+      item.pin ||
+      (await decryptPinFromStore(
+        item.pin_cipher,
+        (item.device_secret || '').trim() || deviceSecret
+      ));
+    if (!pin) {
+      remaining.push(item);
+      continue;
+    }
 
     try {
       await fetchJSON(`/api/employees/${item.employee_id}/pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          pin: item.pin,
+          pin,
           allowOverride: true,
           client_id: item.client_id,
           device_id: deviceId,
@@ -2530,25 +2877,8 @@ async function updatePunchButtonForEmployee(employeeId) {
       // EMPLOYEE IS CLOCKED IN → CLOCK OUT MODE (RED)
       setClockOutButton(button);
       if (status) {
-        status.className = 'glass-status kiosk-status kiosk-status-ok';
-        if (data.clock_in_ts) {
-          const start = new Date(data.clock_in_ts);
-          const now = new Date();
-          const diffMs = Math.max(0, now - start);
-          const diffMin = Math.floor(diffMs / 60000);
-          const diffHours = diffMs / 3600000;
-          const minutesLabel = formatNumber(diffMin);
-          const hoursLabel = formatNumber(diffHours, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2
-          });
-          status.textContent =
-            diffMin < 60
-              ? formatCopy('statusClockedInMinutes', { minutes: minutesLabel })
-              : formatCopy('statusClockedInHours', { hours: hoursLabel });
-        } else {
-          status.textContent = '';
-        }
+        status.className = 'glass-status kiosk-status';
+        status.textContent = '';
       }
     } else {
       // EMPLOYEE IS NOT CLOCKED IN → CLOCK IN MODE (GREEN)
@@ -2602,6 +2932,32 @@ async function onEmployeeChange() {
   }
 
   await updatePunchButtonForEmployee(empId);
+}
+
+function handleEmployeeSelectFocus() {
+  const empSel = document.getElementById('kiosk-employee');
+  if (!empSel) return;
+  employeeSelectStartValue = empSel.value;
+  employeeSelectChanged = false;
+}
+
+function handleEmployeeSelectChange() {
+  employeeSelectChanged = true;
+  void onEmployeeChange();
+}
+
+function handleEmployeeSelectBlur() {
+  const empSel = document.getElementById('kiosk-employee');
+  if (!empSel) return;
+  if (!employeeSelectChanged && employeeSelectStartValue) {
+    empSel.value = '';
+    if (empSel.selectedIndex !== 0) {
+      empSel.selectedIndex = 0;
+    }
+    void onEmployeeChange();
+  }
+  employeeSelectChanged = false;
+  employeeSelectStartValue = empSel.value || '';
 }
 
 // ====== PUNCH BUTTON ======
@@ -2756,6 +3112,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     offlineStorageSupported = canUseLocalStorage();
   }
 
+  await migratePendingPins();
+
   if (!offlineStorageSupported) {
     setSyncWarning(getCopy('offlineUnsupported'));
   }
@@ -2797,7 +3155,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const empSel = document.getElementById('kiosk-employee');
   if (empSel) {
-    empSel.addEventListener('change', onEmployeeChange);
+    empSel.addEventListener('focus', handleEmployeeSelectFocus);
+    empSel.addEventListener('change', handleEmployeeSelectChange);
+    empSel.addEventListener('blur', handleEmployeeSelectBlur);
   }
 
   document.querySelectorAll('.lang-btn').forEach(btn => {

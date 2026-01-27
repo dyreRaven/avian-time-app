@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Avian Kiosk" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 
   <style>
   :root {
@@ -37,6 +37,13 @@
     --radius-xl: 30px;
     --radius-lg: 22px;
     --radius-md: 16px;
+    --kiosk-pill-height: 58px;
+    --kiosk-pill-radius: 18px;
+    --kiosk-head-shift: 22px;
+    --kiosk-select-bg:
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23727b82' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='8' r='3.6'/><path d='M4.8 19.5c1.9-3.8 12.5-3.8 14.4 0'/></svg>"),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23727b82' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>"),
+      linear-gradient(180deg, #ffffff 0%, #f2f4f7 100%);
   }
 
   *,
@@ -48,6 +55,10 @@
   html,
   body {
     height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: none;
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
@@ -55,7 +66,7 @@
     font-family: 'Montserrat', sans-serif;
     color: var(--ink-900);
     background-color: #fff6ec;
-    background-image: url('/images/back11.png');
+    background-image: url('/images/wsplash2.jpg');
     background-repeat: no-repeat;
     background-position: center bottom;
     background-size: 100% auto;
@@ -70,7 +81,7 @@
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding: 32px 28px 64px;
+    padding: 0 28px 64px;
     overflow: hidden;
     z-index: 1;
   }
@@ -85,7 +96,7 @@
     box-shadow: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-    padding: 24px 32px 96px;
+    padding: 0 32px 96px;
     position: relative;
     z-index: 1;
     overflow: visible;
@@ -100,7 +111,7 @@
   .glass-panel {
     width: min(560px, 100%);
     margin: 0 auto;
-    padding: 28px 32px 36px;
+    padding: 0 32px 36px;
     border-radius: 32px;
     background: transparent;
     border: none;
@@ -148,19 +159,21 @@
     padding: 0;
     border-radius: 0;
     background: transparent;
-    color: var(--ink-600);
-    font-size: 0.78rem;
+    color: #2d3539;
+    font-size: 0.95rem;
+    font-weight: 500;
     border: none;
     box-shadow: none;
   }
 
   .kiosk-project-prefix {
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
+    letter-spacing: 0;
+    text-transform: none;
+    font-weight: inherit;
   }
 
   #kiosk-project-name {
-    font-weight: 600;
+    font-weight: 500;
     color: var(--teal-700);
     max-width: 240px;
     overflow: hidden;
@@ -178,29 +191,32 @@
 
   .kiosk-project-top {
     position: static;
-    margin-top: 18px;
+    margin-top: 6px;
     justify-content: center;
     text-align: center;
     z-index: 3;
   }
 
   .lang-switch {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0;
-    padding: 6px;
-    width: min(420px, 100%);
+    height: var(--kiosk-pill-height);
+    padding: 4px;
+    width: 100%;
+    box-sizing: border-box;
+    justify-self: stretch;
     margin-inline: auto;
-    background: #fffdf9;
-    border: 1px solid #d6d2cc;
-    border-radius: 999px;
-    box-shadow: 0 14px 26px rgba(20, 30, 35, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    background: linear-gradient(180deg, #ffffff 0%, #f2f4f7 100%);
+    border: 1px solid #cfd4da;
+    border-radius: var(--kiosk-pill-radius);
+    box-shadow: 0 10px 20px rgba(20, 28, 35, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.9);
   }
 
   .lang-switch-footer {
     position: static;
-    margin-top: 26px;
+    margin-top: 0;
     width: 100%;
   }
 
@@ -211,14 +227,15 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    padding: 9px 16px;
-    border-radius: 999px;
+    height: 100%;
+    padding: 0 16px;
+    border-radius: calc(var(--kiosk-pill-radius) - 4px);
     border: none;
     background: transparent;
     cursor: pointer;
     font-size: 0.9rem;
-    font-weight: 600;
-    color: #2f3639;
+    font-weight: 500;
+    color: #3a424a;
     white-space: nowrap;
     transition: background 0.2s ease, box-shadow 0.2s ease, color 0.2s ease, transform 0.2s ease;
   }
@@ -226,11 +243,11 @@
   .lang-btn::after {
     content: '';
     position: absolute;
-    top: 22%;
+    top: 24%;
     right: -1px;
     width: 1px;
-    height: 56%;
-    background: #cfd3d8;
+    height: 52%;
+    background: #d5dbe1;
   }
 
   .lang-btn:last-child::after {
@@ -248,17 +265,18 @@
 
   .lang-btn.active {
     transform: translateY(-1px);
-    background: #2f8b67;
+    background: linear-gradient(180deg, #2f8b67 0%, #25795b 100%);
     color: #ffffff;
-    box-shadow: 0 10px 18px rgba(32, 109, 77, 0.32);
+    box-shadow: 0 9px 16px rgba(20, 28, 35, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.25);
     z-index: 1;
   }
 
   .glass-body {
     display: grid;
     gap: 28px;
-    margin-top: clamp(40px, 6vh, 96px);
+    margin-top: clamp(32px, 5vh, 72px);
     text-align: center;
+    justify-items: center;
   }
 
   .glass-body > * {
@@ -276,14 +294,16 @@
   }
 
   .glass-logo-top {
-    margin: 20px 0 8px;
+    margin: 4px 0 6px;
+    transform: translateY(var(--kiosk-head-shift));
   }
 
   .kiosk-heading {
     display: grid;
     gap: 10px;
     text-align: center;
-    margin: 8px 0 28px;
+    margin: 10px 0 22px;
+    transform: translateY(var(--kiosk-head-shift));
   }
 
   .kiosk-heading-title {
@@ -300,8 +320,9 @@
     font-size: 1.35rem;
     letter-spacing: 0.08em;
     color: var(--ink-600);
-    font-weight: 700;
+    font-weight: 400;
     line-height: 1.2;
+    margin-top: 6px;
   }
 
   .glass-logo {
@@ -354,10 +375,19 @@
   }
 
   .glass-form {
-    display: grid;
-    gap: 24px;
-    width: min(420px, 100%);
+    display: block;
+    width: min(520px, 100%);
     margin-inline: auto;
+    justify-self: center;
+  }
+
+  .kiosk-form-stack {
+    display: grid;
+    gap: 30px;
+    transform: translateY(52px);
+    width: 100%;
+    align-items: center;
+    justify-items: stretch;
   }
 
   .glass-form .glass-btn {
@@ -374,20 +404,19 @@
   }
 
   .glass-select {
-    height: 60px;
-    border-radius: 999px;
-    border: 1px solid #d6d2cc;
+    height: var(--kiosk-pill-height);
+    width: 100%;
+    justify-self: stretch;
+    border-radius: var(--kiosk-pill-radius);
+    border: 1px solid #cfd4da;
     padding: 0 56px 0 54px;
     font-size: 1rem;
     font-weight: 500;
     color: #2d3539;
-    background-color: #fffdf9;
-    box-shadow: 0 16px 26px rgba(17, 29, 34, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    background-color: #ffffff;
+    box-shadow: 0 10px 18px rgba(18, 26, 32, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.9);
     appearance: none;
-    background-image:
-      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23727d87' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='8' r='3.6'/><path d='M4.8 19.5c1.9-3.8 12.5-3.8 14.4 0'/></svg>"),
-      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23727d87' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>"),
-      linear-gradient(180deg, #fffdf9 0%, #f7f3ed 100%);
+    background-image: var(--kiosk-select-bg);
     background-position: 22px 50%, calc(100% - 22px) 50%, 0 0;
     background-size: 18px 18px, 18px 18px, 100% 100%;
     background-repeat: no-repeat, no-repeat, no-repeat;
@@ -395,16 +424,24 @@
     transition: border 0.2s ease, box-shadow 0.2s ease;
   }
 
+  .glass-select:focus,
+  .glass-select:active {
+    background-image: var(--kiosk-select-bg);
+    background-position: 22px 50%, calc(100% - 22px) 50%, 0 0;
+    background-size: 18px 18px, 18px 18px, 100% 100%;
+    background-repeat: no-repeat, no-repeat, no-repeat;
+  }
+
   .glass-select:focus-visible {
-    outline: 2px solid rgba(12, 129, 109, 0.35);
+    outline: 2px solid rgba(120, 128, 136, 0.35);
     outline-offset: 3px;
-    border-color: rgba(12, 129, 109, 0.45);
-    box-shadow: 0 0 0 4px rgba(12, 129, 109, 0.16), 0 16px 26px rgba(17, 29, 34, 0.14);
+    border-color: rgba(162, 169, 176, 0.9);
+    box-shadow: 0 0 0 3px rgba(120, 128, 136, 0.12), 0 10px 18px rgba(18, 26, 32, 0.18);
   }
 
   .glass-select:focus {
-    border-color: rgba(12, 129, 109, 0.4);
-    box-shadow: 0 0 0 3px rgba(12, 129, 109, 0.14), 0 16px 26px rgba(17, 29, 34, 0.14);
+    border-color: rgba(162, 169, 176, 0.85);
+    box-shadow: 0 0 0 2px rgba(120, 128, 136, 0.1), 0 10px 18px rgba(18, 26, 32, 0.18);
   }
 
   .glass-btn {
@@ -432,7 +469,7 @@
     position: relative;
     width: var(--kiosk-btn-size);
     height: var(--kiosk-btn-size);
-    margin: clamp(8px, 2vh, 28px) auto 0;
+    margin: clamp(52px, 7vh, 96px) auto 0;
     border-radius: 50%;
     background: radial-gradient(circle at 35% 28%, #ffffff 0%, #fff5ec 45%, #eef2f8 100%);
     border: 1px solid rgba(216, 208, 196, 0.85);
@@ -524,39 +561,39 @@
   }
 
   .glass-btn.kiosk-btn-danger {
-    background: #b4231b;
-    box-shadow: 0 18px 32px rgba(180, 35, 27, 0.35);
+    background: #c21f17;
+    box-shadow: 0 18px 32px rgba(194, 31, 23, 0.38);
   }
 
   .glass-btn.kiosk-btn-danger:hover {
-    box-shadow: 0 22px 38px rgba(180, 35, 27, 0.45);
+    box-shadow: 0 22px 38px rgba(194, 31, 23, 0.5);
     filter: saturate(1.05);
   }
 
   .glass-btn.kiosk-btn-danger:focus-visible {
-    outline: 2px solid rgba(180, 35, 27, 0.4);
+    outline: 2px solid rgba(194, 31, 23, 0.45);
     outline-offset: 3px;
   }
 
   .kiosk-btn.kiosk-btn-danger {
-    background: radial-gradient(circle at 35% 28%, #ffffff 0%, #fff1ef 50%, #f1dede 100%);
-    border-color: rgba(218, 166, 162, 0.7);
-    color: #8b1b15;
+    background: radial-gradient(circle at 35% 28%, #ffffff 0%, #ffe7e4 48%, #f1c9c5 100%);
+    border-color: rgba(196, 92, 86, 0.55);
+    color: #8e1c16;
     box-shadow:
-      0 26px 40px rgba(40, 20, 20, 0.22),
-      0 10px 18px rgba(40, 20, 20, 0.16),
+      0 28px 42px rgba(120, 24, 20, 0.28),
+      0 12px 20px rgba(120, 24, 20, 0.18),
       inset 0 6px 10px rgba(255, 255, 255, 0.85),
-      inset 0 -12px 18px rgba(210, 170, 168, 0.32);
+      inset 0 -12px 18px rgba(201, 120, 116, 0.36);
   }
 
   .kiosk-btn.kiosk-btn-danger::before {
     background: conic-gradient(
       from 210deg,
-      #d6a39f 0deg,
-      #f0c9c6 120deg,
-      #eadfe4 200deg,
-      #c8a5ab 300deg,
-      #d6a39f 360deg
+      #d26862 0deg,
+      #f0b3ae 120deg,
+      #edd4d2 200deg,
+      #c3777f 300deg,
+      #d26862 360deg
     );
   }
 
@@ -771,7 +808,7 @@
 
   .pin-modal {
     width: min(440px, 92vw);
-    padding: 20px 20px 0;
+    padding: 24px 20px 36px;
     display: grid;
     gap: 12px;
     align-content: start;
@@ -785,7 +822,7 @@
     z-index: 1;
     color: var(--ink-900);
     font-family: 'Montserrat', sans-serif;
-    max-height: min(420px, calc(100dvh - 96px));
+    max-height: min(840px, calc(100dvh - 12px));
     overflow: auto;
     pointer-events: auto;
   }
@@ -1080,25 +1117,30 @@
     }
 
     .pin-modal {
-      max-height: min(372px, calc(100dvh - 96px));
+      max-height: min(700px, calc(100dvh - 12px));
     }
   }
 
   @media (max-width: 600px) {
+    :root {
+      --kiosk-pill-height: 56px;
+      --kiosk-head-shift: 16px;
+    }
+
     .glass-shell {
-      padding: 18px 16px 48px;
+      padding: 0 16px 48px;
     }
 
     .glass-card {
       width: min(520px, 94vw);
-      padding: 18px 18px 72px;
+      padding: 0 18px 72px;
       border-radius: var(--radius-lg);
       min-height: auto;
     }
 
     .glass-panel {
       width: 100%;
-      padding: 22px 20px 28px;
+      padding: 0 20px 28px;
       border-radius: 26px;
     }
 
@@ -1113,7 +1155,7 @@
     }
 
     .glass-logo-top {
-      margin: 16px 0 6px;
+      margin: 4px 0 6px;
     }
 
     .kiosk-heading-title {
@@ -1121,9 +1163,18 @@
       letter-spacing: 0.08em;
     }
 
+    .kiosk-heading {
+      margin: 10px 0 22px;
+    }
+
     .kiosk-heading-sub {
       font-size: 1.05rem;
       letter-spacing: 0.08em;
+      margin-top: 4px;
+    }
+
+    .kiosk-project-top {
+      margin-top: 4px;
     }
 
     .glass-greeting {
@@ -1131,9 +1182,13 @@
     }
 
     .glass-select {
-      height: 56px;
       font-size: 0.95rem;
       padding: 0 50px 0 48px;
+    }
+
+    .kiosk-form-stack {
+      gap: 24px;
+      transform: translateY(36px);
     }
 
     .glass-btn {
@@ -1144,18 +1199,30 @@
     .kiosk-btn {
       --kiosk-btn-size: clamp(120px, 34vw, 150px);
       --kiosk-ring: clamp(7px, 2vw, 10px);
-      margin-top: clamp(6px, 3vh, 36px);
+      margin-top: clamp(40px, 7vh, 80px);
     }
 
-    .kiosk-btn-label {
-      font-size: clamp(0.9rem, 4vw, 1.1rem);
-      letter-spacing: 0.18em;
-    }
+  .kiosk-btn-label {
+    font-size: clamp(0.82rem, 3.2vw, 1rem);
+    letter-spacing: 0.12em;
+    line-height: 1.1;
+    text-align: center;
+    width: 100%;
+  }
+
+  .kiosk-btn-label-es {
+    font-size: clamp(0.68rem, 2.4vw, 0.88rem);
+    letter-spacing: 0.06em;
+    line-height: 1.15;
+    white-space: pre-line;
+    word-break: keep-all;
+    text-transform: uppercase;
+  }
 
     .pin-modal {
       width: min(360px, 94vw);
-      padding: 18px 16px 2px;
-      max-height: calc(100dvh - 56px);
+      padding: 20px 16px 36px;
+      max-height: calc(100dvh - 8px);
     }
 
     .admin-pin-modal {
@@ -1179,7 +1246,7 @@
     }
 
     .lang-switch-footer {
-      margin-top: 22px;
+      margin-top: 6px;
     }
 
     .lang-btn {
@@ -1192,7 +1259,7 @@
     }
 
     .glass-body {
-      margin-top: clamp(32px, 6vh, 70px);
+      margin-top: clamp(26px, 5vh, 56px);
     }
   }
 
@@ -1224,51 +1291,53 @@
           </div>
           <div class="kiosk-heading">
             <div id="kiosk-datetime" class="kiosk-heading-sub"></div>
+            <div class="kiosk-project-display kiosk-project-top">
+              <span class="kiosk-project-prefix" id="kiosk-project-label">Active Project:</span>
+              <span id="kiosk-project-name">No project set</span>
+            </div>
           </div>
           <div class="glass-body">
             <div class="glass-form">
-              <label class="glass-label kiosk-sr-only" id="kiosk-employee-label" for="kiosk-employee">Employee</label>
-              <select id="kiosk-employee" class="glass-select">
-                <option value="" id="kiosk-employee-placeholder">Select your name</option>
-              </select>
+              <div class="kiosk-form-stack">
+                <label class="glass-label kiosk-sr-only" id="kiosk-employee-label" for="kiosk-employee">Employee</label>
+                <select id="kiosk-employee" class="glass-select">
+                  <option value="" id="kiosk-employee-placeholder">Select your name</option>
+                </select>
 
-              <div class="lang-switch lang-switch-footer" role="group" aria-label="Language">
-                <button class="lang-btn lang-btn-left active" type="button" data-lang="en" aria-label="English">
-                  <span class="lang-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                      <circle cx="12" cy="12" r="9"></circle>
-                      <path d="M3 12h18"></path>
-                      <path d="M12 3c3.5 4 3.5 14 0 18c-3.5-4-3.5-14 0-18z"></path>
-                    </svg>
-                  </span>
-                  <span class="lang-label">English</span>
-                </button>
-                <button class="lang-btn lang-btn-center" type="button" data-lang="es" aria-label="Español">
-                  <span class="lang-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                      <circle cx="12" cy="12" r="9"></circle>
-                      <path d="M3 12h18"></path>
-                      <path d="M12 3c3.5 4 3.5 14 0 18c-3.5-4-3.5-14 0-18z"></path>
-                    </svg>
-                  </span>
-                  <span class="lang-label">Español</span>
-                </button>
-                <button class="lang-btn lang-btn-right" type="button" data-lang="ht" aria-label="Kreyòl">
-                  <span class="lang-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                      <circle cx="12" cy="12" r="9"></circle>
-                      <path d="M3 12h18"></path>
-                      <path d="M12 3c3.5 4 3.5 14 0 18c-3.5-4-3.5-14 0-18z"></path>
-                    </svg>
-                  </span>
-                  <span class="lang-label">Kreyòl</span>
-                </button>
+                <div class="lang-switch lang-switch-footer" role="group" aria-label="Language">
+                  <button class="lang-btn lang-btn-left active" type="button" data-lang="en" aria-label="English">
+                    <span class="lang-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="9"></circle>
+                        <path d="M3 12h18"></path>
+                        <path d="M12 3c3.5 4 3.5 14 0 18c-3.5-4-3.5-14 0-18z"></path>
+                      </svg>
+                    </span>
+                    <span class="lang-label">English</span>
+                  </button>
+                  <button class="lang-btn lang-btn-center" type="button" data-lang="es" aria-label="Español">
+                    <span class="lang-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="9"></circle>
+                        <path d="M3 12h18"></path>
+                        <path d="M12 3c3.5 4 3.5 14 0 18c-3.5-4-3.5-14 0-18z"></path>
+                      </svg>
+                    </span>
+                    <span class="lang-label">Español</span>
+                  </button>
+                  <button class="lang-btn lang-btn-right" type="button" data-lang="ht" aria-label="Kreyòl">
+                    <span class="lang-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="9"></circle>
+                        <path d="M3 12h18"></path>
+                        <path d="M12 3c3.5 4 3.5 14 0 18c-3.5-4-3.5-14 0-18z"></path>
+                      </svg>
+                    </span>
+                    <span class="lang-label">Kreyòl</span>
+                  </button>
+                </div>
+                <div id="kiosk-status" class="glass-status kiosk-status"></div>
               </div>
-              <div class="kiosk-project-display kiosk-project-top">
-                <span class="kiosk-project-prefix" id="kiosk-project-label">Active Project:</span>
-                <span id="kiosk-project-name">No project set</span>
-              </div>
-              <div id="kiosk-status" class="glass-status kiosk-status"></div>
             </div>
           </div>
 
@@ -1539,6 +1608,7 @@
 
 
   <!-- (keep this as the last thing) -->
+  <script src="/js/bcrypt.min.js"></script>
   <script src="/kiosk.js"></script>
 </body>
 </html>

@@ -2000,10 +2000,34 @@ function getClientIp(req) {
   return req.ip || '';
 }
 
+function getKioskDeviceIdForRateLimit(req) {
+  const bodyDeviceId = req.body && req.body.device_id;
+  const queryDeviceId = req.query && req.query.device_id;
+  const headerDeviceId = (req.get('x-kiosk-device-id') || '').trim();
+  const cookieDeviceId = getCookieValue(req, 'kiosk_device_id');
+  return (
+    (bodyDeviceId || queryDeviceId || headerDeviceId || cookieDeviceId || '')
+  ).trim();
+}
+
 const loginRateLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 10,
   keyFn: (req) => `${getClientIp(req)}:login`
+});
+
+const kioskPinRateLimiter = createRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  max: 20,
+  keyFn: (req) => {
+    const deviceId = getKioskDeviceIdForRateLimit(req);
+    const adminId =
+      (req.body && (req.body.admin_id || req.body.employee_id)) ||
+      (req.query && (req.query.admin_id || req.query.employee_id)) ||
+      'unknown';
+    const keyBase = deviceId || getClientIp(req) || 'unknown';
+    return `${keyBase}:${adminId}:kiosk-pin`;
+  }
 });
 
 const bootstrapRateLimiter = createRateLimiter({
@@ -5373,6 +5397,51 @@ app.get('/api/kiosk/employees', async (req, res) => {
   });
 });
 
+// Kiosk admin PIN verification (device auth or admin session)
+app.post('/api/kiosk/admin/verify-pin', kioskPinRateLimiter, async (req, res) => {
+  try {
+    const adminCtx = await resolveKioskAdmin(req);
+    if (!adminCtx.ok) {
+      return res
+        .status(adminCtx.status || 401)
+        .json({ error: adminCtx.error || 'Not authenticated' });
+    }
+
+    const pin = (req.body && req.body.pin ? String(req.body.pin) : '').trim();
+    if (!/^\d{4}$/.test(pin)) {
+      return res.status(400).json({ error: 'PIN must be a 4-digit number.' });
+    }
+
+    const admin = await dbGet(
+      `
+        SELECT id, pin_hash
+        FROM employees
+        WHERE id = ? AND org_id = ? AND IFNULL(kiosk_admin_access, 0) = 1
+          AND IFNULL(active, 1) = 1
+        LIMIT 1
+      `,
+      [adminCtx.adminId, adminCtx.orgId]
+    );
+
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found or not authorized.' });
+    }
+    if (!admin.pin_hash) {
+      return res.status(403).json({ error: 'No PIN is set for this admin.' });
+    }
+
+    const pinOk = await bcrypt.compare(pin, admin.pin_hash);
+    if (!pinOk) {
+      return res.status(401).json({ error: 'Incorrect PIN.' });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Error verifying kiosk admin PIN:', err);
+    return res.status(500).json({ error: 'Failed to verify PIN.' });
+  }
+});
+
 // Kiosk admin: create a pending employee with ID document
 app.post('/api/kiosk/employees', wrapUpload(uploadIdDocument.single('id_document')), async (req, res) => {
   const cleanupFile = async () => {
@@ -5603,7 +5672,7 @@ async function loadPermissionTemplate(orgId, templateId) {
 }
 
 // Re-auth a kiosk admin (by PIN) to unlock rate editing, gated by access permissions
-app.post('/api/kiosk/rates/unlock', async (req, res) => {
+app.post('/api/kiosk/rates/unlock', kioskPinRateLimiter, async (req, res) => {
   try {
     const deviceAccess = await ensureKioskDevice(req);
     if (!deviceAccess.ok) {

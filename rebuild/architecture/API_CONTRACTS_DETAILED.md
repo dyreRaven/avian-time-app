@@ -136,6 +136,11 @@ Note: if language is missing or invalid, clients should default to English and s
 - Response: `[ { "id": 1, "name": "...", "nickname": "...", "name_on_checks": "...", "language": "en", "worker_timekeeping": 1, "kiosk_admin_access": 0, "pin_hash": "..." } ]`
 Note: requires kiosk device auth or admin session; returns active employees allowed on kiosk (worker_timekeeping or kiosk_admin_access); pin_hash is provided for offline validation only (raw PINs are never returned).
 
+### POST /api/kiosk/admin/verify-pin  [kiosk admin]
+- Request: `{ "admin_id": 12, "pin": "1234", "device_id": "...", "device_secret": "..." }`
+- Response: `{ "ok": true }`
+Note: kiosk device auth or admin session required; validates the admin’s 4-digit PIN. Returns 401 for incorrect PIN and 403 if no PIN is set.
+
 ### POST /api/kiosk/employees  [kiosk admin]
 Create a pending employee from the kiosk (no QBO link required).
 - Request (multipart/form-data):

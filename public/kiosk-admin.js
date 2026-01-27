@@ -281,6 +281,175 @@ function kaStoreSet(key, value) {
   }
 }
 
+const kaPinThrottleState = {
+  admin: { fails: 0, nextAllowedAt: 0, timer: null },
+  rate: { fails: 0, nextAllowedAt: 0, timer: null }
+};
+
+const KA_PIN_THROTTLE_START_AFTER = 3;
+const KA_PIN_THROTTLE_BASE_MS = 1000;
+const KA_PIN_THROTTLE_MAX_MS = 8000;
+const KA_PIN_CRYPTO_VERSION = 'v1';
+const KA_PIN_CRYPTO_SALT = 'avian-kiosk-pin-v1';
+const KA_PIN_CRYPTO_ITERATIONS = 50000;
+
+function kaComputePinThrottleDelay(fails) {
+  if (fails < KA_PIN_THROTTLE_START_AFTER) return 0;
+  const step = Math.min(fails - KA_PIN_THROTTLE_START_AFTER, 3);
+  const delay = KA_PIN_THROTTLE_BASE_MS * Math.pow(2, step);
+  return Math.min(delay, KA_PIN_THROTTLE_MAX_MS);
+}
+
+function kaGetPinThrottleRemaining(kind) {
+  const state = kaPinThrottleState[kind];
+  if (!state) return 0;
+  const remaining = state.nextAllowedAt - Date.now();
+  return remaining > 0 ? remaining : 0;
+}
+
+function kaSchedulePinThrottle(kind, elements, delayMs) {
+  const state = kaPinThrottleState[kind];
+  if (!state || delayMs <= 0) return;
+  if (state.timer) clearTimeout(state.timer);
+  elements.forEach(el => {
+    if (el) el.disabled = true;
+  });
+  state.timer = setTimeout(() => {
+    elements.forEach(el => {
+      if (el) el.disabled = false;
+    });
+    state.timer = null;
+  }, delayMs);
+}
+
+function kaRegisterPinFailure(kind, elements = []) {
+  const state = kaPinThrottleState[kind];
+  if (!state) return 0;
+  state.fails += 1;
+  const delay = kaComputePinThrottleDelay(state.fails);
+  if (delay > 0) {
+    state.nextAllowedAt = Date.now() + delay;
+    kaSchedulePinThrottle(kind, elements, delay);
+  }
+  return delay;
+}
+
+function kaResetPinFailures(kind) {
+  const state = kaPinThrottleState[kind];
+  if (!state) return;
+  state.fails = 0;
+  state.nextAllowedAt = 0;
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+}
+
+function kaEnforcePinThrottle(kind, elements = []) {
+  const remaining = kaGetPinThrottleRemaining(kind);
+  if (remaining <= 0) return false;
+  kaSchedulePinThrottle(kind, elements, remaining);
+  return true;
+}
+
+async function kaWaitForPinThrottle(kind) {
+  const remaining = kaGetPinThrottleRemaining(kind);
+  if (remaining <= 0) return;
+  alert('Please wait a moment and try again.');
+  await new Promise(resolve => setTimeout(resolve, remaining));
+}
+
+const kaPinCryptoKeyCache = {
+  secret: null,
+  promise: null
+};
+
+function kaBytesToBase64(bytes) {
+  let binary = '';
+  bytes.forEach(b => {
+    binary += String.fromCharCode(b);
+  });
+  return btoa(binary);
+}
+
+function kaBase64ToBytes(b64) {
+  const binary = atob(b64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    out[i] = binary.charCodeAt(i);
+  }
+  return out;
+}
+
+async function kaGetPinCryptoKey(secret) {
+  if (!secret || !window.crypto || !window.crypto.subtle) return null;
+  if (kaPinCryptoKeyCache.secret === secret && kaPinCryptoKeyCache.promise) {
+    return kaPinCryptoKeyCache.promise;
+  }
+  const enc = new TextEncoder();
+  const baseKey = await window.crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  );
+  const keyPromise = window.crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: enc.encode(KA_PIN_CRYPTO_SALT),
+      iterations: KA_PIN_CRYPTO_ITERATIONS,
+      hash: 'SHA-256'
+    },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+  kaPinCryptoKeyCache.secret = secret;
+  kaPinCryptoKeyCache.promise = keyPromise;
+  return keyPromise;
+}
+
+async function kaEncryptPinForStore(pin, secret) {
+  if (!pin || !secret || !window.crypto || !window.crypto.subtle) return null;
+  const key = await kaGetPinCryptoKey(secret);
+  if (!key) return null;
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const enc = new TextEncoder();
+  const cipherBuf = await window.crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    enc.encode(String(pin))
+  );
+  const cipherBytes = new Uint8Array(cipherBuf);
+  return `${KA_PIN_CRYPTO_VERSION}:${kaBytesToBase64(iv)}:${kaBytesToBase64(cipherBytes)}`;
+}
+
+async function kaDecryptPinFromStore(token, secret) {
+  if (!token || !secret || !window.crypto || !window.crypto.subtle) return null;
+  const parts = String(token).split(':');
+  if (parts.length !== 3 || parts[0] !== KA_PIN_CRYPTO_VERSION) return null;
+  const key = await kaGetPinCryptoKey(secret);
+  if (!key) return null;
+  try {
+    const iv = kaBase64ToBytes(parts[1]);
+    const data = kaBase64ToBytes(parts[2]);
+    const plainBuf = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      data
+    );
+    if (window.TextDecoder) {
+      return new TextDecoder().decode(plainBuf);
+    }
+    const bytes = new Uint8Array(plainBuf);
+    return Array.from(bytes).map(b => String.fromCharCode(b)).join('');
+  } catch {
+    return null;
+  }
+}
+
 async function fetchJSON(url, options = {}) {
   const opts = Object.assign({ credentials: 'include' }, options);
   const method = (opts.method || 'GET').toUpperCase();
@@ -378,6 +547,20 @@ function kaHashPin(pin) {
     return bcrypt.hashSync(String(pin || '').trim(), salt);
   } catch {
     return null;
+  }
+}
+
+async function kaVerifyAdminPinWithServer(adminId, pin) {
+  if (!adminId || !pin) return false;
+  try {
+    const res = await fetchJSON('/api/kiosk/admin/verify-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_id: adminId, pin })
+    });
+    return !!(res && res.ok);
+  } catch {
+    return false;
   }
 }
 
@@ -639,6 +822,30 @@ function kaWritePendingPins(list) {
   kaUpdateOfflineIndicator();
 }
 
+async function kaMigratePendingPins() {
+  const list = kaReadPendingPins();
+  if (!list.length) return;
+  let changed = false;
+  for (const item of list) {
+    if (item && item.pin && !item.pin_cipher) {
+      const secret =
+        (item.device_secret || '').trim() ||
+        kaGetDeviceSecret();
+      try {
+        const cipher = await kaEncryptPinForStore(item.pin, secret);
+        if (cipher) {
+          item.pin_cipher = cipher;
+          delete item.pin;
+          changed = true;
+        }
+      } catch {
+        // ignore encryption failures
+      }
+    }
+  }
+  if (changed) kaWritePendingPins(list);
+}
+
 function kaTodaySessionProjects() {
   const today = kaTodayIso();
   const map = new Map();
@@ -657,14 +864,23 @@ function kaTodaySessionProjects() {
   return Array.from(map.values());
 }
 
-function kaAddPendingPinUpdate(update) {
+async function kaAddPendingPinUpdate(update) {
   const list = kaReadPendingPins();
+  const deviceId = update.device_id || kaDeviceId || null;
+  const deviceSecret = update.device_secret || kaGetDeviceSecret();
+  let pinCipher = null;
+  try {
+    const secret = deviceSecret || '';
+    pinCipher = await kaEncryptPinForStore(update.pin, secret);
+  } catch {
+    pinCipher = null;
+  }
   list.push({
     client_id: update.client_id || `pin_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
     employee_id: update.employee_id,
-    pin: update.pin,
-    device_id: update.device_id || kaDeviceId || null,
-    device_secret: update.device_secret || kaGetDeviceSecret(),
+    ...(pinCipher ? { pin_cipher: pinCipher } : { pin: update.pin }),
+    device_id: deviceId,
+    device_secret: deviceSecret,
     queued_at: new Date().toISOString()
   });
   kaWritePendingPins(list);
@@ -678,12 +894,20 @@ async function kaSyncPendingPins() {
 
   const remaining = [];
   for (const item of list) {
+    const secret =
+      (item.device_secret || '').trim() ||
+      kaGetDeviceSecret();
+    const pin = item.pin || (await kaDecryptPinFromStore(item.pin_cipher, secret));
+    if (!pin) {
+      remaining.push(item);
+      continue;
+    }
     try {
       await fetchJSON(`/api/employees/${item.employee_id}/pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          pin: item.pin,
+          pin,
           allowOverride: true,
           client_id: item.client_id,
           device_id: item.device_id || kaDeviceId || null,
@@ -692,12 +916,12 @@ async function kaSyncPendingPins() {
       });
       const emp = (kaEmployees || []).find(e => Number(e.id) === Number(item.employee_id));
       if (emp) {
-        const pinHash = kaHashPin(item.pin);
+        const pinHash = kaHashPin(pin);
         if (pinHash) {
           emp.pin_hash = pinHash;
           emp.pin = '';
         } else {
-          emp.pin = item.pin;
+          emp.pin = pin;
         }
       }
     } catch (err) {
@@ -951,12 +1175,17 @@ async function kaRequireAdminUnlock() {
   }
 
   for (let i = 0; i < 3; i++) {
+    await kaWaitForPinThrottle('admin');
     const entered = window.prompt('Enter your admin PIN to unlock kiosk admin:');
     if (entered === null) break; // cancel
-    const pinOk = storedHash
+    let pinOk = storedHash
       ? kaVerifyPinHash(entered, storedHash)
       : entered.trim() === storedPin;
+    if (!pinOk && navigator.onLine) {
+      pinOk = await kaVerifyAdminPinWithServer(kaCurrentAdmin.id, entered);
+    }
     if (pinOk) {
+      kaResetPinFailures('admin');
       kaAdminValidated = true;
       try {
         sessionStorage.setItem(unlockKey, '1');
@@ -965,6 +1194,7 @@ async function kaRequireAdminUnlock() {
       }
       return true;
     }
+    kaRegisterPinFailure('admin');
     alert('Incorrect PIN. Try again.');
   }
 
@@ -4307,6 +4537,7 @@ async function kaInit() {
   if (window.AVIAN_STORE && typeof window.AVIAN_STORE.init === 'function') {
     await window.AVIAN_STORE.init([KA_OFFLINE_QUEUE_KEY, KA_PENDING_PIN_KEY, KA_VERIFY_QUEUE_KEY]);
   }
+  await kaMigratePendingPins();
   kaUpdateOfflineIndicator();
 
   if (!kaDeviceId) {
@@ -7080,7 +7311,7 @@ async function kaHandlePinChange() {
             emp.pin = p1;
           }
         }
-        kaAddPendingPinUpdate({ employee_id: id, pin: p1 });
+        await kaAddPendingPinUpdate({ employee_id: id, pin: p1 });
         status.textContent = 'PIN saved locally; will sync when online/authenticated.';
         status.classList.add('ka-status-ok');
         pin1.value = '';
@@ -7449,6 +7680,7 @@ async function kaUnlockRatesWithPin() {
   const pinInput = document.getElementById('ka-rates-pin');
   const pinRow = document.getElementById('ka-rates-pin-row');
   const editor = document.getElementById('ka-rates-editor');
+  const controls = [pinInput].filter(Boolean);
 
   if (!kaCanModifyPayRates()) {
     kaResetRatesUI('You do not have permission to modify pay rates.');
@@ -7461,6 +7693,9 @@ async function kaUnlockRatesWithPin() {
   }
 
   const pin = pinInput ? (pinInput.value || '').trim() : '';
+  if (kaEnforcePinThrottle('rate', controls)) {
+    return;
+  }
   if (!/^[0-9]{4}$/.test(pin)) {
     if (status) {
       status.textContent = 'Enter your 4-digit PIN to unlock rates.';
@@ -7479,6 +7714,7 @@ async function kaUnlockRatesWithPin() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ admin_id: kaCurrentAdmin.id, pin })
     });
+    kaResetPinFailures('rate');
     kaRatesUnlocked = true;
     if (status) {
       status.textContent = 'Unlocked. Rates are visible for 10 minutes.';
@@ -7490,6 +7726,9 @@ async function kaUnlockRatesWithPin() {
     await kaLoadRatesTable();
   } catch (err) {
     kaRatesUnlocked = false;
+    if (err && err.status === 401) {
+      kaRegisterPinFailure('rate', controls);
+    }
     if (status) {
       status.textContent = err.message || 'Unable to unlock rates.';
       status.className = 'ka-status ka-status-error';
@@ -7677,6 +7916,10 @@ function kaHandleRateUnlock(all) {
   const pinInput = document.getElementById('ka-rate-pin');
   const status = document.getElementById('ka-rate-status');
   if (!pinInput || !status) return;
+  const controls = [pinInput];
+  if (kaEnforcePinThrottle('rate', controls)) {
+    return;
+  }
   const entered = (pinInput.value || '').trim();
   const storedHash = kaCurrentAdmin ? kaCurrentAdmin.pin_hash || '' : '';
   const storedPin = (kaCurrentAdmin && kaCurrentAdmin.pin || '').trim();
@@ -7689,11 +7932,13 @@ function kaHandleRateUnlock(all) {
     ? kaVerifyPinHash(entered, storedHash)
     : (storedPin && entered === storedPin);
   if (!pinOk) {
+    kaRegisterPinFailure('rate', controls);
     status.textContent = 'PIN is incorrect.';
     status.className = 'ka-status ka-status-error';
     return;
   }
 
+  kaResetPinFailures('rate');
   if (all) {
     kaRatesUnlockedAll = true;
   } else if (kaRateUnlockTarget != null) {

@@ -1,5 +1,54 @@
 # Change Log
 
+- 2026-01-27: Increased the kiosk PIN modal height by roughly an inch across breakpoints.
+- 2026-01-27: Expanded the kiosk PIN modal height and padding further to eliminate clipping.
+- 2026-01-27: Increased the kiosk PIN modal height further to prevent button cutoffs.
+- 2026-01-27: Increased the kiosk PIN modal height and padding so the action buttons are fully visible.
+- 2026-01-27: Removed the “currently clocked in” banner from the kiosk selection flow (clock-out summary still shows).
+- 2026-01-27: Deepened the clock-out button red styling and shadows for clearer emphasis.
+- 2026-01-27: Standardized kiosk date/time formatting and translations per language rules (en/es/ht).
+- 2026-01-27: Updated Haitian Creole weekday/month names to full native spellings.
+- 2026-01-27: Increased the Spanish clock-in label size further for better legibility.
+- 2026-01-27: Increased the Spanish clock-in label size slightly while keeping it centered.
+- 2026-01-27: Applied Spanish clock-in label sizing inline to ensure it renders smaller and centered.
+- 2026-01-27: Fixed Haitian Creole kiosk date formatting to use proper weekday/month names.
+- 2026-01-27: Forced Spanish clock-in copy into two lines and refreshed the kiosk cache version.
+- 2026-01-27: Forced Spanish clock-in text into a two-line, centered layout with a dedicated style class.
+- 2026-01-27: Bound Spanish clock-in label styles to a body data attribute set by the kiosk language toggle.
+- 2026-01-27: Increased specificity for Spanish clock-in label styling so it applies correctly.
+- 2026-01-27: Tuned the Spanish clock-in button label sizing/spacing to keep it centered in the circle.
+- 2026-01-27: Fixed the kiosk name select background icon so it no longer repeats on focus.
+- 2026-01-27: Reset the name select to its default look on cancel and locked the person icon styling.
+- 2026-01-27: Centered the clock-in button label and replaced the green focus ring on the name select.
+- 2026-01-27: Forced the language pill to stretch to full width so it matches the name select.
+- 2026-01-27: Reduced and centered the kiosk clock-in button label to prevent Spanish overflow.
+- 2026-01-27: Matched the active project line typography to the name select/language pill styling.
+- 2026-01-27: Shifted the logo/date/active-project stack down closer to the pills without moving the pills or clock-in button.
+- 2026-01-27: Moved the kiosk clock-in button upward slightly.
+- 2026-01-27: Increased spacing between the name select and language pills on the kiosk screen.
+- 2026-01-27: Lifted the entire kiosk clock-in layout upward by reducing top padding and logo spacing.
+- 2026-01-27: Tightened the spacing between the kiosk date/time and active project line.
+- 2026-01-27: Matched the name select and language pill sizes by sharing the same height and corner radius.
+- 2026-01-27: Centered the kiosk name/language stack more precisely within the layout.
+- 2026-01-27: Centered the name select and language pills horizontally and ensured they span the same width.
+- 2026-01-27: Widened the name/language pills and softened their corner radius to match the latest reference.
+- 2026-01-27: Restored the active project display under the kiosk date/time.
+- 2026-01-27: Shifted the name/language stack and clock-in button upward slightly for tighter vertical balance.
+- 2026-01-27: Moved the kiosk logo/date stack down slightly and added a touch more spacing between them.
+- 2026-01-27: Increased spacing between the name/language pills and nudged the stack slightly upward.
+- 2026-01-27: Repositioned the kiosk name/language pill stack downward without shifting the clock-in button.
+- 2026-01-27: Nudged the kiosk name/language pills further downward and bumped the kiosk cache version so updates refresh reliably.
+- 2026-01-27: Moved the kiosk name/language pills down by about an inch to center them between the date/time and the clock-in button.
+- 2026-01-27: Shifted the kiosk name/language pills down and increased the space between them without moving the clock-in button.
+- 2026-01-27: Moved the kiosk clock-in button further downward for better spacing.
+- 2026-01-27: Shifted the kiosk clock-in button downward to give it more breathing room.
+- 2026-01-27: Compressed the kiosk background to a smaller wsplash2.jpg for faster load times.
+- 2026-01-27: Updated the kiosk clock-in background image to wsplash2.jpg.
+- 2026-01-27: Disabled zoom and overscroll on the kiosk clock-in page to prevent pinch/drag behaviors.
+- 2026-01-27: Tightened spacing between the name select and language pills while adding more space between the date/time and the form.
+- 2026-01-27: Restyled the kiosk clock-in name select and language toggle pills to match the new reference styling.
+- 2026-01-27: Removed the active project label from the kiosk clock-in screen, set the date/time to regular weight, and shifted the layout upward.
+- 2026-01-27: Updated the kiosk clock-in background image to wsplash.png.
 - 2026-01-26: Added extra spacing beneath the admin header before the Timesheets content.
 - 2026-01-26: Unified timesheet toolbar/button corner radii to match the project card styling.
 - 2026-01-26: Moved the filter icon to sit before the date selector in the timesheet toolbar.
@@ -49,6 +98,9 @@
 - 2026-01-24: Updated timesheet card time pills to show start/end times or an Ongoing status.
 - 2026-01-24: Expanded the timesheet time pill to span the full card width.
 - 2026-01-24: Moved the timesheet time pill below the header row so it spans the card width.
+- 2026-01-27: Loaded bcrypt on the kiosk page so admin PIN checks work reliably on iPad kiosks.
+- 2026-01-27: Added PIN attempt backoff on kiosk/kiosk-admin flows and rate-unlock server throttling to reduce brute-force risk without lockouts.
+- 2026-01-27: Encrypted queued offline PIN updates at rest (best-effort, device-bound key) and added a server PIN-verify fallback for kiosk admin login.
 - 2026-01-24: Scaled the kiosk background art to fit the viewport dimensions.
 - 2026-01-24: Swapped the kiosk clock-in background to newart.png.
 - 2026-01-24: Nudged the kiosk clock-in button downward to align with the background curve.

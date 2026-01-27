@@ -82,6 +82,7 @@
 - POST `/api/kiosks/:id/foreman-today` [kiosk admin]
 - GET  `/api/kiosk/open-punch` [kiosk]
 - GET  `/api/kiosks/:id/open-punches` [kiosk admin]
+- POST `/api/kiosk/admin/verify-pin` [kiosk admin]
 
 ## Kiosk Rate Unlock
 - POST `/api/kiosk/rates/unlock` [modify_pay_rates]
