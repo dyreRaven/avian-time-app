@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <title>Avian Time – Kiosk Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/kiosk-admin.css?v=20260126an" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#10b981" />
@@ -14,19 +17,37 @@
   <!-- HEADER -->
   <header class="ka-header">
     <div class="ka-header-left">
+      <div class="ka-header-menu">
+        <button
+          type="button"
+          id="ka-header-menu-toggle"
+          class="ka-header-menu-toggle"
+          aria-label="Open menu"
+          aria-controls="ka-header-menu-panel"
+          aria-expanded="false"
+        >
+          <span></span>
+          <span></span>
+          <span></span>
+        </button>
+        <div id="ka-header-menu-panel" class="ka-header-menu-panel hidden" role="menu">
+          <button type="button" class="ka-header-menu-item" data-ka-menu="settings" role="menuitem">
+            Settings
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="ka-header-center">
       <div class="ka-logo">
         <img src="/images/logo.png" alt="Avian Group logo" />
       </div>
-      <div>
+    </div>
+    <div class="ka-header-right">
+      <div class="ka-header-title">
         <div class="ka-title-main">ADMIN KIOSK</div>
         <div class="ka-title-sub" id="ka-kiosk-name">Loading admin...</div>
       </div>
     </div>
-<div class="ka-header-right">
-  <div id="ka-back-to-kiosk" class="ka-header-back-link">
-    ← Back to Worker Clock-In
-  </div>
-</div>
 
 
   </header>
@@ -159,6 +180,26 @@
       <span>Total entries</span>
     </div>
     <div class="card-body">
+      <div id="ka-timesheet-empty-state" class="ka-timesheet-empty-state hidden" aria-live="polite">
+        <div class="ka-timesheet-empty-banner">
+          <button
+            type="button"
+            class="ka-timesheet-empty-help"
+            data-ka-help="timesheets"
+            aria-label="Timesheet help"
+            aria-haspopup="dialog"
+          >
+            ?
+          </button>
+          <div class="ka-timesheet-empty-title">No open timesheets</div>
+          <div class="ka-timesheet-empty-copy">
+            Start a timesheet to set the active job for this tablet.
+          </div>
+        </div>
+        <div class="ka-timesheet-empty-actions">
+          <button id="ka-timesheet-empty-start" class="btn primary btn-sm">Start new timesheet</button>
+        </div>
+      </div>
       <div id="ka-session-create" class="ka-session-create hidden">
         <div id="ka-session-empty" class="ka-session-empty">
           No timesheets yet. Select a project, then create a timesheet to set the active job for this tablet.
@@ -182,6 +223,7 @@
             type="button"
             class="ka-help-btn ka-help-pill"
             id="ka-timesheet-help"
+            data-ka-help="timesheets"
             aria-label="Timesheet help"
             aria-haspopup="dialog"
           >
@@ -718,14 +760,15 @@
      NEW BOTTOM NAVIGATION
      ============================ -->
 <nav class="ka-bottom-nav">
-  <button type="button" data-ka-view="timesheets">
+  <div class="ka-nav-diamond" aria-hidden="true"></div>
+  <button type="button" data-ka-action="clockin">
     <span class="ka-nav-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
-        <path d="M12 8v4l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+        <path d="M10 5h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+        <path d="M4 12h10M8 8l-4 4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
     </span>
-    <span class="ka-nav-label">Timesheets</span>
+    <span class="ka-nav-label">Clock In</span>
   </button>
   <button type="button" data-ka-view="workers">
     <span class="ka-nav-icon" aria-hidden="true">
@@ -736,16 +779,14 @@
     </span>
     <span class="ka-nav-label">Current Workers</span>
   </button>
-  <button type="button" data-ka-view="time">
+  <button type="button" data-ka-view="timesheets">
     <span class="ka-nav-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M8 7h12M8 12h12M8 17h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
-        <circle cx="4" cy="7" r="1.5" fill="currentColor"></circle>
-        <circle cx="4" cy="12" r="1.5" fill="currentColor"></circle>
-        <circle cx="4" cy="17" r="1.5" fill="currentColor"></circle>
+        <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+        <path d="M12 8v4l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
     </span>
-    <span class="ka-nav-label">Time Entries</span>
+    <span class="ka-nav-label">Timesheets</span>
   </button>
   <button type="button" data-ka-view="shipments">
     <span class="ka-nav-icon" aria-hidden="true">
@@ -758,16 +799,16 @@
     </span>
     <span class="ka-nav-label">Shipments</span>
   </button>
-  <button type="button" data-ka-view="settings">
+  <button type="button" data-ka-view="time">
     <span class="ka-nav-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
-        <circle cx="9" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
-        <circle cx="12" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
-        <circle cx="15" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+        <path d="M8 7h12M8 12h12M8 17h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+        <circle cx="4" cy="7" r="1.5" fill="currentColor"></circle>
+        <circle cx="4" cy="12" r="1.5" fill="currentColor"></circle>
+        <circle cx="4" cy="17" r="1.5" fill="currentColor"></circle>
       </svg>
     </span>
-    <span class="ka-nav-label">Settings</span>
+    <span class="ka-nav-label">Time Entries</span>
   </button>
 </nav>
 

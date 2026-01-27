@@ -27,7 +27,7 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: 'Montserrat', sans-serif;
   -webkit-font-smoothing: antialiased;
   background: var(--slate-100);
   color: var(--slate-800);
@@ -3909,37 +3909,105 @@ body {
    HEADER
 ========================================= */
 .ka-header {
-  display: flex;
+  display: grid;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  grid-template-columns: auto 1fr auto;
+  column-gap: 16px;
   margin-bottom: 32px;
+  padding-bottom: 0;
 }
 
 .ka-header-left {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 12px;
 }
 
-.ka-logo {
-  width: 44px;
-  height: 44px;
+.ka-header-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ka-header-menu-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--slate-200);
+  background: #ffffff;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: pointer;
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.12);
+}
+
+.ka-header-menu-toggle span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--slate-600);
   border-radius: 999px;
-  background: white;
-  box-shadow: 0 8px 18px rgba(15,23,42,0.18), 0 0 0 1px var(--slate-200);
+}
+
+.ka-header-menu-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  min-width: 160px;
+  padding: 8px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid var(--slate-200);
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.18);
+  z-index: 120;
+}
+
+.ka-header-menu-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--slate-700);
+  cursor: pointer;
+}
+
+.ka-header-menu-item:hover {
+  background: var(--slate-100);
+}
+
+.ka-header-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+}
+
+.ka-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.ka-logo img { width: 30px; height: auto; }
+.ka-logo img { width: 52px; height: auto; }
 
 .ka-title-main {
   font-size: 1rem;
   text-transform: uppercase;
   letter-spacing: 0.18em;
   font-weight: 600;
+  color: var(--slate-800);
 }
 
 .ka-title-sub {
@@ -3954,6 +4022,17 @@ body {
 .ka-header-right {
   display: flex;
   align-items: center;
+  text-align: right;
+}
+
+.ka-header-right .ka-header-title {
+  align-items: flex-end;
+}
+
+.ka-header-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .ka-header-back-link {
@@ -3961,27 +4040,31 @@ body {
   font-weight: 700;
   color: var(--slate-700);
   cursor: pointer;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 0;
   user-select: none;
-  background: var(--slate-200);
-  border: 1px solid var(--slate-300);
-  border-radius: 999px;
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.12);
-  transition: transform 0.12s ease, box-shadow 0.18s ease, background-color 0.12s ease;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  transition: transform 0.12s ease, color 0.12s ease;
+}
+
+.ka-back-arrow {
+  font-size: 1.35rem;
+  line-height: 1;
 }
 
 .ka-header-back-link:hover {
-  background: var(--slate-300);
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18);
+  color: var(--slate-800);
   transform: translateY(-1px);
 }
 .ka-header-back-link:active {
   transform: translateY(1px);
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
 }
 
 /* =========================================
@@ -4753,21 +4836,40 @@ body {
 ========================================= */
 .ka-bottom-nav {
   position: fixed;
-  bottom: 16px;
-  left: 18px;
-  right: 18px;
+  --ka-nav-pad: 8px;
+  bottom: 0;
+  left: 0;
+  right: 0;
   height: 72px;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(148, 163, 184, 0.35);
-  border-radius: 22px;
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+  border-radius: 0;
+  box-shadow: 0 -8px 30px rgba(15, 23, 42, 0.18);
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: stretch;
   gap: 6px;
-  padding: 8px;
+  padding: var(--ka-nav-pad);
+  padding-bottom: calc(var(--ka-nav-pad) + env(safe-area-inset-bottom));
+  height: calc(72px + env(safe-area-inset-bottom));
   z-index: 100;
   backdrop-filter: blur(10px);
+  overflow: visible;
+}
+
+.ka-nav-diamond {
+  position: absolute;
+  top: 0;
+  left: var(--ka-nav-diamond-x, 50%);
+  width: 58px;
+  height: 58px;
+  background: #2f6a63;
+  border-radius: 16px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.2);
+  transition: left 0.22s ease;
+  pointer-events: none;
+  z-index: 0;
 }
 
 .ka-bottom-nav button {
@@ -4785,13 +4887,18 @@ body {
   justify-content: center;
   gap: 4px;
   border-radius: 16px;
-  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  transition: color 0.15s ease, transform 0.2s ease;
+  position: relative;
+  z-index: 1;
 }
 
 .ka-bottom-nav button.active {
-  background: #2f6a63;
-  color: #ffffff;
-  box-shadow: 0 12px 22px rgba(47, 106, 99, 0.35);
+  background: transparent;
+  color: #1f2937;
+  box-shadow: none;
+  justify-content: flex-end;
+  padding-top: 18px;
+  padding-bottom: 6px;
 }
 
 .ka-bottom-nav button:active { transform: translateY(1px); }
@@ -4802,6 +4909,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: transform 0.2s ease, color 0.2s ease;
 }
 
 .ka-nav-icon svg {
@@ -4812,6 +4920,19 @@ body {
 
 .ka-nav-label {
   line-height: 1;
+}
+
+.ka-bottom-nav button.active .ka-nav-icon {
+  position: absolute;
+  top: calc(-1 * var(--ka-nav-pad));
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #ffffff;
+}
+
+.ka-bottom-nav button.active .ka-nav-label {
+  margin-top: 4px;
+  color: #2f6a63;
 }
 
 /* =========================================
@@ -5342,19 +5463,21 @@ body {
 
   /* Header stacks instead of cramming everything in one line */
   .ka-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
+    row-gap: 8px;
     margin-bottom: 22px;
   }
 
-  .ka-header-right {
-    width: 100%;
-    justify-content: space-between;
+  .ka-header-back-link {
+    font-size: 0.9rem;
   }
 
-  .ka-header-back-link {
-    font-size: 0.8rem;
+  .ka-logo {
+    width: 56px;
+    height: 56px;
+  }
+
+  .ka-logo img {
+    width: 46px;
   }
 
   .ka-status {
@@ -5469,12 +5592,14 @@ body {
 
   /* Bottom nav: phone friendly */
   .ka-bottom-nav {
-    height: 64px;
-    bottom: 10px;
-    left: 10px;
-    right: 10px;
-    padding: 6px;
-    border-radius: 18px;
+    height: calc(64px + env(safe-area-inset-bottom));
+    bottom: 0;
+    left: 0;
+    right: 0;
+    --ka-nav-pad: 6px;
+    padding: var(--ka-nav-pad);
+    padding-bottom: calc(var(--ka-nav-pad) + env(safe-area-inset-bottom));
+    border-radius: 0;
     gap: 4px;
   }
 
@@ -5490,6 +5615,20 @@ body {
   .ka-nav-icon svg {
     width: 18px;
     height: 18px;
+  }
+
+  .ka-nav-diamond {
+    width: 50px;
+    height: 50px;
+    border-radius: 14px;
+  }
+
+  .ka-bottom-nav button.active .ka-nav-icon {
+    transform: translate(-50%, -50%);
+  }
+
+  .ka-bottom-nav button.active .ka-nav-label {
+    margin-top: 2px;
   }
 }
 
@@ -9946,6 +10085,87 @@ body {
   text-align: right;
   justify-self: end;
   transform: translateX(var(--ka-timesheet-header-shift));
+}
+
+#ka-view-timesheets.ka-timesheet-empty-day .ka-timesheet-toolbar,
+#ka-view-timesheets.ka-timesheet-empty-day .ka-timesheet-columns,
+#ka-view-timesheets.ka-timesheet-empty-day #ka-session-list {
+  display: none;
+}
+
+#ka-view-timesheets.ka-timesheet-empty-banner .ka-session-footer {
+  display: none;
+}
+
+.ka-timesheet-empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 28px 26px;
+  border-radius: 24px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(236, 253, 245, 0.85));
+  border: 1px solid rgba(16, 185, 129, 0.24);
+  box-shadow: 0 18px 32px rgba(15, 23, 42, 0.08);
+}
+
+.ka-timesheet-empty-banner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ka-timesheet-empty-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.ka-timesheet-empty-help {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 118, 110, 0.35);
+  background: #ffffff;
+  color: #0f766e;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.12);
+}
+
+.ka-timesheet-empty-help:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.4);
+  outline-offset: 2px;
+}
+
+.ka-timesheet-empty-copy {
+  font-size: 0.95rem;
+  color: #475569;
+  max-width: 520px;
+}
+
+.ka-timesheet-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+#ka-timesheet-empty-start {
+  min-width: 220px;
+  height: 46px;
+  border-radius: var(--ka-timesheet-control-radius);
+  font-size: 0.88rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 #ka-view-timesheets .card-body {

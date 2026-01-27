@@ -101,6 +101,7 @@ let kaSessionRefreshInFlight = false;
 let kaLiveProjectOverride = null;
 let kaDialogsOverridden = false;
 let kaTimeOrientationListenerBound = false;
+let kaBottomNavPositionBound = false;
 
 const KA_CSRF_TOKEN_KEY = 'avian_csrf_token_v1';
 let kaCsrfToken = null;
@@ -2541,6 +2542,8 @@ function kaApplyAccessUI() {
   } else if (!kaCanViewTimeReports() && kaCurrentView === 'time') {
     kaShowView('timesheets');
   }
+
+  kaUpdateBottomNavDiamond();
 }
 
 async function kaLoadAccessPerms() {
@@ -3015,6 +3018,8 @@ function kaSetTimesheetDate(nextDate, opts = {}) {
   kaUpdateTimesheetHeading();
   kaUpdateSessionFilterDate();
   kaUpdateTimesheetSectionLabel();
+  kaBindBottomNavPositioning();
+  kaUpdateBottomNavDiamond();
   if (!opts.skipLoad) {
     kaLoadSessions();
   }
@@ -3067,12 +3072,32 @@ function kaProjectLabelById(projectId) {
   return p.name || '(Unnamed project)';
 }
 
+function kaHasTimesheetSessions() {
+  return Array.isArray(kaSessions) && kaSessions.length > 0;
+}
+
+function kaSyncTimesheetEmptyState() {
+  const view = document.getElementById('ka-view-timesheets');
+  const emptyState = document.getElementById('ka-timesheet-empty-state');
+  const hasSessions = kaHasTimesheetSessions();
+  const showBanner = !hasSessions && !kaNewSessionVisible;
+
+  if (view) {
+    view.classList.toggle('ka-timesheet-empty-day', !hasSessions);
+    view.classList.toggle('ka-timesheet-empty-banner', showBanner);
+  }
+  if (emptyState) {
+    emptyState.classList.toggle('hidden', !showBanner);
+  }
+}
+
 function kaUpdateActiveProjectUI() {
   const startBtn = document.getElementById('ka-start-new-btn');
   const createBlock = document.getElementById('ka-session-create');
 
   const hasActive = !!(kaKiosk && kaKiosk.project_id);
-  if (!hasActive) {
+  const hasSessions = kaHasTimesheetSessions();
+  if (!hasActive && hasSessions) {
     kaNewSessionVisible = true;
   }
 
@@ -3081,8 +3106,14 @@ function kaUpdateActiveProjectUI() {
   }
 
   if (createBlock) {
-    createBlock.classList.toggle('hidden', hasActive && !kaNewSessionVisible);
+    if (!hasSessions) {
+      createBlock.classList.toggle('hidden', !kaNewSessionVisible);
+    } else {
+      createBlock.classList.toggle('hidden', hasActive && !kaNewSessionVisible);
+    }
   }
+
+  kaSyncTimesheetEmptyState();
 }
 
 function kaLoadOfflinePunches() {
@@ -3515,6 +3546,7 @@ function kaShowView(view) {
     const v = btn.getAttribute('data-ka-view');
     btn.classList.toggle('active', v === view);
   });
+  kaUpdateBottomNavDiamond();
 
   if (view === 'time') {
     kaBindTimeOrientationListener();
@@ -3524,6 +3556,27 @@ function kaShowView(view) {
   if (view === 'shipments' && kaCanViewShipments()) {
     kaLoadShipments({ forceFresh: true });
   }
+}
+
+function kaUpdateBottomNavDiamond() {
+  const nav = document.querySelector('.ka-bottom-nav');
+  if (!nav) return;
+  const diamond = nav.querySelector('.ka-nav-diamond');
+  if (!diamond) return;
+  const activeBtn = nav.querySelector('button.active');
+  if (!activeBtn) return;
+  const navRect = nav.getBoundingClientRect();
+  const btnRect = activeBtn.getBoundingClientRect();
+  const centerX = btnRect.left + btnRect.width / 2 - navRect.left;
+  nav.style.setProperty('--ka-nav-diamond-x', `${centerX}px`);
+}
+
+function kaBindBottomNavPositioning() {
+  if (kaBottomNavPositionBound) return;
+  const handler = () => kaUpdateBottomNavDiamond();
+  window.addEventListener('resize', handler);
+  window.addEventListener('orientationchange', handler);
+  kaBottomNavPositionBound = true;
 }
 
 function kaParseUtcTimestamp(ts) {
@@ -3813,8 +3866,10 @@ function kaRenderSessions() {
   if (!list) return;
 
   const sessions = Array.isArray(kaSessions) ? kaSessions : [];
+  const hasSessions = sessions.length > 0;
   const activeSession = kaComputeActiveSession(sessions);
   kaUpdateTimesheetHeading(activeSession);
+  kaSyncTimesheetEmptyState();
   const activeSessionId =
     activeSession && activeSession.id !== undefined && activeSession.id !== null
       ? Number(activeSession.id)
@@ -3872,10 +3927,14 @@ function kaRenderSessions() {
 
   if (!filtered.length) {
     if (emptyBanner) {
-      emptyBanner.textContent = query
-        ? 'No timesheets match that search.'
-        : 'No timesheets yet. Select a project, then create a timesheet to set the active job for this tablet.';
-      emptyBanner.classList.remove('hidden');
+      if (hasSessions) {
+        emptyBanner.textContent = query
+          ? 'No timesheets match that search.'
+          : 'No timesheets yet. Select a project, then create a timesheet to set the active job for this tablet.';
+        emptyBanner.classList.remove('hidden');
+      } else {
+        emptyBanner.classList.add('hidden');
+      }
     }
     list.innerHTML = '';
     return;
@@ -4562,18 +4621,57 @@ async function kaInit() {
   kaUpdateSessionFilterDate();
   kaUpdateTimesheetSectionLabel();
 
-  // Back to kiosk button
-  const backBtn = document.getElementById('ka-back-to-kiosk');
-  if (backBtn) {
-    backBtn.addEventListener('click', () => {
-      window.location.href = '/kiosk';
+  // Header menu (settings)
+  const menuToggle = document.getElementById('ka-header-menu-toggle');
+  const menuPanel = document.getElementById('ka-header-menu-panel');
+  if (menuToggle && menuPanel) {
+    const closeMenu = () => {
+      menuPanel.classList.add('hidden');
+      menuToggle.setAttribute('aria-expanded', 'false');
+    };
+    const openMenu = () => {
+      menuPanel.classList.remove('hidden');
+      menuToggle.setAttribute('aria-expanded', 'true');
+    };
+    menuToggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const isOpen = !menuPanel.classList.contains('hidden');
+      if (isOpen) {
+        closeMenu();
+      } else {
+        openMenu();
+      }
+    });
+    menuPanel.addEventListener('click', (e) => {
+      const item = e.target.closest('[data-ka-menu]');
+      if (!item) return;
+      const action = item.dataset.kaMenu;
+      if (action === 'settings') {
+        kaShowView('settings');
+      }
+      closeMenu();
+    });
+    document.addEventListener('click', (e) => {
+      if (menuPanel.classList.contains('hidden')) return;
+      if (menuPanel.contains(e.target) || menuToggle.contains(e.target)) return;
+      closeMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeMenu();
     });
   }
 
-  const helpBtn = document.getElementById('ka-timesheet-help');
+  const helpButtons = Array.from(
+    document.querySelectorAll('[data-ka-help="timesheets"]')
+  );
+  if (!helpButtons.length) {
+    const fallbackHelp = document.getElementById('ka-timesheet-help');
+    if (fallbackHelp) helpButtons.push(fallbackHelp);
+  }
   const helpBackdrop = document.getElementById('ka-help-backdrop');
   const helpClose = document.getElementById('ka-help-close');
-  if (helpBtn && helpBackdrop) {
+  if (helpButtons.length && helpBackdrop) {
     const closeHelp = () => {
       helpBackdrop.classList.add('hidden');
       document.body.classList.remove('ka-modal-open');
@@ -4584,10 +4682,12 @@ async function kaInit() {
       document.body.classList.add('ka-modal-open');
       document.documentElement.classList.add('ka-modal-open');
     };
-    helpBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openHelp();
+    helpButtons.forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openHelp();
+      });
     });
     helpClose?.addEventListener('click', (e) => {
       e.preventDefault();
@@ -4898,8 +4998,13 @@ async function kaInit() {
   const bottomNav = document.querySelector('.ka-bottom-nav');
   if (bottomNav) {
     bottomNav.addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-ka-view]');
+      const btn = e.target.closest('button[data-ka-view], button[data-ka-action]');
       if (!btn) return;
+      const action = btn.dataset.kaAction;
+      if (action === 'clockin') {
+        window.location.href = '/kiosk';
+        return;
+      }
       const view = btn.getAttribute('data-ka-view');
       if (!view || !KA_VIEWS.includes(view)) return;
       kaShowView(view);
@@ -4958,6 +5063,15 @@ async function kaInit() {
   const startNewBtn = document.getElementById('ka-start-new-btn');
   if (startNewBtn) {
     startNewBtn.addEventListener('click', () => {
+      kaNewSessionVisible = true;
+      kaUpdateActiveProjectUI();
+      const sel = document.getElementById('ka-project-select');
+      if (sel) sel.focus();
+    });
+  }
+  const emptyStartBtn = document.getElementById('ka-timesheet-empty-start');
+  if (emptyStartBtn) {
+    emptyStartBtn.addEventListener('click', () => {
       kaNewSessionVisible = true;
       kaUpdateActiveProjectUI();
       const sel = document.getElementById('ka-project-select');

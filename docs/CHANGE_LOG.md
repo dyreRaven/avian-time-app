@@ -1,5 +1,26 @@
 # Change Log
 
+- 2026-01-27: Lifted the active bottom-nav icon so it centers precisely in the diamond.
+- 2026-01-27: Centered active bottom-nav icons within the sliding diamond highlight.
+- 2026-01-27: Reordered the bottom nav so Clock In is first and Timesheets is third.
+- 2026-01-27: Swapped the bottom-nav active state to a sliding diamond highlight instead of a dark pill.
+- 2026-01-27: Lifted the center diamond nav button so its center aligns with the top edge of the bar.
+- 2026-01-27: Reordered the kiosk admin bottom nav (Timesheets, Current Workers, Clock In, Shipments, Time Entries) and moved Settings into a header hamburger menu.
+- 2026-01-27: Added safe-area padding to the kiosk admin bottom nav for iPad home indicator clearance.
+- 2026-01-27: Extended the kiosk admin bottom nav to flush against the screen edges.
+- 2026-01-27: Restyled the kiosk admin bottom nav with a raised diamond center button.
+- 2026-01-27: Removed the divider line beneath the kiosk admin header.
+- 2026-01-27: Reverted the kiosk admin header to the standard layout (no green fill).
+- 2026-01-27: Centered the kiosk admin logo within the header again.
+- 2026-01-27: Added a green divider line beneath the kiosk admin header.
+- 2026-01-27: Moved the kiosk admin logo to sit to the right of the title block.
+- 2026-01-27: Moved the kiosk admin back arrow ahead of the label and increased its size.
+- 2026-01-27: Simplified the kiosk admin back link to plain text ("Clock in" + arrow) without the circular button.
+- 2026-01-27: Matched the kiosk admin typography to the clock-in screen (Montserrat).
+- 2026-01-27: Moved the kiosk admin title block to the right and centered the logo in the header; enlarged the logo and removed its white badge.
+- 2026-01-27: Centered the kiosk admin header title block between the back arrow and logo.
+- 2026-01-27: Swapped the kiosk admin header so the back arrow sits left of the title and the logo moves to the right.
+- 2026-01-27: Added a no-open-timesheets empty state on the kiosk admin Timesheets view with a start button and simplified controls.
 - 2026-01-27: Increased the kiosk PIN modal height by roughly an inch across breakpoints.
 - 2026-01-27: Expanded the kiosk PIN modal height and padding further to eliminate clipping.
 - 2026-01-27: Increased the kiosk PIN modal height further to prevent button cutoffs.
@@ -101,6 +122,7 @@
 - 2026-01-27: Loaded bcrypt on the kiosk page so admin PIN checks work reliably on iPad kiosks.
 - 2026-01-27: Added PIN attempt backoff on kiosk/kiosk-admin flows and rate-unlock server throttling to reduce brute-force risk without lockouts.
 - 2026-01-27: Encrypted queued offline PIN updates at rest (best-effort, device-bound key) and added a server PIN-verify fallback for kiosk admin login.
+- 2026-01-27: Bumped kiosk service worker cache version so kiosks pull the latest kiosk.html and scripts.
 - 2026-01-24: Scaled the kiosk background art to fit the viewport dimensions.
 - 2026-01-24: Swapped the kiosk clock-in background to newart.png.
 - 2026-01-24: Nudged the kiosk clock-in button downward to align with the background curve.
