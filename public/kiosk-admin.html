@@ -50,7 +50,9 @@
       <span class="ka-header-page-sep hidden" id="ka-header-view-sep">—</span>
       <span class="ka-header-page-date hidden" id="ka-header-view-date"></span>
     </div>
-    <div class="ka-header-pill-slot" id="ka-header-pill-slot"></div>
+    <div class="ka-header-pill-slot" id="ka-header-pill-slot">
+      <button id="ka-start-new-btn" class="btn primary btn-sm hidden">New Timesheet</button>
+    </div>
   </div>
   <div id="ka-sidebar-backdrop" class="ka-sidebar-backdrop hidden" aria-hidden="true"></div>
   <aside id="ka-header-menu-panel" class="ka-sidebar hidden" role="menu" aria-hidden="true">
@@ -60,23 +62,76 @@
           <img src="/images/logo.png" alt="Avian Group logo" />
         </div>
         <div class="ka-sidebar-brand-text">
-          <div class="ka-sidebar-title">Admin Kiosk</div>
-          <div class="ka-sidebar-sub" id="ka-kiosk-name">Avian Group</div>
+          <div class="ka-sidebar-title" id="ka-sidebar-admin-name">Loading…</div>
+          <div class="ka-sidebar-sub">Admin Kiosk</div>
         </div>
       </div>
       <div class="ka-sidebar-clocked-row">
-        <div class="ka-sidebar-clocked-details">
-          <div class="ka-sidebar-clocked-main">
-            <span class="ka-clocked-icon" id="ka-sidebar-clocked-icon" aria-hidden="true"></span>
-            <div class="ka-sidebar-clocked-name" id="ka-sidebar-clocked-in">Loading…</div>
-          </div>
-          <div class="ka-sidebar-clocked-project">
-            <span class="ka-sidebar-clocked-project-label" id="ka-sidebar-clocked-project-label">Loading…</span>
-          </div>
+        <div class="ka-sidebar-clocked-status" id="ka-sidebar-clocked-status">
+          <span class="ka-clocked-icon" id="ka-sidebar-clocked-icon" aria-hidden="true"></span>
+          <span class="ka-sidebar-clocked-status-text" id="ka-sidebar-clocked-status-text">Loading…</span>
         </div>
       </div>
     </div>
     <div class="ka-sidebar-actions">
+      <button type="button" class="ka-header-menu-item" data-ka-action="clockin" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <path d="M12 8v4l2.5 1.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Clock-In Page</span>
+      </button>
+      <button type="button" class="ka-header-menu-item" data-ka-view="workers" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <path d="M4 20c1.6-3.4 5-5.4 8-5.4s6.4 2 8 5.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Current Workers</span>
+      </button>
+      <button type="button" class="ka-header-menu-item" data-ka-view="timesheets" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <path d="M12 8v4l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Timesheets</span>
+      </button>
+      <button type="button" class="ka-header-menu-item" data-ka-view="shipments" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="7" width="11" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.6"></rect>
+            <path d="M14 10h4l3 3v2h-7z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"></path>
+            <circle cx="7" cy="17" r="1.6" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <circle cx="17" cy="17" r="1.6" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Shipments</span>
+      </button>
+      <button type="button" class="ka-header-menu-item" data-ka-view="time" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 7h12M8 12h12M8 17h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+            <circle cx="4" cy="7" r="1.5" fill="currentColor"></circle>
+            <circle cx="4" cy="12" r="1.5" fill="currentColor"></circle>
+            <circle cx="4" cy="17" r="1.5" fill="currentColor"></circle>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Time Entries</span>
+      </button>
+      <button type="button" class="ka-header-menu-item" data-ka-menu="account" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <path d="M4 20c1.6-3.4 5-5.4 8-5.4s6.4 2 8 5.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+          </svg>
+        </span>
+        <span class="ka-menu-label">My Account</span>
+      </button>
       <button type="button" class="ka-header-menu-item" data-ka-menu="settings" role="menuitem">
         <span class="ka-menu-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
@@ -85,6 +140,28 @@
           </svg>
         </span>
         <span class="ka-menu-label">Settings</span>
+      </button>
+      <div class="ka-menu-divider" role="separator" aria-hidden="true"></div>
+      <button type="button" class="ka-header-menu-item" data-ka-action="help" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <path d="M9.6 9.2a2.8 2.8 0 0 1 5.6.6c0 1.5-1.1 2.1-2 2.6-.7.4-1 .8-1 1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+            <circle cx="12" cy="17" r="1" fill="currentColor"></circle>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Help</span>
+      </button>
+      <button type="button" class="ka-header-menu-item" data-ka-action="logout" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <path d="M15 4H9a2 2 0 0 0-2 2v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+            <path d="M15 20H9a2 2 0 0 1-2-2v-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+            <path d="M10 12h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+            <path d="m17 8 3 4-3 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Sign out</span>
       </button>
     </div>
   </aside>
@@ -104,11 +181,11 @@
   <div class="ka-modal">
     <div class="ka-modal-header">
       <h3 id="ka-clockin-modal-title">Clock in?</h3>
-      <button id="ka-clockin-modal-close" class="btn ghost btn-sm" type="button">×</button>
+      <button id="ka-clockin-modal-close" class="btn ghost btn-sm ka-modal-close" type="button">×</button>
     </div>
     <p id="ka-clockin-modal-text"></p>
     <div id="ka-clockin-modal-project-wrap" style="display:none; margin-bottom:12px;">
-      <label class="ka-session-label" for="ka-clockin-modal-project">Choose timesheet</label>
+      <label id="ka-clockin-modal-project-label" class="ka-session-label" for="ka-clockin-modal-project">Choose timesheet</label>
       <select id="ka-clockin-modal-project" class="ka-select-arrow"></select>
     </div>
     <div class="ka-modal-actions">
@@ -146,44 +223,13 @@
 <section id="ka-view-timesheets">
   <div id="ka-sessions-card">
     <div class="ka-timesheet-toolbar">
-      <div class="ka-filter-menu">
-        <button
-          type="button"
-          class="ka-filter-toggle"
-          id="ka-session-filter-toggle"
-          aria-label="Timesheet filters"
-          aria-controls="ka-session-filter-panel"
-          aria-expanded="false"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 6h16l-6.5 7v4.5l-3 1.5V13L4 6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path>
-          </svg>
-        </button>
-        <div class="ka-filter-panel hidden" id="ka-session-filter-panel" role="status">
-          <div class="ka-filter-date" id="ka-session-filter-date"></div>
-          <div class="ka-session-filter">
-            <div class="ka-session-label">Show</div>
-            <div class="ka-filter-options" role="listbox" aria-label="Timesheet filter">
-              <button type="button" class="ka-filter-option" data-ka-session-filter="active" aria-selected="true">
-                Active
-              </button>
-              <button type="button" class="ka-filter-option" data-ka-session-filter="all" aria-selected="false">
-                All
-              </button>
-              <button type="button" class="ka-filter-option" data-ka-session-filter="inactive" aria-selected="false">
-                Inactive
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
       <div class="ka-timesheet-date-picker" aria-live="polite">
         <button type="button" class="ka-timesheet-nav" data-ka-date-nav="prev" aria-label="Previous day">
           <svg viewBox="0 0 20 20" aria-hidden="true">
             <path d="M12.5 4.5l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
           </svg>
         </button>
-        <div class="ka-timesheet-date-pill">
+        <div class="ka-timesheet-date-pill" id="ka-timesheet-date-pill" role="button" tabindex="0" aria-label="Choose date">
           <span id="ka-timesheet-range-date"></span>
           <span class="ka-timesheet-calendar" aria-hidden="true">
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -191,6 +237,12 @@
               <path d="M7 3v3M17 3v3M3 9h18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
             </svg>
           </span>
+          <input
+            type="date"
+            id="ka-timesheet-date-input"
+            class="ka-timesheet-date-input"
+            aria-label="Choose date"
+          />
         </div>
         <button type="button" class="ka-timesheet-nav" data-ka-date-nav="next" aria-label="Next day">
           <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -199,26 +251,43 @@
         </button>
       </div>
       <div class="ka-timesheet-toolbar-actions">
-        <button id="ka-start-new-btn" class="btn primary btn-sm hidden">New Timesheet</button>
+        <div class="ka-filter-menu">
+          <button
+            type="button"
+            class="ka-filter-toggle"
+            id="ka-session-filter-toggle"
+            aria-label="Timesheet filters"
+            aria-controls="ka-session-filter-panel"
+            aria-expanded="false"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 6h16l-6.5 7v4.5l-3 1.5V13L4 6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path>
+            </svg>
+            <span class="ka-filter-label-text">Filter</span>
+          </button>
+          <div class="ka-filter-panel hidden" id="ka-session-filter-panel" role="status">
+            <div class="ka-filter-date" id="ka-session-filter-date"></div>
+            <div class="ka-session-filter">
+              <div class="ka-session-label">Show</div>
+              <div class="ka-filter-options" role="listbox" aria-label="Timesheet filter">
+              <button type="button" class="ka-filter-option" data-ka-session-filter="all" aria-selected="true">
+                All Timesheets
+              </button>
+              <button type="button" class="ka-filter-option" data-ka-session-filter="active" aria-selected="false">
+                Active Timesheets
+              </button>
+              <button type="button" class="ka-filter-option" data-ka-session-filter="inactive" aria-selected="false">
+                Inactive Timesheets
+              </button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
-    <div class="ka-timesheet-columns">
-      <span>Project</span>
-      <span>Open punches</span>
-      <span>Total entries</span>
     </div>
     <div class="card-body">
       <div id="ka-timesheet-empty-state" class="ka-timesheet-empty-state hidden" aria-live="polite">
         <div class="ka-timesheet-empty-banner">
-          <button
-            type="button"
-            class="ka-timesheet-empty-help"
-            data-ka-help="timesheets"
-            aria-label="Timesheet help"
-            aria-haspopup="dialog"
-          >
-            ?
-          </button>
           <div class="ka-timesheet-empty-title">No open timesheets</div>
           <div class="ka-timesheet-empty-copy">
             Start a timesheet to set the active job for this tablet.
@@ -245,20 +314,7 @@
       </div>
 
       <div id="ka-session-list" class="ka-session-list"></div>
-      <div class="ka-session-footer">
-        <div class="ka-help">
-          <button
-            type="button"
-            class="ka-help-btn ka-help-pill"
-            id="ka-timesheet-help"
-            data-ka-help="timesheets"
-            aria-label="Timesheet help"
-            aria-haspopup="dialog"
-          >
-            Help?
-          </button>
-        </div>
-      </div>
+      <div class="ka-session-footer"></div>
     </div>
   </div>
 </section>
@@ -267,28 +323,18 @@
        VIEW: CURRENT WORKERS
        ============================ -->
 <section id="ka-view-workers" class="hidden">
-  <div class="card" id="ka-live-card">
-    <div class="card-header ka-live-header">
-      <div class="ka-live-header-left"></div>
-      <div class="ka-live-header-right">
-        <span id="ka-live-count-tag" class="ka-tag gray">0 Active workers</span>
-      </div>
+  <div class="ka-live-controls" id="ka-live-controls">
+    <div class="ka-live-controls-left" id="ka-live-controls-left">
+      <span id="ka-live-count-tag" class="ka-tag gray">0 Active workers</span>
     </div>
-
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Employee</th>
-            <th>Time Clocked In</th>
-            <th>Time on Clock</th>
-            <th>Time Clocked Out</th>
-          </tr>
-        </thead>
-        <tbody id="ka-live-body">
-          <tr><td colspan="3" class="ka-muted">(loading…)</td></tr>
-        </tbody>
-      </table>
+    <label class="ka-live-filter">
+      <span class="ka-live-filter-label">Timesheet</span>
+      <select id="ka-live-timesheet-filter" class="ka-select-arrow"></select>
+    </label>
+  </div>
+  <div class="card" id="ka-live-card">
+    <div id="ka-live-list" class="ka-live-list" role="list" aria-live="polite">
+      <div class="ka-live-item ka-live-placeholder ka-muted" data-ka-placeholder="1" role="listitem">(loading…)</div>
     </div>
   </div>
 </section>
@@ -302,14 +348,6 @@
 
 <section id="ka-view-shipments" class="hidden">
   <div id="ka-shipments-card" class="card">
-    <div class="card-header">
-      <div class="card-header-actions">
-        <button id="ka-shipments-refresh" class="btn secondary btn-sm ka-ship-refresh" type="button">
-          Refresh
-        </button>
-      </div>
-    </div>
-
     <div class="ka-shipments-filters">
       <label class="ka-shipments-filter-label">
         Status:
@@ -337,6 +375,14 @@
           <option value="">All projects</option>
         </select>
       </label>
+      <div class="ka-shipments-actions">
+        <button id="ka-shipments-refresh" class="btn secondary btn-sm ka-ship-refresh" type="button" aria-label="Refresh shipments">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M21 2v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+            <path d="M21 13a9 9 0 1 1-3.38-7.12L21 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div id="ka-shipments-list" class="ka-shipments-list">
@@ -444,6 +490,58 @@
       </div>
 
         <p id="ka-time-status" class="ka-status"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================
+       VIEW: MY ACCOUNT
+       ============================ -->
+  <section id="ka-view-account" class="hidden">
+    <div class="card">
+      <div class="card-body">
+        <p id="ka-account-auth-status" class="ka-status"></p>
+        <div class="ka-settings-grid">
+          <div class="ka-settings-tile">
+            <div>
+              <div class="ka-settings-title">Login email</div>
+              <p class="ka-settings-sub">Update the email used to sign in to the admin console.</p>
+            </div>
+            <div class="ka-settings-content">
+              <label for="ka-account-email-current">Current email</label>
+              <input type="email" id="ka-account-email-current" readonly />
+              <label for="ka-account-email-new">New email</label>
+              <input type="email" id="ka-account-email-new" autocomplete="email" />
+              <label for="ka-account-email-confirm">Confirm new email</label>
+              <input type="email" id="ka-account-email-confirm" autocomplete="email" />
+              <label for="ka-account-email-password">Current password</label>
+              <input type="password" id="ka-account-email-password" autocomplete="current-password" />
+              <div class="ka-account-actions">
+                <button type="button" id="ka-account-email-save" class="btn primary btn-sm">Update Email</button>
+                <span id="ka-account-email-status" class="ka-status"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="ka-settings-tile">
+            <div>
+              <div class="ka-settings-title">Change password</div>
+              <p class="ka-settings-sub">Use your current password to set a new one.</p>
+            </div>
+            <div class="ka-settings-content">
+              <label for="ka-account-password-current">Current password</label>
+              <input type="password" id="ka-account-password-current" autocomplete="current-password" />
+              <label for="ka-account-password-new">New password</label>
+              <input type="password" id="ka-account-password-new" autocomplete="new-password" />
+              <label for="ka-account-password-confirm">Confirm new password</label>
+              <input type="password" id="ka-account-password-confirm" autocomplete="new-password" />
+              <div class="ka-account-actions">
+                <button type="button" id="ka-account-password-save" class="btn secondary btn-sm">Update Password</button>
+                <span id="ka-account-password-status" class="ka-status"></span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -781,6 +879,12 @@
      ============================ -->
 <nav class="ka-bottom-nav">
   <svg class="ka-nav-bg" aria-hidden="true" focusable="false" preserveAspectRatio="none">
+    <defs>
+      <linearGradient id="ka-nav-gradient" x1="0" y1="0" x2="0" y2="1">
+        <stop class="ka-nav-bg-stop top" offset="0%"></stop>
+        <stop class="ka-nav-bg-stop bottom" offset="100%"></stop>
+      </linearGradient>
+    </defs>
     <path class="ka-nav-bg-path"></path>
   </svg>
   <div class="ka-nav-diamond" aria-hidden="true"></div>
@@ -909,6 +1013,26 @@
     </div>
     <div class="ka-modal-actions">
       <button class="btn primary btn-sm" id="ka-docs-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Document viewer modal -->
+<div id="ka-doc-view-backdrop" class="ka-modal-backdrop hidden">
+  <div class="ka-modal ka-doc-view-modal" role="dialog" aria-modal="true" aria-labelledby="ka-doc-view-title">
+    <div class="ka-modal-header">
+      <div>
+        <h3 id="ka-doc-view-title">Document</h3>
+        <div id="ka-doc-view-sub" class="ka-doc-view-sub"></div>
+      </div>
+      <button type="button" class="ka-modal-close" id="ka-doc-view-close">×</button>
+    </div>
+    <div id="ka-doc-view-body" class="ka-doc-view-body">
+      <div class="ka-ship-muted">(loading…)</div>
+    </div>
+    <div class="ka-modal-actions">
+      <button class="btn secondary btn-sm" id="ka-doc-view-download" type="button">Download</button>
+      <button class="btn primary btn-sm" id="ka-doc-view-close-btn" type="button">Close</button>
     </div>
   </div>
 </div>

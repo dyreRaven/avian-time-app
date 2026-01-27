@@ -112,6 +112,10 @@
           View time reports
         </label>
         <label class="checkbox-inline">
+          <input id="edit-employee-perm-view-all-timesheets" type="checkbox" />
+          View all timesheets
+        </label>
+        <label class="checkbox-inline">
           <input id="edit-employee-perm-view-payroll" type="checkbox" />
           View payroll info
         </label>
@@ -811,30 +815,7 @@
 
 <h3 class="shipment-section-title">Payments</h3>
 
-<!-- Row 1 -->
 <div class="form-row-2">
-  <div class="form-group payment-flag">
-    <label>
-      <input
-        type="checkbox"
-        id="shipment-vendor-paid"
-        name="vendor_paid"
-      />
-      Vendor Paid
-    </label>
-    <div class="currency-field">
-  <span class="currency-prefix">$</span>
-  <input
-    type="number"
-    id="shipment-vendor-paid-amount"
-    name="shipment-vendor-paid-amount"
-    min="0"
-    step="0.01"
-    placeholder="0.00"
-  />
-</div>
-  </div>
-
   <div class="form-group payment-flag">
     <label>
       <input
@@ -855,9 +836,7 @@
   />
 </div>
   </div>
-</div>
 
-<div class="form-row-2">
   <div class="form-group payment-flag">
     <label>
       <input
@@ -878,9 +857,11 @@
   />
 </div>
   </div>
+</div>
 
+<div class="form-row-2">
   <!-- ⭐ TOTAL PAID (auto-calculated) -->
-  <div class="form-group">
+  <div class="form-group" style="grid-column: 1 / -1;">
     <label for="shipment-total-paid-display">Total Paid (auto)</label>
     <div class="currency-field">
   <span class="currency-prefix">$</span>

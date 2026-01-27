@@ -27,7 +27,7 @@ Note: only super admin memberships with login_enabled=1 are eligible for login; 
 - Response: `{ "ok": true }`
 
 ### GET /api/auth/me
-- Response: `{ "ok": true, "user": { ... }, "org": { "id": 2, "name": "...", "timezone": "..." }, "membership": { "is_super_admin": true, "login_enabled": true }, "employee": { "id": 12, "name": "...", "desktop_access": true, "kiosk_admin_access": true, "worker_timekeeping": true }, "permissions": { "see_shipments": true, "modify_time": true, "view_time_reports": true, "view_payroll": true, "modify_payroll": true, "modify_pay_rates": true }, "ui_mode": "desktop" }`
+- Response: `{ "ok": true, "user": { ... }, "org": { "id": 2, "name": "...", "timezone": "..." }, "membership": { "is_super_admin": true, "login_enabled": true }, "employee": { "id": 12, "name": "...", "desktop_access": true, "kiosk_admin_access": true, "worker_timekeeping": true }, "permissions": { "see_shipments": true, "modify_time": true, "view_time_reports": true, "view_all_timesheets": true, "view_payroll": true, "modify_payroll": true, "modify_pay_rates": true }, "ui_mode": "desktop" }`
 Note: if the user has multiple orgs and has not selected one yet, return 409 with `{ "ok": false, "requires_org_selection": true, "orgs": [ ... ] }`.
 
 ### GET /api/auth/orgs
@@ -47,6 +47,11 @@ Note: sets the session UI mode; desktop admins on tablets default to kiosk unles
 ### POST /api/auth/change-password
 - Request: `{ "current_password": "...", "new_password": "..." }`
 - Response: `{ "ok": true }`
+
+### POST /api/auth/change-email
+- Request: `{ "current_password": "...", "new_email": "..." }`
+- Response: `{ "ok": true, "email": "..." }`
+Note: new_email must be unique; requires an active desktop session.
 
 ### GET /api/auth/users  [super admin]
 - Response: `{ "ok": true, "users": [ { "user_id": 1, "email": "...", "employee_id": 12, "employee_name": "...", "employee_active": 1, "desktop_access": 1, "is_super_admin": 1, "login_enabled": 1 } ] }`
@@ -215,7 +220,7 @@ Note: clears the selected QBO ID fields and sets needs_qbo_sync=1. Does not requ
 
 ## Permissions and Settings
 ### GET /api/permission-templates  [super admin]
-- Response: `{ "templates": [ { "id": 1, "name": "Foreman", "role_title": "Foreman", "access": { "worker_timekeeping": true, "desktop_access": false, "kiosk_admin_access": true }, "permissions": { "see_shipments": true, "modify_time": true, "view_time_reports": true, "view_payroll": false, "modify_payroll": false, "modify_pay_rates": false } } ] }`
+- Response: `{ "templates": [ { "id": 1, "name": "Foreman", "role_title": "Foreman", "access": { "worker_timekeeping": true, "desktop_access": false, "kiosk_admin_access": true }, "permissions": { "see_shipments": true, "modify_time": true, "view_time_reports": true, "view_all_timesheets": false, "view_payroll": false, "modify_payroll": false, "modify_pay_rates": false } } ] }`
 Note: templates are per-org presets for access + permissions; applying a template copies values and does not auto-update employees later.
 
 ### POST /api/permission-templates  [super admin]
@@ -308,12 +313,17 @@ Note: if device_secret mismatches (or is missing), return 403/400 and require re
 Note: `sessions` in the response are today's timesheets (kiosk_sessions).
 
 ### GET /api/kiosk-sessions/today  [view_payroll]
-- Response: `[ { "id": 10, "kiosk_id": 2, "project_id": 5, "device_id": "...", "date": "YYYY-MM-DD", "created_at": "...", "kiosk_name": "...", "kiosk_location": "...", "project_name": "...", "customer_name": "...", "open_punches": [ { "id": 99, "employee_id": 7, "employee_name": "...", "project_id": 5, "device_id": "...", "clock_in_ts": "..." } ] } ]`
+- Response: `[ { "id": 10, "kiosk_id": 2, "project_id": 5, "device_id": "...", "date": "YYYY-MM-DD", "created_at": "...", "created_by_employee_id": 12, "started_by_name": "...", "shared_with_admins": 0, "kiosk_name": "...", "kiosk_location": "...", "project_name": "...", "customer_name": "...", "open_punches": [ { "id": 99, "employee_id": 7, "employee_name": "...", "project_id": 5, "device_id": "...", "clock_in_ts": "..." } ] } ]`
 Note: Timesheets are stored as kiosk_sessions; the endpoint name remains `/api/kiosk-sessions/*`.
+Note: if the requester lacks `view_all_timesheets` and is not a super admin, results are limited to timesheets they created or that are shared.
+
+### POST /api/kiosk-sessions/:id/share  [super admin]
+- Request: `{ "shared_with_admins": true }`
+- Response: `{ "ok": true, "shared_with_admins": 1 }`
 
 ### GET /api/kiosks/:id/sessions  [view_payroll]
 - Query: `date=YYYY-MM-DD` (defaults to today)
-- Response: `[ { "id": 10, "project_id": 5, "date": "YYYY-MM-DD", "created_at": "...", "created_by_employee_id": 12, "created_by_name": "...", "project_name": "...", "customer_name": "...", "entry_count": 4, "open_count": 1, "first_clock_in_ts": "...", "last_clock_out_ts": "...", "device_entry_count": 3, "device_open_count": 1 } ]`
+- Response: `[ { "id": 10, "project_id": 5, "date": "YYYY-MM-DD", "created_at": "...", "created_by_employee_id": 12, "created_by_name": "...", "shared_with_admins": 0, "project_name": "...", "customer_name": "...", "entry_count": 4, "open_count": 1, "first_clock_in_ts": "...", "last_clock_out_ts": "...", "device_entry_count": 3, "device_open_count": 1 } ]`
 
 ### POST /api/kiosks/:id/sessions  [kiosk admin]
 - Request: `{ "project_id": 5, "make_active": true, "admin_id": 12, "lat": 18.4, "lng": -66.0, "clock_me_in": true, "clock_in_payload": { "client_id": "...", "device_timestamp": "...", "lat": 18.4, "lng": -66.0, "photo_base64": "..." } }`
@@ -578,6 +588,11 @@ Note: kiosk-friendly update for storage/pickup fields; does not change status or
 Note: blank strings are normalized to null; storage_daily_late_fee must be numeric or null.
 Note: if employee_id is provided, picked_up_updated_by is set to the employee nickname/name and picked_up_updated_at is set to now.
 
+### POST /api/shipments/:id/notes  [see_shipments]
+- Request: `{ "notes": "...", "employee_id": 12 }`
+- Response: `{ "shipment": { "id": 12, "notes": "..." } }`
+Note: kiosk-friendly update for shipment notes; blank strings are normalized to null.
+
 ### GET /api/shipments/:id/payments  [view_payroll]
 - Response: `{ "payments": [ { "id": 1, "shipment_id": 12, "type": "vendor", "amount": 500, "currency": "USD", "status": "Pending", "due_date": "YYYY-MM-DD", "paid_date": null, "invoice_number": "...", "notes": "...", "file_path": null, "created_by": 9, "created_at": "..." } ] }`
 Note: ordered by created_at ASC. Payments are a ledger only; they do not auto-update shipment paid flags or totals.
@@ -629,6 +644,11 @@ Note: return 404 if the file is missing on disk.
 Note: max 10 files per request, 10 MB per file; allowed types are PDF, JPEG/JPG, PNG, GIF, WEBP.
 Note: if doc_type is "Other", doc_label is required for display.
 Note: empty uploads return `{ "documents": [] }`.
+
+### PUT /api/shipments/:id/documents/:docId  [see_shipments]
+- Request: `{ "doc_type": "...", "doc_label": "..." }` (either field optional; empty string clears)
+- Response: `{ "document": { "id": 1, "shipment_id": 12, "title": "...", "doc_type": "...", "doc_label": "...", "file_path": "/api/shipments/documents/1/download", "url": "/api/shipments/documents/1/download" } }`
+Note: callers without view_payroll cannot update payment/proof-of-payment documents.
 
 ### DELETE /api/shipments/:id/documents/:docId  [see_shipments]
 - Response: `{ "success": true }`

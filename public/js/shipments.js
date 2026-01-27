@@ -3305,14 +3305,16 @@ function openShipmentCreateModal() {
   // NEW fields for post-pickup + payments
   const pickedUpByInput   = document.getElementById('shipment-picked-up-by');
   const pickedUpDateInput = document.getElementById('shipment-picked-up-date');
-  const vendorPaidChk     = document.getElementById('shipment-vendor-paid');
-  const vendorPaidAmt     = document.getElementById('shipment-vendor-paid-amount');
   const shipperPaidChk    = document.getElementById('shipment-shipper-paid');
   const shipperPaidAmt    = document.getElementById('shipment-shipper-paid-amount');
   const customsPaidChk    = document.getElementById('shipment-customs-paid');
   const customsPaidAmt    = document.getElementById('shipment-customs-paid-amount');
 
-  if (form) form.reset();
+  if (form) {
+    form.reset();
+    form.dataset.vendorPaid = '0';
+    form.dataset.vendorPaidAmount = '';
+  }
   if (updatedAtInput) updatedAtInput.value = '';
 
   // Reset total paid display + hidden numeric
@@ -3339,7 +3341,6 @@ function openShipmentCreateModal() {
   }
 
   // Default payments to unpaid and disable amounts
-  applyPaymentCheckboxState(vendorPaidChk, vendorPaidAmt, vendorPaidChk?.checked);
   applyPaymentCheckboxState(shipperPaidChk, shipperPaidAmt, shipperPaidChk?.checked);
   applyPaymentCheckboxState(customsPaidChk, customsPaidAmt, customsPaidChk?.checked);
 
@@ -3368,8 +3369,6 @@ function openShipmentCreateModal() {
   if (pickedUpDateInput) pickedUpDateInput.value = '';
 
   // Reset payment fields
-  if (vendorPaidChk)  vendorPaidChk.checked = false;
-  if (vendorPaidAmt)  vendorPaidAmt.value   = '';
   if (shipperPaidChk) shipperPaidChk.checked = false;
   if (shipperPaidAmt) shipperPaidAmt.value   = '';
   if (customsPaidChk) customsPaidChk.checked = false;
@@ -3482,8 +3481,6 @@ async function saveShipmentFromModal() {
   const pickedUpByInput     = document.getElementById('shipment-picked-up-by');
   const pickedUpDateInput   = document.getElementById('shipment-picked-up-date');
 
-  const vendorPaidChk       = document.getElementById('shipment-vendor-paid');
-  const vendorPaidAmtInput  = document.getElementById('shipment-vendor-paid-amount');
   const shipperPaidChk      = document.getElementById('shipment-shipper-paid');
   const shipperPaidAmtInput = document.getElementById('shipment-shipper-paid-amount');
   const customsPaidChk      = document.getElementById('shipment-customs-paid');
@@ -3498,12 +3495,6 @@ async function saveShipmentFromModal() {
   const pickedUpBy     = pickedUpByInput?.value.trim() || '';
   const pickedUpDate   = pickedUpDateInput?.value || '';
 
-  const vendorPaid       = vendorPaidChk && vendorPaidChk.checked ? 1 : 0;
-  const vendorPaidAmount =
-    vendorPaid && vendorPaidAmtInput && vendorPaidAmtInput.value
-      ? Number(vendorPaidAmtInput.value)
-      : null;
-
   const shipperPaid       = shipperPaidChk && shipperPaidChk.checked ? 1 : 0;
   const shipperPaidAmount =
     shipperPaid && shipperPaidAmtInput && shipperPaidAmtInput.value
@@ -3514,6 +3505,15 @@ async function saveShipmentFromModal() {
   const customsPaidAmount =
     customsPaid && customsPaidAmtInput && customsPaidAmtInput.value
       ? Number(customsPaidAmtInput.value)
+      : null;
+
+  const formEl = document.getElementById('shipment-create-form');
+  const vendorPaidStored = formEl?.dataset.vendorPaid;
+  const vendorPaidAmountStored = formEl?.dataset.vendorPaidAmount;
+  const vendorPaid = vendorPaidStored === '1' ? 1 : 0;
+  const vendorPaidAmount =
+    vendorPaid && vendorPaidAmountStored != null && vendorPaidAmountStored !== ''
+      ? Number(vendorPaidAmountStored)
       : null;
 
   // 🔹 Auto-calculated total from hidden input
@@ -3690,6 +3690,7 @@ function openShipmentEditModal(shipment, items = []) {
 
   const modal    = document.getElementById('shipment-create-modal');
   const backdrop = document.getElementById('shipment-create-backdrop');
+  const form     = document.getElementById('shipment-create-form');
   const idInput  = document.getElementById('shipment-id');
   const updatedAtInput = document.getElementById('shipment-updated-at');
   const header   = modal ? modal.querySelector('h3') : null;
@@ -3697,6 +3698,11 @@ function openShipmentEditModal(shipment, items = []) {
   if (idInput) idInput.value = shipment.id;
   if (updatedAtInput) updatedAtInput.value = shipment.updated_at || '';
   if (header) header.textContent = 'Edit Shipment';
+  if (form) {
+    form.dataset.vendorPaid = shipment.vendor_paid ? '1' : '0';
+    form.dataset.vendorPaidAmount =
+      shipment.vendor_paid_amount != null ? String(shipment.vendor_paid_amount) : '';
+  }
 
   // Enable documents UI
   if (typeof showDocsUI === "function") showDocsUI();
@@ -3729,8 +3735,6 @@ function openShipmentEditModal(shipment, items = []) {
   // Payments + pickup
   const pickedUpByInput   = document.getElementById('shipment-picked-up-by');
   const pickedUpDateInput = document.getElementById('shipment-picked-up-date');
-  const vendorPaidChk     = document.getElementById('shipment-vendor-paid');
-  const vendorPaidAmt     = document.getElementById('shipment-vendor-paid-amount');
   const shipperPaidChk    = document.getElementById('shipment-shipper-paid');
   const shipperPaidAmt    = document.getElementById('shipment-shipper-paid-amount');
   const customsPaidChk    = document.getElementById('shipment-customs-paid');
@@ -3808,13 +3812,6 @@ function openShipmentEditModal(shipment, items = []) {
   // Post-pickup + payments
   if (pickedUpByInput)   pickedUpByInput.value   = shipment.picked_up_by || '';
   if (pickedUpDateInput) pickedUpDateInput.value = shipment.picked_up_date || '';
-  if (vendorPaidChk) vendorPaidChk.checked = !!shipment.vendor_paid;
-if (vendorPaidAmt)
-  vendorPaidAmt.value =
-    shipment.vendor_paid_amount != null
-      ? Number(shipment.vendor_paid_amount).toFixed(2)
-      : '';
-
   if (shipperPaidChk) shipperPaidChk.checked = !!shipment.shipper_paid;
 if (shipperPaidAmt)
   shipperPaidAmt.value =
@@ -3829,11 +3826,6 @@ if (customsPaidAmt)
       : '';
 
   // Disable/clear payment amounts when unpaid
-  applyPaymentCheckboxState(
-    vendorPaidChk,
-    vendorPaidAmt,
-    !!shipment.vendor_paid
-  );
   applyPaymentCheckboxState(
     shipperPaidChk,
     shipperPaidAmt,
@@ -5017,9 +5009,14 @@ async function loadShipmentPayments(shipmentId, shipment) {
 }
 
 function renderShipmentPayments(rows = [], shipment = {}) {
-  const vendorPaidLabel = shipment.vendor_paid ? 'Paid' : 'Unpaid';
   const shipperPaidLabel = shipment.shipper_paid ? 'Paid' : 'Unpaid';
   const customsPaidLabel = shipment.customs_paid ? 'Paid' : 'Unpaid';
+  const shipperAmt = shipment.shipper_paid_amount;
+  const customsAmt = shipment.customs_paid_amount;
+  const totalPaidValue =
+    shipperAmt != null || customsAmt != null
+      ? formatMoney((Number(shipperAmt) || 0) + (Number(customsAmt) || 0))
+      : '—';
 
   const list = rows.length
     ? rows.map(row => {
@@ -5047,10 +5044,9 @@ function renderShipmentPayments(rows = [], shipment = {}) {
 
   return `
     <div class="ship-detail-pay-summary">
-      <div><strong>Vendor:</strong> ${vendorPaidLabel} ${shipment.vendor_paid_amount != null ? `(${formatMoney(shipment.vendor_paid_amount)})` : ''}</div>
       <div><strong>Forwarder:</strong> ${shipperPaidLabel} ${shipment.shipper_paid_amount != null ? `(${formatMoney(shipment.shipper_paid_amount)})` : ''}</div>
       <div><strong>Customs:</strong> ${customsPaidLabel} ${shipment.customs_paid_amount != null ? `(${formatMoney(shipment.customs_paid_amount)})` : ''}</div>
-      <div><strong>Total paid:</strong> ${shipment.total_paid != null ? formatMoney(shipment.total_paid) : '—'}</div>
+      <div><strong>Total paid:</strong> ${totalPaidValue}</div>
     </div>
 
     <form id="ship-detail-payment-form" class="ship-detail-form">
@@ -5058,7 +5054,6 @@ function renderShipmentPayments(rows = [], shipment = {}) {
         <div class="form-field">
           <label for="ship-payment-type">Type</label>
           <select id="ship-payment-type">
-            <option value="vendor">Vendor</option>
             <option value="shipper">Forwarder</option>
             <option value="customs">Customs</option>
             <option value="other">Other</option>
@@ -5535,18 +5530,16 @@ function setupStorageLateFeeListeners() {
 
 
 function updateShipmentTotalPaid() {
-  const vendorAmtEl  = document.getElementById('shipment-vendor-paid-amount');
   const shipperAmtEl = document.getElementById('shipment-shipper-paid-amount');
   const customsAmtEl = document.getElementById('shipment-customs-paid-amount');
 
   const displayEl = document.getElementById('shipment-total-paid-display'); // visible UI
   const hiddenEl  = document.getElementById('shipment-total-paid');         // hidden numeric
 
-  const vendorAmt  = vendorAmtEl  ? parseFloat(vendorAmtEl.value)  || 0 : 0;
   const shipperAmt = shipperAmtEl ? parseFloat(shipperAmtEl.value) || 0 : 0;
   const customsAmt = customsAmtEl ? parseFloat(customsAmtEl.value) || 0 : 0;
 
-  const total = vendorAmt + shipperAmt + customsAmt;
+  const total = shipperAmt + customsAmt;
 
   // Pretty string in UI
   if (displayEl) {
@@ -5561,7 +5554,6 @@ function updateShipmentTotalPaid() {
 
 function setupShipmentPaymentListeners() {
   const paymentPairs = [
-    ['shipment-vendor-paid', 'shipment-vendor-paid-amount'],
     ['shipment-shipper-paid', 'shipment-shipper-paid-amount'],
     ['shipment-customs-paid', 'shipment-customs-paid-amount']
   ];
@@ -5579,7 +5571,6 @@ function setupShipmentPaymentListeners() {
   });
 
   [
-    'shipment-vendor-paid-amount',
     'shipment-shipper-paid-amount',
     'shipment-customs-paid-amount'
   ].forEach(id => {

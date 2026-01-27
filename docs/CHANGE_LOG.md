@@ -1,5 +1,33 @@
 # Change Log
 
+- 2026-01-27: Removed vendor-paid fields from the admin shipment modals; only freight forwarder and customs payments remain visible.
+- 2026-01-27: Kiosk admin shipments now allow editing shipment notes with offline-safe syncing.
+- 2026-01-27: Kiosk admin shipment document uploads now require a label for "Other" and display that label as the type.
+- 2026-01-27: Kiosk admin shipment cards now open the BOL document from the BOL pill without the download icon.
+- 2026-01-27: Kiosk admin shipment item cards now start collapsed with a directional chevron to expand notes/details.
+- 2026-01-27: Kiosk admin item verification now prompts to Save, Discard, or Cancel when closing with unsaved changes.
+- 2026-01-27: Kiosk admin item verification now shows a brief “Saved” indicator after saving notes/status.
+- 2026-01-27: Kiosk admin item verification status styling is now outline-only on the status dropdown (no fills or card outlines).
+- 2026-01-27: Restyled the kiosk admin Current Workers list with timesheet-style cards, avatars, status pills, and compact clock details.
+- 2026-01-27: Current Workers now only lists active punches and removes the active glow styling.
+- 2026-01-27: Current Workers now defaults to the active timesheet only, with chevron overrides limited to the selected timesheet until reselected.
+- 2026-01-27: Current Workers cards now show the project label under the name and hide the "Time on clock" label.
+- 2026-01-27: Current Workers cards now show only the clock-in date under the worker name and remove the On clock status pill.
+- 2026-01-27: Current Workers header now shows the active project name instead of the date.
+- 2026-01-27: Current Workers moved the active count under the header divider and added a timesheet filter for today’s projects beside it.
+- 2026-01-27: Kiosk admin shipment docs list is view/upload only (no type edits).
+- 2026-01-27: Added an offline-capable shipment document viewer in kiosk admin with in-app preview and download when online.
+- 2026-01-27: Added a subtle gradient to the kiosk admin bottom navigation bar for extra depth.
+- 2026-01-27: Added My Account pages to the admin console and kiosk admin with email and password updates.
+- 2026-01-27: Added the /api/auth/change-email endpoint and linked My Account from the kiosk admin menu and desktop sidebar.
+- 2026-01-27: Added a Help action to the kiosk admin hamburger menu.
+- 2026-01-27: Added bottom-nav links (Clock In, workers, timesheets, shipments, time entries) to the kiosk admin hamburger menu.
+- 2026-01-27: Added timesheet visibility permission and a super-admin share toggle for timesheets.
+- 2026-01-27: Increased hamburger menu text size and reduced its font weight.
+- 2026-01-27: Kept the kiosk admin bottom-nav diamond on the prior view when opening My Account.
+- 2026-01-27: Start new timesheet now opens a single modal with project selection and the clock-in choice together.
+- 2026-01-27: Start new timesheet modal now defaults to a blank project with a "Select a project" placeholder.
+- 2026-01-27: Added a Sign out action to the kiosk admin hamburger menu.
 - 2026-01-27: Matched the Current Workers no-punches card styling to the timesheet empty-state card.
 - 2026-01-27: Increased the size of the Current Workers empty-state card for "no punches today".
 - 2026-01-27: Pulled the Current Workers empty-state card upward to reduce the gap under the divider.
@@ -12,6 +40,11 @@
 - 2026-01-27: Updated the kiosk admin sidebar to show clock-in status next to the admin name and the active project below it.
 - 2026-01-27: Restored the dash separator in the kiosk admin sidebar clocked-in row and kept the status icon aligned with the name.
 - 2026-01-27: Set the kiosk admin sidebar active project line to the brand accent green.
+- 2026-01-27: Reworked the kiosk admin sidebar clocked-in block with a header-style name, an indented status line, and an indented project line.
+- 2026-01-27: Swapped the kiosk admin sidebar brand lines so the admin name appears on top and "Admin Kiosk" appears underneath.
+- 2026-01-27: Removed user-specific sidebar details and added a compact clock-in status indicator.
+- 2026-01-27: Restored the logged-in admin name in the kiosk admin sidebar title line and moved "Admin Kiosk" to the subtitle.
+- 2026-01-27: Added the active project name to the kiosk admin clocked-in status pill (Project N/A when missing).
 - 2026-01-27: Widened the kiosk admin hamburger button and bars.
 - 2026-01-27: Clicking the X on the kiosk admin start-timesheet prompt now cancels before creating the timesheet.
 - 2026-01-27: Reduced the Current Workers header bottom spacing so the empty-state card sits closer to the divider.
@@ -124,6 +157,24 @@
 - 2026-01-27: Matched the name select and language pill sizes by sharing the same height and corner radius.
 - 2026-01-27: Centered the kiosk name/language stack more precisely within the layout.
 - 2026-01-27: Centered the name select and language pills horizontally and ensured they span the same width.
+- 2026-01-27: Moved the New Timesheet button into the header line beside the Timesheets title.
+- 2026-01-27: Rounded the New Timesheet button and switched it to the accent green to match the timesheet pills.
+- 2026-01-27: Sorted the active project first in timesheet project pickers and outlined the active timesheet card in green.
+- 2026-01-27: Extended the active timesheet green outline to wrap the full card, including the top edge.
+- 2026-01-27: Drew the active timesheet outline over the entire card so it stays visible around the time-range pill.
+- 2026-01-27: Moved the timesheet column header labels into each card so the outline wraps the full card.
+- 2026-01-27: Extended the per-card timesheet headers to the card edges and aligned them to the top border.
+- 2026-01-27: Extended the per-card timesheet headers through the full swipe width so they span the entire card.
+- 2026-01-27: Made the timesheet date pill open a calendar picker for quick date selection.
+- 2026-01-27: Showed the “no timesheets” empty state only for today; past/future days keep the toolbar and show a neutral message.
+- 2026-01-27: Matched the timesheet empty-state pill styling to the “no current workers” color palette.
+- 2026-01-27: Right-aligned the timesheet filter button on the same row as the date picker.
+- 2026-01-27: Restored the “Filter” label next to the timesheet filter icon.
+- 2026-01-27: Set the Timesheets filter default to “All”.
+- 2026-01-27: Expanded Timesheets filter labels to include “Timesheets” for clarity.
+- 2026-01-27: Reordered Timesheets filters to put “All Timesheets” first.
+- 2026-01-27: Removed the Timesheets help buttons from the kiosk admin Timesheets view.
+- 2026-01-27: Softened the active timesheet indicator into a subtle green glow instead of a heavy border.
 - 2026-01-27: Widened the name/language pills and softened their corner radius to match the latest reference.
 - 2026-01-27: Restored the active project display under the kiosk date/time.
 - 2026-01-27: Shifted the name/language stack and clock-in button upward slightly for tighter vertical balance.

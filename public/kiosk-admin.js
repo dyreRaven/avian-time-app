@@ -13,7 +13,7 @@ let kaAdminValidated = false;
 let kaSelectedAdminId = null;
 let kaSessions = [];
 let kaActiveSessionId = null;
-let kaSessionFilterMode = 'active'; // active | all | inactive
+let kaSessionFilterMode = 'all'; // active | all | inactive
 let kaShipmentItemsDirty = new Map(); // shipment_item_id -> verification payload
 let kaShipmentDetail = null;
 let kaShipmentDetailDocs = [];
@@ -24,9 +24,13 @@ let kaShipmentsLoading = false;
 let kaShipmentsReloadPending = false;
 let kaItemsFilterUnverifiedFirst = true;
 let kaItemsFilterTerm = '';
+let kaItemsStatusFilter = 'unverified';
+let kaItemsActiveTab = 'items';
 const kaItemAutoSaveTimers = new Map();
 const kaSavedItemStatuses = new Map();
-const kaCollapsedItems = new Set();
+const kaExpandedItems = new Set();
+const kaRecentlySavedItems = new Map(); // itemId -> timeout id
+const KA_ITEM_SAVE_FLASH_MS = 2500;
 const KA_ITEMS_AUTO_SAVE_ENABLED = false; // keep items from autosaving/reordering mid-edit
 let kaTimeRangeMode = 'today';
 let kaTimeActionEntry = null;
@@ -36,6 +40,7 @@ let kaAccessPerms = {
   see_shipments: true,
   modify_time: true,
   view_time_reports: true,
+  view_all_timesheets: false,
   view_payroll: true,
   modify_pay_rates: false
 };
@@ -50,13 +55,17 @@ let kaNewSessionVisible = false;
 let kaFirstActiveSetShown = false;
 let kaClockInPhotoRequired = false;
 let kaTimesheetWorkersSheetState = { open: false, dragging: false, startY: 0, currentY: 0 };
+let kaDocViewObjectUrl = null;
+let kaDocViewCurrentUrl = null;
 
-const KA_VIEWS = ['timesheets', 'workers', 'shipments', 'time', 'settings'];
+const KA_VIEWS = ['timesheets', 'workers', 'shipments', 'time', 'account', 'settings'];
 const KA_PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
 const KA_OFFLINE_QUEUE_KEY = 'avian_kiosk_offline_punches_v1';
 const KA_VERIFY_QUEUE_KEY = 'avian_kiosk_verify_queue_v1';
+const KA_SHIPMENT_NOTES_QUEUE_KEY = 'avian_kiosk_shipment_notes_queue_v1';
 const KA_TIME_REVIEW_QUEUE_KEY = 'avian_kiosk_time_review_queue_v1';
 const KA_SHIPMENTS_CACHE_KEY = 'avian_kiosk_shipments_cache_v1';
+const KA_DOC_CACHE_NAME = 'avian_doc_cache_v1';
 const KA_ORG_TIMEZONE_KEY = 'avian_kiosk_org_timezone_v1';
 const KA_DEFAULT_TIMEZONE = 'America/Puerto_Rico';
 const KA_SHIPMENT_STATUSES = [
@@ -103,6 +112,8 @@ let kaDialogsOverridden = false;
 let kaTimeOrientationListenerBound = false;
 let kaBottomNavPositionBound = false;
 let kaLiveCountTagHome = null;
+let kaAccountBound = false;
+let kaAccountAuthed = false;
 
 const KA_CSRF_TOKEN_KEY = 'avian_csrf_token_v1';
 let kaCsrfToken = null;
@@ -203,8 +214,9 @@ function kaOfflineQueueCount() {
   const punches = kaLoadOfflinePunches().length;
   const pins = kaReadPendingPins().length;
   const verify = kaLoadVerificationQueue().length;
+  const notes = kaLoadShipmentNotesQueue().length;
   const reviews = kaLoadTimeReviewQueue().length;
-  return punches + pins + verify + reviews;
+  return punches + pins + verify + notes + reviews;
 }
 
 function kaUpdateOfflineIndicator() {
@@ -587,6 +599,7 @@ function kaEnsureConfirmModal() {
       <p id="ka-confirm-message"></p>
       <div class="ka-modal-actions">
         <button type="button" class="btn secondary btn-sm" id="ka-confirm-cancel">Cancel</button>
+        <button type="button" class="btn danger btn-sm" id="ka-confirm-alt" hidden>Discard</button>
         <button type="button" class="btn primary btn-sm" id="ka-confirm-yes">Yes</button>
       </div>
     </div>
@@ -601,6 +614,7 @@ function kaShowConfirmDialog(message, { okLabel = 'Yes', cancelLabel = 'Cancel',
   const titleEl = document.getElementById('ka-confirm-title');
   const yesBtn = document.getElementById('ka-confirm-yes');
   const cancelBtn = document.getElementById('ka-confirm-cancel');
+  const altBtn = document.getElementById('ka-confirm-alt');
 
   if (!backdrop || !msgEl || !yesBtn || !cancelBtn || !titleEl) {
     return Promise.resolve(window.confirm ? window.confirm(message) : true);
@@ -610,6 +624,10 @@ function kaShowConfirmDialog(message, { okLabel = 'Yes', cancelLabel = 'Cancel',
   titleEl.textContent = title || 'Confirm';
   yesBtn.textContent = okLabel || 'Yes';
   cancelBtn.textContent = cancelLabel || 'Cancel';
+  if (altBtn) {
+    altBtn.hidden = true;
+    altBtn.onclick = null;
+  }
   backdrop.classList.remove('hidden');
 
   return new Promise(resolve => {
@@ -617,6 +635,7 @@ function kaShowConfirmDialog(message, { okLabel = 'Yes', cancelLabel = 'Cancel',
       backdrop.classList.add('hidden');
       yesBtn.onclick = null;
       cancelBtn.onclick = null;
+      if (altBtn) altBtn.onclick = null;
       backdrop.onclick = null;
       resolve(result);
     };
@@ -629,13 +648,56 @@ function kaShowConfirmDialog(message, { okLabel = 'Yes', cancelLabel = 'Cancel',
   });
 }
 
+function kaShowChoiceDialog(
+  message,
+  { okLabel = 'OK', cancelLabel = 'Cancel', altLabel = null, title = 'Confirm' } = {}
+) {
+  const backdrop = kaEnsureConfirmModal();
+  const msgEl = document.getElementById('ka-confirm-message');
+  const titleEl = document.getElementById('ka-confirm-title');
+  const yesBtn = document.getElementById('ka-confirm-yes');
+  const cancelBtn = document.getElementById('ka-confirm-cancel');
+  const altBtn = document.getElementById('ka-confirm-alt');
+
+  if (!backdrop || !msgEl || !yesBtn || !cancelBtn || !titleEl || !altBtn) {
+    return Promise.resolve('cancel');
+  }
+
+  msgEl.textContent = message || '';
+  titleEl.textContent = title || 'Confirm';
+  yesBtn.textContent = okLabel || 'OK';
+  cancelBtn.textContent = cancelLabel || 'Cancel';
+  altBtn.textContent = altLabel || 'Option';
+  altBtn.hidden = !altLabel;
+  backdrop.classList.remove('hidden');
+
+  return new Promise(resolve => {
+    const cleanup = (result) => {
+      backdrop.classList.add('hidden');
+      yesBtn.onclick = null;
+      cancelBtn.onclick = null;
+      altBtn.onclick = null;
+      backdrop.onclick = null;
+      if (altBtn) altBtn.hidden = true;
+      resolve(result);
+    };
+
+    yesBtn.onclick = () => cleanup('ok');
+    cancelBtn.onclick = () => cleanup('cancel');
+    altBtn.onclick = () => cleanup('alt');
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) cleanup('cancel');
+    };
+  });
+}
+
 function kaCurrentLiveProjectId() {
   if (kaLiveProjectOverride !== null && kaLiveProjectOverride !== undefined) {
     const overridePid = Number(kaLiveProjectOverride);
     if (Number.isFinite(overridePid)) return overridePid;
   }
 
-  const activeSession = kaComputeActiveSession(kaSessions || []);
+  const activeSession = kaExplicitActiveSession(kaSessions || []);
   if (activeSession && activeSession.project_id !== undefined && activeSession.project_id !== null) {
     const pid = Number(activeSession.project_id);
     if (Number.isFinite(pid)) return pid;
@@ -862,6 +924,29 @@ function kaTodaySessionProjects() {
     }
   });
   return Array.from(map.values());
+}
+
+function kaActiveProjectOptions() {
+  const projects = Array.isArray(kaProjects) ? kaProjects : [];
+  const activeId =
+    kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null
+      ? Number(kaKiosk.project_id)
+      : null;
+  const options = projects
+    .filter(p => p.active === undefined || p.active === null || Number(p.active) === 1)
+    .map(p => ({
+      project_id: Number(p.id),
+      label: p.name || '(Unnamed project)'
+    }));
+  if (Number.isFinite(activeId)) {
+    options.sort((a, b) => {
+      const aActive = Number(a.project_id) === activeId;
+      const bActive = Number(b.project_id) === activeId;
+      if (aActive === bActive) return 0;
+      return aActive ? -1 : 1;
+    });
+  }
+  return options;
 }
 
 async function kaAddPendingPinUpdate(update) {
@@ -1103,10 +1188,12 @@ function kaHasOfflineDataToSync() {
   try {
     const pins = kaReadPendingPins();
     const verify = kaLoadVerificationQueue();
+    const notes = kaLoadShipmentNotesQueue();
     const punches = kaLoadOfflinePunches();
     const reviews = kaLoadTimeReviewQueue();
     return (Array.isArray(pins) && pins.length > 0) ||
       (Array.isArray(verify) && verify.length > 0) ||
+      (Array.isArray(notes) && notes.length > 0) ||
       (Array.isArray(punches) && punches.length > 0) ||
       (Array.isArray(reviews) && reviews.length > 0);
   } catch {
@@ -1121,6 +1208,7 @@ async function kaSyncOfflineData(trigger = 'manual') {
   kaOfflineSyncInFlight = true;
   try {
     await kaSyncPendingPins();
+    await kaSyncShipmentNotesQueue();
     await kaSyncVerificationQueue();
     await kaSyncOfflinePunches();
     await kaSyncTimeReviewQueue();
@@ -1386,7 +1474,7 @@ function kaRenderPaymentDocList(docs) {
   return `<ul class="ka-pay-docs">${items.join('')}</ul>`;
 }
 
-async function kaHydrateShipmentCard(shipmentId, adminId) {
+async function kaHydrateShipmentCard(shipmentId) {
   try {
     const params = kaShipmentAuthParams();
     const suffix = params.toString() ? `?${params.toString()}` : '';
@@ -1396,9 +1484,11 @@ async function kaHydrateShipmentCard(shipmentId, adminId) {
     const docs = kaFilterDocsForPermissions(kaNormalizeDocs(resp));
     const bolDoc = kaFindDocByType(docs, 'bol');
     kaSetBolLink(shipmentId, bolDoc);
+    return bolDoc || null;
   } catch (err) {
     // Quietly ignore; card will hydrate when expanded
     console.warn('Prefetch docs failed for shipment', shipmentId, err);
+    return null;
   }
 }
 
@@ -1417,8 +1507,8 @@ function kaSetBolLink(shipmentId, doc) {
   const href = kaAppendShipmentAuth(rawHref);
   el.dataset.bolUrl = href;
   el.href = href;
-  el.target = '_blank';
-  el.rel = 'noopener noreferrer';
+  el.removeAttribute('target');
+  el.removeAttribute('rel');
   el.classList.remove('disabled');
 }
 
@@ -1896,17 +1986,12 @@ function kaRenderShipmentsList(list) {
     const bol = sh.bol_number ? `BOL ${sh.bol_number}` : '';
     const project = sh.project_name ? sh.project_name : 'No project set';
     const verify = kaShipVerificationInfo(sh);
-    const statusClass = kaShipStatusTone(sh.status);
-    const shipperPaid = Number(sh.shipper_paid) === 1 ? 'paid' : 'unpaid';
-    const clearingPaid = Number(sh.customs_paid) === 1 ? 'paid' : 'unpaid';
-    const showPaymentDetails = kaCanViewPayroll();
     const late = kaStorageLateFees(sh.storage_due_date, sh.storage_daily_late_fee);
     const isOverdue = late.daysLate > 0 && late.estimate > 0;
+    const showPaymentDetails = kaCanViewPayroll();
     const overdueText = showPaymentDetails
       ? `Shipment overdue · Estimated charges: $${late.estimate.toFixed(2)}`
       : 'Shipment overdue';
-    const shipperDocsAttr = showPaymentDetails ? `data-ka-docs-payment="shipper" data-ka-docs-id="${sh.id}"` : '';
-    const clearingDocsAttr = showPaymentDetails ? `data-ka-docs-payment="clearing" data-ka-docs-id="${sh.id}"` : '';
 
     const card = document.createElement('div');
     card.className = 'ka-ship-card';
@@ -1924,11 +2009,6 @@ function kaRenderShipmentsList(list) {
                 ? `<span class="ka-ship-meta-text">Due for pickup: ${kaFmtDateMMDDYYYY(sh.storage_due_date)}</span>`
                 : ''
             }
-            ${
-              sh.expected_arrival_date
-                ? `<span class="ka-ship-meta-text">ETA ${kaFmtDateMMDDYYYY(sh.expected_arrival_date)}</span>`
-                : ''
-            }
           </div>
         </div>
         <div class="ka-ship-header-right">
@@ -1937,11 +2017,6 @@ function kaRenderShipmentsList(list) {
               ? `<a class="ka-ship-bol-pill ka-ship-bol" data-bol-for="${sh.id}" href="javascript:void(0)">${bol}</a>`
               : ''
           }
-          <button type="button" class="ka-docs-btn" data-ka-docs="${sh.id}" aria-label="View documents">
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M12 3a1 1 0 0 0-1 1v9.586l-2.293-2.293a1 1 0 1 0-1.414 1.414l4 4a1 1 0 0 0 1.414 0l4-4a1 1 0 0 0-1.414-1.414L13 13.586V4a1 1 0 0 0-1-1Zm-7 14a1 1 0 0 0 0 2h14a1 1 0 1 0 0-2H5Z"/>
-            </svg>
-          </button>
         </div>
       </div>
 
@@ -1958,21 +2033,14 @@ function kaRenderShipmentsList(list) {
         </div>
       </div>
 
-      <div class="ka-ship-payment-row">
-        <span class="ka-ship-pay-badge ${shipperPaid}" ${shipperDocsAttr}>
-          <span class="ka-pay-icon">${shipperPaid === 'paid' ? '✓' : '✕'}</span>
-          Shipper ${shipperPaid === 'paid' ? 'Paid' : 'Unpaid'}
-        </span>
-        <span class="ka-ship-pay-badge ${clearingPaid}" ${clearingDocsAttr}>
-          <span class="ka-pay-icon">${clearingPaid === 'paid' ? '✓' : '✕'}</span>
-          Clearing ${clearingPaid === 'paid' ? 'Paid' : 'Unpaid'}
-        </span>
-      </div>
-
       <div class="ka-ship-card-actions">
-        <div class="ka-ship-status-pill ${statusClass}">${sh.status || 'Status'}</div>
         <button type="button" class="btn secondary btn-sm" data-ka-open-items="${sh.id}">
           View & verify items
+        </button>
+        <button type="button" class="ka-ship-chevron-btn" data-ka-open-overview="${sh.id}" aria-label="View shipment details">
+          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
         </button>
       </div>
     `;
@@ -1982,25 +2050,41 @@ function kaRenderShipmentsList(list) {
   if (!wrap.dataset.bound) {
     wrap.addEventListener('click', (e) => {
       const bolLink = e.target.closest('.ka-ship-bol');
-      if (bolLink && bolLink.dataset.bolUrl) {
-        return; // let the BOL link open normally when available
-      }
-
-      const docsBtn = e.target.closest('[data-ka-docs]');
-      if (docsBtn) {
-        const sid = Number(docsBtn.dataset.kaDocs);
-        if (sid) {
-          kaOpenDocsModal(sid, 'all');
+      if (bolLink) {
+        e.preventDefault();
+        e.stopPropagation();
+        const shipmentId =
+          Number(bolLink.dataset.bolFor) ||
+          Number(bolLink.closest('.ka-ship-card')?.dataset.shipmentId);
+        const bolName = (bolLink.textContent || '').trim() || 'BOL';
+        const openWithUrl = (url) => {
+          if (!url) return false;
+          kaOpenDocViewer({ url, name: bolName, type: 'BOL' });
+          return true;
+        };
+        if (bolLink.dataset.bolUrl) {
+          openWithUrl(bolLink.dataset.bolUrl);
+          return;
         }
+        if (!shipmentId) return;
+        kaHydrateShipmentCard(shipmentId).then(() => {
+          if (bolLink.dataset.bolUrl) {
+            openWithUrl(bolLink.dataset.bolUrl);
+          } else {
+            kaShowInlineAlert('No BOL document uploaded for this shipment.', 'error');
+          }
+        }).catch(err => {
+          console.warn('Failed to load BOL document', err);
+          kaShowInlineAlert('Unable to load the BOL document.', 'error');
+        });
         return;
       }
 
-      const payBtn = e.target.closest('[data-ka-docs-payment]');
-      if (payBtn) {
-        const sid = Number(payBtn.dataset.kaDocsId);
-        const mode = payBtn.dataset.kaDocsPayment || 'all';
+      const overviewBtn = e.target.closest('[data-ka-open-overview]');
+      if (overviewBtn) {
+        const sid = Number(overviewBtn.dataset.kaOpenOverview);
         if (sid) {
-          kaOpenDocsModal(sid, mode);
+          kaOpenItemsModal(sid, { tab: 'overview' });
         }
         return;
       }
@@ -2009,7 +2093,7 @@ function kaRenderShipmentsList(list) {
       if (btn) {
         const sid = Number(btn.dataset.kaOpenItems);
         if (sid) {
-          kaOpenItemsModal(sid);
+          kaOpenItemsModal(sid, { tab: 'items' });
         }
       }
     });
@@ -2550,6 +2634,7 @@ async function kaLoadAccessPerms() {
     see_shipments: true,
     modify_time: true,
     view_time_reports: true,
+    view_all_timesheets: false,
     view_payroll: true,
     modify_pay_rates: false
   };
@@ -2575,6 +2660,7 @@ async function kaLoadAccessPerms() {
     see_shipments: coerceFlag(admin.see_shipments, defaults.see_shipments),
     modify_time: coerceFlag(admin.modify_time, defaults.modify_time),
     view_time_reports: coerceFlag(admin.view_time_reports, defaults.view_time_reports),
+    view_all_timesheets: coerceFlag(admin.view_all_timesheets, defaults.view_all_timesheets),
     view_payroll: coerceFlag(admin.view_payroll, defaults.view_payroll),
     modify_pay_rates: coerceFlag(admin.modify_pay_rates, defaults.modify_pay_rates)
   };
@@ -2838,6 +2924,7 @@ async function kaLogoutToKiosk() {
     see_shipments: false,
     modify_time: false,
     view_time_reports: false,
+    view_all_timesheets: false,
     view_payroll: false,
     modify_pay_rates: false
   };
@@ -2867,33 +2954,210 @@ function kaAdminDisplayName() {
 }
 
 function kaUpdateSidebarClockedIn() {
-  const el = document.getElementById('ka-sidebar-clocked-in');
-  const projectLabelEl = document.getElementById('ka-sidebar-clocked-project-label');
+  const statusTextEl = document.getElementById('ka-sidebar-clocked-status-text');
+  const statusEl = document.getElementById('ka-sidebar-clocked-status');
   const icon = document.getElementById('ka-sidebar-clocked-icon');
-  if (!el) return;
+  if (!statusTextEl) return;
 
-  const name = kaAdminDisplayName();
   const isClockedIn = !!(kaAdminOpenPunch && kaAdminOpenPunch.open);
   const statusLabel = isClockedIn ? 'Clocked In' : 'Not Clocked In';
-  el.textContent = `${name} - ${statusLabel}`;
+  let projectLabel = 'Project N/A';
+  if (isClockedIn) {
+    const projectName = kaAdminOpenPunch.project_name;
+    const projectId = kaAdminOpenPunch.project_id;
+    projectLabel = projectName || (projectId ? `Project ${projectId}` : 'Project N/A');
+  }
+  statusTextEl.textContent = `${statusLabel} - ${projectLabel}`;
 
-  if (projectLabelEl) {
-    if (isClockedIn) {
-      const projectName = kaAdminOpenPunch.project_name;
-      const projectId = kaAdminOpenPunch.project_id;
-      projectLabelEl.textContent =
-        projectName || (projectId ? `Project ${projectId}` : 'Project (unknown)');
-    } else {
-      projectLabelEl.textContent = 'No active project';
-    }
+  if (statusEl) {
+    statusEl.classList.toggle('is-active', isClockedIn);
   }
 
   if (icon) {
-    if (isClockedIn) {
-      icon.classList.add('is-active');
-    } else {
-      icon.classList.remove('is-active');
+    icon.classList.toggle('is-active', isClockedIn);
+  }
+}
+
+function kaSetInlineStatus(el, message, variant = '') {
+  if (!el) return;
+  el.textContent = message || '';
+  let cls = 'ka-status';
+  if (variant === 'ok') cls += ' ka-status-ok';
+  if (variant === 'error') cls += ' ka-status-error';
+  el.className = cls;
+}
+
+function kaSetAccountDisabled(disabled) {
+  const fields = [
+    'ka-account-email-current',
+    'ka-account-email-new',
+    'ka-account-email-confirm',
+    'ka-account-email-password',
+    'ka-account-password-current',
+    'ka-account-password-new',
+    'ka-account-password-confirm'
+  ];
+  fields.forEach((id) => {
+    const field = document.getElementById(id);
+    if (field) field.disabled = !!disabled;
+  });
+  const buttons = ['ka-account-email-save', 'ka-account-password-save'];
+  buttons.forEach((id) => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = !!disabled;
+  });
+}
+
+async function kaLoadAccountInfo() {
+  const authStatusEl = document.getElementById('ka-account-auth-status');
+  const emailCurrent = document.getElementById('ka-account-email-current');
+  const emailStatus = document.getElementById('ka-account-email-status');
+  const passwordStatus = document.getElementById('ka-account-password-status');
+
+  kaSetInlineStatus(emailStatus, '');
+  kaSetInlineStatus(passwordStatus, '');
+  kaSetAccountDisabled(true);
+
+  try {
+    const me = await fetchJSON('/api/auth/me');
+    kaAccountAuthed = !!me?.ok;
+    if (emailCurrent) {
+      emailCurrent.value = me?.user?.email || '';
     }
+    kaSetInlineStatus(authStatusEl, '');
+    kaSetAccountDisabled(!kaAccountAuthed);
+  } catch (err) {
+    kaAccountAuthed = false;
+    if (emailCurrent) emailCurrent.value = '';
+    kaSetInlineStatus(
+      authStatusEl,
+      'Sign in to the Admin Console to update your account.',
+      'error'
+    );
+    kaSetAccountDisabled(true);
+  }
+}
+
+function kaBindAccountActions() {
+  if (kaAccountBound) return;
+  kaAccountBound = true;
+
+  const emailSave = document.getElementById('ka-account-email-save');
+  const emailStatus = document.getElementById('ka-account-email-status');
+  const emailCurrent = document.getElementById('ka-account-email-current');
+  const emailNew = document.getElementById('ka-account-email-new');
+  const emailConfirm = document.getElementById('ka-account-email-confirm');
+  const emailPassword = document.getElementById('ka-account-email-password');
+
+  if (emailSave) {
+    emailSave.addEventListener('click', async () => {
+      if (!kaAccountAuthed) {
+        kaSetInlineStatus(emailStatus, 'Sign in to update your email.', 'error');
+        return;
+      }
+      const currentEmail = String(emailCurrent?.value || '').trim();
+      const nextEmail = String(emailNew?.value || '').trim();
+      const confirmEmail = String(emailConfirm?.value || '').trim();
+      const currentPassword = String(emailPassword?.value || '');
+
+      if (!nextEmail || !confirmEmail || !currentPassword) {
+        kaSetInlineStatus(emailStatus, 'Fill out email and password fields to update.', 'error');
+        return;
+      }
+      if (nextEmail !== confirmEmail) {
+        kaSetInlineStatus(emailStatus, 'New email and confirmation do not match.', 'error');
+        return;
+      }
+      if (currentEmail && nextEmail.toLowerCase() === currentEmail.toLowerCase()) {
+        kaSetInlineStatus(emailStatus, 'New email matches your current email.', 'error');
+        return;
+      }
+
+      const original = emailSave.textContent || 'Update Email';
+      emailSave.disabled = true;
+      emailSave.textContent = 'Updating…';
+      kaSetInlineStatus(emailStatus, 'Updating email…');
+
+      try {
+        const res = await fetchJSON('/api/auth/change-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            current_password: currentPassword,
+            new_email: nextEmail
+          })
+        });
+        const updatedEmail = res?.email || nextEmail;
+        if (emailCurrent) emailCurrent.value = updatedEmail;
+        if (emailNew) emailNew.value = '';
+        if (emailConfirm) emailConfirm.value = '';
+        if (emailPassword) emailPassword.value = '';
+        kaSetInlineStatus(emailStatus, 'Email updated.', 'ok');
+      } catch (err) {
+        console.error('Kiosk admin email update error:', err);
+        kaSetInlineStatus(emailStatus, err?.message || 'Failed to update email.', 'error');
+      } finally {
+        emailSave.disabled = false;
+        emailSave.textContent = original;
+      }
+    });
+  }
+
+  const passwordSave = document.getElementById('ka-account-password-save');
+  const passwordStatus = document.getElementById('ka-account-password-status');
+  const passwordCurrent = document.getElementById('ka-account-password-current');
+  const passwordNew = document.getElementById('ka-account-password-new');
+  const passwordConfirm = document.getElementById('ka-account-password-confirm');
+
+  if (passwordSave) {
+    passwordSave.addEventListener('click', async () => {
+      if (!kaAccountAuthed) {
+        kaSetInlineStatus(passwordStatus, 'Sign in to update your password.', 'error');
+        return;
+      }
+      const current = String(passwordCurrent?.value || '');
+      const next = String(passwordNew?.value || '');
+      const confirm = String(passwordConfirm?.value || '');
+
+      if (!current || !next || !confirm) {
+        kaSetInlineStatus(passwordStatus, 'Fill out all password fields to update.', 'error');
+        return;
+      }
+      if (next !== confirm) {
+        kaSetInlineStatus(passwordStatus, 'New password and confirmation do not match.', 'error');
+        return;
+      }
+      if (next.length < 8) {
+        kaSetInlineStatus(passwordStatus, 'New password must be at least 8 characters.', 'error');
+        return;
+      }
+
+      const original = passwordSave.textContent || 'Update Password';
+      passwordSave.disabled = true;
+      passwordSave.textContent = 'Updating…';
+      kaSetInlineStatus(passwordStatus, 'Updating password…');
+
+      try {
+        await fetchJSON('/api/auth/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            current_password: current,
+            new_password: next
+          })
+        });
+        if (passwordCurrent) passwordCurrent.value = '';
+        if (passwordNew) passwordNew.value = '';
+        if (passwordConfirm) passwordConfirm.value = '';
+        kaSetInlineStatus(passwordStatus, 'Password updated.', 'ok');
+      } catch (err) {
+        console.error('Kiosk admin password update error:', err);
+        kaSetInlineStatus(passwordStatus, err?.message || 'Failed to update password.', 'error');
+      } finally {
+        passwordSave.disabled = false;
+        passwordSave.textContent = original;
+      }
+    });
   }
 }
 
@@ -3024,19 +3288,108 @@ function kaUpdateHeaderTitle(view = kaCurrentView) {
     dateLabel = kaFmtDateShort(kaTimesheetHeaderDateValue());
   } else if (current === 'workers') {
     title = 'Current Workers';
-    dateLabel = kaFmtDateShort(kaTodayIso());
+    dateLabel = kaCurrentWorkersProjectLabel();
   } else if (current === 'shipments') {
     title = 'Shipments – Ready to Pick Up';
   } else if (current === 'time') {
     title = 'Time Entries';
+  } else if (current === 'account') {
+    title = 'My Account';
   } else if (current === 'settings') {
     title = 'Settings';
   }
   kaSetHeaderView(title, dateLabel);
 }
 
+function kaCurrentWorkersProjectLabel() {
+  const projectId = kaCurrentLiveProjectId();
+  const normalizedId = Number.isFinite(Number(projectId)) ? Number(projectId) : null;
+  if (normalizedId === null) return '';
+  const sessions = Array.isArray(kaSessions) ? kaSessions : [];
+  const match = sessions.find(s => Number(s.project_id) === normalizedId);
+  if (match) {
+    return match.project_name || kaProjectLabelById(match.project_id) || `Project ${normalizedId}`;
+  }
+  return kaProjectLabelById(normalizedId) || `Project ${normalizedId}`;
+}
+
+function kaLiveTimesheetOptionLabel(session) {
+  if (!session) return '';
+  return (
+    session.project_name ||
+    kaProjectLabelById(session.project_id) ||
+    (session.project_id ? `Project ${session.project_id}` : '')
+  );
+}
+
+function kaRenderLiveTimesheetFilter() {
+  const select = document.getElementById('ka-live-timesheet-filter');
+  if (!select) return;
+
+  const sessions = Array.isArray(kaSessions) ? kaSessions : [];
+  const today = kaTodayIso();
+  const daySessions = sessions.filter(s => (s?.date || '') === today);
+  const activeSession = kaComputeActiveSession(sessions);
+  const activeLabel =
+    activeSession && (activeSession?.date || '') === today
+      ? kaLiveTimesheetOptionLabel(activeSession)
+      : '';
+
+  select.innerHTML = '';
+  const activeOption = document.createElement('option');
+  activeOption.value = '';
+  activeOption.textContent = activeLabel ? `Active — ${activeLabel}` : 'No active timesheet';
+  select.appendChild(activeOption);
+
+  const sorted = kaSortSessionsByRecency(daySessions);
+  const seen = new Set();
+  sorted.forEach(session => {
+    const pid = session && session.project_id !== undefined && session.project_id !== null
+      ? Number(session.project_id)
+      : null;
+    if (!Number.isFinite(pid)) return;
+    const key = String(pid);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const opt = document.createElement('option');
+    opt.value = String(pid);
+    opt.textContent = kaLiveTimesheetOptionLabel(session);
+    select.appendChild(opt);
+  });
+
+  const selectedValue =
+    kaLiveProjectOverride !== null && kaLiveProjectOverride !== undefined
+      ? String(kaLiveProjectOverride)
+      : '';
+  if (selectedValue && !Array.from(select.options).some(opt => opt.value === selectedValue)) {
+    const fallback = document.createElement('option');
+    fallback.value = selectedValue;
+    fallback.textContent = kaProjectLabelById(selectedValue) || `Project ${selectedValue}`;
+    select.appendChild(fallback);
+  }
+  select.value = selectedValue;
+  select.disabled = select.options.length <= 1;
+}
+
+function kaBindLiveTimesheetFilter() {
+  const select = document.getElementById('ka-live-timesheet-filter');
+  if (!select || select.dataset.bound === '1') return;
+  select.addEventListener('change', () => {
+    const val = select.value;
+    if (!val) {
+      kaLiveProjectOverride = null;
+    } else {
+      const pid = Number(val);
+      kaLiveProjectOverride = Number.isFinite(pid) ? pid : null;
+    }
+    kaUpdateLiveDateLabel();
+    kaLoadLiveWorkers();
+  });
+  select.dataset.bound = '1';
+}
+
 function kaUpdateLiveDateLabel() {
-  const dateLabel = kaFmtDateShort(kaTodayIso());
+  const dateLabel = kaCurrentWorkersProjectLabel();
   if (kaCurrentView === 'workers') {
     kaSetHeaderView('Current Workers', dateLabel || '');
   }
@@ -3071,6 +3424,15 @@ function kaTimesheetSelectedDate() {
   return kaTimesheetDate || kaTodayIso();
 }
 
+function kaSyncTimesheetDateInput() {
+  const input = document.getElementById('ka-timesheet-date-input');
+  if (!input) return;
+  const selected = kaTimesheetSelectedDate();
+  if (selected && input.value !== selected) {
+    input.value = selected;
+  }
+}
+
 function kaUpdateTimesheetSectionLabel() {
   const label = document.getElementById('ka-timesheet-day-label');
   if (!label) return;
@@ -3085,6 +3447,7 @@ function kaSetTimesheetDate(nextDate, opts = {}) {
   kaUpdateTimesheetHeading();
   kaUpdateSessionFilterDate();
   kaUpdateTimesheetSectionLabel();
+  kaSyncTimesheetDateInput();
   kaBindBottomNavPositioning();
   kaUpdateBottomNavDiamond();
   if (!opts.skipLoad) {
@@ -3147,14 +3510,32 @@ function kaSyncTimesheetEmptyState() {
   const view = document.getElementById('ka-view-timesheets');
   const emptyState = document.getElementById('ka-timesheet-empty-state');
   const hasSessions = kaHasTimesheetSessions();
-  const showBanner = !hasSessions && !kaNewSessionVisible;
+  const selected = kaTimesheetSelectedDate();
+  const isToday = selected === kaTodayIso();
+  const showBanner = !hasSessions;
 
   if (view) {
-    view.classList.toggle('ka-timesheet-empty-day', !hasSessions);
+    view.classList.toggle('ka-timesheet-empty-day', showBanner && isToday);
     view.classList.toggle('ka-timesheet-empty-banner', showBanner);
   }
   if (emptyState) {
     emptyState.classList.toggle('hidden', !showBanner);
+    if (showBanner) {
+      const title = emptyState.querySelector('.ka-timesheet-empty-title');
+      const copy = emptyState.querySelector('.ka-timesheet-empty-copy');
+      const actions = emptyState.querySelector('.ka-timesheet-empty-actions');
+      if (isToday) {
+        if (title) title.textContent = 'No open timesheets';
+        if (copy) {
+          copy.textContent = 'Start a timesheet to set the active job for this tablet.';
+        }
+        actions?.classList.remove('hidden');
+      } else {
+        if (title) title.textContent = 'No timesheets for this day';
+        if (copy) copy.textContent = 'No timesheets exist for this date.';
+        actions?.classList.add('hidden');
+      }
+    }
   }
 }
 
@@ -3203,6 +3584,16 @@ function kaSaveVerificationQueue(list) {
   kaUpdateOfflineIndicator();
 }
 
+function kaLoadShipmentNotesQueue() {
+  const list = kaStoreGet(KA_SHIPMENT_NOTES_QUEUE_KEY, []);
+  return Array.isArray(list) ? list : [];
+}
+
+function kaSaveShipmentNotesQueue(list) {
+  kaStoreSet(KA_SHIPMENT_NOTES_QUEUE_KEY, list || []);
+  kaUpdateOfflineIndicator();
+}
+
 function kaLoadTimeReviewQueue() {
   const list = kaStoreGet(KA_TIME_REVIEW_QUEUE_KEY, []);
   return Array.isArray(list) ? list : [];
@@ -3220,6 +3611,27 @@ function kaQueueTimeReview(entry) {
   const remaining = queue.filter(item => Number(item.exception_id) !== id);
   remaining.push(entry);
   kaSaveTimeReviewQueue(remaining);
+}
+
+function kaQueueShipmentNotes(shipmentId, notes, meta = {}) {
+  if (!shipmentId) return;
+  const idNum = Number(shipmentId);
+  if (!Number.isFinite(idNum)) return;
+  const queue = kaLoadShipmentNotesQueue();
+  const remaining = queue.filter(item => Number(item.shipment_id) !== idNum);
+  const auth = {
+    ...kaShipmentAuthMeta(),
+    ...meta
+  };
+  remaining.push({
+    shipment_id: idNum,
+    notes: notes == null ? '' : String(notes),
+    employee_id: auth.employee_id || null,
+    device_id: auth.device_id || null,
+    device_secret: auth.device_secret || null,
+    queued_at: new Date().toISOString()
+  });
+  kaSaveShipmentNotesQueue(remaining);
 }
 
 function kaQueueShipmentVerification(shipmentId, items = [], meta = {}) {
@@ -3258,6 +3670,44 @@ function kaQueueShipmentVerification(shipmentId, items = [], meta = {}) {
   entry.items = Array.from(byId.values());
   entry.queued_at = new Date().toISOString();
   kaSaveVerificationQueue(queue);
+}
+
+async function kaSyncShipmentNotesQueue() {
+  const queue = kaLoadShipmentNotesQueue();
+  if (!Array.isArray(queue) || !queue.length) return;
+
+  const remaining = [];
+
+  for (const job of queue) {
+    if (!job || !job.shipment_id) continue;
+    const fallback = kaShipmentAuthMeta();
+    const employeeId = job.employee_id || fallback.employee_id;
+    const deviceId = job.device_id || fallback.device_id;
+    const deviceSecret = job.device_secret || fallback.device_secret;
+
+    if (!employeeId || !deviceId || !deviceSecret) {
+      remaining.push(job);
+      continue;
+    }
+
+    try {
+      await fetchJSON(`/api/shipments/${job.shipment_id}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          notes: job.notes == null ? '' : String(job.notes),
+          employee_id: employeeId,
+          device_id: deviceId,
+          device_secret: deviceSecret
+        })
+      });
+    } catch (err) {
+      console.warn('Failed to sync queued shipment notes', err);
+      remaining.push(job);
+    }
+  }
+
+  kaSaveShipmentNotesQueue(remaining);
 }
 
 async function kaSyncVerificationQueue() {
@@ -3357,80 +3807,71 @@ function kaSetLiveWorkersEmptyState(isEmpty) {
   if (card) card.classList.toggle('ka-live-empty', !!isEmpty);
 }
 
+function kaInitialsFromName(name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return '';
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  const first = parts[0][0] || '';
+  const last = parts.length > 1 ? parts[parts.length - 1][0] || '' : '';
+  return `${first}${last}`.toUpperCase();
+}
+
 async function kaLoadLiveWorkers() {
   if (!kaKiosk) return;
 
-  const tbody = document.getElementById('ka-live-body');
+  const list = document.getElementById('ka-live-list');
   const tag = document.getElementById('ka-live-count-tag');
   const card = document.getElementById('ka-live-card');
-  if (!tbody) return;
+  if (!list) return;
 
-  const hasContent = tbody.dataset.hasContent === '1';
+  const hasContent = list.dataset.hasContent === '1';
 
-  // Loading row (4 columns: Employee | Clock In | Time on Clock | Clock Out)
+  // Loading card placeholder
   if (!hasContent) {
-    tbody.innerHTML = `
-      <tr data-ka-placeholder="1"><td colspan="4" class="ka-muted">(loading…)</td></tr>
+    list.innerHTML = `
+      <div class="ka-live-item ka-live-placeholder" data-ka-placeholder="1" role="listitem">(loading…)</div>
     `;
   }
   if (card) card.classList.add('ka-refreshing');
-  tbody.dataset.refreshing = '1';
+  list.dataset.refreshing = '1';
 
   try {
     const rows = await fetchJSON(`/api/kiosks/${kaKiosk.id}/open-punches`);
     const punchRows = Array.isArray(rows) ? rows : [];
     const fragment = document.createDocumentFragment();
 
-    const hasProjectOverride =
-      kaLiveProjectOverride !== null &&
-      kaLiveProjectOverride !== undefined &&
-      Number.isFinite(Number(kaLiveProjectOverride));
     let liveProjectId = kaCurrentLiveProjectId();
-    const activeSession = kaComputeActiveSession(kaSessions || []);
-    const activeProjectId =
-      activeSession && activeSession.project_id !== undefined && activeSession.project_id !== null
-        ? Number(activeSession.project_id)
-        : null;
 
     const filterByProject = (pid) =>
       pid !== null && pid !== undefined
         ? punchRows.filter(r => Number(r.project_id) === Number(pid))
         : punchRows;
 
-    let filteredRows = filterByProject(liveProjectId);
+    let filteredRows = Number.isFinite(Number(liveProjectId))
+      ? filterByProject(liveProjectId)
+      : [];
 
-    const liveSession =
-      liveProjectId !== null
-        ? (kaSessions || []).find(s => Number(s.project_id) === liveProjectId)
-        : null;
-    let projectLabel = '';
-    if (liveProjectId !== null && liveProjectId !== undefined) {
-      projectLabel =
-        (liveSession && (liveSession.project_name || kaProjectLabelById(liveSession.project_id))) ||
-        kaProjectLabelById(liveProjectId) ||
-        `Project ${liveProjectId}`;
-    }
-
-    const entryCount = filteredRows.length;
-    const openCount = filteredRows.filter(r => !r.clock_out_ts).length;
+    const openRows = filteredRows.filter(r => !r.clock_out_ts);
+    const openCount = openRows.length;
 
     kaUpdateLiveDateLabel();
 
-    // ----- No workers currently clocked in/out today -----
-    if (!punchRows.length || filteredRows.length === 0) {
-      const row = document.createElement('tr');
-      row.dataset.kaPlaceholder = '1';
-      row.innerHTML = `
-        <td colspan="4" class="ka-muted">(${liveProjectId !== null ? 'no punches today on this project' : 'no punches today on this kiosk'})</td>
-      `;
-      fragment.appendChild(row);
+    // ----- No active workers currently clocked in -----
+    if (!punchRows.length || openRows.length === 0) {
+      const item = document.createElement('div');
+      item.className = 'ka-live-item ka-live-placeholder';
+      item.dataset.kaPlaceholder = '1';
+      item.setAttribute('role', 'listitem');
+      item.textContent = `(${liveProjectId !== null ? 'no active workers on this project' : 'no active workers on this kiosk'})`;
+      fragment.appendChild(item);
       if (tag) {
         tag.textContent = '0 Active workers';
         tag.className = 'ka-tag gray';
       }
       kaSetLiveWorkersEmptyState(true);
-      tbody.replaceChildren(fragment);
-      tbody.dataset.hasContent = '1';
+      list.replaceChildren(fragment);
+      list.dataset.hasContent = '1';
       return;
     }
 
@@ -3439,12 +3880,13 @@ async function kaLoadLiveWorkers() {
     let olderThanTodayCount = 0;
 
     // ----- Build rows: Employee | Clock In | Time on Clock -----
-    filteredRows.forEach(r => {
-      const tr = document.createElement('tr');
+    openRows.forEach(r => {
+      const item = document.createElement('article');
 
-      let clockInLabel = '–';
-      let durationLabel = '–';
-      let clockOutLabel = '–';
+      let clockInLabel = '';
+      let clockInDateLabel = '';
+      let clockOutLabel = '';
+      let durationLabel = '—';
       let isOlder = false;
 
       if (r.clock_in_ts) {
@@ -3455,14 +3897,13 @@ async function kaLoadLiveWorkers() {
           hour: '2-digit',
           minute: '2-digit'
         });
+        clockInDateLabel = kaFmtDateLong(dt);
 
         // Time on Clock (duration)
-        const end = r.clock_out_ts ? new Date(r.clock_out_ts) : now;
-        const diffMs = end - dt;
-        const totalMin = Math.max(0, Math.round(diffMs / 60000)); // nearest minute
-        const hours = Math.floor(totalMin / 60);
-        const minutes = totalMin % 60;
-        durationLabel = `${hours} hr${hours === 1 ? '' : 's'} ${minutes} min`;
+        durationLabel = kaDurationLabelFromStart(
+          r.clock_in_ts,
+          r.clock_out_ts ? new Date(r.clock_out_ts) : now
+        ) || '—';
 
         if (r.clock_out_ts) {
           const out = new Date(r.clock_out_ts);
@@ -3483,27 +3924,39 @@ async function kaLoadLiveWorkers() {
         }
       }
 
-      const rowProjectLabel =
-        r.project_name || kaProjectLabelById(r.project_id) || '(Project)';
+      const employeeName = r.employee_name || '(Unknown employee)';
+      const initials = kaInitialsFromName(r.employee_name || 'Employee');
+      const clockInStamp = clockInDateLabel || '';
+      const clockInText = clockInLabel ? `Clocked in ${clockInLabel}` : 'Clocked in';
+      const clockOutText = clockOutLabel ? `Clocked out ${clockOutLabel}` : '';
+      const clockOutHtml = clockOutText ? `<span class="ka-live-clockout">${clockOutText}</span>` : '';
+      const clockSepHtml = clockOutText ? '<span class="ka-live-clock-sep">•</span>' : '';
+      const prevTagHtml = isOlder ? '<span class="ka-live-prev-tag">Prev day</span>' : '';
 
-      tr.innerHTML = `
-        <td>
-          <div class="ka-live-employee">${r.employee_name || '(Unknown employee)'}</div>
-          <div class="ka-live-project">${rowProjectLabel}</div>
-        </td>
-        <td>
-          ${clockInLabel}
-          ${
-            isOlder
-              ? '<span class="ka-tag orange" style="margin-left:4px;">Prev day</span>'
-              : ''
-          }
-        </td>
-        <td>${durationLabel}</td>
-        <td>${clockOutLabel}</td>
+      item.className = `ka-live-item is-active${isOlder ? ' is-previous' : ''}`;
+      item.setAttribute('role', 'listitem');
+      item.innerHTML = `
+        <div class="ka-live-avatar" aria-hidden="true">
+          <span class="ka-live-initials">${initials || '?'}</span>
+        </div>
+        <div class="ka-live-details">
+          <div class="ka-live-name-row">
+            <div class="ka-live-employee">${employeeName}</div>
+          </div>
+          <div class="ka-live-date">${clockInStamp || '—'}</div>
+          <div class="ka-live-clock-row">
+            <span class="ka-live-clockin">${clockInText}</span>
+            ${clockSepHtml}
+            ${clockOutHtml}
+            ${prevTagHtml}
+          </div>
+        </div>
+        <div class="ka-live-metric">
+          <span class="ka-live-metric-value">${durationLabel}</span>
+        </div>
       `;
 
-      fragment.appendChild(tr);
+      fragment.appendChild(item);
     });
 
     // Update active count tag with live data (no extra refresh required)
@@ -3514,8 +3967,8 @@ async function kaLoadLiveWorkers() {
     }
 
     kaSetLiveWorkersEmptyState(false);
-    tbody.replaceChildren(fragment);
-    tbody.dataset.hasContent = '1';
+    list.replaceChildren(fragment);
+    list.dataset.hasContent = '1';
 
     // Optional warning about previous-day open punches
     const status = document.getElementById('ka-kiosk-status');
@@ -3534,10 +3987,10 @@ async function kaLoadLiveWorkers() {
   } catch (err) {
     console.error('Error loading live workers:', err);
     if (!hasContent) {
-      tbody.innerHTML = `
-        <tr data-ka-placeholder="1"><td colspan="4" class="ka-muted">(error loading live workers)</td></tr>
+      list.innerHTML = `
+        <div class="ka-live-item ka-live-placeholder" data-ka-placeholder="1" role="listitem">(error loading live workers)</div>
       `;
-      tbody.dataset.hasContent = '1';
+      list.dataset.hasContent = '1';
     }
     kaSetLiveWorkersEmptyState(true);
     if (tag) {
@@ -3545,7 +3998,7 @@ async function kaLoadLiveWorkers() {
       tag.className = 'ka-tag orange';
     }
   } finally {
-    delete tbody.dataset.refreshing;
+    delete list.dataset.refreshing;
     if (card) card.classList.remove('ka-refreshing');
   }
 }
@@ -3560,6 +4013,7 @@ function kaUpdateTimesheetHeading(activeSession = null) {
   if (rangeEl) {
     rangeEl.textContent = longLabel || shortLabel || '';
   }
+  kaSyncTimesheetDateInput();
   if (kaCurrentView === 'timesheets') {
     kaSetHeaderView('Timesheets', shortLabel || '');
   }
@@ -3583,17 +4037,9 @@ function kaBindTimeOrientationListener() {
 function kaSyncLiveCountPill() {
   const pill = document.getElementById('ka-live-count-tag');
   if (!pill) return;
-  const headerSlot = document.getElementById('ka-header-pill-slot');
-  const home = kaLiveCountTagHome || pill.parentElement;
-  if (!kaLiveCountTagHome && home) {
-    kaLiveCountTagHome = home;
-  }
-  if (kaCurrentView === 'workers') {
-    if (headerSlot && pill.parentElement !== headerSlot) {
-      headerSlot.appendChild(pill);
-    }
-  } else if (kaLiveCountTagHome && pill.parentElement !== kaLiveCountTagHome) {
-    kaLiveCountTagHome.appendChild(pill);
+  const leftSlot = document.getElementById('ka-live-controls-left');
+  if (leftSlot && pill.parentElement !== leftSlot) {
+    leftSlot.appendChild(pill);
   }
 }
 
@@ -3616,14 +4062,21 @@ function kaShowView(view, opts = {}) {
     if (section) section.classList.toggle('hidden', v !== view);
   });
 
-  document.querySelectorAll('.ka-bottom-nav button').forEach(btn => {
-    const v = btn.getAttribute('data-ka-view');
-    btn.classList.toggle('active', v === view);
-  });
-  kaUpdateBottomNavDiamond();
+  const bottomNavBtn = document.querySelector(
+    `.ka-bottom-nav button[data-ka-view="${view}"]`
+  );
+  if (bottomNavBtn) {
+    document.querySelectorAll('.ka-bottom-nav button').forEach(btn => {
+      const v = btn.getAttribute('data-ka-view');
+      btn.classList.toggle('active', v === view);
+    });
+    kaUpdateBottomNavDiamond();
+  }
   kaUpdateHeaderTitle(view);
   if (document.body) {
     document.body.classList.toggle('ka-view-workers-active', view === 'workers');
+    document.body.classList.toggle('ka-view-timesheets-active', view === 'timesheets');
+    document.body.classList.toggle('ka-view-shipments-active', view === 'shipments');
   }
   kaSyncLiveCountPill();
 
@@ -3637,7 +4090,14 @@ function kaShowView(view, opts = {}) {
   }
 
   if (view === 'workers') {
+    kaBindLiveTimesheetFilter();
+    kaRenderLiveTimesheetFilter();
     kaLoadLiveWorkers();
+  }
+
+  if (view === 'account') {
+    kaBindAccountActions();
+    kaLoadAccountInfo();
   }
 }
 
@@ -3905,6 +4365,35 @@ function kaSortSessionsByRecency(list) {
   });
 }
 
+function kaExplicitActiveSession(sessions) {
+  if (!Array.isArray(sessions) || !sessions.length) return null;
+  const sorted = kaSortSessionsByRecency(sessions);
+  const activeProjectId =
+    kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null
+      ? Number(kaKiosk.project_id)
+      : null;
+  const preferredId =
+    kaActiveSessionId !== undefined && kaActiveSessionId !== null
+      ? Number(kaActiveSessionId)
+      : null;
+  const normalizedProjectId = Number.isFinite(activeProjectId) ? activeProjectId : null;
+  const normalizedPreferredId = Number.isFinite(preferredId) ? preferredId : null;
+
+  if (normalizedPreferredId !== null) {
+    const existing = sorted.find(s => Number(s.id) === normalizedPreferredId);
+    if (existing && (normalizedProjectId === null || Number(existing.project_id) === normalizedProjectId)) {
+      return existing;
+    }
+  }
+
+  if (normalizedProjectId !== null) {
+    const projectMatch = sorted.find(s => Number(s.project_id) === normalizedProjectId);
+    if (projectMatch) return projectMatch;
+  }
+
+  return null;
+}
+
 function kaComputeActiveSession(sessions) {
   if (!Array.isArray(sessions) || !sessions.length) return null;
   const sorted = kaSortSessionsByRecency(sessions);
@@ -4076,7 +4565,6 @@ function kaRenderSessions() {
 
   if (emptyBanner) emptyBanner.classList.add('hidden');
 
-  const liveProjectId = kaCurrentLiveProjectId();
   list.innerHTML = '';
   filtered.forEach(s => {
     const projName = s.project_name || kaProjectLabelById(s.project_id) || '(Project)';
@@ -4086,7 +4574,7 @@ function kaRenderSessions() {
     const entryCount = Number(s.device_entry_count ?? s.entry_count ?? 0);
     const isOngoing = isActive || openCount > 0;
     const row = document.createElement('div');
-    row.className = 'ka-session-row';
+    row.className = `ka-session-row${isActive ? ' is-active' : ''}`;
     row.dataset.sessionId = s.id;
     row.dataset.projectId = Number.isFinite(Number(s.project_id)) ? String(s.project_id) : '';
 
@@ -4095,6 +4583,15 @@ function kaRenderSessions() {
 
     const main = document.createElement('div');
     main.className = 'ka-session-main';
+
+    const columns = document.createElement('div');
+    columns.className = 'ka-session-columns';
+    columns.innerHTML = `
+      <span>Project</span>
+      <span>Open punches</span>
+      <span>Total entries</span>
+    `;
+    main.appendChild(columns);
 
     const head = document.createElement('div');
     head.className = 'ka-session-head';
@@ -4189,9 +4686,10 @@ async function kaLoadSessions() {
       kaKiosk.project_id = activeSession.project_id;
     }
 
-    kaRenderSessions();
-    kaUpdateActiveProjectUI();
-    await kaRefreshAdminPunchStatus();
+  kaRenderSessions();
+  kaRenderLiveTimesheetFilter();
+  kaUpdateActiveProjectUI();
+  await kaRefreshAdminPunchStatus();
     await kaRefreshLiveData();
     if (status) {
       status.textContent = '';
@@ -4206,30 +4704,18 @@ async function kaLoadSessions() {
   }
 }
 
-async function kaAddSession() {
+async function kaAddSession(opts = {}) {
   if (!kaKiosk || !kaKiosk.id) return;
   const sel = document.getElementById('ka-project-select');
   const status = document.getElementById('ka-session-status');
-  const projectId = sel && sel.value ? Number(sel.value) : null;
+  const inlineProjectId = sel && sel.value ? Number(sel.value) : null;
   const adminId = kaCurrentAdmin && kaCurrentAdmin.id ? Number(kaCurrentAdmin.id) : null;
   const adminName = (kaCurrentAdmin && (kaCurrentAdmin.nickname || kaCurrentAdmin.name)) || 'you';
-
-  if (!projectId) {
-    if (status) {
-      status.textContent = 'Pick a project to start a timesheet.';
-      status.className = 'ka-status ka-status-error';
-    }
-    return;
-  }
-
-  const projectLabel = kaProjectLabelById(projectId) || `Project ${projectId}`;
   const dateLabel = kaFmtDateLong(kaTimesheetSelectedDate()) || kaFmtDateLongTZ(new Date());
+
   let adminOpen = false;
   let currentProjId = null;
   let currentLabel = '';
-  let treatSkipAsCancel = false;
-  let modalResult = { action: 'skip', projectId };
-
   if (adminId) {
     await kaRefreshAdminPunchStatus();
     adminOpen = !!(kaAdminOpenPunch && kaAdminOpenPunch.open);
@@ -4239,38 +4725,90 @@ async function kaAddSession() {
         kaProjectLabelById(currentProjId) ||
         (kaAdminOpenPunch.project_name || `Project ${currentProjId}`);
     }
+  }
 
+  const buildPrompt = (targetProjectId) => {
+    if (!targetProjectId) {
+      return {
+        message: 'Select a project to start a timesheet.',
+        yesLabel: 'Start timesheet',
+        skipLabel: 'Cancel',
+        treatSkipAsCancel: true,
+        projectLabel: ''
+      };
+    }
+    const projectLabel = kaProjectLabelById(targetProjectId) || `Project ${targetProjectId}`;
     let message = '';
     let yesLabel = 'Start timesheet';
     let skipLabel = 'Cancel';
-    if (adminOpen && Number(currentProjId) !== Number(projectId)) {
+    let treatSkipAsCancel = true;
+    if (adminOpen && Number(currentProjId) !== Number(targetProjectId)) {
       message = `${adminName} is clocked in on ${currentLabel}. Start a timesheet for ${projectLabel} (${dateLabel})? Switch your clock-in to this project?`;
       yesLabel = 'Start & switch';
       skipLabel = 'Start only';
       treatSkipAsCancel = false;
-    } else if (!adminOpen && !kaClockInPhotoRequired) {
+    } else if (!adminOpen && !kaClockInPhotoRequired && adminId) {
       message = `Start a timesheet for ${projectLabel} (${dateLabel}). Clock in ${adminName} as well?`;
       yesLabel = 'Start & clock in';
       skipLabel = 'Start only';
       treatSkipAsCancel = false;
     } else {
       message = `Start a timesheet for ${projectLabel} (${dateLabel})?`;
-      if (!adminOpen && kaClockInPhotoRequired) {
+      if (!adminOpen && kaClockInPhotoRequired && adminId) {
         message += ' Photo is required to clock in.';
       }
       yesLabel = 'Start timesheet';
       skipLabel = 'Cancel';
       treatSkipAsCancel = true;
     }
+    return { message, yesLabel, skipLabel, treatSkipAsCancel, projectLabel };
+  };
 
+    const defaultProjectId = opts.useModal ? null : inlineProjectId;
+    let projectId =
+      opts.projectId !== undefined && opts.projectId !== null
+        ? opts.projectId
+        : defaultProjectId;
+    let modalResult = { action: 'skip', projectId };
+    let treatSkipAsCancel = false;
+    let usedModal = false;
+    let projectLabel = '';
+
+    if (opts.useModal) {
+      const projectOptions = kaActiveProjectOptions();
+      if (!projectOptions.length) {
+      if (status) {
+        status.textContent = 'No active projects available.';
+        status.className = 'ka-status ka-status-error';
+      }
+      kaShowStatusMessage('No active projects available.', 'error', 6000);
+      return;
+    }
+    const prompt = buildPrompt(projectId);
     modalResult = await kaShowClockInModal({
       projectId,
       adminName,
       titleText: 'Start timesheet?',
-      message,
-      yesLabel,
-      skipLabel
+      message: prompt.message,
+      yesLabel: prompt.yesLabel,
+      skipLabel: prompt.skipLabel,
+      projectOptions,
+      projectLabelText: 'Project',
+      allowBlankProject: true,
+      onProjectChange: (nextProjectId) => {
+        const nextPrompt = buildPrompt(nextProjectId);
+        return {
+          message: nextPrompt.message,
+          yesLabel: nextPrompt.yesLabel,
+          skipLabel: nextPrompt.skipLabel
+        };
+      }
     });
+    usedModal = true;
+    projectId = modalResult.projectId || projectId;
+    const finalPrompt = buildPrompt(projectId);
+    treatSkipAsCancel = finalPrompt.treatSkipAsCancel;
+    projectLabel = finalPrompt.projectLabel;
 
     if (modalResult.action === 'dismiss' || (modalResult.action === 'skip' && treatSkipAsCancel)) {
       if (status) {
@@ -4278,6 +4816,45 @@ async function kaAddSession() {
         status.className = 'ka-status ka-status-error';
       }
       return;
+    }
+
+    if (!projectId) {
+      if (status) {
+        status.textContent = 'Pick a project to start a timesheet.';
+        status.className = 'ka-status ka-status-error';
+      }
+      return;
+    }
+  } else {
+    if (!projectId) {
+      if (status) {
+        status.textContent = 'Pick a project to start a timesheet.';
+        status.className = 'ka-status ka-status-error';
+      }
+      return;
+    }
+
+    projectLabel = kaProjectLabelById(projectId) || `Project ${projectId}`;
+
+    if (adminId) {
+      const prompt = buildPrompt(projectId);
+      treatSkipAsCancel = prompt.treatSkipAsCancel;
+      modalResult = await kaShowClockInModal({
+        projectId,
+        adminName,
+        titleText: 'Start timesheet?',
+        message: prompt.message,
+        yesLabel: prompt.yesLabel,
+        skipLabel: prompt.skipLabel
+      });
+
+      if (modalResult.action === 'dismiss' || (modalResult.action === 'skip' && treatSkipAsCancel)) {
+        if (status) {
+          status.textContent = 'Timesheet not started.';
+          status.className = 'ka-status ka-status-error';
+        }
+        return;
+      }
     }
   }
 
@@ -4362,12 +4939,14 @@ async function kaAddSession() {
             'error',
             8000
           );
-          kaShowClockInPrompt({
-            projectId,
-            adminId,
-            adminName,
-            message: `${adminName} is not clocked in. Clock in to a timesheet for today?`
-          });
+          if (!usedModal) {
+            kaShowClockInPrompt({
+              projectId,
+              adminId,
+              adminName,
+              message: `${adminName} is not clocked in. Clock in to a timesheet for today?`
+            });
+          }
         }
       } else if (wantsSwitch) {
         try {
@@ -4393,12 +4972,14 @@ async function kaAddSession() {
             8000
           );
         }
-        kaShowClockInPrompt({
-          projectId,
-          adminId,
-          adminName,
-          message: `${adminName} is not clocked in. Clock in to a timesheet for today?`
-        });
+        if (!usedModal) {
+          kaShowClockInPrompt({
+            projectId,
+            adminId,
+            adminName,
+            message: `${adminName} is not clocked in. Clock in to a timesheet for today?`
+          });
+        }
       }
     }
 
@@ -4582,7 +5163,10 @@ function kaShowClockInModal({
   projectOptions,
   titleText,
   yesLabel,
-  skipLabel
+  skipLabel,
+  projectLabelText,
+  onProjectChange,
+  allowBlankProject
 }) {
   const backdrop = document.getElementById('ka-clockin-modal-backdrop');
   const text = document.getElementById('ka-clockin-modal-text');
@@ -4592,6 +5176,7 @@ function kaShowClockInModal({
   const skipBtn = document.getElementById('ka-clockin-modal-skip');
   const projWrap = document.getElementById('ka-clockin-modal-project-wrap');
   const projSel = document.getElementById('ka-clockin-modal-project');
+  const projLabel = document.getElementById('ka-clockin-modal-project-label');
   if (!backdrop || !text || !title || !closeBtn || !yesBtn || !skipBtn) {
     return Promise.resolve({ action: 'dismiss', projectId });
   }
@@ -4607,12 +5192,31 @@ function kaShowClockInModal({
   if (projSel && projWrap) {
     projSel.innerHTML = '';
     if (projectOptions && projectOptions.length > 0) {
+      if (allowBlankProject) {
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Select a project';
+        placeholder.disabled = true;
+        placeholder.selected = !projectId;
+        projSel.appendChild(placeholder);
+      }
       projectOptions.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.project_id;
         opt.textContent = p.label;
         projSel.appendChild(opt);
       });
+      if (projectId) {
+        projSel.value = String(projectId);
+      } else if (allowBlankProject) {
+        projSel.value = '';
+      }
+      if (projLabel) {
+        if (!projLabel.dataset.defaultLabel) {
+          projLabel.dataset.defaultLabel = projLabel.textContent || '';
+        }
+        projLabel.textContent = projectLabelText || projLabel.dataset.defaultLabel;
+      }
       projWrap.style.display = 'block';
     } else {
       projWrap.style.display = 'none';
@@ -4622,26 +5226,53 @@ function kaShowClockInModal({
   backdrop.classList.remove('hidden');
 
   return new Promise(resolve => {
+    const currentProjectId = () => {
+      if (projSel && projWrap && projWrap.style.display !== 'none') {
+        return projSel.value ? Number(projSel.value) : null;
+      }
+      return projectId || null;
+    };
+
+    const applyUpdates = (selectedId) => {
+      if (allowBlankProject) {
+        const hasSelection = !!selectedId;
+        yesBtn.disabled = !hasSelection;
+      }
+      if (typeof onProjectChange !== 'function') return;
+      const updates = onProjectChange(selectedId);
+      if (!updates || typeof updates !== 'object') return;
+      if (updates.titleText !== undefined) title.textContent = updates.titleText || '';
+      if (updates.message !== undefined) text.textContent = updates.message || '';
+      if (updates.yesLabel !== undefined) yesBtn.textContent = updates.yesLabel || '';
+      if (updates.skipLabel !== undefined) skipBtn.textContent = updates.skipLabel || '';
+    };
+
+    if (projSel && projWrap && projWrap.style.display !== 'none') {
+      projSel.onchange = () => applyUpdates(currentProjectId());
+      applyUpdates(currentProjectId());
+    } else {
+      applyUpdates(currentProjectId());
+    }
+
     const cleanup = (result) => {
       backdrop.classList.add('hidden');
       yesBtn.onclick = null;
       skipBtn.onclick = null;
       closeBtn.onclick = null;
       backdrop.onclick = null;
+      if (projSel) {
+        projSel.onchange = null;
+      }
       resolve(result);
     };
 
     yesBtn.onclick = () => {
-      const targetProjectId =
-        projSel && projWrap && projWrap.style.display !== 'none' && projSel.value
-          ? Number(projSel.value)
-          : projectId;
-      cleanup({ action: 'yes', projectId: targetProjectId });
+      cleanup({ action: 'yes', projectId: currentProjectId() });
     };
-    skipBtn.onclick = () => cleanup({ action: 'skip', projectId });
-    closeBtn.onclick = () => cleanup({ action: 'dismiss', projectId });
+    skipBtn.onclick = () => cleanup({ action: 'skip', projectId: currentProjectId() });
+    closeBtn.onclick = () => cleanup({ action: 'dismiss', projectId: currentProjectId() });
     backdrop.onclick = (e) => {
-      if (e.target === backdrop) cleanup({ action: 'dismiss', projectId });
+      if (e.target === backdrop) cleanup({ action: 'dismiss', projectId: currentProjectId() });
     };
   });
 }
@@ -4824,14 +5455,19 @@ async function kaInit() {
 
   kaHardenPinInputs();
   if (window.AVIAN_STORE && typeof window.AVIAN_STORE.init === 'function') {
-    await window.AVIAN_STORE.init([KA_OFFLINE_QUEUE_KEY, KA_PENDING_PIN_KEY, KA_VERIFY_QUEUE_KEY]);
+    await window.AVIAN_STORE.init([
+      KA_OFFLINE_QUEUE_KEY,
+      KA_PENDING_PIN_KEY,
+      KA_VERIFY_QUEUE_KEY,
+      KA_SHIPMENT_NOTES_QUEUE_KEY
+    ]);
   }
   await kaMigratePendingPins();
   kaUpdateOfflineIndicator();
 
   if (!kaDeviceId) {
     alert('Missing kiosk device ID in URL (device_id).');
-    kaSetText('ka-kiosk-name', 'Avian Group');
+    kaSetText('ka-sidebar-admin-name', kaAdminDisplayName());
     return;
   }
 
@@ -4891,10 +5527,35 @@ async function kaInit() {
       }
     });
     menuPanel.addEventListener('click', (e) => {
-      const item = e.target.closest('[data-ka-menu]');
+      const item = e.target.closest('[data-ka-menu], [data-ka-view], [data-ka-action]');
       if (!item) return;
       const action = item.dataset.kaMenu;
-      if (action === 'settings') {
+      const view = item.dataset.kaView;
+      const navAction = item.dataset.kaAction;
+      if (navAction === 'clockin') {
+        window.location.href = '/kiosk';
+        return;
+      }
+      if (navAction === 'logout') {
+        closeMenu();
+        kaLogoutToKiosk();
+        return;
+      }
+      if (navAction === 'help') {
+        closeMenu();
+        const helpBackdrop = document.getElementById('ka-help-backdrop');
+        if (helpBackdrop) {
+          helpBackdrop.classList.remove('hidden');
+          document.body.classList.add('ka-modal-open');
+          document.documentElement.classList.add('ka-modal-open');
+        }
+        return;
+      }
+      if (view && KA_VIEWS.includes(view)) {
+        kaShowView(view);
+      } else if (action === 'account') {
+        kaShowView('account');
+      } else if (action === 'settings') {
         kaShowView('settings');
       }
       closeMenu();
@@ -4987,6 +5648,38 @@ async function kaInit() {
       kaSetTimesheetDate(nextDate);
     });
   });
+
+  const datePill = document.getElementById('ka-timesheet-date-pill');
+  const dateInput = document.getElementById('ka-timesheet-date-input');
+  if (dateInput) {
+    kaSyncTimesheetDateInput();
+    dateInput.addEventListener('change', () => {
+      const next = dateInput.value;
+      if (next) {
+        kaSetTimesheetDate(next);
+      }
+    });
+  }
+  if (datePill && dateInput) {
+    const openPicker = () => {
+      if (typeof dateInput.showPicker === 'function') {
+        dateInput.showPicker();
+      } else {
+        dateInput.focus();
+        dateInput.click();
+      }
+    };
+    datePill.addEventListener('click', (e) => {
+      if (e.target && (e.target === dateInput)) return;
+      openPicker();
+    });
+    datePill.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openPicker();
+      }
+    });
+  }
 
   const searchInput = document.getElementById('ka-timesheet-search');
   if (searchInput) {
@@ -5087,15 +5780,39 @@ async function kaInit() {
   const docsBody = document.getElementById('ka-docs-body');
   if (docsBody && !docsBody.dataset.bound) {
     docsBody.addEventListener('click', (e) => {
+      const nameLink = e.target.closest('.ka-doc-name');
+      if (nameLink && nameLink.href) {
+        e.preventDefault();
+        e.stopPropagation();
+        let type = '';
+        const row = nameLink.closest('.ka-doc-row');
+        const typeEl = row ? row.querySelector('.ka-doc-type') : null;
+        if (typeEl) type = (typeEl.textContent || '').trim();
+        if (type.toLowerCase().startsWith('type:')) {
+          type = type.replace(/^type:\s*/i, '');
+        }
+        kaOpenDocViewer({
+          url: nameLink.href,
+          name: (nameLink.textContent || '').trim(),
+          type
+        });
+        return;
+      }
       const dl = e.target.closest('.ka-doc-download');
       if (dl && dl.href) {
         e.preventDefault();
         e.stopPropagation();
+        if (!navigator.onLine) {
+          kaShowModalToast('Offline: connect to download.', 'error');
+          return;
+        }
         window.open(dl.href, '_blank');
       }
     });
     docsBody.dataset.bound = '1';
   }
+
+  kaBindDocViewerModal();
 
   // Overview upload handlers (bound on render too)
   kaBindOverviewUpload();
@@ -5304,23 +6021,17 @@ async function kaInit() {
   }
 
   // Timesheets: add + set active
-  document.getElementById('ka-add-session-btn')?.addEventListener('click', kaAddSession);
+  document.getElementById('ka-add-session-btn')?.addEventListener('click', () => kaAddSession({ useModal: true }));
   const startNewBtn = document.getElementById('ka-start-new-btn');
   if (startNewBtn) {
     startNewBtn.addEventListener('click', () => {
-      kaNewSessionVisible = true;
-      kaUpdateActiveProjectUI();
-      const sel = document.getElementById('ka-project-select');
-      if (sel) sel.focus();
+      kaAddSession({ useModal: true });
     });
   }
   const emptyStartBtn = document.getElementById('ka-timesheet-empty-start');
   if (emptyStartBtn) {
     emptyStartBtn.addEventListener('click', () => {
-      kaNewSessionVisible = true;
-      kaUpdateActiveProjectUI();
-      const sel = document.getElementById('ka-project-select');
-      if (sel) sel.focus();
+      kaAddSession({ useModal: true });
     });
   }
   const allowedModes = new Set(['active', 'all', 'inactive']);
@@ -5441,7 +6152,7 @@ async function kaInit() {
     );
 
     if (!kaKiosk) {
-      kaSetText('ka-kiosk-name', 'Avian Group');
+      kaSetText('ka-sidebar-admin-name', kaAdminDisplayName());
       kaSetText('ka-kiosk-device-id', kaDeviceId);
       const statusEl = document.getElementById('ka-kiosk-status');
       if (statusEl) {
@@ -5547,16 +6258,17 @@ async function kaCloseItemsModal(opts = {}) {
   const shipmentId = kaItemsModalShipmentId;
 
   if (!force && kaHasUnsavedItems(shipmentId)) {
-    const proceed = await kaShowConfirmDialog(
+    const choice = await kaShowChoiceDialog(
       'You have unsent item changes. Save all updates before closing?',
       {
         okLabel: 'Save & close',
+        altLabel: 'Discard changes',
         cancelLabel: 'Keep working',
         title: 'Unsaved item updates'
       }
     );
-    if (!proceed) return;
-    if (shipmentId) {
+    if (choice === 'cancel') return;
+    if (choice === 'ok' && shipmentId) {
       await kaSaveShipmentVerificationFor(shipmentId, { silent: true });
     }
   }
@@ -5571,8 +6283,10 @@ async function kaCloseItemsModal(opts = {}) {
   kaItemsFilterUnverifiedFirst = true;
   kaItemsModalShipmentId = null;
   kaShipmentDetailDocs = [];
-  kaCollapsedItems.clear();
+  kaExpandedItems.clear();
   kaSavedItemStatuses.clear();
+  kaRecentlySavedItems.forEach(timer => clearTimeout(timer));
+  kaRecentlySavedItems.clear();
   if (kaCanViewShipments()) {
     kaLoadShipments({ forceFresh: true });
   }
@@ -5587,16 +6301,20 @@ function kaForceCloseAllModals() {
   const ids = [
     'ka-return-backdrop',
     'ka-time-action-backdrop',
-    'ka-confirm-backdrop'
+    'ka-confirm-backdrop',
+    'ka-docs-backdrop',
+    'ka-doc-view-backdrop'
   ];
   ids.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.classList.add('hidden');
   });
   kaCloseItemsModal({ force: true });
+  kaCloseDocViewer();
 }
 
 function kaSetItemsTab(tab) {
+  kaItemsActiveTab = tab || 'items';
   const panels = document.querySelectorAll('[data-ka-items-panel]');
   const buttons = document.querySelectorAll('[data-ka-items-tab]');
   panels.forEach(panel => {
@@ -5653,6 +6371,9 @@ function kaRefreshShipmentProgress(shipmentId) {
       kaShipmentDetailDocs || [],
       kaShipmentDetail.items || []
     );
+    kaBindOverviewUpload();
+    kaBindOverviewPaymentDocs();
+    kaBindPickupControls(kaShipmentDetail.shipment || {});
   }
 
   // Update list cache + re-render shipments list
@@ -5732,11 +6453,30 @@ function kaSetSavedItemStatus(itemId, status) {
   const normalized = kaNormalizeItemStatus(status);
   const idNum = Number(itemId);
   kaSavedItemStatuses.set(idNum, normalized);
-  if (normalized && normalized !== 'unverified') {
-    kaCollapsedItems.add(idNum);
-  } else {
-    kaCollapsedItems.delete(idNum);
-  }
+}
+
+function kaMarkItemRecentlySaved(itemId) {
+  const idNum = Number(itemId);
+  if (!Number.isFinite(idNum)) return;
+  const existing = kaRecentlySavedItems.get(idNum);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    kaRecentlySavedItems.delete(idNum);
+    const row = document.querySelector(`.ka-item-row[data-item-id="${idNum}"]`);
+    const statusEl = row && row.querySelector('[data-ka-item-save-status]');
+    if (statusEl) {
+      statusEl.textContent = '';
+      statusEl.classList.remove('is-ok');
+    }
+  }, KA_ITEM_SAVE_FLASH_MS);
+  kaRecentlySavedItems.set(idNum, timer);
+}
+
+function kaClearItemSavedStatus(itemId) {
+  const idNum = Number(itemId);
+  const timer = kaRecentlySavedItems.get(idNum);
+  if (timer) clearTimeout(timer);
+  kaRecentlySavedItems.delete(idNum);
 }
 
 function kaGetSavedItemStatus(itemId, fallback = '') {
@@ -5749,7 +6489,7 @@ function kaGetSavedItemStatus(itemId, fallback = '') {
 
 function kaSeedSavedItemStatuses(items = []) {
   kaSavedItemStatuses.clear();
-  kaCollapsedItems.clear();
+  kaExpandedItems.clear();
   (items || []).forEach(it => {
     kaSetSavedItemStatus(it.id, it?.verification?.status || '');
   });
@@ -5800,6 +6540,211 @@ function kaCloseDocsModal() {
   document.getElementById('ka-docs-backdrop')?.classList.add('hidden');
 }
 
+function kaDocCacheAvailable() {
+  return typeof caches !== 'undefined' && typeof caches.open === 'function';
+}
+
+function kaDocNormalizeUrl(url) {
+  if (!url) return '';
+  try {
+    return new URL(url, window.location.origin).toString();
+  } catch {
+    return url;
+  }
+}
+
+async function kaGetDocCache() {
+  if (!kaDocCacheAvailable()) return null;
+  try {
+    return await caches.open(KA_DOC_CACHE_NAME);
+  } catch {
+    return null;
+  }
+}
+
+async function kaGetCachedDoc(url) {
+  const cache = await kaGetDocCache();
+  if (!cache) return null;
+  const match = await cache.match(url);
+  if (!match) return null;
+  const blob = await match.blob();
+  return {
+    blob,
+    contentType: match.headers.get('content-type') || blob.type || ''
+  };
+}
+
+async function kaFetchDocBlob(url) {
+  if (!navigator.onLine) {
+    return { blob: null, contentType: '', offline: true };
+  }
+  const resp = await fetch(url, { credentials: 'same-origin' });
+  if (!resp.ok) {
+    const err = new Error(`Failed to load document (${resp.status})`);
+    err.status = resp.status;
+    throw err;
+  }
+  const cache = await kaGetDocCache();
+  if (cache) {
+    try {
+      await cache.put(url, resp.clone());
+    } catch {
+      // ignore cache failures
+    }
+  }
+  const blob = await resp.blob();
+  return {
+    blob,
+    contentType: resp.headers.get('content-type') || blob.type || ''
+  };
+}
+
+function kaDocViewKind(contentType, name = '', blobType = '') {
+  const type = (contentType || blobType || '').toLowerCase();
+  const lowerName = (name || '').toLowerCase();
+  if (type.includes('pdf') || lowerName.endsWith('.pdf')) return 'pdf';
+  if (type.startsWith('image/')) return 'image';
+  if (/\.(png|jpe?g|gif|webp|bmp|svg)$/.test(lowerName)) return 'image';
+  return 'other';
+}
+
+function kaDocViewCleanup() {
+  if (kaDocViewObjectUrl) {
+    URL.revokeObjectURL(kaDocViewObjectUrl);
+    kaDocViewObjectUrl = null;
+  }
+}
+
+function kaUpdateDocViewerDownloadState() {
+  const btn = document.getElementById('ka-doc-view-download');
+  if (!btn) return;
+  const online = navigator.onLine;
+  btn.disabled = !online || !kaDocViewCurrentUrl;
+  btn.title = !online ? 'Connect to the internet to download.' : '';
+}
+
+function kaCloseDocViewer() {
+  const backdrop = document.getElementById('ka-doc-view-backdrop');
+  if (backdrop) backdrop.classList.add('hidden');
+  kaDocViewCleanup();
+  kaDocViewCurrentUrl = null;
+}
+
+async function kaOpenDocViewer({ url, name, type } = {}) {
+  const backdrop = document.getElementById('ka-doc-view-backdrop');
+  const body = document.getElementById('ka-doc-view-body');
+  const titleEl = document.getElementById('ka-doc-view-title');
+  const subEl = document.getElementById('ka-doc-view-sub');
+  if (!backdrop || !body || !titleEl) return;
+
+  const normalizedUrl = kaDocNormalizeUrl(url);
+  if (!normalizedUrl) return;
+
+  kaDocViewCleanup();
+  kaDocViewCurrentUrl = normalizedUrl;
+
+  titleEl.textContent = name || 'Document';
+  if (subEl) {
+    subEl.textContent = type ? `Type: ${type}` : '';
+  }
+
+  body.innerHTML = '<div class="ka-ship-muted">Loading document…</div>';
+  backdrop.classList.remove('hidden');
+  kaUpdateDocViewerDownloadState();
+
+  let cached = null;
+  try {
+    cached = await kaGetCachedDoc(normalizedUrl);
+  } catch {
+    cached = null;
+  }
+
+  let blob = cached?.blob || null;
+  let contentType = cached?.contentType || '';
+
+  if (!blob) {
+    try {
+      const fetched = await kaFetchDocBlob(normalizedUrl);
+      blob = fetched.blob;
+      contentType = fetched.contentType || contentType;
+    } catch (err) {
+      const offlineMsg = !navigator.onLine
+        ? 'This document is not available offline yet. Connect to the internet and open it once to cache it.'
+        : `Unable to load document. ${err.message || err}`;
+      body.innerHTML = `<div class="ka-ship-muted">${offlineMsg}</div>`;
+      return;
+    }
+  }
+
+  const kind = kaDocViewKind(contentType, name, blob.type);
+  const objectUrl = URL.createObjectURL(blob);
+  kaDocViewObjectUrl = objectUrl;
+
+  if (kind === 'pdf') {
+    body.innerHTML = `<iframe class="ka-doc-view-frame" src="${objectUrl}" title="${name || 'Document'}"></iframe>`;
+  } else if (kind === 'image') {
+    body.innerHTML = `<img class="ka-doc-view-image" src="${objectUrl}" alt="${name || 'Document'}" />`;
+  } else {
+    body.innerHTML = '<div class="ka-ship-muted">Preview unavailable for this file type. Use Download while online.</div>';
+  }
+}
+
+async function kaPrefetchDocsForOffline(docs = []) {
+  if (!navigator.onLine || !Array.isArray(docs) || !docs.length) return;
+  const cache = await kaGetDocCache();
+  if (!cache) return;
+  for (const doc of docs) {
+    const rawUrl = doc?.url || doc?.file_path;
+    if (!rawUrl) continue;
+    const url = kaDocNormalizeUrl(kaAppendShipmentAuth(rawUrl));
+    if (!url) continue;
+    try {
+      const cached = await cache.match(url);
+      if (cached) continue;
+      const resp = await fetch(url, { credentials: 'same-origin' });
+      if (resp && resp.ok) {
+        await cache.put(url, resp.clone());
+      }
+    } catch {
+      // ignore prefetch failures
+    }
+  }
+}
+
+function kaBindDocViewerModal() {
+  const backdrop = document.getElementById('ka-doc-view-backdrop');
+  if (!backdrop || backdrop.dataset.bound) return;
+  const closeBtn = document.getElementById('ka-doc-view-close');
+  const closeBtnAlt = document.getElementById('ka-doc-view-close-btn');
+  const downloadBtn = document.getElementById('ka-doc-view-download');
+  const close = () => {
+    kaCloseDocViewer();
+  };
+
+  closeBtn?.addEventListener('click', close);
+  closeBtnAlt?.addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) close();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !backdrop.classList.contains('hidden')) {
+      close();
+    }
+  });
+  downloadBtn?.addEventListener('click', () => {
+    if (!kaDocViewCurrentUrl) return;
+    if (!navigator.onLine) {
+      kaShowModalToast('Offline: connect to download.', 'error');
+      return;
+    }
+    window.open(kaDocViewCurrentUrl, '_blank');
+  });
+
+  window.addEventListener('online', kaUpdateDocViewerDownloadState);
+  window.addEventListener('offline', kaUpdateDocViewerDownloadState);
+  backdrop.dataset.bound = '1';
+}
+
 function kaDocMatchesShipper(doc) {
   const t = (doc.doc_type || doc.doc_label || doc.title || '').toLowerCase();
   return (
@@ -5821,6 +6766,17 @@ function kaDocMatchesClearing(doc) {
   );
 }
 
+function kaDocMatchesVendor(doc) {
+  const t = (doc.doc_type || doc.doc_label || doc.title || '').toLowerCase();
+  if (kaDocMatchesShipper(doc) || kaDocMatchesClearing(doc)) return false;
+  return (
+    t.includes('vendor') ||
+    t.includes('invoice') ||
+    t.includes('supplier') ||
+    t.includes('seller')
+  );
+}
+
 function kaRenderDocsList(docs) {
   const list = kaFilterDocsForPermissions(docs);
   if (!Array.isArray(list) || !list.length) {
@@ -5830,10 +6786,10 @@ function kaRenderDocsList(docs) {
     const rawHref = doc.url || doc.file_path || '#';
     const href = kaAppendShipmentAuth(rawHref);
     const label =
-      doc.label || doc.doc_label || doc.title || doc.filename || 'Document';
+      doc.filename || doc.title || doc.label || doc.doc_label || 'Document';
     const downloadName =
       doc.filename || doc.original_name || doc.title || doc.label || 'document';
-    const type = doc.doc_type || doc.doc_label || '';
+    const type = doc.doc_label || doc.doc_type || '';
     const extra = type ? `<span class="ka-doc-type">${type}</span>` : '';
     return `
       <li class="ka-doc-row">
@@ -5856,6 +6812,8 @@ function kaBindOverviewUpload() {
   const uploadBtn = document.getElementById('ka-docs-upload-btn');
   const fileInput = document.getElementById('ka-docs-upload-files');
   const typeSelect = document.getElementById('ka-docs-upload-type');
+  const labelWrap = document.getElementById('ka-docs-upload-label-wrap');
+  const labelInput = document.getElementById('ka-docs-upload-label');
   const statusEl = document.getElementById('ka-docs-upload-status');
   const chooseBtn = document.getElementById('ka-docs-upload-choose');
   const filenameEl = document.getElementById('ka-docs-upload-filename');
@@ -5879,6 +6837,21 @@ function kaBindOverviewUpload() {
     updateName();
   }
 
+  const syncLabelInput = () => {
+    if (!typeSelect) return;
+    const needsLabel = (typeSelect.value || '') === 'Other';
+    if (labelWrap) labelWrap.hidden = !needsLabel;
+    if (labelInput) {
+      labelInput.disabled = !needsLabel;
+      if (!needsLabel) labelInput.value = '';
+    }
+  };
+
+  if (typeSelect) {
+    typeSelect.addEventListener('change', syncLabelInput);
+    syncLabelInput();
+  }
+
   uploadBtn.onclick = async () => {
     if (!kaItemsModalShipmentId) return;
     const files = fileInput.files;
@@ -5889,11 +6862,20 @@ function kaBindOverviewUpload() {
       }
       return;
     }
+    const typeValue = typeSelect ? typeSelect.value : '';
+    const customLabel = labelInput ? labelInput.value.trim() : '';
+    if (typeValue === 'Other' && !customLabel) {
+      if (statusEl) {
+        statusEl.textContent = 'Enter a label for "Other" document type.';
+        statusEl.className = 'ka-status ka-status-error';
+      }
+      return;
+    }
     const form = new FormData();
     Array.from(files).forEach(f => form.append('documents', f));
-    if (typeSelect && typeSelect.value) {
-      form.append('doc_type', typeSelect.value);
-      form.append('doc_label', typeSelect.value);
+    if (typeValue) {
+      form.append('doc_type', typeValue);
+      form.append('doc_label', typeValue === 'Other' ? customLabel : typeValue);
     }
     const auth = kaShipmentAuthMeta();
     if (auth.employee_id) form.append('employee_id', String(auth.employee_id));
@@ -5927,6 +6909,12 @@ function kaBindOverviewUpload() {
 
       await kaReloadDocsForOverview(kaItemsModalShipmentId);
       fileInput.value = '';
+      if (typeSelect) typeSelect.value = '';
+      if (labelInput) {
+        labelInput.value = '';
+        labelInput.disabled = true;
+      }
+      if (labelWrap) labelWrap.hidden = true;
       if (statusEl) {
         statusEl.textContent = 'Uploaded.';
         statusEl.className = 'ka-status ka-status-ok';
@@ -5955,6 +6943,8 @@ async function kaReloadDocsForOverview(shipmentId) {
         const shipment = (kaShipmentDetail && kaShipmentDetail.shipment) || {};
         overviewEl.innerHTML = kaRenderShipmentOverview(shipment, documents, items);
         kaBindOverviewUpload();
+        kaBindOverviewPaymentDocs();
+        kaBindNotesControls(shipment);
         kaBindPickupControls(shipment);
       }
     }
@@ -6103,6 +7093,8 @@ function kaBindPickupControls(shipment) {
           kaShipmentDetail.items || []
         );
         kaBindOverviewUpload();
+        kaBindOverviewPaymentDocs();
+        kaBindNotesControls(kaShipmentDetail.shipment);
         kaBindPickupControls(kaShipmentDetail.shipment);
       }
     } catch (err) {
@@ -6113,6 +7105,124 @@ function kaBindPickupControls(shipment) {
       }
     } finally {
       saveBtn.disabled = false;
+    }
+  };
+}
+
+function kaBindNotesControls(shipment) {
+  const notesEl = document.getElementById('ka-shipment-notes');
+  const saveBtn = document.getElementById('ka-notes-save');
+  const statusEl = document.getElementById('ka-notes-status');
+  if (!notesEl || !saveBtn) return;
+
+  const startingValue = shipment && shipment.notes != null ? String(shipment.notes) : '';
+  let lastSaved = startingValue;
+  let isEditing = false;
+
+  const setStatus = (msg, variant = '') => {
+    if (!statusEl) return;
+    statusEl.textContent = msg || '';
+    let cls = 'ka-status';
+    if (variant === 'error') cls += ' ka-status-error';
+    if (variant === 'ok') cls += ' ka-status-ok';
+    statusEl.className = cls;
+  };
+
+  const syncSaveState = () => {
+    if (!isEditing) {
+      saveBtn.disabled = false;
+      return;
+    }
+    saveBtn.disabled = false;
+  };
+
+  const updateLocalNotes = (nextValue) => {
+    const safeValue = nextValue == null ? '' : String(nextValue);
+    if (shipment) shipment.notes = safeValue;
+    if (kaShipmentDetail && kaShipmentDetail.shipment) {
+      kaShipmentDetail.shipment.notes = safeValue;
+    }
+    if (notesEl && notesEl.value !== safeValue) {
+      notesEl.value = safeValue;
+    }
+  };
+
+  const enterEditMode = () => {
+    isEditing = true;
+    notesEl.readOnly = false;
+    notesEl.closest('.ka-items-notes')?.classList.add('is-editing');
+    saveBtn.textContent = 'Save notes';
+    setStatus('');
+    syncSaveState();
+    notesEl.focus();
+  };
+
+  const exitEditMode = () => {
+    isEditing = false;
+    notesEl.readOnly = true;
+    notesEl.closest('.ka-items-notes')?.classList.remove('is-editing');
+    saveBtn.textContent = 'Edit notes';
+    syncSaveState();
+  };
+
+  notesEl.closest('.ka-items-notes')?.classList.remove('is-editing');
+  notesEl.readOnly = true;
+  saveBtn.textContent = 'Edit notes';
+  notesEl.addEventListener('input', syncSaveState);
+  syncSaveState();
+
+  saveBtn.onclick = async () => {
+    if (!shipment || !shipment.id) return;
+    const nextValue = notesEl.value || '';
+    const normalized = nextValue.trim();
+    if (!isEditing) {
+      enterEditMode();
+      return;
+    }
+    if (normalized === (lastSaved || '').trim()) {
+      exitEditMode();
+      return;
+    }
+    saveBtn.disabled = true;
+    setStatus('Saving…');
+
+    if (!navigator.onLine) {
+      kaQueueShipmentNotes(shipment.id, normalized);
+      updateLocalNotes(normalized);
+      lastSaved = normalized;
+      exitEditMode();
+      setStatus('Saved offline. Will sync when online.', 'ok');
+      return;
+    }
+
+    try {
+      const resp = await fetchJSON(`/api/shipments/${shipment.id}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: normalized })
+      });
+      const saved = resp && resp.shipment ? resp.shipment : null;
+      if (saved && saved.notes !== undefined) {
+        updateLocalNotes(saved.notes || '');
+        lastSaved = saved.notes || '';
+      } else {
+        updateLocalNotes(normalized);
+        lastSaved = normalized;
+      }
+      setStatus('Notes saved.', 'ok');
+      exitEditMode();
+    } catch (err) {
+      if (!navigator.onLine) {
+        kaQueueShipmentNotes(shipment.id, normalized);
+        updateLocalNotes(normalized);
+        lastSaved = normalized;
+        exitEditMode();
+        setStatus('Saved offline. Will sync when online.', 'ok');
+      } else {
+        setStatus(err.message || 'Error saving notes.', 'error');
+      }
+    } finally {
+      syncSaveState();
     }
   };
 }
@@ -6133,6 +7243,22 @@ function kaShowModalToast(message, variant = 'ok', duration = 2500) {
   }, duration + 300);
 }
 
+function kaShowDocsEmptyModal(mode = 'all') {
+  const backdrop = document.getElementById('ka-docs-backdrop');
+  const body = document.getElementById('ka-docs-body');
+  const titleEl = document.getElementById('ka-docs-title');
+  if (!backdrop || !body) return;
+  const titles = {
+    shipper: 'Shipper proof of payment',
+    clearing: 'Clearing proof of payment',
+    vendor: 'Vendor invoice',
+    all: 'Shipment documents'
+  };
+  if (titleEl) titleEl.textContent = titles[mode] || titles.all;
+  body.innerHTML = '<div class="ka-ship-muted">(No document uploaded.)</div>';
+  backdrop.classList.remove('hidden');
+}
+
 async function kaOpenDocsModal(shipmentId, mode = 'all') {
   const backdrop = document.getElementById('ka-docs-backdrop');
   const body = document.getElementById('ka-docs-body');
@@ -6151,11 +7277,13 @@ async function kaOpenDocsModal(shipmentId, mode = 'all') {
     let filtered = docs;
     if (mode === 'shipper') filtered = docs.filter(kaDocMatchesShipper);
     if (mode === 'clearing') filtered = docs.filter(kaDocMatchesClearing);
+    if (mode === 'vendor') filtered = docs.filter(kaDocMatchesVendor);
 
     if (titleEl) {
       const titles = {
         shipper: 'Shipper proof of payment',
         clearing: 'Clearing proof of payment',
+        vendor: 'Vendor invoice',
         all: 'Shipment documents'
       };
       titleEl.textContent = titles[mode] || titles.all;
@@ -6164,6 +7292,7 @@ async function kaOpenDocsModal(shipmentId, mode = 'all') {
     body.innerHTML = filtered.length
       ? kaRenderDocsList(filtered)
       : '<div class="ka-ship-muted">(No documents found for this category.)</div>';
+    kaPrefetchDocsForOffline(filtered);
   } catch (err) {
     console.error('Failed to load documents', err);
     body.innerHTML = `<div class="ka-ship-muted">(Error loading documents: ${err.message || err})</div>`;
@@ -6180,6 +7309,9 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
   const project = shipment.project_name || 'No project set';
   const vendor = shipment.vendor_name || '';
   const tracking = shipment.tracking_number || '';
+  const trackingHref = tracking
+    ? `https://www.google.com/search?q=${encodeURIComponent(`tracking ${tracking}`)}`
+    : '';
   const freight = shipment.freight_forwarder || '';
   const poNumber = shipment.po_number || '—';
   const internalRef = shipment.sku || '—';
@@ -6192,32 +7324,33 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
   const storageDue = kaFmtDateMMDDYYYY(shipment.storage_due_date) || '—';
   const paidShipper = Number(shipment.shipper_paid) === 1 ? 'Paid' : 'Unpaid';
   const paidCustoms = Number(shipment.customs_paid) === 1 ? 'Paid' : 'Unpaid';
-  const paidVendor = Number(shipment.vendor_paid) === 1 ? 'Paid' : 'Unpaid';
-  const amountVendor = kaFmtCurrency(shipment.vendor_paid_amount);
   const amountShipper = kaFmtCurrency(shipment.shipper_paid_amount);
   const amountCustoms = kaFmtCurrency(shipment.customs_paid_amount);
-  const totalPaid =
-    shipment.total_paid !== undefined && shipment.total_paid !== null
-      ? kaFmtCurrency(shipment.total_paid)
-      : kaFmtCurrency(
-          (Number(shipment.vendor_paid_amount) || 0) +
-          (Number(shipment.shipper_paid_amount) || 0) +
-          (Number(shipment.customs_paid_amount) || 0)
-        );
+  const totalPaid = kaFmtCurrency(
+    (Number(shipment.shipper_paid_amount) || 0) +
+    (Number(shipment.customs_paid_amount) || 0)
+  );
 
   const verify = kaShipVerificationInfo(shipment);
   const normalizedDocs = kaFilterDocsForPermissions(kaNormalizeDocs(docs));
+  const shipperDocs = normalizedDocs.filter(kaDocMatchesShipper);
+  const clearingDocs = normalizedDocs.filter(kaDocMatchesClearing);
   const paymentRows = [
-    { label: 'Vendor Paid', status: paidVendor, amount: amountVendor },
-    { label: 'Freight Forwarder Paid', status: paidShipper, amount: amountShipper },
-    { label: 'Customs Paid', status: paidCustoms, amount: amountCustoms }
+    { label: 'Freight Forwarder Paid', status: paidShipper, amount: amountShipper, mode: 'shipper', hasDocs: shipperDocs.length > 0 },
+    { label: 'Customs Paid', status: paidCustoms, amount: amountCustoms, mode: 'clearing', hasDocs: clearingDocs.length > 0 }
   ];
   const paymentTotalsRow = canViewPayments
-    ? `<div class="ka-items-overview-pair"><span>Total Paid</span><strong>${totalPaid}</strong></div>`
+    ? `<div class="ka-items-overview-pair ka-pay-total"><span>Total Paid</span><strong>${totalPaid}</strong></div>`
     : '';
+  const shipmentId = shipment.id || kaItemsModalShipmentId || '';
   const paymentsHtml = paymentRows
     .map(row => {
-      const amountPart = canViewPayments && row.amount !== '—' ? ` (${row.amount})` : '';
+      const amountPart =
+        canViewPayments && row.amount !== '—'
+          ? row.status === 'Paid'
+            ? ` (<button type="button" class="ka-pay-doc-link" data-ka-pay-docs="${row.mode}" data-ka-pay-docs-has="${row.hasDocs ? 1 : 0}" data-ka-pay-docs-id="${shipmentId}">${row.amount}</button>)`
+            : ` (${row.amount})`
+          : '';
       return `<div class="ka-items-overview-pair"><span>${row.label}</span><strong>${row.status}${amountPart}</strong></div>`;
     })
     .join('');
@@ -6226,25 +7359,27 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
   const otherDocs = normalizedDocs.filter(d => !bolDoc || d !== bolDoc);
 
   const docItems = [];
-  if (bolDoc) {
-    const href = kaAppendShipmentAuth(bolDoc.url || bolDoc.file_path || '#');
-    const label =
-      bolDoc.label || bolDoc.doc_label || bolDoc.title || bolDoc.filename || 'BOL';
-    docItems.push(
-      `<li><a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a> (BOL)</li>`
-    );
-  }
-  otherDocs.forEach(doc => {
+  const pushDocCard = (doc, fallbackType) => {
+    if (!doc) return;
     const href = kaAppendShipmentAuth(doc.url || doc.file_path || '#');
-    const label = doc.label || doc.doc_label || doc.title || doc.filename || 'Document';
-    docItems.push(
-      `<li><a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a></li>`
-    );
-  });
+    const label = doc.filename || doc.title || doc.label || doc.doc_label || 'Document';
+    const typeLabel = doc.doc_label || doc.doc_type || fallbackType || 'Document';
+    docItems.push(`
+      <li class="ka-doc-card">
+        <a class="ka-doc-card-link" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>
+        <div class="ka-doc-card-type">Type: ${typeLabel}</div>
+      </li>
+    `);
+  };
+  if (bolDoc) {
+    pushDocCard(bolDoc, 'BOL');
+  }
+  otherDocs.forEach(doc => pushDocCard(doc, 'Document'));
 
   const docsHtml = docItems.length
-    ? `<ul>${docItems.join('')}</ul>`
+    ? `<ul class="ka-docs-card-list">${docItems.join('')}</ul>`
     : '<div class="ka-ship-muted">(No documents uploaded)</div>';
+  const notesValue = shipment.notes == null ? '' : String(shipment.notes);
 
   return `
     <div class="ka-items-overview-grid">
@@ -6256,7 +7391,7 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
           bolLabel
             ? `<div class="ka-items-overview-pair"><span>BOL</span>${
                 bolHref
-                  ? `<a class="ka-ship-bol-pill" href="${bolHref}" target="_blank" rel="noopener noreferrer">${bolLabel}</a>`
+                  ? `<a class="ka-ship-bol-pill" href="${bolHref}">${bolLabel}</a>`
                   : `<strong class="ka-ship-bol-pill">${bolLabel}</strong>`
               }</div>`
             : ''
@@ -6272,7 +7407,11 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
         <div class="ka-items-overview-pair"><span>Expected Ship Date</span><strong>${expectedShip || '—'}</strong></div>
         <div class="ka-items-overview-pair"><span>Expected Arrival</span><strong>${expectedArrival || '—'}</strong></div>
         <div class="ka-items-overview-pair"><span>Due for Pickup</span><strong>${storageDue || '—'}</strong></div>
-        <div class="ka-items-overview-pair"><span>Tracking #</span><strong>${tracking || '—'}</strong></div>
+        <div class="ka-items-overview-pair"><span>Tracking #</span>${
+          tracking
+            ? `<a class="ka-tracking-link" href="${trackingHref}" target="_blank" rel="noopener noreferrer">${tracking}</a>`
+            : `<strong>—</strong>`
+        }</div>
       </div>
 
       <div class="ka-items-overview-card">
@@ -6308,35 +7447,50 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
 
     </div>
 
-    ${
-      shipment.notes
-        ? `<div class="ka-items-notes"><div class="ka-items-overview-label">Notes</div><p>${shipment.notes}</p></div>`
-        : ''
-    }
+    <div class="ka-items-notes">
+      <div class="ka-items-overview-label">Notes</div>
+      <textarea id="ka-shipment-notes" rows="3" placeholder="Add notes for this shipment">${escapeHTML(notesValue)}</textarea>
+      <div class="ka-notes-actions">
+        <button type="button" class="btn secondary btn-sm" id="ka-notes-save">Save notes</button>
+        <span class="ka-status" id="ka-notes-status"></span>
+      </div>
+    </div>
 
     <div class="ka-items-docs">
       <h4>Documents</h4>
       <div class="ka-docs-list-wrap">
         ${docsHtml}
       </div>
+      <div class="ka-docs-divider"></div>
+      <h5 class="ka-doc-upload-title">Upload New Documents</h5>
       <div class="ka-doc-upload-block">
-        <div class="ka-doc-upload">
-          <div class="ka-doc-upload-file">
-            <button type="button" class="btn secondary btn-sm" id="ka-docs-upload-choose">Choose Files</button>
-            <span id="ka-docs-upload-filename" class="ka-doc-file-name">No Files Selected</span>
-            <input type="file" id="ka-docs-upload-files" multiple class="ka-doc-hidden-input" />
+          <div class="ka-doc-upload">
+            <div class="ka-doc-upload-file">
+              <div class="ka-doc-upload-step">
+                <button type="button" class="btn secondary btn-sm" id="ka-docs-upload-choose">Choose Files</button>
+              </div>
+              <span id="ka-docs-upload-filename" class="ka-doc-file-name">No Files Selected</span>
+              <input type="file" id="ka-docs-upload-files" multiple class="ka-doc-hidden-input" />
           </div>
           <label class="ka-doc-upload-type">
-            <select id="ka-docs-upload-type">
-              <option value="">Select type…</option>
-              <option value="Shippers Invoice">Shippers Invoice</option>
-              <option value="BOL">BOL</option>
-              <option value="Country of Origin Certificate">Country of Origin Certificate</option>
-              <option value="Tally Sheet">Tally Sheet</option>
-              <option value="Freight Forwarder Proof of Payment">Freight Forwarder Proof of Payment</option>
-              <option value="Customs & Clearing Proof of Payment">Customs & Clearing Proof of Payment</option>
-              <option value="Other">Other</option>
-            </select>
+            <div class="ka-doc-upload-step">
+              <select id="ka-docs-upload-type">
+                <option value="">Select type…</option>
+                <option value="Shippers Invoice">Shippers Invoice</option>
+                <option value="Vendor Invoice">Vendor Invoice</option>
+                <option value="BOL">BOL</option>
+                <option value="Country of Origin Certificate">Country of Origin Certificate</option>
+                <option value="Tally Sheet">Tally Sheet</option>
+                <option value="Freight Forwarder Proof of Payment">Freight Forwarder Proof of Payment</option>
+                <option value="Customs & Clearing Proof of Payment">Customs & Clearing Proof of Payment</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+          </label>
+          <label class="ka-doc-upload-type" id="ka-docs-upload-label-wrap" hidden>
+            <div class="ka-doc-upload-step">
+              <input type="text" id="ka-docs-upload-label" placeholder="Describe document type" />
+            </div>
           </label>
           <button type="button" class="btn primary btn-sm" id="ka-docs-upload-btn">Upload</button>
         </div>
@@ -6346,7 +7500,56 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
   `;
 }
 
-async function kaOpenItemsModal(shipmentId) {
+function kaBindOverviewPaymentDocs() {
+  const wrap = document.getElementById('ka-items-overview');
+  if (!wrap) return;
+  wrap.querySelectorAll('[data-ka-pay-docs]').forEach(btn => {
+    if (btn.dataset.bound) return;
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.kaPayDocs || 'all';
+      const hasDocs = btn.dataset.kaPayDocsHas === '1';
+      const sid = Number(btn.dataset.kaPayDocsId || kaItemsModalShipmentId);
+      if (!sid) return;
+      if (hasDocs) {
+        kaOpenDocsModal(sid, mode);
+      } else {
+        kaShowDocsEmptyModal(mode);
+      }
+    });
+    btn.dataset.bound = '1';
+  });
+}
+
+function kaBindOverviewDocViewer() {
+  const wrap = document.getElementById('ka-items-overview');
+  if (!wrap || wrap.dataset.docViewBound) return;
+  wrap.addEventListener('click', (e) => {
+    const link = e.target.closest('.ka-doc-card-link, .ka-ship-bol-pill');
+    if (!link) return;
+    const href = link.getAttribute('href');
+    if (!href || href === '#' || href.startsWith('javascript')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const name = (link.textContent || '').trim();
+    let type = '';
+    const card = link.closest('.ka-doc-card');
+    if (card) {
+      const typeEl = card.querySelector('.ka-doc-card-type');
+      if (typeEl) type = (typeEl.textContent || '').trim();
+    }
+    if (type.toLowerCase().startsWith('type:')) {
+      type = type.replace(/^type:\s*/i, '');
+    }
+    if (!type && link.classList.contains('ka-ship-bol-pill')) {
+      type = 'BOL';
+    }
+    kaOpenDocViewer({ url: href, name, type });
+  });
+  wrap.dataset.docViewBound = '1';
+}
+
+async function kaOpenItemsModal(shipmentId, opts = {}) {
+  const { tab = kaItemsActiveTab || 'items' } = opts || {};
   const modal = document.getElementById('ka-items-modal');
   const body = document.getElementById('ka-items-modal-body');
   const titleEl = document.getElementById('ka-items-modal-title');
@@ -6360,9 +7563,10 @@ async function kaOpenItemsModal(shipmentId) {
   kaShipmentItemsDirty.clear();
   kaClearItemAutoSaves();
   kaItemsModalShipmentId = shipmentId;
-  kaSetItemsTab('items');
+  kaItemsStatusFilter = 'unverified';
+  kaSetItemsTab(tab);
   kaShipmentDetailDocs = [];
-  kaCollapsedItems.clear();
+  kaExpandedItems.clear();
 
   if (!modal.dataset.tabsBound) {
     const tabBtns = modal.querySelectorAll('[data-ka-items-tab]');
@@ -6422,45 +7626,40 @@ async function kaOpenItemsModal(shipmentId) {
 
   overviewEl.innerHTML = kaRenderShipmentOverview(shipment, documents, items);
   kaBindOverviewUpload();
+  kaBindOverviewPaymentDocs();
+  kaBindOverviewDocViewer();
+  kaBindNotesControls(shipment);
   kaBindPickupControls(shipment);
+  kaPrefetchDocsForOffline(documents);
 
   const hasItems = Array.isArray(items) && items.length > 0;
 
   body.innerHTML = `
     <div class="ka-items-toolbar">
-      <div class="ka-items-summary" id="ka-items-summary">
-        <div class="ka-summary-pill status-verified" data-ka-item-count="verified">
-          <span class="ka-summary-label">Verified</span>
-          <span class="ka-summary-count">0</span>
-        </div>
-        <div class="ka-summary-pill status-missing" data-ka-item-count="missing">
-          <span class="ka-summary-label">Missing</span>
-          <span class="ka-summary-count">0</span>
-        </div>
-        <div class="ka-summary-pill status-damaged" data-ka-item-count="damaged">
-          <span class="ka-summary-label">Damaged</span>
-          <span class="ka-summary-count">0</span>
-        </div>
-        <div class="ka-summary-pill status-wrong_item" data-ka-item-count="wrong_item">
-          <span class="ka-summary-label">Wrong</span>
-          <span class="ka-summary-count">0</span>
-        </div>
-        <div class="ka-summary-pill status-unverified" data-ka-item-count="unverified">
-          <span class="ka-summary-label">Unverified</span>
-          <span class="ka-summary-count">0</span>
-        </div>
-      </div>
       <div class="ka-items-actions">
-        <input type="search" id="ka-items-search" placeholder="Search description or SKU" value="${kaItemsFilterTerm}" />
+        <label class="ka-items-filter">
+          <span>View</span>
+          <select id="ka-items-status-filter">
+            <option value="unverified" ${kaItemsStatusFilter === 'unverified' ? 'selected' : ''}>Unverified</option>
+            <option value="verified" ${kaItemsStatusFilter === 'verified' ? 'selected' : ''}>Verified</option>
+            <option value="missing" ${kaItemsStatusFilter === 'missing' ? 'selected' : ''}>Missing</option>
+            <option value="damaged" ${kaItemsStatusFilter === 'damaged' ? 'selected' : ''}>Damaged</option>
+            <option value="wrong_item" ${kaItemsStatusFilter === 'wrong_item' ? 'selected' : ''}>Wrong item</option>
+            <option value="all" ${kaItemsStatusFilter === 'all' ? 'selected' : ''}>All</option>
+          </select>
+        </label>
+        <div class="ka-search-field">
+          <svg class="ka-search-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"></circle>
+            <path d="M20 20l-4.35-4.35" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+          </svg>
+          <input type="search" id="ka-items-search" placeholder="Search description or SKU" value="${kaItemsFilterTerm}" />
+        </div>
       </div>
     </div>
 
     <div id="ka-items-list" class="ka-items-list">
       ${hasItems ? '' : '<div class="ka-ship-muted">(No items on this shipment)</div>'}
-    </div>
-
-    <div class="ka-items-bottom-actions">
-      <button type="button" class="btn primary btn-sm" id="ka-items-save-close">Save & close</button>
     </div>
 
     <div id="ka-items-savebar" class="ka-items-savebar hidden">
@@ -6487,6 +7686,15 @@ async function kaOpenItemsModal(shipmentId) {
     searchEl.dataset.bound = '1';
   }
 
+  const statusFilterEl = document.getElementById('ka-items-status-filter');
+  if (statusFilterEl && !statusFilterEl.dataset.bound) {
+    statusFilterEl.addEventListener('change', () => {
+      kaItemsStatusFilter = statusFilterEl.value || 'unverified';
+      kaRenderItemsList(shipmentId);
+    });
+    statusFilterEl.dataset.bound = '1';
+  }
+
   const saveNowBtn = document.getElementById('ka-items-save-now');
   if (saveNowBtn && !saveNowBtn.dataset.bound) {
     saveNowBtn.addEventListener('click', () => {
@@ -6496,27 +7704,12 @@ async function kaOpenItemsModal(shipmentId) {
     saveNowBtn.dataset.bound = '1';
   }
 
-  const saveCloseBtn = document.getElementById('ka-items-save-close');
-  if (saveCloseBtn && !saveCloseBtn.dataset.bound) {
-    saveCloseBtn.addEventListener('click', async () => {
-      kaClearItemAutoSaves();
-      let ok = true;
-      if (shipmentId) {
-        ok = await kaSaveShipmentVerificationFor(shipmentId);
-      }
-      if (ok) {
-        kaCloseItemsModal();
-      }
-    });
-    saveCloseBtn.dataset.bound = '1';
-  }
-
   const undoBtn = document.getElementById('ka-items-undo');
   if (undoBtn && !undoBtn.dataset.bound) {
     undoBtn.addEventListener('click', () => {
       kaClearItemAutoSaves();
       kaShipmentItemsDirty.clear();
-      kaOpenItemsModal(shipmentId);
+      kaOpenItemsModal(shipmentId, { tab: kaItemsActiveTab });
     });
     undoBtn.dataset.bound = '1';
   }
@@ -6548,20 +7741,28 @@ function kaRenderItemsList(shipmentId) {
       return hay.includes(term);
     });
 
+  const statusFilter = (kaItemsStatusFilter || 'unverified').toLowerCase().trim();
+  if (statusFilter && statusFilter !== 'all') {
+    items = items.filter(item => {
+      const current = kaCurrentItemState(item);
+      const status = kaNormalizeItemStatus(current?.verification?.status || '');
+      const normalized = status || 'unverified';
+      return normalized === statusFilter;
+    });
+  }
+
   const statusForSort = (it) => kaGetSavedItemStatus(it.id, it.verification?.status || '');
   if (kaItemsFilterUnverifiedFirst) {
     items.sort((a, b) => {
       const aStatus = statusForSort(a);
       const bStatus = statusForSort(b);
-      const aCollapsed = aStatus && aStatus !== 'unverified' && kaCollapsedItems.has(Number(a.id));
-      const bCollapsed = bStatus && bStatus !== 'unverified' && kaCollapsedItems.has(Number(b.id));
       // unverified first, then others; within that, keep collapsed items lower
-      const rank = (st, collapsed) => {
-        if (!st || st === 'unverified') return collapsed ? 1 : 0;
-        return collapsed ? 3 : 2;
+      const rank = (st) => {
+        if (!st || st === 'unverified') return 0;
+        return 1;
       };
-      const aRank = rank(aStatus, aCollapsed);
-      const bRank = rank(bStatus, bCollapsed);
+      const aRank = rank(aStatus);
+      const bRank = rank(bStatus);
       if (aRank !== bRank) return aRank - bRank;
       return Number(a.id) - Number(b.id);
     });
@@ -6588,12 +7789,16 @@ function kaRenderItemRow(item, shipmentId) {
   const status = (verification.status || '').toLowerCase();
   const notes = verification.notes || '';
   const storage = verification.storage_override || '';
+  const combinedNotes = notes || storage || '';
+  const isExpanded = kaExpandedItems.has(Number(item.id));
+  const chevronGlyph = isExpanded ? '⌄' : '›';
   const lastBy = verification.verified_by || '';
   const lastAt = verification.verified_at ? verification.verified_at.slice(0, 10) : '';
   const qty = item.quantity !== undefined ? item.quantity : '';
   const unit = item.unit || '';
   const sku = item.sku || '';
   const vendorName = item.vendor_name || '';
+  const recentlySaved = kaRecentlySavedItems.has(Number(item.id));
 
   const row = document.createElement('div');
   row.className = 'ka-item-row';
@@ -6609,8 +7814,6 @@ function kaRenderItemRow(item, shipmentId) {
     { val: 'wrong_item', label: 'Wrong item' }
   ];
 
-  const hasNotesOpen = !!notes || !!storage;
-  const statusLabel = kaItemStatusLabel(status);
 
   row.innerHTML = `
     <div class="ka-item-row-head">
@@ -6623,43 +7826,25 @@ function kaRenderItemRow(item, shipmentId) {
         </div>
       </div>
       <div class="ka-item-head-right">
-        <span class="ka-item-status-chip">${statusLabel}</span>
-        <button type="button" class="ka-item-collapse" data-ka-collapse="${item.id}" aria-label="Collapse item">⌄</button>
+        <div class="ka-status-select">
+          <select class="ka-item-status" data-ka-item-status-select="${item.id}">
+            ${statuses
+              .map(
+                s => `<option value="${s.val}" ${status === s.val ? 'selected' : ''}>${s.label}</option>`
+              )
+              .join('')}
+          </select>
+        </div>
+        <button type="button" class="ka-item-collapse" data-ka-collapse="${item.id}" aria-label="${isExpanded ? 'Collapse item' : 'Expand item'}">${chevronGlyph}</button>
       </div>
     </div>
     <div class="ka-item-body">
-      <div class="ka-item-meta-line meta-right">
-        <span>Qty: ${qty}${unit ? ` ${unit}` : ''}</span>
-        ${sku ? `<span class="ka-item-meta-dot">•</span><span>SKU: ${sku}</span>` : ''}
-        ${vendorName ? `<span class="ka-item-meta-dot">•</span><span>Vendor: ${vendorName}</span>` : ''}
-      </div>
       <div class="ka-item-divider"></div>
 
-      <div class="ka-item-status-group" data-ka-status-buttons="${item.id}">
-        ${statuses
-          .map(
-            s => `<button type="button"
-              class="ka-item-status-btn ${status === s.val ? 'active' : ''} status-${s.val || 'unverified'}"
-              data-ka-item-status="${s.val}">${s.label}</button>`
-          )
-          .join('')}
-      </div>
-
-      <div class="ka-item-note-toggle">
-        <button type="button" class="ka-note-toggle-btn" data-ka-toggle-notes="${item.id}">
-          <span class="ka-note-label">${hasNotesOpen ? 'Hide notes' : 'Notes & storage'}</span>
-          <span class="ka-note-chevron">${hasNotesOpen ? '▴' : '▾'}</span>
-        </button>
-      </div>
-
-      <div class="ka-item-row-notes ${hasNotesOpen ? 'open' : ''}" data-ka-notes="${item.id}">
+      <div class="ka-item-row-notes open" data-ka-notes="${item.id}">
         <label>
-          <span>Notes</span>
-          <textarea rows="2" data-ship-item-notes-id="${item.id}">${notes}</textarea>
-        </label>
-        <label>
-          <span>Storage details</span>
-          <textarea rows="2" data-ship-item-storage-id="${item.id}">${storage}</textarea>
+          <span>Notes & storage details</span>
+          <textarea rows="3" data-ship-item-notes-id="${item.id}">${combinedNotes}</textarea>
         </label>
       </div>
 
@@ -6667,59 +7852,60 @@ function kaRenderItemRow(item, shipmentId) {
         <div class="ka-item-last">
           <span class="ka-item-unsaved-dot ${kaShipmentItemsDirty.has(Number(item.id)) ? '' : 'hidden'}" aria-hidden="true">●</span>
           <span class="ka-item-last-meta">${
-            lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : 'Not verified yet'
+            lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : ''
           }</span>
         </div>
         <div class="ka-item-row-actions">
           <button type="button" class="btn secondary btn-sm" data-ka-save-item="${item.id}">Save now</button>
+          <span class="ka-item-save-status ${recentlySaved ? 'is-ok' : ''}" data-ka-item-save-status="${item.id}">${recentlySaved ? 'Saved' : ''}</span>
         </div>
       </div>
     </div>
   `;
 
-  const statusButtons = Array.from(row.querySelectorAll('[data-ka-item-status]'));
+  const statusSelect = row.querySelector('[data-ka-item-status-select]');
   const notesEl = row.querySelector(`textarea[data-ship-item-notes-id="${item.id}"]`);
-  const storageEl = row.querySelector(`textarea[data-ship-item-storage-id="${item.id}"]`);
-  const toggleBtn = row.querySelector(`[data-ka-toggle-notes="${item.id}"]`);
   const saveBtn = row.querySelector(`[data-ka-save-item="${item.id}"]`);
-  const notesWrap = row.querySelector(`[data-ka-notes="${item.id}"]`);
-  const statusChip = row.querySelector('.ka-item-status-chip');
   const collapseBtn = row.querySelector(`[data-ka-collapse="${item.id}"]`);
   const unsavedDot = row.querySelector('.ka-item-unsaved-dot');
   const lastMeta = row.querySelector('.ka-item-last-meta');
+  const saveStatus = row.querySelector('[data-ka-item-save-status]');
 
   const applyStatusStyle = (val) => {
     const allStatuses = ['verified', 'missing', 'damaged', 'wrong_item', 'unverified'];
     allStatuses.forEach(s => row.classList.remove(`status-${s}`));
     row.classList.add(`status-${val || 'unverified'}`);
+    if (statusSelect) {
+      statusSelect.classList.remove(
+        'ka-status-verified',
+        'ka-status-missing',
+        'ka-status-damaged',
+        'ka-status-wrong_item'
+      );
+      const normalized = kaNormalizeItemStatus(val);
+      if (normalized && normalized !== 'unverified') {
+        statusSelect.classList.add(`ka-status-${normalized}`);
+      }
+    }
   };
 
   const setActiveStatus = (val) => {
-    statusButtons.forEach(btn => {
-      const match = (btn.dataset.kaItemStatus || '') === val;
-      btn.classList.toggle('active', match);
-    });
+    if (statusSelect) statusSelect.value = val;
     applyStatusStyle(val);
-    if (statusChip) statusChip.textContent = kaItemStatusLabel(val);
-    const normalized = kaNormalizeItemStatus(val);
-    if (!normalized || normalized === 'unverified') {
-      kaCollapsedItems.delete(Number(item.id));
-      row.classList.remove('collapsed');
-    }
   };
 
   const buildPayload = (statusOverride = null) => {
     const nowIso = new Date().toISOString();
     const admin = kaCurrentAdmin || {};
     const verifiedBy = admin.nickname || admin.name || 'Field Admin';
-    const activeBtn = statusButtons.find(btn => btn.classList.contains('active'));
     const newStatus =
-      statusOverride !== null ? statusOverride : (activeBtn ? activeBtn.dataset.kaItemStatus || '' : '');
+      statusOverride !== null ? statusOverride : (statusSelect ? statusSelect.value || '' : '');
+    const combinedValue = notesEl ? notesEl.value || '' : '';
 
     return {
       status: newStatus,
-      notes: notesEl ? notesEl.value || '' : '',
-      storage_override: storageEl ? storageEl.value || '' : '',
+      notes: combinedValue,
+      storage_override: combinedValue,
       verified_at: nowIso,
       verified_by: verifiedBy,
     };
@@ -6750,6 +7936,7 @@ function kaRenderItemRow(item, shipmentId) {
   const markDirty = (statusOverride = null, { skipAuto = false } = {}) => {
     const payload = buildPayload(statusOverride);
     const itemIdNum = Number(item.id);
+    kaClearItemSavedStatus(itemIdNum);
     const existingTimer = kaItemAutoSaveTimers.get(itemIdNum);
     if (existingTimer) {
       clearTimeout(existingTimer);
@@ -6760,7 +7947,10 @@ function kaRenderItemRow(item, shipmentId) {
     kaUpdateItemsSavebar();
     kaUpdateItemsSummaryUI();
     refreshUnsavedState(true);
-    if (statusChip) statusChip.textContent = kaItemStatusLabel(payload.status || '');
+    if (saveStatus) {
+      saveStatus.textContent = '';
+      saveStatus.classList.remove('is-ok');
+    }
 
     if (lastMeta) {
       lastMeta.textContent = `${payload.verified_by || ''}${
@@ -6772,32 +7962,20 @@ function kaRenderItemRow(item, shipmentId) {
   };
 
   const currentStatusValue = () => {
-    const activeBtn = statusButtons.find(btn => btn.classList.contains('active'));
-    const active = activeBtn ? activeBtn.dataset.kaItemStatus || '' : '';
+    const active = statusSelect ? statusSelect.value || '' : '';
     const saved = kaGetSavedItemStatus(item.id, status);
     return kaNormalizeItemStatus(active || saved);
   };
 
-  statusButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const val = btn.dataset.kaItemStatus || '';
+  if (statusSelect) {
+    statusSelect.addEventListener('change', () => {
+      const val = statusSelect.value || '';
       setActiveStatus(val);
       markDirty(val, { skipAuto: true });
     });
-  });
+  }
 
   notesEl?.addEventListener('blur', () => markDirty(null));
-  storageEl?.addEventListener('blur', () => markDirty(null));
-
-  if (toggleBtn && notesWrap) {
-    toggleBtn.addEventListener('click', () => {
-      const nowOpen = notesWrap.classList.toggle('open');
-      const chevron = toggleBtn.querySelector('.ka-note-chevron');
-      const label = toggleBtn.querySelector('.ka-note-label');
-      if (label) label.textContent = nowOpen ? 'Hide notes' : 'Notes & storage';
-      if (chevron) chevron.textContent = nowOpen ? '▴' : '▾';
-    });
-  }
 
   if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
@@ -6806,40 +7984,26 @@ function kaRenderItemRow(item, shipmentId) {
       const ok = await kaSaveShipmentVerificationFor(shipmentId, { onlyItemId: itemIdNum });
       if (ok) {
         refreshUnsavedState(false);
-        const current = kaCurrentItemState(item);
-        const statusNow = (current?.verification?.status || '').toLowerCase();
-        if (statusNow && statusNow !== 'unverified') {
-          kaCollapsedItems.add(itemIdNum);
-          kaRenderItemsList(shipmentId);
-        }
       }
     });
   }
 
   if (collapseBtn) {
     collapseBtn.addEventListener('click', () => {
-      const currentStatus = currentStatusValue();
-      if (!currentStatus || currentStatus === 'unverified') {
-        row.classList.remove('collapsed');
-        kaCollapsedItems.delete(Number(item.id));
-        return;
-      }
-
       const collapsed = row.classList.toggle('collapsed');
       if (collapsed) {
-        kaCollapsedItems.add(Number(item.id));
+        kaExpandedItems.delete(Number(item.id));
       } else {
-        kaCollapsedItems.delete(Number(item.id));
+        kaExpandedItems.add(Number(item.id));
       }
+      collapseBtn.textContent = collapsed ? '›' : '⌄';
+      collapseBtn.setAttribute('aria-label', collapsed ? 'Expand item' : 'Collapse item');
     });
   }
 
-  const savedStatus = currentStatusValue();
-  if (savedStatus && savedStatus !== 'unverified' && kaCollapsedItems.has(Number(item.id))) {
-    row.classList.add('collapsed');
-  } else if (!savedStatus || savedStatus === 'unverified') {
-    kaCollapsedItems.delete(Number(item.id));
-  }
+  row.classList.toggle('collapsed', !isExpanded);
+
+  setActiveStatus(currentStatusValue());
 
   return row;
 }
@@ -6969,6 +8133,7 @@ function kaSetItemSavedUI(itemId) {
   const current = kaCurrentItemState(item);
   const status = current && current.verification ? (current.verification.status || '').toLowerCase() : '';
   kaSetSavedItemStatus(itemId, status);
+  kaMarkItemRecentlySaved(itemId);
 
   if (row) {
     row.classList.remove('is-unsaved');
@@ -6986,7 +8151,12 @@ function kaSetItemSavedUI(itemId) {
     if (lastMeta && current && current.verification) {
       const lastBy = current.verification.verified_by || '';
       const lastAt = current.verification.verified_at ? current.verification.verified_at.slice(0, 10) : '';
-      lastMeta.textContent = lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : 'Not verified yet';
+      lastMeta.textContent = lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : '';
+    }
+    const saveStatus = row.querySelector('[data-ka-item-save-status]');
+    if (saveStatus) {
+      saveStatus.textContent = 'Saved';
+      saveStatus.classList.add('is-ok');
     }
   }
 }
@@ -7218,7 +8388,7 @@ async function kaStartDayAndClockIn() {
 // --- Render header + project + photo toggle ---
 
 function kaRenderKioskHeader() {
-  kaSetText('ka-kiosk-name', 'Avian Group');
+  kaSetText('ka-sidebar-admin-name', kaAdminDisplayName());
   kaSetText('ka-kiosk-device-id', kaKiosk.device_id || '(none)');
   kaUpdateSidebarClockedIn();
 }
@@ -7231,6 +8401,18 @@ function kaRenderProjectsSelect() {
   const activeProjects = projects.filter(
     p => p.active === undefined || p.active === null || Number(p.active) === 1
   );
+  const activeId =
+    kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null
+      ? Number(kaKiosk.project_id)
+      : null;
+  if (Number.isFinite(activeId)) {
+    activeProjects.sort((a, b) => {
+      const aActive = Number(a.id) === activeId;
+      const bActive = Number(b.id) === activeId;
+      if (aActive === bActive) return 0;
+      return aActive ? -1 : 1;
+    });
+  }
 
   // If nothing was returned from the server, show a clear placeholder
   if (!activeProjects.length) {

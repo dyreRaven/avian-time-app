@@ -16,6 +16,7 @@
 - POST `/api/auth/select-org`
 - POST `/api/auth/ui-mode`
 - POST `/api/auth/change-password`
+- POST `/api/auth/change-email`
 - GET  `/api/auth/users` [super admin]
 - POST `/api/auth/users` [super admin] (create user)
 - POST `/api/auth/users/:id/reset-password` [super admin]
@@ -83,6 +84,7 @@
 - GET  `/api/kiosk/open-punch` [kiosk]
 - GET  `/api/kiosks/:id/open-punches` [kiosk admin]
 - POST `/api/kiosk/admin/verify-pin` [kiosk admin]
+- POST `/api/kiosk-sessions/:id/share` [super admin]
 
 ## Kiosk Rate Unlock
 - POST `/api/kiosk/rates/unlock` [modify_pay_rates]
@@ -124,6 +126,7 @@
 - DELETE `/api/shipments/:id` [see_shipments]
 - POST `/api/shipments/:id/status` [see_shipments]
 - POST `/api/shipments/:id/storage` [see_shipments]
+- POST `/api/shipments/:id/notes` [see_shipments]
 - GET  `/api/shipments/:id/payments` [see_shipments]
 - POST `/api/shipments/:id/payments` [see_shipments]
 - GET  `/api/shipments/:id/timeline` [see_shipments]
@@ -132,6 +135,7 @@
 - DELETE `/api/shipments/:id/comments/:commentId` [see_shipments]
 - GET  `/api/shipments/:id/documents` [see_shipments]
 - POST `/api/shipments/:id/documents` [see_shipments]
+- PUT  `/api/shipments/:id/documents/:docId` [see_shipments]
 - DELETE `/api/shipments/:id/documents/:docId` [see_shipments]
 - GET  `/api/shipments/documents/:docId/download` [see_shipments]
 - POST `/api/shipments/:id/verify-items` [see_shipments]

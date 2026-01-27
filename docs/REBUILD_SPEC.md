@@ -53,6 +53,7 @@
 - see_shipments
 - modify_time
 - view_time_reports
+- view_all_timesheets
 - view_payroll
 - modify_payroll
 - modify_pay_rates
@@ -66,6 +67,7 @@
 - All API endpoints are gated server-side by permissions.
 - view_payroll is read-only for payroll screens; modify_payroll is required to run checks or unpay.
 - Shipments access uses `see_shipments` for both desktop and kiosk admin; legacy `kiosk_can_view_shipments` is folded into this permission.
+- Timesheet visibility: admins without `view_all_timesheets` only see timesheets they created unless a super admin shares them; super admins can see all timesheets.
 
 ## Routes
 - /auth
@@ -113,6 +115,7 @@
 - Settings: Settings.
 - Nav items are visible but disabled when the user lacks permissions; tooltips explain required access.
 - Gating: Employees/Vendors/Projects/Timesheets/Payroll/Payroll Reports require view_payroll; Payroll actions (create checks, unpay, retries) require modify_payroll; Time Exceptions + Time Entry Report require view_time_reports or view_payroll; Shipments + Shipment Verification Report require see_shipments; Settings requires view_payroll; Access-control panel inside Settings requires is_super_admin.
+- Timesheets list is filtered to the current admin unless `view_all_timesheets` is granted or the timesheet is shared by a super admin.
 - Admin Home is available to any desktop_access user, but cards/actions hide or disable if the user lacks the underlying permission.
 
 ### QuickBooks Connection
@@ -172,7 +175,7 @@
 - Identity: name, nickname, email, active/inactive.
 - Pay: hourly rate (requires modify_pay_rates), name_on_checks (syncs to QBO), payee linkage (employee/vendor QBO ID; vendor ID wins when both exist).
 - Access: worker_timekeeping, desktop_access, kiosk_admin_access (super admin only).
-- Permissions: see_shipments, modify_time, view_time_reports, view_payroll, modify_pay_rates (super admin only).
+- Permissions: see_shipments, modify_time, view_time_reports, view_all_timesheets, view_payroll, modify_pay_rates (super admin only).
 - Kiosk settings: PIN set/reset (override required if already set), language default (en/es/ht).
 - QuickBooks: employee/vendor QBO IDs, needs_qbo_sync flag, link actions.
 - Audit: show last_updated timestamps for name_on_checks sync and rate changes.

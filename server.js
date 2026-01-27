@@ -2292,10 +2292,11 @@ app.post('/api/auth/bootstrap', bootstrapRateLimiter, async (req, res) => {
           see_shipments,
           modify_time,
           view_time_reports,
+          view_all_timesheets,
           view_payroll,
           modify_payroll,
           modify_pay_rates
-        ) VALUES (?, 1, 1, 1, 1, 1, 1)
+        ) VALUES (?, 1, 1, 1, 1, 1, 1, 1)
       `,
       [employeeId]
     );
@@ -2721,6 +2722,62 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Change password error:', err);
     return res.status(500).json({ error: 'Failed to update password.' });
+  }
+});
+
+app.post('/api/auth/change-email', requireAuth, async (req, res) => {
+  const { current_password, new_email } = req.body || {};
+
+  if (!current_password || !new_email) {
+    return res
+      .status(400)
+      .json({ error: 'Current password and new email are required.' });
+  }
+
+  const normEmail = normalizeEmail(new_email);
+  if (!normEmail) {
+    return res.status(400).json({ error: 'Email is required.' });
+  }
+
+  try {
+    const status = await requireActiveDesktopSession(req);
+    if (!status.ok) {
+      if (req.session) {
+        req.session.destroy(() => {});
+      }
+      return res.status(status.status || 403).json({ error: status.error || 'Access denied.' });
+    }
+
+    const userId = req.session.userId;
+    const user = await dbGet('SELECT id, email, password_hash FROM users WHERE id = ?', [
+      userId
+    ]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    const matches = await bcrypt.compare(current_password, user.password_hash);
+    if (!matches) {
+      return res.status(401).json({ error: 'Current password is incorrect.' });
+    }
+
+    if (normalizeEmail(user.email) === normEmail) {
+      return res.json({ ok: true, email: user.email });
+    }
+
+    const existing = await dbGet(
+      'SELECT id FROM users WHERE LOWER(email) = LOWER(?) AND id <> ?',
+      [normEmail, userId]
+    );
+    if (existing) {
+      return res.status(409).json({ error: 'Email already in use.' });
+    }
+
+    await dbRun('UPDATE users SET email = ? WHERE id = ?', [normEmail, userId]);
+    return res.json({ ok: true, email: normEmail });
+  } catch (err) {
+    console.error('Change email error:', err);
+    return res.status(500).json({ error: 'Failed to update email.' });
   }
 });
 
@@ -5335,6 +5392,7 @@ app.get('/api/employees', requireViewPayroll, (req, res) => {
       p.see_shipments,
       p.modify_time,
       p.view_time_reports,
+      p.view_all_timesheets,
       p.view_payroll,
       p.modify_payroll,
       p.modify_pay_rates
@@ -5380,6 +5438,7 @@ app.get('/api/kiosk/employees', async (req, res) => {
       p.see_shipments,
       p.modify_time,
       p.view_time_reports,
+      p.view_all_timesheets,
       p.view_payroll,
       p.modify_pay_rates
     FROM employees
@@ -5539,10 +5598,11 @@ app.post('/api/kiosk/employees', wrapUpload(uploadIdDocument.single('id_document
           see_shipments,
           modify_time,
           view_time_reports,
+          view_all_timesheets,
           view_payroll,
           modify_payroll,
           modify_pay_rates
-        ) VALUES (?, 0, 0, 0, 0, 0, 0)
+        ) VALUES (?, 0, 0, 0, 0, 0, 0, 0)
         ON CONFLICT(employee_id) DO NOTHING
       `,
       [employeeId]
@@ -5642,6 +5702,7 @@ function normalizeTemplatePerms(raw) {
     see_shipments: input.see_shipments === true || input.see_shipments === 1 || input.see_shipments === '1' || input.see_shipments === 'true',
     modify_time: input.modify_time === true || input.modify_time === 1 || input.modify_time === '1' || input.modify_time === 'true',
     view_time_reports: input.view_time_reports === true || input.view_time_reports === 1 || input.view_time_reports === '1' || input.view_time_reports === 'true',
+    view_all_timesheets: input.view_all_timesheets === true || input.view_all_timesheets === 1 || input.view_all_timesheets === '1' || input.view_all_timesheets === 'true',
     view_payroll: input.view_payroll === true || input.view_payroll === 1 || input.view_payroll === '1' || input.view_payroll === 'true',
     modify_payroll: input.modify_payroll === true || input.modify_payroll === 1 || input.modify_payroll === '1' || input.modify_payroll === 'true',
     modify_pay_rates: input.modify_pay_rates === true || input.modify_pay_rates === 1 || input.modify_pay_rates === '1' || input.modify_pay_rates === 'true'
@@ -5873,6 +5934,7 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
       hasField('see_shipments') ||
       hasField('modify_time') ||
       hasField('view_time_reports') ||
+      hasField('view_all_timesheets') ||
       hasField('view_payroll') ||
       hasField('modify_payroll') ||
       hasField('modify_pay_rates');
@@ -5916,6 +5978,7 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
         see_shipments: toFlag(body.see_shipments),
         modify_time: toFlag(body.modify_time),
         view_time_reports: toFlag(body.view_time_reports),
+        view_all_timesheets: toFlag(body.view_all_timesheets),
         view_payroll: toFlag(body.view_payroll),
         modify_payroll: toFlag(body.modify_payroll),
         modify_pay_rates: toFlag(body.modify_pay_rates)
@@ -6024,25 +6087,27 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
       await dbRun(
         `
           INSERT INTO employee_permissions (
-            employee_id,
-            see_shipments,
-            modify_time,
-            view_time_reports,
-            view_payroll,
-            modify_payroll,
-            modify_pay_rates
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          employeeId,
-          permPayload ? permPayload.see_shipments : 0,
-          permPayload ? permPayload.modify_time : 0,
-          permPayload ? permPayload.view_time_reports : 0,
-          permPayload ? (permPayload.view_payroll || permPayload.modify_payroll ? 1 : 0) : 0,
-          permPayload ? permPayload.modify_payroll : 0,
-          permPayload ? permPayload.modify_pay_rates : 0
-        ]
-      );
+          employee_id,
+          see_shipments,
+          modify_time,
+          view_time_reports,
+          view_all_timesheets,
+          view_payroll,
+          modify_payroll,
+          modify_pay_rates
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        employeeId,
+        permPayload ? permPayload.see_shipments : 0,
+        permPayload ? permPayload.modify_time : 0,
+        permPayload ? permPayload.view_time_reports : 0,
+        permPayload ? permPayload.view_all_timesheets : 0,
+        permPayload ? (permPayload.view_payroll || permPayload.modify_payroll ? 1 : 0) : 0,
+        permPayload ? permPayload.modify_payroll : 0,
+        permPayload ? permPayload.modify_pay_rates : 0
+      ]
+    );
 
       return res.json({ ok: true, id: employeeId, needs_qbo_sync: needsQboSync });
     }
@@ -6201,14 +6266,16 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
             see_shipments,
             modify_time,
             view_time_reports,
+            view_all_timesheets,
             view_payroll,
             modify_payroll,
             modify_pay_rates
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(employee_id) DO UPDATE SET
             see_shipments = excluded.see_shipments,
             modify_time = excluded.modify_time,
             view_time_reports = excluded.view_time_reports,
+            view_all_timesheets = excluded.view_all_timesheets,
             view_payroll = excluded.view_payroll,
             modify_payroll = excluded.modify_payroll,
             modify_pay_rates = excluded.modify_pay_rates
@@ -6218,6 +6285,7 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
           normalizedPerms.see_shipments,
           normalizedPerms.modify_time,
           normalizedPerms.view_time_reports,
+          normalizedPerms.view_all_timesheets,
           normalizedPerms.view_payroll,
           normalizedPerms.modify_payroll,
           normalizedPerms.modify_pay_rates
@@ -11492,6 +11560,25 @@ app.get('/api/kiosks/:id/open-punches', async (req, res) => {
 
   const orgTimezone = await getOrgTimezone(adminCtx.orgId);
   const today = getTodayIsoDate(orgTimezone);
+  const perms = await getAdminAccessPerms({
+    employeeId: adminCtx.adminId,
+    orgId: adminCtx.orgId
+  });
+  const isSuperAdmin = await isEmployeeSuperAdmin({
+    employeeId: adminCtx.adminId,
+    orgId: adminCtx.orgId
+  });
+  const canViewAll = canViewAllTimesheets({ perms, isSuperAdmin });
+  const visibilityFilter = canViewAll
+    ? ''
+    : `
+      AND (
+        tp.kiosk_session_id IS NULL
+        OR ks.shared_with_admins = 1
+        OR ks.created_by_employee_id = ?
+        OR ks.created_by_employee_id IS NULL
+      )
+    `;
   const sql = `
     SELECT
       tp.id,
@@ -11503,16 +11590,23 @@ app.get('/api/kiosks/:id/open-punches', async (req, res) => {
       tp.clock_in_ts,
       tp.clock_out_ts
     FROM time_punches tp
+    LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
     LEFT JOIN employees e ON tp.employee_id = e.id
     LEFT JOIN projects p ON tp.project_id = p.id
     WHERE tp.org_id = ?
       AND tp.clock_out_ts IS NULL
       AND tp.clock_in_local_date = ?
       AND tp.device_id = ?
+      ${visibilityFilter}
     ORDER BY tp.clock_in_ts ASC
   `;
 
-  db.all(sql, [adminCtx.orgId, today, kioskRow.device_id], (err2, rows) => {
+  const params = [adminCtx.orgId, today, kioskRow.device_id];
+  if (!canViewAll) {
+    params.push(adminCtx.adminId);
+  }
+
+  db.all(sql, params, (err2, rows) => {
     if (err2) return res.status(500).json({ error: err2.message });
     res.json(rows || []);
   });
@@ -11555,6 +11649,7 @@ app.get('/api/kiosks/:id/sessions', async (req, res) => {
         ks.date,
         ks.created_at,
         ks.created_by_employee_id,
+        ks.shared_with_admins,
         ea.name AS created_by_name,
         p.name AS project_name,
         p.customer_name,
@@ -11622,7 +11717,35 @@ app.get('/api/kiosks/:id/sessions', async (req, res) => {
 
     db.all(sql, [adminCtx.orgId, kioskId, date], (err2, rows) => {
       if (err2) return res.status(500).json({ error: err2.message });
-      res.json(rows || []);
+      const list = rows || [];
+      const applyVisibilityFilter = async () => {
+        const perms = await getAdminAccessPerms({
+          employeeId: adminCtx.adminId,
+          orgId: adminCtx.orgId
+        });
+        const isSuperAdmin = await isEmployeeSuperAdmin({
+          employeeId: adminCtx.adminId,
+          orgId: adminCtx.orgId
+        });
+        const canViewAll = canViewAllTimesheets({ perms, isSuperAdmin });
+        if (canViewAll) {
+          return list;
+        }
+        return list.filter(session =>
+          isTimesheetVisible(session, {
+            adminId: adminCtx.adminId,
+            perms,
+            isSuperAdmin
+          })
+        );
+      };
+
+      applyVisibilityFilter()
+        .then(filtered => res.json(filtered))
+        .catch(err => {
+          console.error('Error filtering kiosk sessions:', err);
+          res.status(500).json({ error: 'Failed to load timesheets.' });
+        });
     });
 });
 
@@ -11917,7 +12040,7 @@ app.post('/api/kiosks/:id/sessions', async (req, res) => {
            employee_name_snapshot,
            project_name_snapshot)
         VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           (SELECT name FROM employees WHERE id = ? AND org_id = ?),
           (SELECT name FROM projects  WHERE id = ? AND org_id = ?)
         )
@@ -12161,9 +12284,75 @@ app.post('/api/kiosks/:id/active-session', async (req, res) => {
   );
 });
 
+async function isEmployeeSuperAdmin({ employeeId, orgId }) {
+  if (!employeeId || !orgId) return false;
+  const row = await dbGet(
+    `
+      SELECT is_super_admin, login_enabled
+      FROM user_orgs
+      WHERE org_id = ? AND employee_id = ?
+      LIMIT 1
+    `,
+    [orgId, employeeId]
+  );
+  return !!(row && isTruthyFlag(row.is_super_admin) && isTruthyFlag(row.login_enabled));
+}
+
+async function isSessionSuperAdmin(req, orgId) {
+  if (!req || !req.session || !orgId) return false;
+  if (isTruthyFlag(req.session.isSuperAdmin)) return true;
+  const userId = req.session.userId;
+  if (!userId) return false;
+  const row = await dbGet(
+    `
+      SELECT is_super_admin, login_enabled
+      FROM user_orgs
+      WHERE user_id = ? AND org_id = ?
+      LIMIT 1
+    `,
+    [userId, orgId]
+  );
+  return !!(row && isTruthyFlag(row.is_super_admin) && isTruthyFlag(row.login_enabled));
+}
+
+function canViewAllTimesheets({ perms, isSuperAdmin }) {
+  return (
+    !!isSuperAdmin ||
+    !!(perms && isTruthyFlag(perms.view_all_timesheets))
+  );
+}
+
+function isTimesheetVisible(session, { adminId, perms, isSuperAdmin }) {
+  if (!session) return false;
+  if (canViewAllTimesheets({ perms, isSuperAdmin })) return true;
+  if (isTruthyFlag(session.shared_with_admins)) return true;
+  if (session.created_by_employee_id == null) return true; // legacy sessions without creator
+  if (adminId && Number(session.created_by_employee_id) === Number(adminId)) return true;
+  return false;
+}
+
+async function resolveTimesheetAccess(req) {
+  const status = await requireActiveDesktopSession(req);
+  if (!status.ok) {
+    return { ok: false, status: status.status || 403, error: status.error || 'Org access denied.' };
+  }
+  const orgId = status.orgId;
+  const employeeId = status.employeeId;
+  const perms = await getAdminAccessPerms({ employeeId, orgId });
+  const isSuperAdmin = await isSessionSuperAdmin(req, orgId);
+  if (!isSuperAdmin && !perms.view_payroll) {
+    return { ok: false, status: 403, error: 'Admin privileges required.' };
+  }
+  return { ok: true, orgId, employeeId, perms, isSuperAdmin };
+}
+
 // List all sessions for today across kiosks (admin console)
-app.get('/api/kiosk-sessions/today', requireViewPayroll, async (req, res) => {
-  const orgId = req.session && req.session.orgId;
+app.get('/api/kiosk-sessions/today', async (req, res) => {
+  const access = await resolveTimesheetAccess(req);
+  if (!access.ok) {
+    return res.status(access.status || 403).json({ error: access.error || 'Not authorized' });
+  }
+  const orgId = access.orgId;
   const orgTimezone = await getOrgTimezone(orgId);
   const date = getTodayIsoDate(orgTimezone);
 
@@ -12175,14 +12364,18 @@ app.get('/api/kiosk-sessions/today', requireViewPayroll, async (req, res) => {
       ks.device_id,
       ks.date,
       ks.created_at,
+      ks.created_by_employee_id,
+      ks.shared_with_admins,
       k.name AS kiosk_name,
       k.location AS kiosk_location,
       k.device_id AS kiosk_device_id,
       p.name AS project_name,
-      p.customer_name
+      p.customer_name,
+      ea.name AS started_by_name
     FROM kiosk_sessions ks
     LEFT JOIN kiosks k ON k.id = ks.kiosk_id
     LEFT JOIN projects p ON p.id = ks.project_id
+    LEFT JOIN employees ea ON ea.id = ks.created_by_employee_id
     WHERE ks.org_id = ?
       AND ks.date = ?
     ORDER BY k.name, ks.created_at
@@ -12191,6 +12384,19 @@ app.get('/api/kiosk-sessions/today', requireViewPayroll, async (req, res) => {
   db.all(sessionsSql, [orgId, date], (err, sessions) => {
     if (err) return res.status(500).json({ error: err.message });
     const list = sessions || [];
+    const canViewAll = canViewAllTimesheets({
+      perms: access.perms,
+      isSuperAdmin: access.isSuperAdmin
+    });
+    const filtered = canViewAll
+      ? list
+      : list.filter(session =>
+          isTimesheetVisible(session, {
+            adminId: access.employeeId,
+            perms: access.perms,
+            isSuperAdmin: access.isSuperAdmin
+          })
+        );
 
     // Grab all open punches for today and attach to matching sessions
       const punchesSql = `
@@ -12213,7 +12419,7 @@ app.get('/api/kiosk-sessions/today', requireViewPayroll, async (req, res) => {
     db.all(punchesSql, [orgId, date], (err2, punches) => {
       if (err2) return res.status(500).json({ error: err2.message });
       const byKey = new Map();
-      list.forEach(s => {
+      filtered.forEach(s => {
         const devKey = `dev:${s.device_id || ''}|${s.project_id || ''}`;
         byKey.set(devKey, s);
         if (s.kiosk_id) {
@@ -12232,9 +12438,43 @@ app.get('/api/kiosk-sessions/today', requireViewPayroll, async (req, res) => {
         }
       });
 
-      return res.json(list);
+      return res.json(filtered);
     });
   });
+});
+
+// Super admin can share/unshare a timesheet with other admins
+app.post('/api/kiosk-sessions/:id/share', requireSuperAdmin, async (req, res) => {
+  const sessionId = Number(req.params.id);
+  const orgId = req.session && req.session.orgId;
+  if (!sessionId) {
+    return res.status(400).json({ error: 'Invalid timesheet id.' });
+  }
+  if (!orgId) {
+    return res.status(403).json({ error: 'Org access denied.' });
+  }
+
+  const raw = req.body && req.body.shared_with_admins;
+  const shared =
+    raw === true || raw === 1 || raw === '1' || raw === 'true';
+
+  try {
+    const existing = await dbGet(
+      'SELECT id FROM kiosk_sessions WHERE id = ? AND org_id = ? LIMIT 1',
+      [sessionId, orgId]
+    );
+    if (!existing) {
+      return res.status(404).json({ error: 'Timesheet not found.' });
+    }
+    await dbRun(
+      'UPDATE kiosk_sessions SET shared_with_admins = ? WHERE id = ? AND org_id = ?',
+      [shared ? 1 : 0, sessionId, orgId]
+    );
+    return res.json({ ok: true, shared_with_admins: shared ? 1 : 0 });
+  } catch (err) {
+    console.error('Error updating timesheet sharing:', err);
+    return res.status(500).json({ error: 'Failed to update timesheet sharing.' });
+  }
 });
 
 
@@ -15617,6 +15857,82 @@ app.post(
   }
 );
 
+// Update document metadata (type/label) for a shipment
+app.put('/api/shipments/:shipmentId/documents/:docId', async (req, res) => {
+  try {
+    const shipmentId = Number(req.params.shipmentId);
+    const docId = Number(req.params.docId);
+
+    if (!shipmentId || !docId) {
+      return res.status(400).json({ error: 'Invalid shipment or document id.' });
+    }
+
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
+    }
+
+    const doc = await dbGet(
+      `
+        SELECT id, shipment_id, title, category, doc_type, doc_label
+        FROM shipment_documents
+        WHERE id = ? AND shipment_id = ? AND org_id = ?
+      `,
+      [docId, shipmentId, access.orgId]
+    );
+
+    if (!doc) {
+      return res.status(404).json({ error: 'Document not found.' });
+    }
+
+    const canViewPayroll = !!(access.perms && access.perms.view_payroll);
+
+    const payload = req.body || {};
+    const hasType = Object.prototype.hasOwnProperty.call(payload, 'doc_type');
+    const hasLabel = Object.prototype.hasOwnProperty.call(payload, 'doc_label');
+    const nextType = hasType
+      ? (typeof payload.doc_type === 'string' && payload.doc_type.trim()
+          ? payload.doc_type.trim()
+          : null)
+      : doc.doc_type;
+    const nextLabel = hasLabel
+      ? (typeof payload.doc_label === 'string' && payload.doc_label.trim()
+          ? payload.doc_label.trim()
+          : null)
+      : (hasType ? nextType : doc.doc_label);
+
+    const nextDoc = { ...doc, doc_type: nextType, doc_label: nextLabel };
+    if (!canViewPayroll && isPaymentDoc(nextDoc)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    await dbRun(
+      `
+        UPDATE shipment_documents
+        SET doc_type = ?, doc_label = ?
+        WHERE id = ? AND shipment_id = ? AND org_id = ?
+      `,
+      [nextType, nextLabel, docId, shipmentId, access.orgId]
+    );
+
+    const downloadUrl = `/api/shipments/documents/${doc.id}/download`;
+    res.json({
+      document: {
+        ...doc,
+        doc_type: nextType,
+        doc_label: nextLabel,
+        file_path: downloadUrl,
+        url: downloadUrl
+      }
+    });
+  } catch (err) {
+    console.error('Error updating shipment document:', err);
+    res.status(500).json({ error: 'Error updating shipment document.' });
+  }
+});
+
 // Delete a document for a shipment
 app.delete(
   '/api/shipments/:shipmentId/documents/:docId',
@@ -15830,6 +16146,71 @@ app.post('/api/shipments/:id/storage', async (req, res) => {
   } catch (err) {
     console.error('Error updating shipment storage from kiosk:', err);
     res.status(500).json({ error: 'Failed to update storage/pickup.' });
+  }
+});
+
+// Update shipment notes (kiosk-friendly)
+app.post('/api/shipments/:id/notes', async (req, res) => {
+  try {
+    const shipmentId = Number(req.params.id);
+    if (!shipmentId) {
+      return res.status(400).json({ error: 'Invalid shipment id.' });
+    }
+
+    const hasNotes = Object.prototype.hasOwnProperty.call(req.body || {}, 'notes');
+    if (!hasNotes) {
+      return res.status(400).json({ error: 'Notes are required.' });
+    }
+
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
+    }
+
+    const normalizeText = (val) => {
+      if (val === undefined || val === null) return null;
+      const s = String(val).trim();
+      return s === '' ? null : s;
+    };
+
+    const nextNotes = normalizeText(req.body.notes);
+
+    const existing = await dbGet(
+      'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+      [shipmentId, access.orgId]
+    );
+    if (!existing) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
+
+    await dbRun(
+      `
+        UPDATE shipments
+        SET notes = ?,
+            updated_at = datetime('now')
+        WHERE id = ? AND org_id = ?
+      `,
+      [nextNotes, shipmentId, access.orgId]
+    );
+
+    const row = await dbGet(
+      `SELECT s.*,
+        COALESCE(s.vendor_name, v.name) AS vendor_name,
+        COALESCE(s.project_name_snapshot, p.name) AS project_name,
+        p.customer_name
+       FROM shipments s
+       LEFT JOIN vendors  v ON v.id = s.vendor_id AND v.org_id = s.org_id
+       LEFT JOIN projects p ON p.id = s.project_id AND p.org_id = s.org_id
+       WHERE s.id = ? AND s.org_id = ?`,
+      [shipmentId, access.orgId]
+    );
+
+    res.json({ shipment: row });
+  } catch (err) {
+    console.error('Error updating shipment notes from kiosk:', err);
+    res.status(500).json({ error: 'Failed to update shipment notes.' });
   }
 });
 

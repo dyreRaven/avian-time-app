@@ -88,6 +88,10 @@
   <img src="/icons/notifications.svg" class="nav-icon" alt="" aria-hidden="true" />
   <span>Notifications</span>
 </button>
+<button class="nav-item" data-section="my-account">
+  <img src="/icons/employee.svg" class="nav-icon" alt="" aria-hidden="true" />
+  <span>My Account</span>
+</button>
 <button class="nav-item" data-section="settings">
   <img src="/icons/settings.svg" class="nav-icon" alt="" aria-hidden="true" />
   <span>Settings</span>
@@ -798,6 +802,76 @@
           </div>
         </section>
 
+        <!-- MY ACCOUNT -->
+        <section id="section-my-account" class="section">
+          <div class="card">
+            <div class="card-header">
+              <h1 class="report-title">My Account</h1>
+              <div class="card-header-actions settings-actions">
+                <button type="button" class="btn secondary logout-btn">Logout</button>
+                <span id="account-status" class="message"></span>
+              </div>
+            </div>
+
+            <div class="card-body settings-grid">
+              <div class="card settings-card">
+                <div class="card-header">
+                  <h2>Login Email</h2>
+                </div>
+                <div class="card-body">
+                  <label>
+                    Current Email
+                    <input type="email" id="account-email-current" readonly />
+                  </label>
+                  <label>
+                    New Email
+                    <input type="email" id="account-email-new" autocomplete="email" />
+                  </label>
+                  <label>
+                    Confirm New Email
+                    <input type="email" id="account-email-confirm" autocomplete="email" />
+                  </label>
+                  <label>
+                    Current Password
+                    <input type="password" id="account-email-password" autocomplete="current-password" />
+                  </label>
+                  <p class="card-sub">Use your current password to confirm email updates.</p>
+                  <div class="settings-actions">
+                    <button type="button" id="account-email-save" class="btn secondary">Update Email</button>
+                    <span id="account-email-status" class="message"></span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card settings-card">
+                <div class="card-header">
+                  <h2>Change Password</h2>
+                </div>
+                <div class="card-body">
+                  <label>
+                    Current Password
+                    <input type="password" id="settings-password-current" />
+                  </label>
+                  <label>
+                    New Password
+                    <input type="password" id="settings-password-new" />
+                  </label>
+                  <label>
+                    Confirm New Password
+                    <input type="password" id="settings-password-confirm" />
+                  </label>
+                  <p class="card-sub">Update your login password. Leave fields blank to keep the current one.</p>
+                  <div class="settings-actions">
+                    <button type="button" id="settings-password-save" class="btn secondary">Update Password</button>
+                    <span id="settings-password-status" class="message"></span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
         <!-- SETTINGS -->
         <section id="section-settings" class="section">
           <div class="card">
@@ -824,31 +898,6 @@
                     Contact Email
                     <input type="email" id="settings-company-email" />
                   </label>
-                </div>
-              </div>
-
-              <div class="card settings-card">
-                <div class="card-header">
-                  <h2>Change Password</h2>
-                </div>
-                <div class="card-body">
-                  <label>
-                    Current Password
-                    <input type="password" id="settings-password-current" />
-                  </label>
-                  <label>
-                    New Password
-                    <input type="password" id="settings-password-new" />
-                  </label>
-                  <label>
-                    Confirm New Password
-                    <input type="password" id="settings-password-confirm" />
-                  </label>
-                  <p class="card-sub">Update your login password. Leave fields blank to keep the current one.</p>
-                  <div class="settings-actions">
-                    <button type="button" id="settings-password-save" class="btn secondary">Update Password</button>
-                    <span id="settings-password-status" class="message"></span>
-                  </div>
                 </div>
               </div>
 
@@ -992,6 +1041,10 @@
                         View time reports
                       </label>
                       <label class="checkbox-inline">
+                        <input type="checkbox" id="settings-template-perm-view-all-timesheets" />
+                        View all timesheets
+                      </label>
+                      <label class="checkbox-inline">
                         <input type="checkbox" id="settings-template-perm-view-payroll" />
                         View payroll info
                       </label>
@@ -1045,13 +1098,14 @@
                         <th>See shipments</th>
                         <th>Modify/approve/reject time</th>
                         <th>View time reports</th>
+                        <th>View all timesheets</th>
                         <th>View payroll info</th>
                         <th>Modify payroll</th>
                         <th>Modify pay rates</th>
                       </tr>
                     </thead>
                     <tbody id="settings-access-body">
-                      <tr><td colspan="7">(loading admins…)</td></tr>
+                      <tr><td colspan="8">(loading admins…)</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -1416,7 +1470,7 @@
               <div>
                 <h2 id="session-heading">Today's Timesheets</h2>
                 <p class="card-sub">
-                  See every project timesheet on all kiosks and who is currently clocked in.
+                  View timesheets you have access to; super admins can share timesheets across admins.
                 </p>
               </div>
               <div>
@@ -1433,11 +1487,12 @@
                     <th class="right">Workers clocked in</th>
                     <th>Started</th>
                     <th>Ended</th>
+                    <th class="center">Shared</th>
                   </tr>
                 </thead>
                 <tbody id="session-table-body">
                   <tr>
-                    <td colspan="5">(loading timesheets…)</td>
+                    <td colspan="6">(loading timesheets…)</td>
                   </tr>
                 </tbody>
               </table>

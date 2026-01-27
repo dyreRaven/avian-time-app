@@ -2289,6 +2289,12 @@ if (connectBtn) {
   };
   const passwordSaveBtn = document.getElementById('settings-password-save');
   const passwordStatus = document.getElementById('settings-password-status');
+  const accountEmailCurrent = document.getElementById('account-email-current');
+  const accountEmailNew = document.getElementById('account-email-new');
+  const accountEmailConfirm = document.getElementById('account-email-confirm');
+  const accountEmailPassword = document.getElementById('account-email-password');
+  const accountEmailSave = document.getElementById('account-email-save');
+  const accountEmailStatus = document.getElementById('account-email-status');
   const backupCard = document.getElementById('settings-backup-card');
   const backupBtn = document.getElementById('settings-backup-now');
   const backupStatus = document.getElementById('settings-backup-status');
@@ -2310,6 +2316,7 @@ if (connectBtn) {
   const templatePermSeeShipments = document.getElementById('settings-template-perm-see-shipments');
   const templatePermModifyTime = document.getElementById('settings-template-perm-modify-time');
   const templatePermViewTime = document.getElementById('settings-template-perm-view-time-reports');
+  const templatePermViewAllTimesheets = document.getElementById('settings-template-perm-view-all-timesheets');
   const templatePermViewPayroll = document.getElementById('settings-template-perm-view-payroll');
   const templatePermModifyPayroll = document.getElementById('settings-template-perm-modify-payroll');
   const templatePermModifyRates = document.getElementById('settings-template-perm-modify-pay-rates');
@@ -2324,6 +2331,12 @@ if (connectBtn) {
     if (!passwordStatus) return;
     passwordStatus.textContent = text || '';
     passwordStatus.style.color = color || '';
+  }
+
+  function setAccountEmailStatus(text, color) {
+    if (!accountEmailStatus) return;
+    accountEmailStatus.textContent = text || '';
+    accountEmailStatus.style.color = color || '';
   }
 
   function setBackupStatus(text, color) {
@@ -2381,6 +2394,7 @@ if (connectBtn) {
     if (templatePermSeeShipments) templatePermSeeShipments.checked = false;
     if (templatePermModifyTime) templatePermModifyTime.checked = false;
     if (templatePermViewTime) templatePermViewTime.checked = false;
+    if (templatePermViewAllTimesheets) templatePermViewAllTimesheets.checked = false;
     if (templatePermViewPayroll) templatePermViewPayroll.checked = false;
     if (templatePermModifyPayroll) templatePermModifyPayroll.checked = false;
     if (templatePermModifyRates) templatePermModifyRates.checked = false;
@@ -2405,6 +2419,7 @@ if (connectBtn) {
         see_shipments: !!templatePermSeeShipments?.checked,
         modify_time: !!templatePermModifyTime?.checked,
         view_time_reports: !!templatePermViewTime?.checked,
+        view_all_timesheets: !!templatePermViewAllTimesheets?.checked,
         view_payroll: !!templatePermViewPayroll?.checked,
         modify_payroll: !!templatePermModifyPayroll?.checked,
         modify_pay_rates: !!templatePermModifyRates?.checked
@@ -2462,6 +2477,7 @@ if (connectBtn) {
     if (templatePermSeeShipments) templatePermSeeShipments.checked = !!template.permissions?.see_shipments;
     if (templatePermModifyTime) templatePermModifyTime.checked = !!template.permissions?.modify_time;
     if (templatePermViewTime) templatePermViewTime.checked = !!template.permissions?.view_time_reports;
+    if (templatePermViewAllTimesheets) templatePermViewAllTimesheets.checked = !!template.permissions?.view_all_timesheets;
     if (templatePermViewPayroll) templatePermViewPayroll.checked = !!template.permissions?.view_payroll;
     if (templatePermModifyPayroll) templatePermModifyPayroll.checked = !!template.permissions?.modify_payroll;
     if (templatePermModifyRates) templatePermModifyRates.checked = !!template.permissions?.modify_pay_rates;
@@ -2743,12 +2759,19 @@ if (connectBtn) {
     if (passwordFields.confirm) passwordFields.confirm.value = '';
   }
 
+  function clearAccountEmailInputs() {
+    if (accountEmailNew) accountEmailNew.value = '';
+    if (accountEmailConfirm) accountEmailConfirm.value = '';
+    if (accountEmailPassword) accountEmailPassword.value = '';
+  }
+
   function deriveCurrentAdminAccess(perms = {}) {
     const fallbackModifyPayroll =
       typeof perms.modify_payroll === 'undefined'
         ? (perms.view_payroll === true || perms.view_payroll === 'true')
         : (perms.modify_payroll === true || perms.modify_payroll === 'true');
     return {
+      view_all_timesheets: perms.view_all_timesheets === true || perms.view_all_timesheets === 'true',
       modify_pay_rates: perms.modify_pay_rates === true || perms.modify_pay_rates === 'true',
       modify_payroll: fallbackModifyPayroll,
       view_payroll: perms.view_payroll === true || perms.view_payroll === 'true'
@@ -2984,14 +3007,14 @@ if (connectBtn) {
     const tbody = document.getElementById('settings-access-body');
     if (!tbody) return;
 
-    tbody.innerHTML = '<tr><td colspan="7">(loading admins…)</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8">(loading admins…)</td></tr>';
     try {
       const employees = await fetchJSON('/api/employees?status=active');
       const admins = (employees || []).filter(
         e => e.desktop_access || e.kiosk_admin_access
       );
       if (!admins.length) {
-        tbody.innerHTML = '<tr><td colspan="7">(no admins found)</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8">(no admins found)</td></tr>';
         return;
       }
 
@@ -3001,6 +3024,7 @@ if (connectBtn) {
           see_shipments: !!admin.see_shipments,
           modify_time: !!admin.modify_time,
           view_time_reports: !!admin.view_time_reports,
+          view_all_timesheets: !!admin.view_all_timesheets,
           view_payroll: !!admin.view_payroll,
           modify_payroll: !!admin.modify_payroll,
           modify_pay_rates: !!admin.modify_pay_rates
@@ -3013,6 +3037,7 @@ if (connectBtn) {
           <td class="center"><input type="checkbox" data-perm="see_shipments" ${perms.see_shipments ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="modify_time" ${perms.modify_time ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="view_time_reports" ${perms.view_time_reports ? 'checked' : ''}></td>
+          <td class="center"><input type="checkbox" data-perm="view_all_timesheets" ${perms.view_all_timesheets ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="view_payroll" ${perms.view_payroll ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="modify_payroll" ${canModifyPayroll ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="modify_pay_rates" ${perms.modify_pay_rates ? 'checked' : ''}></td>
@@ -3021,7 +3046,7 @@ if (connectBtn) {
       });
     } catch (err) {
       console.error('Error loading admins for access control', err);
-      tbody.innerHTML = '<tr><td colspan="7">(error loading admins)</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8">(error loading admins)</td></tr>';
     }
   }
 
@@ -3033,6 +3058,9 @@ if (connectBtn) {
           const meData = await meRes.json();
           window.CURRENT_EMPLOYEE = meData.employee || null;
           window.CURRENT_USER = meData.user || null;
+          if (accountEmailCurrent) {
+            accountEmailCurrent.value = meData?.user?.email || '';
+          }
           window.CURRENT_IS_SUPER_ADMIN = !!meData?.membership?.is_super_admin;
           window.CURRENT_ORG = meData.org || null;
           window.CURRENT_ORG_TIMEZONE = meData?.org?.timezone || null;
@@ -3041,6 +3069,9 @@ if (connectBtn) {
             ...(window.CURRENT_ACCESS_PERMS || {}),
             ...currentAccess
           };
+          if (typeof renderSessionsTable === 'function') {
+            renderSessionsTable();
+          }
           if (typeof applyTimeEntryApprovalAccess === 'function') {
             applyTimeEntryApprovalAccess();
           }
@@ -3111,6 +3142,7 @@ if (connectBtn) {
         see_shipments: row.querySelector('input[data-perm="see_shipments"]')?.checked || false,
         modify_time: row.querySelector('input[data-perm="modify_time"]')?.checked || false,
         view_time_reports: row.querySelector('input[data-perm="view_time_reports"]')?.checked || false,
+        view_all_timesheets: row.querySelector('input[data-perm="view_all_timesheets"]')?.checked || false,
         view_payroll: row.querySelector('input[data-perm="view_payroll"]')?.checked || false,
         modify_payroll: row.querySelector('input[data-perm="modify_payroll"]')?.checked || false,
         modify_pay_rates: row.querySelector('input[data-perm="modify_pay_rates"]')?.checked || false
@@ -3200,6 +3232,56 @@ if (connectBtn) {
     settingsSaveBtn.addEventListener('click', saveSettings);
   }
 
+  async function updateAccountEmail() {
+    if (!accountEmailSave) return;
+    const currentEmail = String(accountEmailCurrent?.value || '').trim();
+    const nextEmail = String(accountEmailNew?.value || '').trim();
+    const confirmEmail = String(accountEmailConfirm?.value || '').trim();
+    const currentPassword = String(accountEmailPassword?.value || '');
+
+    if (!nextEmail || !confirmEmail || !currentPassword) {
+      setAccountEmailStatus('Fill out email and password fields to update your email.', '#b45309');
+      return;
+    }
+    if (nextEmail !== confirmEmail) {
+      setAccountEmailStatus('New email and confirmation do not match.', 'crimson');
+      return;
+    }
+    if (currentEmail && nextEmail.toLowerCase() === currentEmail.toLowerCase()) {
+      setAccountEmailStatus('New email matches your current email.', '#b45309');
+      return;
+    }
+
+    const originalText = accountEmailSave.textContent || 'Update Email';
+    accountEmailSave.disabled = true;
+    accountEmailSave.textContent = 'Updating…';
+    setAccountEmailStatus('Updating email…', '');
+
+    try {
+      const res = await fetchJSON('/api/auth/change-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_email: nextEmail
+        })
+      });
+      const updatedEmail = res?.email || nextEmail;
+      if (accountEmailCurrent) accountEmailCurrent.value = updatedEmail;
+      if (window.CURRENT_USER) {
+        window.CURRENT_USER.email = updatedEmail;
+      }
+      setAccountEmailStatus('Email updated.', 'green');
+      clearAccountEmailInputs();
+    } catch (err) {
+      console.error('Email update error:', err);
+      setAccountEmailStatus(err.message || 'Failed to update email.', 'crimson');
+    } finally {
+      accountEmailSave.disabled = false;
+      accountEmailSave.textContent = originalText;
+    }
+  }
+
   async function changePassword() {
     if (!passwordSaveBtn) return;
     const current = passwordFields.current?.value || '';
@@ -3246,6 +3328,10 @@ if (connectBtn) {
 
   if (passwordSaveBtn) {
     passwordSaveBtn.addEventListener('click', changePassword);
+  }
+
+  if (accountEmailSave) {
+    accountEmailSave.addEventListener('click', updateAccountEmail);
   }
 
   async function runManualBackup() {

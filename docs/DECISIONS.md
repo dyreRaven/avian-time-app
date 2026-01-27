@@ -1,6 +1,8 @@
 # Decisions Log
 
+- 2026-01-27: Shipment payments UI tracks freight forwarder and customs paid only; vendor paid is removed from the app.
 - 2026-01-27: Brand green accent color is #0c816d.
+- 2026-01-27: Added view_all_timesheets permission; super admins can share specific timesheets with other admins.
 - 2026-01-24: Geofence enforcement is limited to kiosk clock-ins; timesheet creation checks the project geofence and flags session-level exceptions when outside; clock-out geofence checks are removed.
 - 2026-01-22: Accept sqlite3/node-gyp/tar audit findings as a build-time dependency-chain risk; keep sqlite3 for now, avoid npm install on production hosts when possible, and re-evaluate on upstream fixes or driver migration.
 - 2025-01-XX: Admin console access is only for designated admins.

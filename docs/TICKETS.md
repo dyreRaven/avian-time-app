@@ -192,6 +192,15 @@ This file tracks the issues discovered in smoke testing. Each ticket lists prior
   - Preflight blocks if any unresolved exceptions exist within the range (per spec).
 - Refs: quickbooks.js:1500, server.js:3679
 
+### T-042 Timesheet deletion requires empty entries
+- Priority: P2
+- Area: Timekeeping/Timesheets
+- Problem: Timesheets can be deleted even when they contain entries, risking loss of time data.
+- Status: Open
+- Acceptance criteria:
+  - Server blocks deletion when a timesheet has any entries.
+  - UI prevents deletion or surfaces a clear error when blocked.
+
 ### T-014 Auth hardening gaps
 - Priority: P2
 - Area: Auth/Security

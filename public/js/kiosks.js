@@ -50,7 +50,7 @@ function renderSessionsTable() {
   if (!tbody) return;
 
   if (!sessionsTableData.length) {
-    tbody.innerHTML = '<tr><td colspan="5">(no timesheets yet today)</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6">(no timesheets yet today)</td></tr>';
     return;
   }
 
@@ -64,6 +64,11 @@ function renderSessionsTable() {
     const adminLabel = session.started_by_name || session.foreman_name || '—';
     const started = formatAstTime(session.created_at);
     const ended = formatAstTime(session.ended_at);
+    const shared = !!session.shared_with_admins;
+    const isSuperAdmin = window.CURRENT_IS_SUPER_ADMIN === true;
+    const sharedCell = isSuperAdmin
+      ? `<td class="center"><input type="checkbox" class="session-share-toggle" data-session-share="${session.id}" ${shared ? 'checked' : ''}></td>`
+      : `<td class="center">${shared ? 'Shared' : '—'}</td>`;
 
     tr.innerHTML = `
       <td>${projLabel}</td>
@@ -71,9 +76,31 @@ function renderSessionsTable() {
       <td class="right">${workersCount}</td>
       <td>${started || '—'}</td>
       <td>${ended || '—'}</td>
+      ${sharedCell}
     `;
 
     tr.addEventListener('click', () => showSessionDetail(session, now));
+    if (isSuperAdmin) {
+      const toggle = tr.querySelector('.session-share-toggle');
+      if (toggle) {
+        toggle.addEventListener('click', e => e.stopPropagation());
+        toggle.addEventListener('change', async (e) => {
+          e.stopPropagation();
+          const checked = toggle.checked;
+          try {
+            await fetchJSON(`/api/kiosk-sessions/${session.id}/share`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ shared_with_admins: checked })
+            });
+            session.shared_with_admins = checked ? 1 : 0;
+          } catch (err) {
+            console.error('Error updating timesheet sharing', err);
+            toggle.checked = !checked;
+          }
+        });
+      }
+    }
     tbody.appendChild(tr);
   });
 }
@@ -121,7 +148,7 @@ function showSessionDetail(session, now = new Date()) {
 async function loadSessionsTable() {
   const tbody = document.getElementById('session-table-body');
   if (tbody) {
-    tbody.innerHTML = '<tr><td colspan="5">Loading timesheets…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6">Loading timesheets…</td></tr>';
   }
 
   try {
@@ -131,7 +158,7 @@ async function loadSessionsTable() {
   } catch (err) {
     console.error('Error loading timesheets:', err);
     if (tbody) {
-      tbody.innerHTML = '<tr><td colspan="5">Error loading timesheets.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6">Error loading timesheets.</td></tr>';
     }
   }
 }

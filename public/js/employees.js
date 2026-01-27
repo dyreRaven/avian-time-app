@@ -147,6 +147,7 @@ function applyTemplateToEditForm(template) {
   const permSeeShipments = document.getElementById('edit-employee-perm-see-shipments');
   const permModifyTime = document.getElementById('edit-employee-perm-modify-time');
   const permViewTime = document.getElementById('edit-employee-perm-view-time-reports');
+  const permViewAllTimesheets = document.getElementById('edit-employee-perm-view-all-timesheets');
   const permViewPayroll = document.getElementById('edit-employee-perm-view-payroll');
   const permModifyPayroll = document.getElementById('edit-employee-perm-modify-payroll');
   const permModifyRates = document.getElementById('edit-employee-perm-modify-pay-rates');
@@ -161,6 +162,7 @@ function applyTemplateToEditForm(template) {
   if (permSeeShipments) permSeeShipments.checked = !!template.permissions?.see_shipments;
   if (permModifyTime) permModifyTime.checked = !!template.permissions?.modify_time;
   if (permViewTime) permViewTime.checked = !!template.permissions?.view_time_reports;
+  if (permViewAllTimesheets) permViewAllTimesheets.checked = !!template.permissions?.view_all_timesheets;
   if (permViewPayroll) permViewPayroll.checked = !!template.permissions?.view_payroll;
   if (permModifyPayroll) permModifyPayroll.checked = !!template.permissions?.modify_payroll;
   if (permModifyRates) permModifyRates.checked = !!template.permissions?.modify_pay_rates;
@@ -655,6 +657,7 @@ function setEmployeeInputsReadOnly(isReadOnly) {
   const permSeeShipments = document.getElementById('edit-employee-perm-see-shipments');
   const permModifyTime = document.getElementById('edit-employee-perm-modify-time');
   const permViewTime = document.getElementById('edit-employee-perm-view-time-reports');
+  const permViewAllTimesheets = document.getElementById('edit-employee-perm-view-all-timesheets');
   const permViewPayroll = document.getElementById('edit-employee-perm-view-payroll');
   const permModifyPayroll = document.getElementById('edit-employee-perm-modify-payroll');
   const permModifyRates = document.getElementById('edit-employee-perm-modify-pay-rates');
@@ -706,6 +709,7 @@ function setEmployeeInputsReadOnly(isReadOnly) {
   if (permSeeShipments) permSeeShipments.disabled = permLocked;
   if (permModifyTime) permModifyTime.disabled = permLocked;
   if (permViewTime) permViewTime.disabled = permLocked;
+  if (permViewAllTimesheets) permViewAllTimesheets.disabled = permLocked;
   if (permViewPayroll) permViewPayroll.disabled = permLocked;
   if (permModifyPayroll) permModifyPayroll.disabled = permLocked;
   if (permModifyRates) permModifyRates.disabled = permLocked;
@@ -824,6 +828,7 @@ function openEmployeeModal(emp) {
   const permSeeShipments = document.getElementById('edit-employee-perm-see-shipments');
   const permModifyTime = document.getElementById('edit-employee-perm-modify-time');
   const permViewTime = document.getElementById('edit-employee-perm-view-time-reports');
+  const permViewAllTimesheets = document.getElementById('edit-employee-perm-view-all-timesheets');
   const permViewPayroll = document.getElementById('edit-employee-perm-view-payroll');
   const permModifyPayroll = document.getElementById('edit-employee-perm-modify-payroll');
   const permModifyRates = document.getElementById('edit-employee-perm-modify-pay-rates');
@@ -865,6 +870,7 @@ function openEmployeeModal(emp) {
   if (permSeeShipments) permSeeShipments.checked = !!emp.see_shipments;
   if (permModifyTime) permModifyTime.checked = !!emp.modify_time;
   if (permViewTime) permViewTime.checked = !!emp.view_time_reports;
+  if (permViewAllTimesheets) permViewAllTimesheets.checked = !!emp.view_all_timesheets;
   if (permViewPayroll) permViewPayroll.checked = !!emp.view_payroll;
   if (permModifyPayroll) permModifyPayroll.checked = !!emp.modify_payroll;
   if (permModifyRates) permModifyRates.checked = !!emp.modify_pay_rates;
@@ -920,6 +926,7 @@ async function saveEmployeeFromModal() {
   const permSeeShipments = document.getElementById('edit-employee-perm-see-shipments');
   const permModifyTime = document.getElementById('edit-employee-perm-modify-time');
   const permViewTime = document.getElementById('edit-employee-perm-view-time-reports');
+  const permViewAllTimesheets = document.getElementById('edit-employee-perm-view-all-timesheets');
   const permViewPayroll = document.getElementById('edit-employee-perm-view-payroll');
   const permModifyPayroll = document.getElementById('edit-employee-perm-modify-payroll');
   const permModifyRates = document.getElementById('edit-employee-perm-modify-pay-rates');
@@ -1011,6 +1018,7 @@ async function saveEmployeeFromModal() {
     payload.see_shipments = permSeeShipments && permSeeShipments.checked ? 1 : 0;
     payload.modify_time = permModifyTime && permModifyTime.checked ? 1 : 0;
     payload.view_time_reports = permViewTime && permViewTime.checked ? 1 : 0;
+    payload.view_all_timesheets = permViewAllTimesheets && permViewAllTimesheets.checked ? 1 : 0;
     payload.view_payroll = permViewPayroll && permViewPayroll.checked ? 1 : 0;
     payload.modify_payroll = permModifyPayroll && permModifyPayroll.checked ? 1 : 0;
     payload.modify_pay_rates = permModifyRates && permModifyRates.checked ? 1 : 0;

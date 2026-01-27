@@ -16,7 +16,7 @@
   name_on_checks_updated_at, name_on_checks_qbo_updated_at,
   id_document_type, id_document_path, id_document_uploaded_at, id_document_uploaded_by, created_at.
 - `employee_permissions`: employee_id, see_shipments, modify_time,
-  view_time_reports, view_payroll, modify_payroll, modify_pay_rates.
+  view_time_reports, view_all_timesheets, view_payroll, modify_payroll, modify_pay_rates.
 - `permission_templates`: id, org_id, name, role_title, access_json, permissions_json, created_at, updated_at.
 - `audit_log`: id, org_id, actor_user_id, actor_employee_id, action, entity_type,
   entity_id, before_json, after_json, note, created_at.
@@ -25,7 +25,7 @@
 - `kiosks`: id, org_id, name, location, device_id, device_secret, project_id,
   last_seen_at, created_at.
 - `kiosk_sessions` (timesheets): id, org_id, kiosk_id, device_id, project_id, date,
-  created_by_employee_id, geo_lat, geo_lng, geo_distance_m, geo_violation, created_at, ended_at.
+  created_by_employee_id, shared_with_admins, geo_lat, geo_lng, geo_distance_m, geo_violation, created_at, ended_at.
 - `kiosk_foreman_days`: id, org_id, kiosk_id, foreman_employee_id, date, set_by_employee_id, created_at.
 - `time_punches`: id, org_id, client_id, employee_id, project_id,
   clock_in_ts, clock_in_local_date, clock_out_ts, clock_out_local_date, clock_out_project_id,
