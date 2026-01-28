@@ -14,7 +14,9 @@
   language, employee_qbo_id, vendor_qbo_id, role_title, permission_template_id, worker_timekeeping,
   desktop_access, kiosk_admin_access, email, needs_qbo_sync,
   name_on_checks_updated_at, name_on_checks_qbo_updated_at,
-  id_document_type, id_document_path, id_document_uploaded_at, id_document_uploaded_by, created_at.
+  start_date, termination_date,
+  id_document_type, id_document_path, id_document_uploaded_at, id_document_uploaded_by,
+  employee_photo_path, employee_photo_uploaded_at, employee_photo_uploaded_by, created_at.
 - `employee_permissions`: employee_id, see_shipments, modify_time,
   view_time_reports, view_all_timesheets, view_payroll, modify_payroll, modify_pay_rates.
 - `permission_templates`: id, org_id, name, role_title, access_json, permissions_json, created_at, updated_at.

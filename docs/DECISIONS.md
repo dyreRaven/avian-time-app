@@ -68,7 +68,7 @@
 - 2025-01-XX: Shipment payment-related documents are hidden from users without view_payroll.
 - 2025-01-XX: Shipment comments can be queued offline for kiosk admins and synced on reconnect.
 - 2025-01-XX: Shipment comments are soft-deletable (inactive) with is_deleted metadata.
-- 2025-01-XX: Shipment notifications are per-admin with status/project/shipment filters, daily summary time, and reminders for selected statuses (repeat every N days; picked_up_by required for Cleared - Ready for Release).
+- 2025-01-XX: Shipment notifications are per-admin with status/project/shipment filters, daily summary time, and reminders for selected statuses (repeat every N days; picked_up_by required for Cleared - Ready for Pickup).
 - 2025-01-XX: In-app notifications are always on; push/email are opt-in per admin via notification_prefs.
 - 2025-01-XX: Time/payroll notification filters use explicit event_types with default selections for exceptions and payroll failures/due.
 - 2025-01-XX: Offline sync uses client_id idempotency keys and if_match_updated_at for conflict detection on queued updates.

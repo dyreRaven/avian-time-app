@@ -1789,7 +1789,8 @@
         <label>
           Status
           <select id="shipments-report-status">
-            <option value="">All statuses</option>
+            <option value="active">Active</option>
+            <option value="all">All statuses</option>
             <option>Pre-Order</option>
             <option>Ordered</option>
             <option>In Transit to Forwarder</option>
@@ -1797,9 +1798,8 @@
             <option>Sailed</option>
             <option>Arrived at Port</option>
             <option>Awaiting Clearance</option>
-            <option>Cleared - Ready for Release</option>
-            <option>Picked Up</option>
-            <option>Archived</option>
+            <option>Cleared - Ready for Pickup</option>
+            <option value="Picked Up">Picked Up/Archived</option>
           </select>
         </label>
 

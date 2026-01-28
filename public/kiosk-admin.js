@@ -24,8 +24,9 @@ let kaShipmentsLoading = false;
 let kaShipmentsReloadPending = false;
 let kaItemsFilterUnverifiedFirst = true;
 let kaItemsFilterTerm = '';
-let kaItemsStatusFilter = 'unverified';
+let kaItemsStatusFilter = 'all';
 let kaItemsActiveTab = 'items';
+let kaEmployeeFormVisible = false;
 const kaItemAutoSaveTimers = new Map();
 const kaSavedItemStatuses = new Map();
 const kaExpandedItems = new Set();
@@ -55,10 +56,11 @@ let kaNewSessionVisible = false;
 let kaFirstActiveSetShown = false;
 let kaClockInPhotoRequired = false;
 let kaTimesheetWorkersSheetState = { open: false, dragging: false, startY: 0, currentY: 0 };
+let kaEmployeeSheetState = { open: false, dragging: false, startY: 0, currentY: 0, employeeId: null };
 let kaDocViewObjectUrl = null;
 let kaDocViewCurrentUrl = null;
 
-const KA_VIEWS = ['timesheets', 'workers', 'shipments', 'time', 'account', 'settings'];
+const KA_VIEWS = ['timesheets', 'workers', 'employees', 'shipments', 'time', 'account', 'settings'];
 const KA_PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
 const KA_OFFLINE_QUEUE_KEY = 'avian_kiosk_offline_punches_v1';
 const KA_VERIFY_QUEUE_KEY = 'avian_kiosk_verify_queue_v1';
@@ -68,6 +70,11 @@ const KA_SHIPMENTS_CACHE_KEY = 'avian_kiosk_shipments_cache_v1';
 const KA_DOC_CACHE_NAME = 'avian_doc_cache_v1';
 const KA_ORG_TIMEZONE_KEY = 'avian_kiosk_org_timezone_v1';
 const KA_DEFAULT_TIMEZONE = 'America/Puerto_Rico';
+const KA_LANGUAGE_LABELS = {
+  en: 'English',
+  es: 'Spanish',
+  ht: 'Haitian Creole'
+};
 const KA_SHIPMENT_STATUSES = [
   'Pre-Order',
   'Ordered',
@@ -76,14 +83,14 @@ const KA_SHIPMENT_STATUSES = [
   'Sailed',
   'Arrived at Port',
   'Awaiting Clearance',
-  'Cleared - Ready for Release',
+  'Cleared - Ready for Pickup',
   'Picked Up',
   'Archived'
 ];
 const KA_NOTIFY_DEFAULT = {
   enabled: false, // legacy flag for shipments alerts
   shipments_enabled: false,
-  statuses: ['Cleared - Ready for Release'],
+  statuses: ['Cleared - Ready for Pickup'],
   project_ids: [],
   remind_every_days: 1,
   remind_time: '19:00',
@@ -1970,6 +1977,25 @@ function kaFmtCurrency(val) {
   return `$${num.toFixed(2)}`;
 }
 
+function kaBindExpandableSelect(select) {
+  if (!select || select.dataset.expandSelectBound) return;
+  const expand = () => {
+    const count = select.options ? select.options.length : 0;
+    if (count > 1) select.size = count;
+  };
+  const collapse = () => {
+    select.size = 1;
+  };
+  select.addEventListener('focus', expand);
+  select.addEventListener('blur', collapse);
+  select.addEventListener('change', () => {
+    collapse();
+    select.blur();
+  });
+  collapse();
+  select.dataset.expandSelectBound = '1';
+}
+
 function kaRenderShipmentsList(list) {
   const wrap = document.getElementById('ka-shipments-list');
   if (!wrap) return;
@@ -2125,9 +2151,17 @@ async function kaLoadShipments(opts = {}) {
   const params = kaShipmentAuthParams();
 
   const statusVal = statusSel ? statusSel.value : '';
-  if (statusVal && statusVal !== 'all') {
+  if (statusVal) {
     if (statusVal.startsWith('status:')) {
-      params.set('status', statusVal.slice('status:'.length));
+      const statusLabel = statusVal.slice('status:'.length);
+      params.set('status', statusLabel);
+      if (statusLabel === 'Picked Up') {
+        params.set('include_archived', '1');
+      }
+    } else if (statusVal === 'all') {
+      params.set('include_archived', '1');
+    } else if (statusVal === 'active') {
+      params.set('include_archived', '0');
     }
   }
 
@@ -2293,7 +2327,7 @@ async function kaReminderCheck(forceNow = false) {
   const matches = kaShipmentsMatchingNotify(kaNotifyPref);
 
   const outstanding = matches.filter(sh =>
-    (sh.status || '') === 'Cleared - Ready for Release' &&
+    (sh.status || '') === 'Cleared - Ready for Pickup' &&
     (!sh.picked_up_by || String(sh.picked_up_by).trim() === '')
   );
 
@@ -2331,14 +2365,14 @@ async function kaReminderCheck(forceNow = false) {
   const ok = await kaEnsureNotifyPermission();
   if (ok) {
     try {
-      new Notification('Ready for Release – Pickup Reminder', {
+      new Notification('Ready for Pickup – Pickup Reminder', {
         body: `${summary.join(', ')}${extra}`
       });
     } catch (err) {
       console.warn('Kiosk reminder notification failed:', err);
     }
   }
-  kaSetNotifyMsg('Reminder sent for ready-to-release shipments.', '#0f172a');
+  kaSetNotifyMsg('Reminder sent for ready-to-pickup shipments.', '#0f172a');
 
   due.forEach(sh => {
     kaReminderTimestamps[sh.id] = now;
@@ -3293,6 +3327,8 @@ function kaUpdateHeaderTitle(view = kaCurrentView) {
     title = 'Shipments – Ready to Pick Up';
   } else if (current === 'time') {
     title = 'Time Entries';
+  } else if (current === 'employees') {
+    title = 'Employees';
   } else if (current === 'account') {
     title = 'My Account';
   } else if (current === 'settings') {
@@ -4043,6 +4079,391 @@ function kaSyncLiveCountPill() {
   }
 }
 
+function kaSetEmployeeFormVisible(nextVisible, { skipScroll = false } = {}) {
+  const form = document.getElementById('ka-employee-add-form');
+  const toggleBtn = document.getElementById('ka-employee-add-toggle');
+  const statusEl = document.getElementById('ka-helper-status');
+  if (!form || !toggleBtn) return;
+  kaEmployeeFormVisible = !!nextVisible;
+  form.classList.toggle('hidden', !kaEmployeeFormVisible);
+  toggleBtn.textContent = kaEmployeeFormVisible ? 'Hide form' : 'Add employee';
+  toggleBtn.setAttribute('aria-expanded', String(kaEmployeeFormVisible));
+  if (statusEl && !kaEmployeeFormVisible) {
+    statusEl.textContent = '';
+    statusEl.className = 'ka-status';
+  }
+  if (kaEmployeeFormVisible && !skipScroll) {
+    form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function kaNormalizeEmployees(rows) {
+  return (rows || []).map(e => ({
+    ...e,
+    is_admin: !!e.kiosk_admin_access,
+    uses_timekeeping: e.worker_timekeeping !== undefined ? Number(e.worker_timekeeping) : 1
+  }));
+}
+
+function kaFindEmployeeById(id) {
+  if (!id) return null;
+  return (kaEmployees || []).find(e => Number(e.id) === Number(id)) || null;
+}
+
+function kaUpdateEmployeeRecord(id, updates = {}) {
+  const emp = kaFindEmployeeById(id);
+  if (!emp) return null;
+  Object.assign(emp, updates);
+  if (kaCurrentAdmin && Number(kaCurrentAdmin.id) === Number(id)) {
+    Object.assign(kaCurrentAdmin, updates);
+  }
+  return emp;
+}
+
+function kaEmployeeQboStatus(emp = {}) {
+  const hasQboId = !!(emp.employee_qbo_id || emp.vendor_qbo_id);
+  const needsSync = emp.needs_qbo_sync === 1 || emp.needs_qbo_sync === true;
+  if (!hasQboId && !needsSync) {
+    return { label: 'Not linked to QuickBooks', className: 'gray', shortLabel: 'QuickBooks not linked' };
+  }
+  if (needsSync) {
+    return {
+      label: hasQboId ? 'QuickBooks sync needed' : 'Needs QuickBooks linking',
+      className: 'orange',
+      shortLabel: 'QuickBooks pending'
+    };
+  }
+  return { label: 'Synced to QuickBooks', className: 'green', shortLabel: 'QuickBooks synced' };
+}
+
+function kaEmployeeDocTypeLabel(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'drivers_license') return "Driver's license";
+  if (v === 'passport') return 'Passport';
+  if (v === 'other') return 'Other';
+  return '';
+}
+
+function kaEmployeeDateLabel(value) {
+  const label = kaFmtDateLong(value);
+  return label || 'Not set';
+}
+
+function kaEmployeeAuthParams() {
+  const params = new URLSearchParams();
+  const adminId = kaAdminAuthId() || (kaStartEmployeeId ? Number(kaStartEmployeeId) : null);
+  if (adminId) params.set('admin_id', adminId);
+  const deviceSecret = kaGetDeviceSecret();
+  if (kaDeviceId && deviceSecret) {
+    params.set('device_id', kaDeviceId);
+    params.set('device_secret', deviceSecret);
+  }
+  return params;
+}
+
+function kaEmployeeAuthMeta() {
+  const adminId = kaAdminAuthId() || (kaStartEmployeeId ? Number(kaStartEmployeeId) : null);
+  return {
+    admin_id: adminId || null,
+    device_id: kaDeviceId || null,
+    device_secret: kaGetDeviceSecret() || null
+  };
+}
+
+function kaAppendEmployeeAuth(url) {
+  const params = kaEmployeeAuthParams();
+  if (!params.toString() || !url || url === '#') return url;
+  try {
+    const u = new URL(url, window.location.origin);
+    params.forEach((value, key) => {
+      if (!u.searchParams.get(key)) u.searchParams.set(key, value);
+    });
+    return u.pathname + u.search;
+  } catch {
+    return url;
+  }
+}
+
+function kaEmployeeDocUrl(employeeId, kind) {
+  if (!employeeId || !kind) return '#';
+  const base = `/api/kiosk/admin/employees/${encodeURIComponent(employeeId)}/${kind}`;
+  return kaAppendEmployeeAuth(base);
+}
+
+function kaEmployeeSheetElements() {
+  const sheet = document.getElementById('ka-employee-detail-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    handle: sheet.querySelector('[data-ka-employee-sheet-handle]'),
+    title: sheet.querySelector('#ka-employee-detail-title'),
+    sub: sheet.querySelector('#ka-employee-detail-sub'),
+    status: sheet.querySelector('#ka-employee-detail-status'),
+    qboTag: sheet.querySelector('#ka-employee-detail-qbo'),
+    startDate: sheet.querySelector('#ka-employee-detail-start'),
+    termDate: sheet.querySelector('#ka-employee-detail-term'),
+    language: sheet.querySelector('#ka-employee-detail-language'),
+    languageSave: sheet.querySelector('#ka-employee-detail-language-save'),
+    languageStatus: sheet.querySelector('#ka-employee-detail-language-status'),
+    nameChecks: sheet.querySelector('#ka-employee-detail-namechecks'),
+    nameChecksSave: sheet.querySelector('#ka-employee-detail-namechecks-save'),
+    nameChecksStatus: sheet.querySelector('#ka-employee-detail-namechecks-status'),
+    pinInput: sheet.querySelector('#ka-employee-detail-pin'),
+    pinConfirm: sheet.querySelector('#ka-employee-detail-pin-confirm'),
+    pinSave: sheet.querySelector('#ka-employee-detail-pin-save'),
+    pinStatus: sheet.querySelector('#ka-employee-detail-pin-status'),
+    photoImg: sheet.querySelector('#ka-employee-detail-photo-img'),
+    photoPlaceholder: sheet.querySelector('#ka-employee-detail-photo-placeholder'),
+    photoView: sheet.querySelector('#ka-employee-detail-photo-view'),
+    photoDelete: sheet.querySelector('#ka-employee-detail-photo-delete'),
+    photoDate: sheet.querySelector('#ka-employee-detail-photo-date'),
+    idMeta: sheet.querySelector('#ka-employee-detail-id-meta'),
+    idPlaceholder: sheet.querySelector('#ka-employee-detail-id-placeholder'),
+    idView: sheet.querySelector('#ka-employee-detail-id-view')
+  };
+}
+
+function kaPopulateEmployeeSheet(employee) {
+  const els = kaEmployeeSheetElements();
+  if (!els || !employee) return;
+  const displayName = employee.nickname || employee.name || 'Employee';
+  const secondaryName =
+    employee.nickname && employee.name && employee.nickname !== employee.name ? employee.name : '';
+  const qboStatus = kaEmployeeQboStatus(employee);
+
+  if (els.title) els.title.textContent = displayName;
+  if (els.sub) {
+    const subParts = [];
+    if (secondaryName) subParts.push(secondaryName);
+    subParts.push(employee.active === 0 ? 'Inactive' : 'Active');
+    if (qboStatus.shortLabel) subParts.push(qboStatus.shortLabel);
+    els.sub.textContent = subParts.filter(Boolean).join(' • ');
+  }
+
+  if (els.status) kaSetInlineStatus(els.status, '');
+  if (els.qboTag) {
+    els.qboTag.textContent = qboStatus.label;
+    els.qboTag.className = `ka-tag ${qboStatus.className || 'gray'}`;
+  }
+  if (els.startDate) els.startDate.textContent = kaEmployeeDateLabel(employee.start_date);
+  if (els.termDate) els.termDate.textContent = kaEmployeeDateLabel(employee.termination_date);
+
+  if (els.language) {
+    const lang = (employee.language || 'en').toString().toLowerCase();
+    els.language.value = KA_LANGUAGE_LABELS[lang] ? lang : 'en';
+  }
+  if (els.languageStatus) kaSetInlineStatus(els.languageStatus, '');
+  if (els.nameChecks) {
+    els.nameChecks.value = employee.name_on_checks || employee.name || '';
+  }
+  if (els.nameChecksStatus) kaSetInlineStatus(els.nameChecksStatus, '');
+  if (els.pinInput) els.pinInput.value = '';
+  if (els.pinConfirm) els.pinConfirm.value = '';
+  if (els.pinStatus) kaSetInlineStatus(els.pinStatus, '');
+
+  const photoUrl = employee.employee_photo_uploaded_at
+    ? kaEmployeeDocUrl(employee.id, 'photo')
+    : '';
+  if (els.photoImg) {
+    if (photoUrl) {
+      els.photoImg.src = photoUrl;
+      els.photoImg.classList.remove('hidden');
+      els.photoImg.alt = `${displayName} photo`;
+    } else {
+      els.photoImg.src = '';
+      els.photoImg.classList.add('hidden');
+    }
+  }
+  if (els.photoPlaceholder) {
+    els.photoPlaceholder.classList.toggle('hidden', !!photoUrl);
+  }
+  if (els.photoView) {
+    if (photoUrl) {
+      els.photoView.href = photoUrl;
+      els.photoView.classList.remove('hidden');
+    } else {
+      els.photoView.removeAttribute('href');
+      els.photoView.classList.add('hidden');
+    }
+  }
+  if (els.photoDelete) {
+    els.photoDelete.classList.toggle('hidden', !photoUrl);
+  }
+  if (els.photoDate) {
+    els.photoDate.textContent = employee.employee_photo_uploaded_at
+      ? `Uploaded ${kaFmtDateLong(employee.employee_photo_uploaded_at)}`
+      : '';
+  }
+
+  const hasId = !!employee.id_document_uploaded_at;
+  const idUrl = hasId ? kaEmployeeDocUrl(employee.id, 'id-document') : '';
+  if (els.idMeta) {
+    if (hasId) {
+      const typeLabel = kaEmployeeDocTypeLabel(employee.id_document_type);
+      const parts = [];
+      if (typeLabel) parts.push(typeLabel);
+      parts.push(`Uploaded ${kaFmtDateLong(employee.id_document_uploaded_at)}`);
+      els.idMeta.textContent = parts.filter(Boolean).join(' • ');
+    } else {
+      els.idMeta.textContent = '';
+    }
+  }
+  if (els.idPlaceholder) {
+    els.idPlaceholder.classList.toggle('hidden', hasId);
+  }
+  if (els.idView) {
+    if (hasId) {
+      els.idView.href = idUrl;
+      els.idView.classList.remove('hidden');
+    } else {
+      els.idView.removeAttribute('href');
+      els.idView.classList.add('hidden');
+    }
+  }
+}
+
+function kaOpenEmployeeSheet(employee) {
+  const els = kaEmployeeSheetElements();
+  if (!els || !employee) return;
+  kaEmployeeSheetState.employeeId = Number(employee.id) || null;
+  kaEmployeeSheetState.open = true;
+  kaPopulateEmployeeSheet(employee);
+  els.sheet.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    els.sheet.classList.add('is-open');
+  });
+  els.sheet.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('ka-modal-open');
+  document.documentElement.classList.add('ka-modal-open');
+}
+
+function kaCloseEmployeeSheet() {
+  const els = kaEmployeeSheetElements();
+  if (!els) return;
+  kaEmployeeSheetState.dragging = false;
+  kaEmployeeSheetState.open = false;
+  kaEmployeeSheetState.employeeId = null;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+  document.body.classList.remove('ka-modal-open');
+  document.documentElement.classList.remove('ka-modal-open');
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+    }
+  }, 260);
+}
+
+function kaRefreshEmployeeSheet() {
+  const id = kaEmployeeSheetState.employeeId;
+  if (!id) return;
+  const emp = kaFindEmployeeById(id);
+  if (emp) kaPopulateEmployeeSheet(emp);
+}
+
+function kaRenderEmployeesGrid() {
+  const grid = document.getElementById('ka-employees-grid');
+  const empty = document.getElementById('ka-employees-empty');
+  const countTag = document.getElementById('ka-employees-count');
+  if (!grid) return;
+
+  const employees = Array.isArray(kaEmployees) ? [...kaEmployees] : [];
+  employees.sort((a, b) => {
+    const aName = (a.nickname || a.name || '').toLowerCase();
+    const bName = (b.nickname || b.name || '').toLowerCase();
+    return aName.localeCompare(bName);
+  });
+
+  if (countTag) {
+    const total = employees.length;
+    countTag.textContent = `${total} Employee${total === 1 ? '' : 's'}`;
+    countTag.className = `ka-tag ${total ? 'gray' : 'orange'}`;
+  }
+
+  if (!employees.length) {
+    grid.replaceChildren();
+    if (empty) empty.classList.remove('hidden');
+    return;
+  }
+
+  if (empty) empty.classList.add('hidden');
+
+  const fragment = document.createDocumentFragment();
+  employees.forEach(emp => {
+    const card = document.createElement('div');
+    card.className = 'ka-employee-card';
+    card.setAttribute('role', 'button');
+    card.setAttribute('tabindex', '0');
+    card.dataset.employeeId = emp.id;
+
+    const displayName = emp.nickname || emp.name || 'Unnamed employee';
+    card.setAttribute('aria-label', `View details for ${displayName}`);
+    const secondaryName =
+      emp.nickname && emp.name && emp.nickname !== emp.name ? emp.name : '';
+    const tags = [];
+    if (emp.active === 0) {
+      tags.push('<span class="ka-tag red">Inactive</span>');
+    }
+    if (emp.kiosk_admin_access) {
+      tags.push('<span class="ka-tag green">Kiosk Admin</span>');
+    }
+    if (emp.worker_timekeeping) {
+      tags.push('<span class="ka-tag gray">Worker</span>');
+    }
+    if (emp.pin_hash) {
+      tags.push('<span class="ka-tag orange">PIN set</span>');
+    }
+    if (!tags.length) {
+      tags.push('<span class="ka-tag gray">Employee</span>');
+    }
+    const accessBits = [];
+    if (emp.worker_timekeeping) accessBits.push('Timekeeping');
+    if (emp.kiosk_admin_access) accessBits.push('Admin');
+    const accessLabel = accessBits.length ? accessBits.join(' • ') : '—';
+    const langKey = (emp.language || 'en').toString().toLowerCase();
+    const langLabel = KA_LANGUAGE_LABELS[langKey] || 'English';
+
+    card.innerHTML = `
+      <div class="ka-employee-card-header">
+        <div>
+          <div class="ka-employee-card-name">${escapeHTML(displayName)}</div>
+          ${secondaryName ? `<div class="ka-employee-card-sub">${escapeHTML(secondaryName)}</div>` : ''}
+        </div>
+        <div class="ka-employee-tags">${tags.join('')}</div>
+      </div>
+      <div class="ka-employee-card-meta">
+        <div>
+          <span class="ka-employee-meta-label">Access</span>
+          ${escapeHTML(accessLabel)}
+        </div>
+        <div>
+          <span class="ka-employee-meta-label">Language</span>
+          ${escapeHTML(langLabel)}
+        </div>
+      </div>
+    `;
+    card.addEventListener('click', () => {
+      const current = kaFindEmployeeById(emp.id) || emp;
+      kaOpenEmployeeSheet(current);
+    });
+    card.addEventListener('keydown', (evt) => {
+      if (evt.key === 'Enter' || evt.key === ' ') {
+        evt.preventDefault();
+        const current = kaFindEmployeeById(emp.id) || emp;
+        kaOpenEmployeeSheet(current);
+      }
+    });
+    fragment.appendChild(card);
+  });
+
+  grid.replaceChildren(fragment);
+}
+
 // --- Timesheet helpers (sessions per kiosk) ---
 
 function kaShowView(view, opts = {}) {
@@ -4093,6 +4514,11 @@ function kaShowView(view, opts = {}) {
     kaBindLiveTimesheetFilter();
     kaRenderLiveTimesheetFilter();
     kaLoadLiveWorkers();
+  }
+
+  if (view === 'employees') {
+    kaRenderEmployeesGrid();
+    kaSetEmployeeFormVisible(kaEmployeeFormVisible, { skipScroll: true });
   }
 
   if (view === 'account') {
@@ -5735,6 +6161,24 @@ async function kaInit() {
   document
     .getElementById('ka-helper-submit')
     ?.addEventListener('click', kaHandleHelperAdd);
+  document
+    .getElementById('ka-employee-add-toggle')
+    ?.addEventListener('click', () => kaSetEmployeeFormVisible(!kaEmployeeFormVisible));
+  document
+    .getElementById('ka-employee-add-cancel')
+    ?.addEventListener('click', () => kaSetEmployeeFormVisible(false));
+  document
+    .getElementById('ka-employee-detail-language-save')
+    ?.addEventListener('click', kaHandleEmployeeSheetLanguageSave);
+  document
+    .getElementById('ka-employee-detail-namechecks-save')
+    ?.addEventListener('click', kaHandleEmployeeSheetNameChecksSave);
+  document
+    .getElementById('ka-employee-detail-pin-save')
+    ?.addEventListener('click', kaHandleEmployeeSheetPinSave);
+  document
+    .getElementById('ka-employee-detail-photo-delete')
+    ?.addEventListener('click', kaHandleEmployeeSheetPhotoDelete);
   window.addEventListener('online', () => {
     kaSyncOfflineData('online');
     kaStartOfflineSyncLoop();
@@ -5768,6 +6212,7 @@ async function kaInit() {
       await kaCloseItemsModal();
     }
   });
+  kaBindItemsSheetSwipe();
 
   // Docs modal controls
   const docsBackdrop = document.getElementById('ka-docs-backdrop');
@@ -5947,10 +6392,12 @@ async function kaInit() {
     .getElementById('ka-shipments-refresh')
     ?.addEventListener('click', () => kaLoadShipments({ forceFresh: true }));
 
-      // 🔹 Shipments filter: change mode (ready vs all)
-  document
-    .getElementById('ka-shipments-filter')
-    ?.addEventListener('change', () => kaLoadShipments({ forceFresh: true }));
+  // 🔹 Shipments filter: change mode (ready vs all)
+  const shipmentsStatusSelect = document.getElementById('ka-shipments-filter');
+  if (shipmentsStatusSelect) {
+    shipmentsStatusSelect.addEventListener('change', () => kaLoadShipments({ forceFresh: true }));
+    kaBindExpandableSelect(shipmentsStatusSelect);
+  }
   document
     .getElementById('ka-shipments-project')
     ?.addEventListener('change', () => kaLoadShipments({ forceFresh: true }));
@@ -6011,6 +6458,53 @@ async function kaInit() {
           kaCloseTimesheetWorkersSheet();
         } else if (sheetEls.panel) {
           sheetEls.panel.style.transform = '';
+        }
+      };
+      handle.addEventListener('pointerdown', onPointerDown);
+      handle.addEventListener('pointermove', onPointerMove);
+      handle.addEventListener('pointerup', onPointerUp);
+      handle.addEventListener('pointercancel', onPointerUp);
+    }
+  }
+
+  const employeeSheetEls = kaEmployeeSheetElements();
+  if (employeeSheetEls && !employeeSheetEls.sheet.dataset.bound) {
+    employeeSheetEls.sheet.dataset.bound = '1';
+    employeeSheetEls.sheet.querySelectorAll('[data-ka-employee-sheet-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseEmployeeSheet());
+    });
+
+    const handle = employeeSheetEls.handle;
+    if (handle) {
+      const onPointerDown = (e) => {
+        if (!employeeSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        kaEmployeeSheetState.dragging = true;
+        kaEmployeeSheetState.startY = e.clientY;
+        kaEmployeeSheetState.currentY = e.clientY;
+        employeeSheetEls.sheet.classList.add('dragging');
+        handle.setPointerCapture(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaEmployeeSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaEmployeeSheetState.startY);
+        kaEmployeeSheetState.currentY = e.clientY;
+        if (employeeSheetEls.panel) {
+          employeeSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaEmployeeSheetState.dragging) return;
+        kaEmployeeSheetState.dragging = false;
+        employeeSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaEmployeeSheetState.currentY - kaEmployeeSheetState.startY);
+        const threshold = employeeSheetEls.panel
+          ? Math.min(180, employeeSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseEmployeeSheet();
+        } else if (employeeSheetEls.panel) {
+          employeeSheetEls.panel.style.transform = '';
         }
       };
       handle.addEventListener('pointerdown', onPointerDown);
@@ -6106,18 +6600,14 @@ async function kaInit() {
     const [kiosks, projects, employees] = await Promise.all([
       fetchJSON('/api/kiosks'),
       fetchJSON('/api/kiosk/projects'),
-      fetchJSON('/api/kiosk/employees'),
+      fetchJSON('/api/kiosk/admin/employees'),
     ]);
 
     // Only keep active projects for kiosk use
     kaProjects = (projects || []).filter(
       p => p.active === undefined || p.active === null || Number(p.active) === 1
     );
-    kaEmployees = (employees || []).map(e => ({
-      ...e,
-      is_admin: !!e.kiosk_admin_access,
-      uses_timekeeping: e.worker_timekeeping !== undefined ? Number(e.worker_timekeeping) : 1
-    }));
+    kaEmployees = kaNormalizeEmployees(employees || []);
 
     // Figure out which employee is running kiosk-admin (from URL ?employee_id=)
     if (kaStartEmployeeId) {
@@ -6171,6 +6661,8 @@ async function kaInit() {
     kaRenderPinStatus();
     kaRenderAdminSelect();
     kaRenderSettingsForm();
+    kaRenderEmployeesGrid();
+    kaSetEmployeeFormVisible(false, { skipScroll: true });
     await kaInitAdminConsoleSwitch();
     kaSetupStartOfDayUI();
     await kaLoadSessions();
@@ -6253,6 +6745,14 @@ function kaHasUnsavedItems(shipmentId) {
   return dirtyMap || pendingTimers || queued;
 }
 
+function kaResetItemsSheetPosition() {
+  const content = document.querySelector('#ka-items-modal .ka-items-modal-content');
+  if (content) {
+    content.style.transform = '';
+    content.classList.remove('is-dragging');
+  }
+}
+
 async function kaCloseItemsModal(opts = {}) {
   const force = opts.force === true;
   const shipmentId = kaItemsModalShipmentId;
@@ -6267,14 +6767,21 @@ async function kaCloseItemsModal(opts = {}) {
         title: 'Unsaved item updates'
       }
     );
-    if (choice === 'cancel') return;
+    if (choice === 'cancel') return false;
     if (choice === 'ok' && shipmentId) {
       await kaSaveShipmentVerificationFor(shipmentId, { silent: true });
     }
   }
 
   const modal = document.getElementById('ka-items-modal');
-  if (modal) modal.classList.add('hidden');
+  if (modal) {
+    modal.classList.add('hidden');
+    const content = modal.querySelector('.ka-items-modal-content');
+    if (content) {
+      content.style.transform = '';
+      content.classList.remove('is-dragging');
+    }
+  }
   document.body.classList.remove('ka-modal-open');
   document.documentElement.classList.remove('ka-modal-open');
   kaClearItemAutoSaves();
@@ -6290,11 +6797,74 @@ async function kaCloseItemsModal(opts = {}) {
   if (kaCanViewShipments()) {
     kaLoadShipments({ forceFresh: true });
   }
+  return true;
 }
 
 function kaClearItemAutoSaves() {
   kaItemAutoSaveTimers.forEach(timer => clearTimeout(timer));
   kaItemAutoSaveTimers.clear();
+}
+
+function kaBindItemsSheetSwipe() {
+  const modal = document.getElementById('ka-items-modal');
+  const content = modal?.querySelector('.ka-items-modal-content');
+  if (!modal || !content || content.dataset.sheetBound) return;
+  const header = content.querySelector('.ka-items-modal-header');
+  const handle = content.querySelector('.ka-items-sheet-handle');
+  const state = { dragging: false, startY: 0, lastY: 0, pointerId: null };
+
+  const canStart = (target) => {
+    if (!target) return false;
+    if (handle && handle.contains(target)) return true;
+    if (!header || !header.contains(target)) return false;
+    if (target.closest('button, a, input, select, textarea')) return false;
+    return true;
+  };
+
+  const onPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!canStart(e.target)) return;
+    if (modal.classList.contains('hidden')) return;
+    state.dragging = true;
+    state.startY = e.clientY;
+    state.lastY = e.clientY;
+    state.pointerId = e.pointerId;
+    content.classList.add('is-dragging');
+    if (content.setPointerCapture) content.setPointerCapture(e.pointerId);
+  };
+
+  const onPointerMove = (e) => {
+    if (!state.dragging) return;
+    if (state.pointerId !== null && e.pointerId !== state.pointerId) return;
+    const delta = Math.max(0, e.clientY - state.startY);
+    state.lastY = e.clientY;
+    content.style.transform = `translateY(${delta}px)`;
+    if (delta > 0) e.preventDefault();
+  };
+
+  const onPointerEnd = async (e) => {
+    if (!state.dragging) return;
+    if (state.pointerId !== null && e.pointerId !== state.pointerId) return;
+    state.dragging = false;
+    content.classList.remove('is-dragging');
+    const delta = Math.max(0, state.lastY - state.startY);
+    const threshold = Math.min(160, content.offsetHeight * 0.25);
+    if (delta > threshold) {
+      const closed = await kaCloseItemsModal();
+      if (!closed) {
+        kaResetItemsSheetPosition();
+      }
+    } else {
+      kaResetItemsSheetPosition();
+    }
+    state.pointerId = null;
+  };
+
+  content.addEventListener('pointerdown', onPointerDown);
+  content.addEventListener('pointermove', onPointerMove, { passive: false });
+  content.addEventListener('pointerup', onPointerEnd);
+  content.addEventListener('pointercancel', onPointerEnd);
+  content.dataset.sheetBound = '1';
 }
 
 function kaForceCloseAllModals() {
@@ -6335,7 +6905,7 @@ function kaItemStatusLabel(status) {
     missing: 'Missing',
     damaged: 'Damaged',
     wrong_item: 'Wrong item',
-    '': 'Unverified'
+    '': 'Not Reviewed'
   };
   return map[status] || map[''];
 }
@@ -7556,6 +8126,7 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
   const subEl = document.getElementById('ka-items-modal-sub');
   const overviewEl = document.getElementById('ka-items-overview');
   if (!modal || !body || !titleEl || !overviewEl) return;
+  kaResetItemsSheetPosition();
 
   document.body.classList.add('ka-modal-open');
   document.documentElement.classList.add('ka-modal-open');
@@ -7563,7 +8134,7 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
   kaShipmentItemsDirty.clear();
   kaClearItemAutoSaves();
   kaItemsModalShipmentId = shipmentId;
-  kaItemsStatusFilter = 'unverified';
+  kaItemsStatusFilter = 'all';
   kaSetItemsTab(tab);
   kaShipmentDetailDocs = [];
   kaExpandedItems.clear();
@@ -7621,7 +8192,11 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
   titleEl.textContent =
     (shipment.title || shipment.sku || `Shipment #${shipment.id || shipmentId || ''}`);
   if (subEl) {
-    subEl.textContent = '';
+    const projectLabel =
+      shipment.project_name ||
+      kaProjectLabelById(shipment.project_id) ||
+      'No project set';
+    subEl.textContent = `Project: ${projectLabel}`;
   }
 
   overviewEl.innerHTML = kaRenderShipmentOverview(shipment, documents, items);
@@ -7640,8 +8215,9 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
         <label class="ka-items-filter">
           <span>View</span>
           <select id="ka-items-status-filter">
-            <option value="unverified" ${kaItemsStatusFilter === 'unverified' ? 'selected' : ''}>Unverified</option>
+            <option value="unverified" ${kaItemsStatusFilter === 'unverified' ? 'selected' : ''}>Not Reviewed</option>
             <option value="verified" ${kaItemsStatusFilter === 'verified' ? 'selected' : ''}>Verified</option>
+            <option value="issues" ${kaItemsStatusFilter === 'issues' ? 'selected' : ''}>Issues</option>
             <option value="missing" ${kaItemsStatusFilter === 'missing' ? 'selected' : ''}>Missing</option>
             <option value="damaged" ${kaItemsStatusFilter === 'damaged' ? 'selected' : ''}>Damaged</option>
             <option value="wrong_item" ${kaItemsStatusFilter === 'wrong_item' ? 'selected' : ''}>Wrong item</option>
@@ -7689,7 +8265,7 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
   const statusFilterEl = document.getElementById('ka-items-status-filter');
   if (statusFilterEl && !statusFilterEl.dataset.bound) {
     statusFilterEl.addEventListener('change', () => {
-      kaItemsStatusFilter = statusFilterEl.value || 'unverified';
+      kaItemsStatusFilter = statusFilterEl.value || 'all';
       kaRenderItemsList(shipmentId);
     });
     statusFilterEl.dataset.bound = '1';
@@ -7741,12 +8317,15 @@ function kaRenderItemsList(shipmentId) {
       return hay.includes(term);
     });
 
-  const statusFilter = (kaItemsStatusFilter || 'unverified').toLowerCase().trim();
+  const statusFilter = (kaItemsStatusFilter || 'all').toLowerCase().trim();
   if (statusFilter && statusFilter !== 'all') {
     items = items.filter(item => {
       const current = kaCurrentItemState(item);
       const status = kaNormalizeItemStatus(current?.verification?.status || '');
       const normalized = status || 'unverified';
+      if (statusFilter === 'issues') {
+        return ['missing', 'damaged', 'wrong_item'].includes(normalized);
+      }
       return normalized === statusFilter;
     });
   }
@@ -7799,6 +8378,35 @@ function kaRenderItemRow(item, shipmentId) {
   const sku = item.sku || '';
   const vendorName = item.vendor_name || '';
   const recentlySaved = kaRecentlySavedItems.has(Number(item.id));
+  const qtyText = `${qty}${unit ? ` ${unit}` : ''}`.trim();
+  const metaParts = [];
+  if (qtyText !== '') {
+    metaParts.push(`
+      <span class="ka-item-meta-chunk">
+        <span class="ka-item-meta-label">Qty:</span>
+        <span class="ka-item-meta-value">${qtyText}</span>
+      </span>
+    `);
+  }
+  if (sku) {
+    metaParts.push(`
+      <span class="ka-item-meta-chunk">
+        <span class="ka-item-meta-label">SKU:</span>
+        <span class="ka-item-meta-value">${sku}</span>
+      </span>
+    `);
+  }
+  if (vendorName) {
+    metaParts.push(`
+      <span class="ka-item-meta-chunk">
+        <span class="ka-item-meta-label">Vendor:</span>
+        <span class="ka-item-meta-value">${vendorName}</span>
+      </span>
+    `);
+  }
+  const metaHtml = metaParts.length
+    ? metaParts.join('<span class="ka-item-meta-dot">•</span>')
+    : '';
 
   const row = document.createElement('div');
   row.className = 'ka-item-row';
@@ -7807,7 +8415,7 @@ function kaRenderItemRow(item, shipmentId) {
   if (kaShipmentItemsDirty.has(Number(item.id))) row.classList.add('is-unsaved');
 
   const statuses = [
-    { val: '', label: 'Unverified' },
+    { val: '', label: 'Not Reviewed' },
     { val: 'verified', label: 'Verified' },
     { val: 'missing', label: 'Missing' },
     { val: 'damaged', label: 'Damaged' },
@@ -7816,52 +8424,60 @@ function kaRenderItemRow(item, shipmentId) {
 
 
   row.innerHTML = `
-    <div class="ka-item-row-head">
-      <div>
-        <div class="ka-item-title">${item.description || '(No description)'}</div>
+    <div class="ka-item-swipe">
+      <div class="ka-item-swipe-main">
+        <div class="ka-item-row-head">
+          <div class="ka-item-head-left">
+            <div class="ka-item-title">${item.description || '(No description)'}</div>
         <div class="ka-item-meta-line">
-          <span>Qty: ${qty}${unit ? ` ${unit}` : ''}</span>
-          ${sku ? `<span class="ka-item-meta-dot">•</span><span>SKU: ${sku}</span>` : ''}
-          ${vendorName ? `<span class="ka-item-meta-dot">•</span><span>Vendor: ${vendorName}</span>` : ''}
+          ${metaHtml}
         </div>
       </div>
-      <div class="ka-item-head-right">
-        <div class="ka-status-select">
-          <select class="ka-item-status" data-ka-item-status-select="${item.id}">
-            ${statuses
-              .map(
-                s => `<option value="${s.val}" ${status === s.val ? 'selected' : ''}>${s.label}</option>`
-              )
-              .join('')}
-          </select>
+          <div class="ka-item-head-right">
+            <div class="ka-status-select">
+              <select class="ka-item-status" data-ka-item-status-select="${item.id}">
+                ${statuses
+                  .map(
+                    s => `<option value="${s.val}" ${status === s.val ? 'selected' : ''}>${s.label}</option>`
+                  )
+                  .join('')}
+              </select>
+            </div>
+            <button type="button" class="ka-item-collapse" data-ka-collapse="${item.id}" aria-label="${isExpanded ? 'Collapse item' : 'Expand item'}">${chevronGlyph}</button>
+          </div>
         </div>
-        <button type="button" class="ka-item-collapse" data-ka-collapse="${item.id}" aria-label="${isExpanded ? 'Collapse item' : 'Expand item'}">${chevronGlyph}</button>
-      </div>
-    </div>
-    <div class="ka-item-body">
-      <div class="ka-item-divider"></div>
+        <div class="ka-item-body">
+          <div class="ka-item-divider"></div>
 
-      <div class="ka-item-row-notes open" data-ka-notes="${item.id}">
-        <label>
-          <span>Notes & storage details</span>
-          <textarea rows="3" data-ship-item-notes-id="${item.id}">${combinedNotes}</textarea>
-        </label>
-      </div>
+          <div class="ka-item-row-notes open" data-ka-notes="${item.id}">
+            <label>
+              <span>Notes & Storage Details</span>
+              <textarea rows="3" data-ship-item-notes-id="${item.id}">${combinedNotes}</textarea>
+            </label>
+          </div>
 
-      <div class="ka-item-row-footer">
-        <div class="ka-item-last">
-          <span class="ka-item-unsaved-dot ${kaShipmentItemsDirty.has(Number(item.id)) ? '' : 'hidden'}" aria-hidden="true">●</span>
-          <span class="ka-item-last-meta">${
-            lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : ''
-          }</span>
-        </div>
-        <div class="ka-item-row-actions">
-          <button type="button" class="btn secondary btn-sm" data-ka-save-item="${item.id}">Save now</button>
-          <span class="ka-item-save-status ${recentlySaved ? 'is-ok' : ''}" data-ka-item-save-status="${item.id}">${recentlySaved ? 'Saved' : ''}</span>
+          <div class="ka-item-row-footer">
+            <div class="ka-item-last">
+              <span class="ka-item-unsaved-dot ${kaShipmentItemsDirty.has(Number(item.id)) ? '' : 'hidden'}" aria-hidden="true">●</span>
+              <span class="ka-item-last-meta">${
+                lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : ''
+              }</span>
+            </div>
+            <div class="ka-item-row-actions">
+              <button type="button" class="btn secondary btn-sm" data-ka-save-item="${item.id}">Save now</button>
+              <span class="ka-item-save-status ${recentlySaved ? 'is-ok' : ''}" data-ka-item-save-status="${item.id}">${recentlySaved ? 'Saved' : ''}</span>
+            </div>
+          </div>
         </div>
       </div>
+      <button type="button" class="ka-item-swipe-action" data-ka-item-swipe-save="${item.id}" aria-label="Save item">Save</button>
     </div>
   `;
+
+  row.querySelectorAll('.ka-item-meta-value').forEach(el => {
+    const fullText = (el.textContent || '').trim();
+    if (fullText) el.setAttribute('title', fullText);
+  });
 
   const statusSelect = row.querySelector('[data-ka-item-status-select]');
   const notesEl = row.querySelector(`textarea[data-ship-item-notes-id="${item.id}"]`);
@@ -7918,6 +8534,7 @@ function kaRenderItemRow(item, shipmentId) {
     } else {
       row.classList.remove('is-unsaved');
       unsavedDot?.classList.add('hidden');
+      kaResetItemSwipe(row);
     }
   };
 
@@ -7988,6 +8605,20 @@ function kaRenderItemRow(item, shipmentId) {
     });
   }
 
+  const swipeAction = row.querySelector('[data-ka-item-swipe-save]');
+  if (swipeAction) {
+    swipeAction.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const itemIdNum = Number(item.id);
+      markDirty(null, { skipAuto: true });
+      const ok = await kaSaveShipmentVerificationFor(shipmentId, { onlyItemId: itemIdNum });
+      if (ok) {
+        refreshUnsavedState(false);
+        kaCloseItemSwipes();
+      }
+    });
+  }
+
   if (collapseBtn) {
     collapseBtn.addEventListener('click', () => {
       const collapsed = row.classList.toggle('collapsed');
@@ -8004,8 +8635,135 @@ function kaRenderItemRow(item, shipmentId) {
   row.classList.toggle('collapsed', !isExpanded);
 
   setActiveStatus(currentStatusValue());
+  kaBindItemSwipe(row);
 
   return row;
+}
+
+function kaCloseItemSwipes(exceptRow = null) {
+  document.querySelectorAll('.ka-item-row.show-save').forEach(row => {
+    if (exceptRow && row === exceptRow) return;
+    kaResetItemSwipe(row);
+  });
+}
+
+function kaResetItemSwipe(row) {
+  if (!row) return;
+  row.classList.remove('show-save');
+  row.classList.remove('is-dragging');
+  const swipeMain = row.querySelector('.ka-item-swipe-main');
+  if (swipeMain) swipeMain.style.transform = '';
+}
+
+function kaBindItemSwipe(row) {
+  const swipe = row?.querySelector('.ka-item-swipe');
+  const swipeMain = row?.querySelector('.ka-item-swipe-main');
+  if (!row || !swipe || !swipeMain || swipe.dataset.bound) return;
+  const actionWidth = 110;
+  const itemIdNum = Number(row.dataset.itemId);
+  const state = {
+    tracking: false,
+    dragging: false,
+    startX: 0,
+    startY: 0,
+    startOffset: 0,
+    currentOffset: 0,
+    deltaX: 0,
+    pointerId: null
+  };
+
+  const canStart = (target) => {
+    if (!target) return false;
+    const isDirty = row.classList.contains('is-unsaved') || kaShipmentItemsDirty.has(itemIdNum);
+    if (!isDirty) return false;
+    if (target.closest('button, a, input, select, textarea')) return false;
+    return true;
+  };
+
+  const setOffset = (offset) => {
+    const clamped = Math.max(-actionWidth, Math.min(0, offset));
+    state.currentOffset = clamped;
+    swipeMain.style.transform = `translateX(${clamped}px)`;
+  };
+
+  const openSwipe = () => {
+    row.classList.add('show-save');
+    setOffset(-actionWidth);
+  };
+
+  const closeSwipe = () => {
+    row.classList.remove('show-save');
+    swipeMain.style.transform = '';
+  };
+
+  const onPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!canStart(e.target)) return;
+    state.tracking = true;
+    state.dragging = false;
+    state.pointerId = e.pointerId;
+    state.startX = e.clientX;
+    state.startY = e.clientY;
+    state.startOffset = row.classList.contains('show-save') ? -actionWidth : 0;
+    state.currentOffset = state.startOffset;
+    state.deltaX = 0;
+  };
+
+  const onPointerMove = (e) => {
+    if (!state.tracking || (state.pointerId !== null && e.pointerId !== state.pointerId)) return;
+    const dx = e.clientX - state.startX;
+    const dy = e.clientY - state.startY;
+    state.deltaX = dx;
+    if (!state.dragging) {
+      if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+        state.dragging = true;
+        row.classList.add('is-dragging');
+        if (swipeMain.setPointerCapture) swipeMain.setPointerCapture(e.pointerId);
+        kaCloseItemSwipes(row);
+      } else if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
+        state.tracking = false;
+        return;
+      } else {
+        return;
+      }
+    }
+    e.preventDefault();
+    setOffset(state.startOffset + dx);
+  };
+
+  const onPointerEnd = () => {
+    if (!state.tracking) return;
+    const offset = state.currentOffset || 0;
+    if (state.dragging) {
+      const openThreshold = -actionWidth * 0.2;
+      if (row.classList.contains('show-save')) {
+        if (state.deltaX > 12 || offset > openThreshold) {
+          closeSwipe();
+        } else {
+          openSwipe();
+        }
+      } else {
+        if (offset < openThreshold) {
+          openSwipe();
+        } else {
+          closeSwipe();
+        }
+      }
+    } else if (row.classList.contains('show-save')) {
+      closeSwipe();
+    }
+    row.classList.remove('is-dragging');
+    state.tracking = false;
+    state.dragging = false;
+    state.pointerId = null;
+  };
+
+  swipeMain.addEventListener('pointerdown', onPointerDown);
+  swipeMain.addEventListener('pointermove', onPointerMove, { passive: false });
+  swipeMain.addEventListener('pointerup', onPointerEnd);
+  swipeMain.addEventListener('pointercancel', onPointerEnd);
+
+  swipe.dataset.bound = '1';
 }
 
 function kaMarkAllItemsVerified(shipmentId) {
@@ -8749,12 +9507,92 @@ function kaRenderPinStatus() {
   });
 }
 
+async function kaSaveEmployeePinUpdate({ employeeId, pin, statusEl }) {
+  const deviceSecret = kaGetDeviceSecret();
+  if (statusEl) {
+    statusEl.textContent = 'Saving PIN…';
+    statusEl.className = 'ka-status';
+  }
+
+  const updateLocal = () => {
+    const emp = kaFindEmployeeById(employeeId);
+    if (emp) {
+      const pinHash = kaHashPin(pin);
+      if (pinHash) {
+        emp.pin_hash = pinHash;
+        emp.pin = '';
+      } else {
+        emp.pin = pin;
+      }
+    }
+  };
+
+  try {
+    await fetchJSON(`/api/employees/${employeeId}/pin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pin,
+        allowOverride: true,
+        device_id: kaDeviceId || null,
+        device_secret: deviceSecret
+      })
+    });
+
+    updateLocal();
+    if (statusEl) {
+      statusEl.textContent = 'PIN updated.';
+      statusEl.classList.add('ka-status-ok');
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('Error updating PIN (primary endpoint)', err);
+    try {
+      await fetchJSON(`/api/employees/${employeeId}/pin?allowOverride=1`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pin,
+          device_id: kaDeviceId || null,
+          device_secret: deviceSecret
+        })
+      });
+      updateLocal();
+      if (statusEl) {
+        statusEl.textContent = 'PIN updated.';
+        statusEl.classList.add('ka-status-ok');
+      }
+      return { ok: true };
+    } catch (err2) {
+      console.error('PIN fallback attempt failed', err2);
+      const msg = err2 && err2.message ? err2.message : (err && err.message) || 'Error updating PIN. Please try again.';
+
+      const authLike = /auth|login|credential|session/i.test(msg);
+      const netLike = /network|failed to fetch|offline/i.test(msg);
+      if (authLike || netLike) {
+        updateLocal();
+        await kaAddPendingPinUpdate({ employee_id: employeeId, pin });
+        if (statusEl) {
+          statusEl.textContent = 'PIN saved locally; will sync when online/authenticated.';
+          statusEl.classList.add('ka-status-ok');
+        }
+        return { ok: true, queued: true };
+      }
+
+      if (statusEl) {
+        statusEl.textContent = msg;
+        statusEl.classList.add('ka-status-error');
+      }
+      return { ok: false, error: msg };
+    }
+  }
+}
+
 async function kaHandlePinChange() {
   const sel = document.getElementById('ka-pin-employee');
   const pin1 = document.getElementById('ka-pin-new');
   const pin2 = document.getElementById('ka-pin-confirm');
   const status = document.getElementById('ka-pin-status');
-  const deviceSecret = kaGetDeviceSecret();
 
   if (!sel || !pin1 || !pin2 || !status) return;
 
@@ -8783,90 +9621,12 @@ async function kaHandlePinChange() {
     return;
   }
 
-  try {
-    status.textContent = 'Saving PIN…';
-    await fetchJSON(`/api/employees/${id}/pin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pin: p1,
-        allowOverride: true,
-        device_id: kaDeviceId || null,
-        device_secret: deviceSecret
-      })
-    });
-
-    const emp = (kaEmployees || []).find(e => Number(e.id) === Number(id));
-    if (emp) {
-      const pinHash = kaHashPin(p1);
-      if (pinHash) {
-        emp.pin_hash = pinHash;
-        emp.pin = '';
-      } else {
-        emp.pin = p1;
-      }
-    }
-
-    status.textContent = 'PIN updated.';
-    status.classList.add('ka-status-ok');
+  const result = await kaSaveEmployeePinUpdate({ employeeId: id, pin: p1, statusEl: status });
+  if (result && result.ok) {
     pin1.value = '';
     pin2.value = '';
-  } catch (err) {
-    console.error('Error updating PIN (primary endpoint)', err);
-    // Try a fallback with allowOverride in the querystring (some backends expect this)
-    try {
-      await fetchJSON(`/api/employees/${id}/pin?allowOverride=1`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pin: p1,
-          device_id: kaDeviceId || null,
-          device_secret: deviceSecret
-        })
-      });
-      const emp = (kaEmployees || []).find(e => Number(e.id) === Number(id));
-      if (emp) {
-        const pinHash = kaHashPin(p1);
-        if (pinHash) {
-          emp.pin_hash = pinHash;
-          emp.pin = '';
-        } else {
-          emp.pin = p1;
-        }
-      }
-      status.textContent = 'PIN updated.';
-      status.classList.add('ka-status-ok');
-      pin1.value = '';
-      pin2.value = '';
-      return;
-    } catch (err2) {
-      console.error('PIN fallback attempt failed', err2);
-      const msg = err2 && err2.message ? err2.message : (err && err.message) || 'Error updating PIN. Please try again.';
-
-      // If it's an auth/network issue, queue locally so the user can still clock in
-      const authLike = /auth|login|credential|session/i.test(msg);
-      const netLike = /network|failed to fetch|offline/i.test(msg);
-      if (authLike || netLike) {
-        const emp = (kaEmployees || []).find(e => Number(e.id) === Number(id));
-        if (emp) {
-          const pinHash = kaHashPin(p1);
-          if (pinHash) {
-            emp.pin_hash = pinHash;
-            emp.pin = '';
-          } else {
-            emp.pin = p1;
-          }
-        }
-        await kaAddPendingPinUpdate({ employee_id: id, pin: p1 });
-        status.textContent = 'PIN saved locally; will sync when online/authenticated.';
-        status.classList.add('ka-status-ok');
-        pin1.value = '';
-        pin2.value = '';
-      } else {
-        status.textContent = msg;
-        status.classList.add('ka-status-error');
-      }
-    }
+    kaRenderEmployeesGrid();
+    kaRenderPinStatus();
   }
 }
 
@@ -9023,6 +9783,130 @@ async function kaHandleNameOnChecksSave() {
   }
 }
 
+async function kaHandleEmployeeSheetLanguageSave() {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.language || !els.languageStatus) return;
+  const id = kaEmployeeSheetState.employeeId;
+  if (!id) {
+    kaSetInlineStatus(els.languageStatus, 'Employee not selected.', 'error');
+    return;
+  }
+  const lang = els.language.value || 'en';
+  kaSetInlineStatus(els.languageStatus, 'Saving language…');
+  try {
+    const auth = kaEmployeeAuthMeta();
+    await fetchJSON(`/api/employees/${id}/language`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: lang, ...auth })
+    });
+    kaUpdateEmployeeRecord(id, { language: lang });
+    kaSetInlineStatus(els.languageStatus, 'Language updated.', 'ok');
+    kaRenderEmployeesGrid();
+    kaRenderSettingsForm();
+    kaRefreshEmployeeSheet();
+  } catch (err) {
+    console.error('Error updating language (sheet)', err);
+    kaSetInlineStatus(els.languageStatus, err.message || 'Error updating language.', 'error');
+  }
+}
+
+async function kaHandleEmployeeSheetNameChecksSave() {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.nameChecks || !els.nameChecksStatus) return;
+  const id = kaEmployeeSheetState.employeeId;
+  if (!id) {
+    kaSetInlineStatus(els.nameChecksStatus, 'Employee not selected.', 'error');
+    return;
+  }
+  const value = (els.nameChecks.value || '').trim();
+  kaSetInlineStatus(els.nameChecksStatus, 'Saving name on checks…');
+  try {
+    const auth = kaEmployeeAuthMeta();
+    const res = await fetchJSON(`/api/employees/${id}/name-on-checks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name_on_checks: value || null, ...auth })
+    });
+    kaUpdateEmployeeRecord(id, { name_on_checks: value || null });
+    const warning = res && res.qbo_warning;
+    if (warning) {
+      kaSetInlineStatus(
+        els.nameChecksStatus,
+        `Updated locally. QuickBooks warning: ${warning}`,
+        'error'
+      );
+    } else {
+      kaSetInlineStatus(els.nameChecksStatus, 'Name on checks updated.', 'ok');
+    }
+    kaRenderEmployeesGrid();
+    kaRenderSettingsForm();
+    kaRefreshEmployeeSheet();
+  } catch (err) {
+    console.error('Error updating name on checks (sheet)', err);
+    kaSetInlineStatus(els.nameChecksStatus, 'Error updating name on checks.', 'error');
+  }
+}
+
+async function kaHandleEmployeeSheetPinSave() {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.pinInput || !els.pinConfirm || !els.pinStatus) return;
+  const id = kaEmployeeSheetState.employeeId;
+  if (!id) {
+    kaSetInlineStatus(els.pinStatus, 'Employee not selected.', 'error');
+    return;
+  }
+  const p1 = (els.pinInput.value || '').trim();
+  const p2 = (els.pinConfirm.value || '').trim();
+  kaSetInlineStatus(els.pinStatus, '');
+
+  if (!/^[0-9]{4}$/.test(p1) || !/^[0-9]{4}$/.test(p2)) {
+    kaSetInlineStatus(els.pinStatus, 'PIN must be exactly 4 digits.', 'error');
+    return;
+  }
+  if (p1 !== p2) {
+    kaSetInlineStatus(els.pinStatus, 'PIN entries do not match.', 'error');
+    return;
+  }
+
+  const result = await kaSaveEmployeePinUpdate({ employeeId: id, pin: p1, statusEl: els.pinStatus });
+  if (result && result.ok) {
+    els.pinInput.value = '';
+    els.pinConfirm.value = '';
+    kaRenderEmployeesGrid();
+    kaRenderPinStatus();
+    kaRefreshEmployeeSheet();
+  }
+}
+
+async function kaHandleEmployeeSheetPhotoDelete() {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.status) return;
+  const id = kaEmployeeSheetState.employeeId;
+  if (!id) {
+    kaSetInlineStatus(els.status, 'Employee not selected.', 'error');
+    return;
+  }
+  const confirmed = window.confirm('Delete this employee photo?');
+  if (!confirmed) return;
+
+  kaSetInlineStatus(els.status, 'Deleting photo…');
+  try {
+    await fetchJSON(`/api/kiosk/admin/employees/${id}/photo`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...kaEmployeeAuthMeta() })
+    });
+    kaUpdateEmployeeRecord(id, { employee_photo_uploaded_at: null });
+    kaSetInlineStatus(els.status, 'Photo deleted.', 'ok');
+    kaRenderEmployeesGrid();
+    kaRefreshEmployeeSheet();
+  } catch (err) {
+    console.error('Error deleting employee photo (sheet)', err);
+    kaSetInlineStatus(els.status, err.message || 'Failed to delete photo.', 'error');
+  }
+}
+
 async function kaHandleHelperAdd() {
   const statusEl = document.getElementById('ka-helper-status');
   const nameInput = document.getElementById('ka-helper-name');
@@ -9030,11 +9914,12 @@ async function kaHandleHelperAdd() {
   const langSelect = document.getElementById('ka-helper-language');
   const idTypeSelect = document.getElementById('ka-helper-id-type');
   const fileInput = document.getElementById('ka-helper-id-file');
+  const photoInput = document.getElementById('ka-helper-photo-file');
 
   if (!statusEl || !nameInput || !idTypeSelect || !fileInput) return;
 
   if (!navigator.onLine) {
-    statusEl.textContent = 'Adding workers requires an internet connection.';
+    statusEl.textContent = 'Adding employees requires an internet connection.';
     statusEl.className = 'ka-status ka-status-error';
     return;
   }
@@ -9044,6 +9929,7 @@ async function kaHandleHelperAdd() {
   const language = (langSelect && langSelect.value) ? langSelect.value : 'en';
   const idType = String(idTypeSelect.value || '').trim();
   const file = fileInput.files && fileInput.files[0];
+  const photoFile = photoInput && photoInput.files ? photoInput.files[0] : null;
   const adminId = kaCurrentAdmin && kaCurrentAdmin.id ? kaCurrentAdmin.id : null;
   const deviceSecret = kaGetDeviceSecret();
 
@@ -9052,13 +9938,13 @@ async function kaHandleHelperAdd() {
     statusEl.className = 'ka-status ka-status-error';
     return;
   }
-  if (!idType) {
-    statusEl.textContent = 'Select an ID type.';
+  if (idType && !file) {
+    statusEl.textContent = 'Upload an ID image or clear the ID type.';
     statusEl.className = 'ka-status ka-status-error';
     return;
   }
-  if (!file) {
-    statusEl.textContent = 'Upload an ID image.';
+  if (file && !idType) {
+    statusEl.textContent = 'Select an ID type to match the uploaded ID.';
     statusEl.className = 'ka-status ka-status-error';
     return;
   }
@@ -9073,7 +9959,7 @@ async function kaHandleHelperAdd() {
     return;
   }
 
-  statusEl.textContent = 'Uploading worker...';
+  statusEl.textContent = 'Uploading employee...';
   statusEl.className = 'ka-status';
 
   try {
@@ -9081,8 +9967,13 @@ async function kaHandleHelperAdd() {
     form.append('name', name);
     if (nickname) form.append('nickname', nickname);
     if (language) form.append('language', language);
-    form.append('id_document_type', idType);
-    form.append('id_document', file);
+    if (idType && file) {
+      form.append('id_document_type', idType);
+      form.append('id_document', file);
+    }
+    if (photoFile) {
+      form.append('employee_photo', photoFile);
+    }
     form.append('admin_id', String(adminId));
     form.append('device_id', kaDeviceId);
     form.append('device_secret', deviceSecret);
@@ -9096,10 +9987,10 @@ async function kaHandleHelperAdd() {
 
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      throw new Error(data.error || 'Failed to add worker.');
+      throw new Error(data.error || 'Failed to add employee.');
     }
 
-    statusEl.textContent = 'Worker added for review.';
+    statusEl.textContent = 'Employee added. QuickBooks linking is pending.';
     statusEl.className = 'ka-status ka-status-ok';
 
     nameInput.value = '';
@@ -9107,21 +9998,24 @@ async function kaHandleHelperAdd() {
     if (langSelect) langSelect.value = 'en';
     idTypeSelect.value = '';
     fileInput.value = '';
+    if (photoInput) photoInput.value = '';
 
-    const refreshed = await fetchJSON('/api/kiosk/employees');
-    kaEmployees = (refreshed || []).map(e => ({
-      ...e,
-      is_admin: !!e.kiosk_admin_access,
-      uses_timekeeping: e.worker_timekeeping !== undefined ? Number(e.worker_timekeeping) : 1
-    }));
+    const refreshed = await fetchJSON('/api/kiosk/admin/employees');
+    kaEmployees = kaNormalizeEmployees(refreshed || []);
+    if (kaStartEmployeeId) {
+      kaCurrentAdmin =
+        kaEmployees.find((e) => String(e.id) === String(kaStartEmployeeId)) || kaCurrentAdmin;
+    }
     kaRenderSettingsForm();
     kaRenderPinStatus();
+    kaRenderEmployeesGrid();
+    if (kaEmployeeSheetState.open) kaRefreshEmployeeSheet();
     if (kaRatesUnlockedAll) {
       kaRenderRatesTable(kaEmployees);
     }
   } catch (err) {
     console.error('Error adding helper:', err);
-    statusEl.textContent = err.message || 'Could not add worker.';
+    statusEl.textContent = err.message || 'Could not add employee.';
     statusEl.className = 'ka-status ka-status-error';
   }
 }

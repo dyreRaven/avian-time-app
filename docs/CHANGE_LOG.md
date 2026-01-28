@@ -1,5 +1,13 @@
 # Change Log
 
+- 2026-01-28: Renamed the shipment status to "Cleared - Ready for Pickup" across UI and data (migration included).
+- 2026-01-28: Expanded shipment status dropdowns to show all options without scrolling.
+- 2026-01-28: Kiosk admin employee cards now open a detail sheet for language, PIN updates, name-on-checks, QuickBooks status, documents, and employment dates.
+- 2026-01-28: Added kiosk admin employee detail endpoints for list, photo view/delete, and ID document access.
+- 2026-01-27: Shipment verification report and kiosk shipments now default to all dates when no date range is provided; added Active/All statuses filters and combined the Picked Up/Archived label.
+- 2026-01-27: Added a kiosk admin Employees page with optional worker photo/ID uploads; new workers are flagged for QuickBooks linking.
+- 2026-01-27: Admins can now view and delete employee photos from the employee details modal.
+- 2026-01-27: Kiosk admin Employees view now shows employee cards and hides the add form behind an “Add employee” button.
 - 2026-01-27: Removed vendor-paid fields from the admin shipment modals; only freight forwarder and customs payments remain visible.
 - 2026-01-27: Kiosk admin shipments now allow editing shipment notes with offline-safe syncing.
 - 2026-01-27: Kiosk admin shipment document uploads now require a label for "Other" and display that label as the type.

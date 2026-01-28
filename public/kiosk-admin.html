@@ -6,7 +6,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/kiosk-admin.css?v=20260127a" />
+  <link rel="stylesheet" href="/kiosk-admin.css?v=20260127d" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#10b981" />
 
@@ -91,6 +91,16 @@
           </svg>
         </span>
         <span class="ka-menu-label">Current Workers</span>
+      </button>
+      <button type="button" class="ka-header-menu-item" data-ka-view="employees" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="9" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <path d="M3.5 19c1.2-2.8 4-4.3 5.5-4.3s4.3 1.5 5.5 4.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+            <path d="M17 8v4m-2-2h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Employees</span>
       </button>
       <button type="button" class="ka-header-menu-item" data-ka-view="timesheets" role="menuitem">
         <span class="ka-menu-icon" aria-hidden="true">
@@ -340,6 +350,77 @@
 </section>
 
   <!-- ============================
+       VIEW: EMPLOYEES
+       ============================ -->
+<section id="ka-view-employees" class="hidden">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2>Employees</h2>
+        <p class="card-sub">
+          Add employees for this kiosk. New employees are flagged for QuickBooks linking in the admin console.
+        </p>
+      </div>
+      <div class="ka-employee-header-actions">
+        <span id="ka-employees-count" class="ka-tag gray">0 Employees</span>
+        <button
+          type="button"
+          id="ka-employee-add-toggle"
+          class="btn primary btn-sm"
+          aria-controls="ka-employee-add-form"
+          aria-expanded="false"
+        >Add employee</button>
+      </div>
+    </div>
+    <div class="card-body ka-employee-add hidden" id="ka-employee-add-form">
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="ka-helper-name">Full name</label>
+          <input type="text" id="ka-helper-name" placeholder="Full name" />
+        </div>
+        <div class="form-field">
+          <label for="ka-helper-nickname">Nickname (optional)</label>
+          <input type="text" id="ka-helper-nickname" placeholder="Nickname (optional)" />
+        </div>
+        <div class="form-field">
+          <label for="ka-helper-language">Language</label>
+          <select id="ka-helper-language" class="ka-select-arrow">
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="ht">Haitian Creole</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="ka-helper-id-type">ID type (optional)</label>
+          <select id="ka-helper-id-type" class="ka-select-arrow">
+            <option value="">No ID</option>
+            <option value="drivers_license">Driver’s license</option>
+            <option value="passport">Passport</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="ka-helper-photo-file">Worker photo (optional)</label>
+          <input type="file" id="ka-helper-photo-file" accept="image/*" />
+        </div>
+        <div class="form-field">
+          <label for="ka-helper-id-file">ID image (optional)</label>
+          <input type="file" id="ka-helper-id-file" accept="image/*" />
+        </div>
+      </div>
+      <p class="ka-muted">If you select an ID type, upload the matching ID image.</p>
+      <div class="ka-employee-add-actions">
+        <button type="button" id="ka-helper-submit" class="btn primary btn-sm">Add employee</button>
+        <button type="button" id="ka-employee-add-cancel" class="btn secondary btn-sm">Cancel</button>
+      </div>
+      <p id="ka-helper-status" class="ka-status"></p>
+    </div>
+  </div>
+  <div id="ka-employees-grid" class="ka-employee-grid"></div>
+  <div id="ka-employees-empty" class="ka-employee-empty hidden">No employees found.</div>
+</section>
+
+  <!-- ============================
        VIEW: DAILY SETTINGS (FIRST CLOCK-IN)
        ============================ -->
   <!-- ============================
@@ -352,7 +433,8 @@
       <label class="ka-shipments-filter-label">
         Status:
         <select id="ka-shipments-filter" class="ka-select-arrow">
-          <option value="status:Cleared - Ready for Release" selected>Cleared – Ready for Pickup</option>
+          <option value="status:Cleared - Ready for Pickup" selected>Cleared – Ready for Pickup</option>
+          <option value="active">Active</option>
           <option value="all">All statuses</option>
           <optgroup label="Filter by status">
             <option value="status:Pre-Order">Pre-Order</option>
@@ -362,9 +444,8 @@
             <option value="status:Sailed">Sailed</option>
             <option value="status:Arrived at Port">Arrived at Port</option>
             <option value="status:Awaiting Clearance">Awaiting Clearance</option>
-            <option value="status:Cleared - Ready for Release">Cleared - Ready for Release</option>
-            <option value="status:Picked Up">Picked Up</option>
-          <option value="status:Archived">Archived</option>
+            <option value="status:Cleared - Ready for Pickup">Cleared - Ready for Pickup</option>
+            <option value="status:Picked Up">Picked Up/Archived</option>
         </optgroup>
       </select>
     </label>
@@ -706,51 +787,6 @@
         </div>
       </div>
 
-      <div class="ka-settings-tile collapsed" data-settings-section="helpers">
-        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-helpers">
-          <div>
-            <div class="ka-settings-title">Add worker / helper</div>
-            <p class="ka-settings-sub">Add a new worker with an ID image so payroll can link them later.</p>
-          </div>
-          <span class="ka-settings-chevron" aria-hidden="true"></span>
-        </button>
-        <div class="ka-settings-content" id="ka-settings-helpers">
-          <div class="ka-dual-row">
-            <div class="ka-dual-left">
-              <input type="text" id="ka-helper-name" placeholder="Full name" />
-            </div>
-            <div class="ka-dual-right">
-              <input type="text" id="ka-helper-nickname" placeholder="Nickname (optional)" />
-            </div>
-          </div>
-          <div class="ka-dual-row">
-            <div class="ka-dual-left">
-              <select id="ka-helper-language" class="ka-select-arrow">
-                <option value="en">English</option>
-                <option value="es">Spanish</option>
-                <option value="ht">Haitian Creole</option>
-              </select>
-            </div>
-            <div class="ka-dual-right">
-              <select id="ka-helper-id-type" class="ka-select-arrow">
-                <option value="">Select ID type</option>
-                <option value="drivers_license">Driver’s license</option>
-                <option value="passport">Passport</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-field">
-            <label for="ka-helper-id-file">Upload ID image</label>
-            <input type="file" id="ka-helper-id-file" accept="image/*" />
-          </div>
-          <div class="ka-namechecks-actions">
-            <button type="button" id="ka-helper-submit" class="btn primary btn-sm">Add worker</button>
-          </div>
-          <p id="ka-helper-status" class="ka-status"></p>
-        </div>
-      </div>
-
       <div class="ka-settings-tile collapsed" data-settings-section="notifications" id="ka-notify-settings-tile">
         <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-notify">
           <div>
@@ -960,10 +996,136 @@
   </div>
 </div>
 
+<!-- ============================
+     EMPLOYEE DETAIL SHEET
+     ============================ -->
+<div id="ka-employee-detail-sheet" class="ka-sheet hidden" aria-hidden="true">
+  <div class="ka-sheet-backdrop" data-ka-employee-sheet-close></div>
+  <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-employee-detail-title">
+    <div class="ka-sheet-handle" data-ka-employee-sheet-handle></div>
+    <div class="ka-sheet-header">
+      <div>
+        <div class="ka-sheet-title" id="ka-employee-detail-title">Employee</div>
+        <div class="ka-sheet-sub" id="ka-employee-detail-sub"></div>
+      </div>
+      <button type="button" class="ka-sheet-close" data-ka-employee-sheet-close aria-label="Close">×</button>
+    </div>
+    <div class="ka-sheet-body">
+      <div id="ka-employee-detail-status" class="ka-status"></div>
+
+      <div class="ka-employee-sheet-section">
+        <div class="ka-employee-sheet-section-title">QuickBooks + dates</div>
+        <div class="ka-employee-meta-grid">
+          <div class="ka-employee-meta-item">
+            <span class="ka-employee-meta-label">QuickBooks</span>
+            <div id="ka-employee-detail-qbo" class="ka-tag gray">Not linked</div>
+          </div>
+          <div class="ka-employee-meta-item">
+            <span class="ka-employee-meta-label">Start date</span>
+            <div id="ka-employee-detail-start">Not set</div>
+          </div>
+          <div class="ka-employee-meta-item">
+            <span class="ka-employee-meta-label">Termination date</span>
+            <div id="ka-employee-detail-term">Not set</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ka-employee-sheet-section">
+        <div class="ka-employee-sheet-section-title">Preferences</div>
+        <div class="ka-employee-sheet-row">
+          <div class="form-field">
+            <label for="ka-employee-detail-language">Language preference</label>
+            <select id="ka-employee-detail-language" class="ka-select-arrow">
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="ht">Haitian Creole</option>
+            </select>
+          </div>
+          <button type="button" id="ka-employee-detail-language-save" class="btn secondary btn-sm">Save</button>
+        </div>
+        <p id="ka-employee-detail-language-status" class="ka-status"></p>
+
+        <div class="ka-employee-sheet-row">
+          <div class="form-field">
+            <label for="ka-employee-detail-namechecks">Name on checks</label>
+            <input type="text" id="ka-employee-detail-namechecks" placeholder="Name on checks" />
+          </div>
+          <button type="button" id="ka-employee-detail-namechecks-save" class="btn secondary btn-sm">Save</button>
+        </div>
+        <p id="ka-employee-detail-namechecks-status" class="ka-status"></p>
+      </div>
+
+      <div class="ka-employee-sheet-section">
+        <div class="ka-employee-sheet-section-title">PIN</div>
+        <div class="ka-employee-sheet-pin">
+          <div class="form-field">
+            <label for="ka-employee-detail-pin">New PIN</label>
+            <input type="password" id="ka-employee-detail-pin" inputmode="numeric" maxlength="4" placeholder="4 digits" />
+          </div>
+          <div class="form-field">
+            <label for="ka-employee-detail-pin-confirm">Confirm PIN</label>
+            <input type="password" id="ka-employee-detail-pin-confirm" inputmode="numeric" maxlength="4" placeholder="Confirm PIN" />
+          </div>
+          <button type="button" id="ka-employee-detail-pin-save" class="btn primary btn-sm">Update PIN</button>
+        </div>
+        <p id="ka-employee-detail-pin-status" class="ka-status"></p>
+      </div>
+
+      <div class="ka-employee-sheet-section">
+        <div class="ka-employee-sheet-section-title">Documents</div>
+        <div class="ka-employee-doc-grid">
+          <div class="ka-employee-doc-card">
+            <div class="ka-employee-doc-head">
+              <div>
+                <div class="ka-employee-doc-title">Photo</div>
+                <div id="ka-employee-detail-photo-date" class="ka-muted"></div>
+              </div>
+            </div>
+            <div class="ka-employee-doc-thumb" id="ka-employee-detail-photo-thumb">
+              <span id="ka-employee-detail-photo-placeholder" class="ka-muted">(no photo)</span>
+              <img id="ka-employee-detail-photo-img" class="hidden" alt="Employee photo" />
+            </div>
+            <div class="ka-employee-doc-actions">
+              <a id="ka-employee-detail-photo-view" class="btn secondary btn-sm" target="_blank" rel="noopener">View photo</a>
+              <button type="button" id="ka-employee-detail-photo-delete" class="btn danger btn-sm">Delete photo</button>
+            </div>
+          </div>
+          <div class="ka-employee-doc-card">
+            <div class="ka-employee-doc-head">
+              <div>
+                <div class="ka-employee-doc-title">ID</div>
+                <div id="ka-employee-detail-id-meta" class="ka-muted"></div>
+              </div>
+            </div>
+            <div class="ka-employee-doc-thumb ka-employee-doc-thumb--compact">
+              <span id="ka-employee-detail-id-placeholder" class="ka-muted">(no ID uploaded)</span>
+            </div>
+            <div class="ka-employee-doc-actions">
+              <a id="ka-employee-detail-id-view" class="btn secondary btn-sm" target="_blank" rel="noopener">View ID</a>
+            </div>
+          </div>
+          <div class="ka-employee-doc-card">
+            <div class="ka-employee-doc-head">
+              <div>
+                <div class="ka-employee-doc-title">Docs</div>
+                <div class="ka-muted">Other documents</div>
+              </div>
+            </div>
+            <div class="ka-employee-doc-thumb ka-employee-doc-thumb--compact">
+              <span id="ka-employee-detail-docs-placeholder" class="ka-muted">(no additional docs)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="/js/utils.js"></script>
 <script src="/js/bcrypt.min.js"></script>
 <script src="/js/offline-store.js"></script>
-<script src="/kiosk-admin.js?v=20260127a"></script>
+<script src="/kiosk-admin.js?v=20260127d"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
@@ -974,6 +1136,7 @@
 <!-- Items modal -->
 <div id="ka-items-modal" class="hidden">
   <div class="ka-items-modal-content">
+    <div class="ka-items-sheet-handle" aria-hidden="true"></div>
     <div class="ka-items-modal-header">
       <div class="ka-items-modal-headings">
         <div class="ka-items-modal-title" id="ka-items-modal-title">Verify items</div>
@@ -998,8 +1161,8 @@
     </div>
 
     <div class="ka-items-modal-footer">
-      <button class="btn btn-secondary btn-sm" id="ka-items-modal-cancel">Close</button>
-      <button class="btn btn-primary btn-sm" id="ka-items-modal-save">Save verification</button>
+      <button class="btn btn-secondary btn-sm" id="ka-items-modal-cancel">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="ka-items-modal-save">Save &amp; Close</button>
     </div>
   </div>
 </div>

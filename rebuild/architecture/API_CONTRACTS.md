@@ -44,11 +44,17 @@
 - POST `/api/employees/:id/name-on-checks` [view_payroll or kiosk device]
 - GET  `/api/employees/:id/id-document` [view_payroll]
 - DELETE `/api/employees/:id/id-document` [view_payroll]
+- GET  `/api/employees/:id/photo` [view_payroll]
+- DELETE `/api/employees/:id/photo` [view_payroll]
 - POST `/api/employees/:id/link-qbo` [view_payroll + super admin]
 - POST `/api/employees/:id/qbo-create` [view_payroll + super admin]
 - POST `/api/employees/:id/unlink-qbo` [view_payroll + super admin]
 - GET  `/api/kiosk/employees` [kiosk]
+- GET  `/api/kiosk/admin/employees` [kiosk admin]
 - POST `/api/kiosk/employees` [kiosk admin]
+- GET  `/api/kiosk/admin/employees/:id/photo` [kiosk admin]
+- DELETE `/api/kiosk/admin/employees/:id/photo` [kiosk admin]
+- GET  `/api/kiosk/admin/employees/:id/id-document` [kiosk admin]
 
 ## Permissions and Settings
 - GET  `/api/permission-templates` [super admin]

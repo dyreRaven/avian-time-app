@@ -9,7 +9,7 @@
     'Sailed',
     'Arrived at Port',
     'Awaiting Clearance',
-    'Cleared - Ready for Release',
+    'Cleared - Ready for Pickup',
     'Picked Up',
     'Archived'
   ];

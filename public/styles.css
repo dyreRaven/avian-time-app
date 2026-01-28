@@ -3754,6 +3754,32 @@ select:focus {
   color: var(--slate-700);
 }
 
+#employee-edit-modal .employee-doc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+#employee-edit-modal .employee-doc-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--slate-700);
+}
+
+#employee-edit-modal .employee-doc-meta {
+  margin-top: 2px;
+  font-size: 0.78rem;
+  color: var(--slate-500);
+}
+
+#employee-edit-modal .employee-doc-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* two-column horizontal layout for checkboxes + PINs */
 .two-col {
   display: grid;
@@ -7205,6 +7231,20 @@ body {
   font-size: 0.78rem;
   color: var(--slate-600);
   text-decoration: underline;
+}
+
+.pending-doc-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.pending-doc-links a {
+  font-size: 0.78rem;
+  color: var(--slate-600);
+  text-decoration: underline;
+  margin-top: 0;
 }
 
 /* Payroll settings spacing and smaller text */

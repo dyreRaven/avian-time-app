@@ -144,7 +144,7 @@
 #### Dashboard Tiles
 - Time Exceptions: count of open/unreviewed exceptions; links to Time Exceptions report; visible with view_time_reports or view_payroll.
 - Missing QBO Links: count of employees/vendors/projects missing QBO IDs or flagged needs_qbo_sync; links to the relevant list; visible with view_payroll.
-- Shipments Ready for Pickup: count of shipments in status "Cleared - Ready for Release"; links to Shipments board filtered; visible with see_shipments.
+- Shipments Ready for Pickup: count of shipments in status "Cleared - Ready for Pickup"; links to Shipments board filtered; visible with see_shipments.
 - Payroll Run Due: shows current pay period end date and count of unpaid entries; links to Payroll; visible with view_payroll.
 - Kiosk Offline Alerts: kiosks with last_seen_at older than 30 minutes (or never seen) while a timesheet exists today; links to Timesheets; visible with view_payroll.
 - Empty state: if no tiles are applicable, show "All clear" with only permitted quick actions.
@@ -378,11 +378,11 @@
 ### Shipments Ops: Notifications
 - Preferences are per-admin (shipment_notification_prefs) and scoped by org.
 - Filters: statuses[], project_ids[], optional shipment_ids[].
-- Empty statuses or project_ids means "all"; shipment_ids limits to explicit shipments if provided (UI should default statuses to "Cleared - Ready for Release" to avoid noisy reminders).
+- Empty statuses or project_ids means "all"; shipment_ids limits to explicit shipments if provided (UI should default statuses to "Cleared - Ready for Pickup" to avoid noisy reminders).
 - notify_time is HH:MM (24-hour) in org timezone; empty disables scheduled sends.
 - Daily summary: at notify_time, send a summary notification of matching shipments.
 - Reminders: at notify_time, notify for shipments matching filters; repeat every remind_every_days per shipment (default 1).
-- For status "Cleared - Ready for Release", reminders only fire when picked_up_by is blank.
+- For status "Cleared - Ready for Pickup", reminders only fire when picked_up_by is blank.
 - Optional "new shipments" alert can fire on refresh for newly seen shipments that match filters (device-local).
 - Channels: in-app + push; email optional; SMS disabled by default.
 - Kiosk caches preferences locally per admin/device for offline use; server prefs are the source of truth when online.
@@ -400,7 +400,7 @@
 - Verification history is stored only in verification_json.history[] (no separate audit log/report for item verification).
 - When storage_override is set for the first time on any item, append a shipment timeline entry (event_type="storage_location_set").
 - Kiosk/field devices can post verification with device credentials + employee_id.
-- UI allows verification only when status is Cleared - Ready for Release, Picked Up, or Archived.
+- UI allows verification only when status is Cleared - Ready for Pickup, Picked Up, or Archived.
 - Inline verification updates are saved immediately via /api/shipments/:id/verify-items.
 
 ### Shipment Templates
@@ -415,7 +415,7 @@
 ### Shipment Verification Report
 - Summary mode (no shipment_id): filters by project, status, and created_at date range.
 - Archived shipments are excluded by default; if status=Archived is selected, return archived shipments only.
-- Optional ready-for-pickup filter: items_verified=1, picked_up_by blank, status "Cleared - Ready for Release".
+- Optional ready-for-pickup filter: items_verified=1, picked_up_by blank, status "Cleared - Ready for Pickup".
 - Sorted newest-first by updated_at (fallback created_at), then id.
 - Filters UI: start date, end date (created_at), status, project, and a Ready for Pickup toggle.
 - Defaults: date range prefilled to the last 30 days; Ready for Pickup is off by default.
@@ -611,7 +611,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Sailed
 - Arrived at Port
 - Awaiting Clearance
-- Cleared - Ready for Release
+- Cleared - Ready for Pickup
 - Picked Up
 - Archived
 

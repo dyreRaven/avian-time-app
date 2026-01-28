@@ -141,6 +141,11 @@ Note: if language is missing or invalid, clients should default to English and s
 - Response: `[ { "id": 1, "name": "...", "nickname": "...", "name_on_checks": "...", "language": "en", "worker_timekeeping": 1, "kiosk_admin_access": 0, "pin_hash": "..." } ]`
 Note: requires kiosk device auth or admin session; returns active employees allowed on kiosk (worker_timekeeping or kiosk_admin_access); pin_hash is provided for offline validation only (raw PINs are never returned).
 
+### GET /api/kiosk/admin/employees  [kiosk admin]
+- Response: `[ { "id": 1, "name": "...", "nickname": "...", "name_on_checks": "...", "language": "en", "worker_timekeeping": 1, "kiosk_admin_access": 0, "desktop_access": 0, "pin_hash": "...", "needs_qbo_sync": 1, "employee_qbo_id": "...", "vendor_qbo_id": "...", "active": 1, "start_date": "YYYY-MM-DD", "termination_date": "YYYY-MM-DD", "id_document_type": "drivers_license", "id_document_uploaded_at": "YYYY-MM-DDTHH:MM:SSZ", "employee_photo_uploaded_at": "YYYY-MM-DDTHH:MM:SSZ", "see_shipments": 0, "modify_time": 0, "view_time_reports": 0, "view_all_timesheets": 0, "view_payroll": 0, "modify_pay_rates": 0 } ]`
+Note: requires kiosk admin device auth or admin session; returns all employees in the org (active and inactive), plus QuickBooks sync flags, document timestamps, and start/termination dates.
+Note: pin_hash is provided for offline validation only (raw PINs are never returned).
+
 ### POST /api/kiosk/admin/verify-pin  [kiosk admin]
 - Request: `{ "admin_id": 12, "pin": "1234", "device_id": "...", "device_secret": "..." }`
 - Response: `{ "ok": true }`
@@ -152,12 +157,25 @@ Create a pending employee from the kiosk (no QBO link required).
   - `name`: required
   - `nickname`: optional
   - `language`: optional (`en`/`es`/`ht`, default `en`)
-  - `id_document_type`: `drivers_license` | `passport` | `other`
-  - `id_document`: image file (required)
+  - `id_document_type`: `drivers_license` | `passport` | `other` (optional; required if `id_document` provided)
+  - `id_document`: image file (optional; required if `id_document_type` provided)
+  - `employee_photo`: image file (optional)
   - `admin_id`: required for kiosk device auth (kiosk admin employee id)
 - Response: `{ "ok": true, "id": 123, "needs_qbo_sync": 1 }`
-Note: stores the ID image securely and marks the employee as pending for desktop admin review and QBO linking (helpers/workers added on kiosk).
+Note: stores the ID image/photo securely and marks the employee as pending for desktop admin review and QBO linking (helpers/workers added on kiosk).
 Note: desktop admin sessions with view_payroll may also use this endpoint (admin_id inferred from session).
+
+### GET /api/kiosk/admin/employees/:id/photo  [kiosk admin]
+- Response: binary image (inline)
+Note: kiosk admin device auth or admin session required.
+
+### DELETE /api/kiosk/admin/employees/:id/photo  [kiosk admin]
+- Response: `{ "ok": true }`
+Note: kiosk admin device auth or admin session required.
+
+### GET /api/kiosk/admin/employees/:id/id-document  [kiosk admin]
+- Response: file download
+Note: kiosk admin device auth or admin session required.
 
 ### POST /api/employees  [view_payroll]
 Create or update.
@@ -196,6 +214,14 @@ Note: deletes the stored ID document file if present and clears id_document_type
 ### GET /api/employees/:id/id-document  [view_payroll]
 - Response: image file (inline download)
 Note: returns 404 if no ID document exists; access limited to desktop admins (view_payroll).
+
+### GET /api/employees/:id/photo  [view_payroll]
+- Response: image file (inline)
+Note: returns 404 if no employee photo exists; access limited to desktop admins (view_payroll).
+
+### DELETE /api/employees/:id/photo  [view_payroll]
+- Response: `{ "ok": true }`
+Note: deletes the stored employee photo file if present and clears employee_photo_path, employee_photo_uploaded_at, employee_photo_uploaded_by. Missing files do not fail the request.
 
 ### POST /api/employees/:id/link-qbo  [view_payroll + super admin]
 - Request: `{ "employee_qbo_id": "...", "vendor_qbo_id": "..." }`
@@ -691,7 +717,7 @@ Note: name is required; other fields are optional and default to null. items is 
 - Response: `{ "ok": true, "preference": { "enabled": true, "statuses": [ "Arrived", "Customs" ], "project_ids": [5], "shipment_ids": [1, 2], "notify_time": "09:00", "remind_every_days": 7 } }`
 Note: per-admin (user_id) preference; if none exists, return defaults (enabled=false, empty arrays, notify_time="").
 Note: empty statuses or project_ids means "all"; shipment_ids limits to explicit shipments if provided.
-Note: reminders use the same filters (no fixed status); for status "Cleared - Ready for Release", reminders only fire when picked_up_by is blank.
+Note: reminders use the same filters (no fixed status); for status "Cleared - Ready for Pickup", reminders only fire when picked_up_by is blank.
 Note: notify_time is HH:MM (24-hour) in org timezone; empty disables scheduled sends.
 
 ### PUT /api/shipments/notifications  [see_shipments]
@@ -734,14 +760,14 @@ Note: pay fields (Total Pay/Paid/Paid Date) are omitted entirely unless view_pay
 - Note: raw log; sorted by created_at DESC, then id DESC.
 
 ### GET /api/reports/shipment-verification  [see_shipments]
-- Query: `shipment_id`, `project_id`, `status`, `ready_for_pickup`, `start=YYYY-MM-DD`, `end=YYYY-MM-DD`
-- Note: summary mode excludes archived shipments by default; if status=Archived is selected, return archived shipments only.
+- Query: `shipment_id`, `project_id`, `status`, `ready_for_pickup`, `include_archived=1`, `start=YYYY-MM-DD`, `end=YYYY-MM-DD`
+- Note: summary mode excludes archived shipments by default; `include_archived=1` returns archived + non-archived, and `status=Archived` returns archived-only.
 - Note: sorted by updated_at DESC (fallback created_at), then id DESC.
-- Note: `ready_for_pickup=1|true|yes` means items_verified=1, picked_up_by blank, and status="Cleared - Ready for Release".
-- Note: UI defaults the date range to the last 30 days and leaves ready_for_pickup off unless toggled.
+- Note: `ready_for_pickup=1|true|yes` means items_verified=1, picked_up_by blank, and status="Cleared - Ready for Pickup".
+- Note: if `start`/`end` are omitted, no date filtering is applied; ready_for_pickup remains off unless toggled.
 - Note: date filters are evaluated using org timezone (created_at local date in the org’s timezone).
 - Note: items_verified_count treats legacy rows with empty verification_json + verified=1 as verified.
-- Response (summary): `{ "mode": "summary", "shipments": [ { "id": 1, "title": "...", "bol_number": "...", "sku": "...", "tracking_number": "...", "freight_forwarder": "...", "status": "Cleared - Ready for Release", "project_id": 5, "project_name": "...", "customer_name": "...", "items_verified": 1, "items_total": 12, "items_verified_count": 12, "picked_up_by": null, "picked_up_date": null, "picked_up_updated_by": "...", "picked_up_updated_at": "...", "verified_by": "...", "expected_arrival_date": "...", "storage_due_date": "...", "storage_daily_late_fee": 25, "created_at": "...", "total_price": 1200, "vendor_paid": 1, "vendor_paid_amount": 600, "shipper_paid": 0, "shipper_paid_amount": 0, "customs_paid": 0, "customs_paid_amount": 0, "total_paid": 600, "vendor_name": "...", "distinct_item_vendors": 2 } ] }`
+- Response (summary): `{ "mode": "summary", "shipments": [ { "id": 1, "title": "...", "bol_number": "...", "sku": "...", "tracking_number": "...", "freight_forwarder": "...", "status": "Cleared - Ready for Pickup", "project_id": 5, "project_name": "...", "customer_name": "...", "items_verified": 1, "items_total": 12, "items_verified_count": 12, "picked_up_by": null, "picked_up_date": null, "picked_up_updated_by": "...", "picked_up_updated_at": "...", "verified_by": "...", "expected_arrival_date": "...", "storage_due_date": "...", "storage_daily_late_fee": 25, "created_at": "...", "total_price": 1200, "vendor_paid": 1, "vendor_paid_amount": 600, "shipper_paid": 0, "shipper_paid_amount": 0, "customs_paid": 0, "customs_paid_amount": 0, "total_paid": 600, "vendor_name": "...", "distinct_item_vendors": 2 } ] }`
 - Response (detail): `{ "mode": "detail", "shipment": { "id": 1, "title": "...", "status": "Arrived" }, "items": [ { "id": 1, "shipment_id": 1, "description": "...", "sku": "...", "quantity": 2, "unit_price": 100, "line_total": 200, "vendor_name": "...", "verified": 1, "notes": "...", "verification": { "status": "verified", "notes": "...", "verified_at": "...", "verified_by": "...", "verified_by_employee_id": 12, "verified_by_user_id": 9, "verified_via": "session", "verified_device_id": null, "storage_override": "", "history": [] } } ] }`
 - Note: detail mode returns the same shipment shape as /api/shipments/:id, and items include `verification` parsed from verification_json. If verification_json is empty/invalid, fall back to `verified` and `notes`, with history defaulting to [].
 Note: paid amount fields (vendor_paid_amount, shipper_paid_amount, customs_paid_amount, total_paid) are omitted or null unless the requester has view_payroll.

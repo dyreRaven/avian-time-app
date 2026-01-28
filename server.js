@@ -62,7 +62,7 @@ const createAccessHelpers = require('./lib/access');
 const { csrfGuard, requireAuth, makeRequireAdminAccess } = require('./lib/auth');
 const createBackupHelper = require('./lib/backup');
 const createShipmentUpload = require('./lib/uploads');
-const createEmployeeIdUpload = require('./lib/id-uploads');
+const createEmployeeMediaUpload = require('./lib/employee-media-uploads');
 const { normalizePayrollRules, applyOvertimeAllocations, roundCurrency } = require('./lib/payroll-utils');
 const IS_PROD = NODE_ENV === 'production';
 if (IS_PROD && SESSION_SECRET.length < 32) {
@@ -211,11 +211,14 @@ const {
   allowedExts: shipmentAllowedExts
 } = createShipmentUpload(__dirname);
 const {
-  upload: uploadIdDocument,
+  upload: uploadEmployeeMedia,
   resolveEmployeeIdPath,
-  allowedMimes: idAllowedMimes,
-  allowedExts: idAllowedExts
-} = createEmployeeIdUpload(__dirname);
+  resolveEmployeePhotoPath,
+  idAllowedMimes,
+  idAllowedExts,
+  photoAllowedMimes,
+  photoAllowedExts
+} = createEmployeeMediaUpload(__dirname);
 
 async function tableExists(tableName) {
   const row = await dbGet(
@@ -5381,6 +5384,7 @@ app.get('/api/employees', requireViewPayroll, (req, res) => {
       e.name_on_checks_qbo_updated_at,
       e.id_document_type,
       e.id_document_uploaded_at,
+      e.employee_photo_uploaded_at,
       q.last_error AS name_on_checks_qbo_error,
       CASE
         WHEN q.created_at IS NOT NULL
@@ -5456,6 +5460,55 @@ app.get('/api/kiosk/employees', async (req, res) => {
   });
 });
 
+// Kiosk admin list with extended fields (admin-only)
+app.get('/api/kiosk/admin/employees', async (req, res) => {
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
+    return res
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authenticated' });
+  }
+
+  const orgId = adminCtx.orgId;
+  const sql = `
+    SELECT
+      e.id,
+      e.name,
+      e.name_on_checks,
+      e.nickname,
+      e.language,
+      e.worker_timekeeping,
+      e.kiosk_admin_access,
+      e.desktop_access,
+      e.pin_hash,
+      e.needs_qbo_sync,
+      e.employee_qbo_id,
+      e.vendor_qbo_id,
+      e.active,
+      e.id_document_type,
+      e.id_document_uploaded_at,
+      e.employee_photo_uploaded_at,
+      e.start_date,
+      e.termination_date,
+      p.see_shipments,
+      p.modify_time,
+      p.view_time_reports,
+      p.view_all_timesheets,
+      p.view_payroll,
+      p.modify_pay_rates
+    FROM employees e
+    LEFT JOIN employee_permissions p
+      ON p.employee_id = e.id
+    WHERE e.org_id = ?
+    ORDER BY e.name COLLATE NOCASE
+  `;
+
+  db.all(sql, [orgId], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows || []);
+  });
+});
+
 // Kiosk admin PIN verification (device auth or admin session)
 app.post('/api/kiosk/admin/verify-pin', kioskPinRateLimiter, async (req, res) => {
   try {
@@ -5501,120 +5554,155 @@ app.post('/api/kiosk/admin/verify-pin', kioskPinRateLimiter, async (req, res) =>
   }
 });
 
-// Kiosk admin: create a pending employee with ID document
-app.post('/api/kiosk/employees', wrapUpload(uploadIdDocument.single('id_document')), async (req, res) => {
-  const cleanupFile = async () => {
-    if (req.file && req.file.path) {
-      try {
-        await fsp.unlink(req.file.path);
-      } catch {}
-    }
-  };
+// Kiosk admin: create a pending employee with optional ID + photo uploads
+app.post(
+  '/api/kiosk/employees',
+  wrapUpload(
+    uploadEmployeeMedia.fields([
+      { name: 'id_document', maxCount: 1 },
+      { name: 'employee_photo', maxCount: 1 }
+    ])
+  ),
+  async (req, res) => {
+    const idFile = req.files && req.files.id_document ? req.files.id_document[0] : null;
+    const photoFile = req.files && req.files.employee_photo ? req.files.employee_photo[0] : null;
+    const uploadedFiles = [];
+    if (idFile) uploadedFiles.push(idFile);
+    if (photoFile) uploadedFiles.push(photoFile);
 
-  try {
-    const adminCtx = await resolveKioskAdmin(req);
-    if (!adminCtx.ok) {
-      await cleanupFile();
-      return res
-        .status(adminCtx.status || 401)
-        .json({ error: adminCtx.error || 'Not authenticated' });
-    }
-
-    const name = String(req.body?.name || '').trim();
-    if (!name) {
-      await cleanupFile();
-      return res.status(400).json({ error: 'Name is required.' });
-    }
-
-    const nickname = String(req.body?.nickname || '').trim() || null;
-    const rawLang = String(req.body?.language || '').trim().toLowerCase();
-    const allowedLanguages = ['en', 'es', 'ht'];
-    const language = allowedLanguages.includes(rawLang) ? rawLang : 'en';
-
-    const idType = String(req.body?.id_document_type || '').trim();
-    const allowedTypes = new Set(['drivers_license', 'passport', 'other']);
-    if (!idType || !allowedTypes.has(idType)) {
-      await cleanupFile();
-      return res.status(400).json({
-        error: 'id_document_type must be drivers_license, passport, or other.'
-      });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({ error: 'id_document file is required.' });
-    }
+    const cleanupFiles = async () => {
+      await cleanupUploadedFiles(uploadedFiles);
+    };
 
     try {
-      const result = await validateStoredUpload(req.file.path, idAllowedMimes, idAllowedExts);
-      if (!result.ok) {
-        await cleanupFile();
-        return res.status(400).json({ error: result.error || 'Unsupported file type.' });
+      const adminCtx = await resolveKioskAdmin(req);
+      if (!adminCtx.ok) {
+        await cleanupFiles();
+        return res
+          .status(adminCtx.status || 401)
+          .json({ error: adminCtx.error || 'Not authenticated' });
       }
-    } catch (err) {
-      await cleanupFile();
-      return res.status(400).json({ error: err.message || 'Unsupported file type.' });
-    }
 
-    const relativePath = `employee_ids/${req.file.filename}`;
-    const orgId = adminCtx.orgId;
-    const uploadedAt = new Date().toISOString();
+      const name = String(req.body?.name || '').trim();
+      if (!name) {
+        await cleanupFiles();
+        return res.status(400).json({ error: 'Name is required.' });
+      }
 
-    const insertRes = await dbRun(
-      `
-        INSERT INTO employees (
-          org_id,
+      const nickname = String(req.body?.nickname || '').trim() || null;
+      const rawLang = String(req.body?.language || '').trim().toLowerCase();
+      const allowedLanguages = ['en', 'es', 'ht'];
+      const language = allowedLanguages.includes(rawLang) ? rawLang : 'en';
+
+      const idType = String(req.body?.id_document_type || '').trim();
+      const allowedTypes = new Set(['drivers_license', 'passport', 'other']);
+      const hasIdFile = !!idFile;
+      const hasIdType = !!idType;
+      if (hasIdType && !allowedTypes.has(idType)) {
+        await cleanupFiles();
+        return res.status(400).json({
+          error: 'id_document_type must be drivers_license, passport, or other.'
+        });
+      }
+      if (hasIdFile && !hasIdType) {
+        await cleanupFiles();
+        return res.status(400).json({ error: 'Select an ID type for the uploaded ID.' });
+      }
+      if (hasIdType && !hasIdFile) {
+        await cleanupFiles();
+        return res.status(400).json({ error: 'Upload an ID image or clear the ID type.' });
+      }
+
+      try {
+        if (idFile) {
+          const result = await validateStoredUpload(idFile.path, idAllowedMimes, idAllowedExts);
+          if (!result.ok) {
+            await cleanupFiles();
+            return res.status(400).json({ error: result.error || 'Unsupported file type.' });
+          }
+        }
+        if (photoFile) {
+          const result = await validateStoredUpload(photoFile.path, photoAllowedMimes, photoAllowedExts);
+          if (!result.ok) {
+            await cleanupFiles();
+            return res.status(400).json({ error: result.error || 'Unsupported file type.' });
+          }
+        }
+      } catch (err) {
+        await cleanupFiles();
+        return res.status(400).json({ error: err.message || 'Unsupported file type.' });
+      }
+
+      const idRelativePath = idFile ? `employee_ids/${idFile.filename}` : null;
+      const photoRelativePath = photoFile ? `employee_photos/${photoFile.filename}` : null;
+      const orgId = adminCtx.orgId;
+      const uploadedAt = new Date().toISOString();
+      const idUploadedAt = idFile ? uploadedAt : null;
+      const photoUploadedAt = photoFile ? uploadedAt : null;
+
+      const insertRes = await dbRun(
+        `
+          INSERT INTO employees (
+            org_id,
+            name,
+            nickname,
+            language,
+            active,
+            worker_timekeeping,
+            desktop_access,
+            kiosk_admin_access,
+            needs_qbo_sync,
+            id_document_type,
+            id_document_path,
+            id_document_uploaded_at,
+            id_document_uploaded_by,
+            employee_photo_path,
+            employee_photo_uploaded_at,
+            employee_photo_uploaded_by
+          ) VALUES (?, ?, ?, ?, 1, 1, 0, 0, 1, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          orgId,
           name,
           nickname,
           language,
-          active,
-          worker_timekeeping,
-          desktop_access,
-          kiosk_admin_access,
-          needs_qbo_sync,
-          id_document_type,
-          id_document_path,
-          id_document_uploaded_at,
-          id_document_uploaded_by
-        ) VALUES (?, ?, ?, ?, 1, 1, 0, 0, 1, ?, ?, ?, ?)
-      `,
-      [
-        orgId,
-        name,
-        nickname,
-        language,
-        idType,
-        relativePath,
-        uploadedAt,
-        adminCtx.adminId
-      ]
-    );
+          idFile ? idType : null,
+          idRelativePath,
+          idUploadedAt,
+          idFile ? adminCtx.adminId : null,
+          photoRelativePath,
+          photoUploadedAt,
+          photoFile ? adminCtx.adminId : null
+        ]
+      );
 
-    const employeeId = insertRes.lastID;
+      const employeeId = insertRes.lastID;
 
-    await dbRun(
-      `
-        INSERT INTO employee_permissions (
-          employee_id,
-          see_shipments,
-          modify_time,
-          view_time_reports,
-          view_all_timesheets,
-          view_payroll,
-          modify_payroll,
-          modify_pay_rates
-        ) VALUES (?, 0, 0, 0, 0, 0, 0, 0)
-        ON CONFLICT(employee_id) DO NOTHING
-      `,
-      [employeeId]
-    );
+      await dbRun(
+        `
+          INSERT INTO employee_permissions (
+            employee_id,
+            see_shipments,
+            modify_time,
+            view_time_reports,
+            view_all_timesheets,
+            view_payroll,
+            modify_payroll,
+            modify_pay_rates
+          ) VALUES (?, 0, 0, 0, 0, 0, 0, 0)
+          ON CONFLICT(employee_id) DO NOTHING
+        `,
+        [employeeId]
+      );
 
-    return res.json({ ok: true, id: employeeId, needs_qbo_sync: 1 });
-  } catch (err) {
-    console.error('Error creating kiosk employee:', err);
-    await cleanupFile();
-    return res.status(500).json({ error: 'Failed to create employee.' });
+      return res.json({ ok: true, id: employeeId, needs_qbo_sync: 1 });
+    } catch (err) {
+      console.error('Error creating kiosk employee:', err);
+      await cleanupFiles();
+      return res.status(500).json({ error: 'Failed to create employee.' });
+    }
   }
-});
+);
 
 const RATE_UNLOCK_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -6744,6 +6832,164 @@ app.post('/api/employees/:id/name-on-checks', async (req, res) => {
   }
 });
 
+// Kiosk admin: view employee ID document
+app.get('/api/kiosk/admin/employees/:id/id-document', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
+    return res
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authenticated' });
+  }
+
+  try {
+    const row = await dbGet(
+      `
+        SELECT id_document_path
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [id, adminCtx.orgId]
+    );
+    if (!row || !row.id_document_path) {
+      return res.status(404).json({ error: 'ID document not found.' });
+    }
+
+    const absPath = resolveEmployeeIdPath(row.id_document_path);
+    if (!absPath) {
+      return res.status(404).json({ error: 'ID document not found.' });
+    }
+
+    try {
+      await fsp.access(absPath, fs.constants.R_OK);
+    } catch {
+      return res.status(404).json({ error: 'ID document not found.' });
+    }
+
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.download(absPath, path.basename(absPath));
+  } catch (err) {
+    console.error('Error loading kiosk admin ID document:', err);
+    return res.status(500).json({ error: 'Failed to load ID document.' });
+  }
+});
+
+// Kiosk admin: view employee photo
+app.get('/api/kiosk/admin/employees/:id/photo', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
+    return res
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authenticated' });
+  }
+
+  try {
+    const row = await dbGet(
+      `
+        SELECT employee_photo_path
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [id, adminCtx.orgId]
+    );
+    if (!row || !row.employee_photo_path) {
+      return res.status(404).json({ error: 'Employee photo not found.' });
+    }
+
+    const absPath = resolveEmployeePhotoPath(row.employee_photo_path);
+    if (!absPath) {
+      return res.status(404).json({ error: 'Employee photo not found.' });
+    }
+
+    try {
+      await fsp.access(absPath, fs.constants.R_OK);
+    } catch {
+      return res.status(404).json({ error: 'Employee photo not found.' });
+    }
+
+    let mime = null;
+    try {
+      mime = await sniffMimeFromFile(absPath);
+    } catch {}
+    if (!mime) mime = 'application/octet-stream';
+
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename="${path.basename(absPath)}"`);
+    return res.sendFile(absPath);
+  } catch (err) {
+    console.error('Error loading kiosk admin employee photo:', err);
+    return res.status(500).json({ error: 'Failed to load employee photo.' });
+  }
+});
+
+// Kiosk admin: delete employee photo
+app.delete('/api/kiosk/admin/employees/:id/photo', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
+    return res
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authenticated' });
+  }
+
+  try {
+    const row = await dbGet(
+      `
+        SELECT employee_photo_path
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [id, adminCtx.orgId]
+    );
+    if (!row) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+
+    if (row.employee_photo_path) {
+      const absPath = resolveEmployeePhotoPath(row.employee_photo_path);
+      if (absPath) {
+        try {
+          await fsp.unlink(absPath);
+        } catch {}
+      }
+    }
+
+    await dbRun(
+      `
+        UPDATE employees
+        SET
+          employee_photo_path = NULL,
+          employee_photo_uploaded_at = NULL,
+          employee_photo_uploaded_by = NULL
+        WHERE id = ? AND org_id = ?
+      `,
+      [id, adminCtx.orgId]
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Error deleting kiosk admin employee photo:', err);
+    return res.status(500).json({ error: 'Failed to delete employee photo.' });
+  }
+});
+
 app.get('/api/employees/:id/id-document', requireViewPayroll, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const orgId = req.session && req.session.orgId;
@@ -6831,6 +7077,103 @@ app.delete('/api/employees/:id/id-document', requireViewPayroll, async (req, res
   } catch (err) {
     console.error('Error deleting ID document:', err);
     return res.status(500).json({ error: 'Failed to delete ID document.' });
+  }
+});
+
+app.get('/api/employees/:id/photo', requireViewPayroll, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const orgId = req.session && req.session.orgId;
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  try {
+    const row = await dbGet(
+      `
+        SELECT employee_photo_path
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [id, orgId]
+    );
+    if (!row || !row.employee_photo_path) {
+      return res.status(404).json({ error: 'Employee photo not found.' });
+    }
+
+    const absPath = resolveEmployeePhotoPath(row.employee_photo_path);
+    if (!absPath) {
+      return res.status(404).json({ error: 'Employee photo not found.' });
+    }
+
+    try {
+      await fsp.access(absPath, fs.constants.R_OK);
+    } catch {
+      return res.status(404).json({ error: 'Employee photo not found.' });
+    }
+
+    let mime = null;
+    try {
+      mime = await sniffMimeFromFile(absPath);
+    } catch {}
+    if (!mime) mime = 'application/octet-stream';
+
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename="${path.basename(absPath)}"`);
+    return res.sendFile(absPath);
+  } catch (err) {
+    console.error('Error loading employee photo:', err);
+    return res.status(500).json({ error: 'Failed to load employee photo.' });
+  }
+});
+
+app.delete('/api/employees/:id/photo', requireViewPayroll, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const orgId = req.session && req.session.orgId;
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  try {
+    const row = await dbGet(
+      `
+        SELECT employee_photo_path
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [id, orgId]
+    );
+    if (!row) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+
+    if (row.employee_photo_path) {
+      const absPath = resolveEmployeePhotoPath(row.employee_photo_path);
+      if (absPath) {
+        try {
+          await fsp.unlink(absPath);
+        } catch {}
+      }
+    }
+
+    await dbRun(
+      `
+        UPDATE employees
+        SET
+          employee_photo_path = NULL,
+          employee_photo_uploaded_at = NULL,
+          employee_photo_uploaded_by = NULL
+        WHERE id = ? AND org_id = ?
+      `,
+      [id, orgId]
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Error deleting employee photo:', err);
+    return res.status(500).json({ error: 'Failed to delete employee photo.' });
   }
 });
 
@@ -12647,7 +12990,7 @@ const SHIPMENT_STATUSES = [
   'Sailed',
   'Arrived at Port',
   'Awaiting Clearance',
-  'Cleared - Ready for Release',
+  'Cleared - Ready for Pickup',
   'Picked Up',
   'Archived'
 ];
@@ -17435,7 +17778,8 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
       status,
       ready_for_pickup,
       start,
-      end
+      end,
+      include_archived
     } = req.query || {};
 
     const access = await ensureShipmentAccess(req);
@@ -17452,11 +17796,14 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
     let endDate = end ? String(end).trim() : '';
     if (!startDate) startDate = null;
     if (!endDate) endDate = null;
-    if (!startDate && !endDate) {
-      const today = getTodayIsoDate(orgTimezone);
-      startDate = shiftIsoDate(today, -30);
-      endDate = today;
-    }
+    const statusFilter = status ? String(status).trim() : '';
+    const statusKey = statusFilter.toLowerCase();
+    const includeArchived =
+      statusKey === 'all'
+        ? true
+        : statusKey === 'active'
+          ? false
+          : coerceBooleanFlag(include_archived);
 
     // ───── DETAIL MODE: single shipment with items + history ─────
     if (shipment_id) {
@@ -17568,9 +17915,12 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
     let where = 'WHERE s.org_id = ? ';
     params.push(orgId);
 
-    if (status && status === 'Archived') {
+    const isArchivedOnly = statusKey === 'archived';
+    const isAllStatus = statusKey === 'all' || statusKey === 'active' || !statusFilter;
+
+    if (isArchivedOnly) {
       where += 'AND IFNULL(s.is_archived, 0) = 1 ';
-    } else {
+    } else if (!includeArchived) {
       where += 'AND IFNULL(s.is_archived, 0) = 0 ';
     }
 
@@ -17579,15 +17929,15 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
       params.push(project_id);
     }
 
-    if (status && status !== 'Archived') {
+    if (!isAllStatus && !isArchivedOnly) {
       where += 'AND s.status = ? ';
-      params.push(status);
+      params.push(statusFilter);
     }
 
     // "Ready for pickup" filter:
     //  - items_verified = 1 (all items verified)
     //  - picked_up_by IS NULL (not yet picked up)
-    //  - status is "Cleared - Ready for Release" (adjust if you like)
+    //  - status is "Cleared - Ready for Pickup" (adjust if you like)
     if (
       ready_for_pickup === '1' ||
       ready_for_pickup === 'true' ||
@@ -17596,7 +17946,7 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
       where += `
         AND s.items_verified = 1
         AND (s.picked_up_by IS NULL OR s.picked_up_by = '')
-        AND s.status = 'Cleared - Ready for Release'
+        AND s.status = 'Cleared - Ready for Pickup'
       `;
     }
 

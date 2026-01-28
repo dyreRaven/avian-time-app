@@ -19,10 +19,90 @@ const SHIPMENT_STATUS_ICONS = {
   "Sailed": "/icons/shipments/ship.svg",
   "Arrived at Port": "/icons/shipments/port.svg",
   "Awaiting Clearance": "/icons/shipments/customs.svg",
-  "Cleared - Ready for Release": "/icons/shipments/pickup.svg",
+  "Cleared - Ready for Pickup": "/icons/shipments/pickup.svg",
   "Picked Up": "/icons/shipments/done.svg",
   "Archived": "/icons/shipments/archived.svg"
 };
+
+function normalizeShipmentStatusLabel(status) {
+  if (!status) return '';
+  return String(status)
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\s*-\s*/g, ' - ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeShipmentStatusKey(status) {
+  return normalizeShipmentStatusLabel(status).toLowerCase();
+}
+
+function normalizeShipmentStatusList(statuses = []) {
+  const unique = [];
+  const seen = new Set();
+
+  (statuses || []).forEach(status => {
+    const label = normalizeShipmentStatusLabel(status);
+    if (!label) return;
+    const key = normalizeShipmentStatusKey(label);
+    if (seen.has(key)) return;
+    seen.add(key);
+    unique.push(label);
+  });
+
+  return unique;
+}
+
+function normalizeShipmentsBoardData(data) {
+  if (!data || typeof data !== 'object') return data;
+
+  const order = [];
+  const byStatus = {};
+  const seen = new Set();
+
+  const addStatus = (status) => {
+    const label = normalizeShipmentStatusLabel(status);
+    if (!label) return null;
+    const key = normalizeShipmentStatusKey(label);
+    if (!seen.has(key)) {
+      seen.add(key);
+      order.push(label);
+      byStatus[label] = [];
+    }
+    return label;
+  };
+
+  (data.statuses || []).forEach(addStatus);
+
+  Object.entries(data.shipmentsByStatus || {}).forEach(([status, list]) => {
+    const label = addStatus(status);
+    if (!label) return;
+    if (Array.isArray(list) && list.length) {
+      list.forEach(sh => {
+        if (!sh || !sh.status) return;
+        const key = normalizeShipmentStatusKey(sh.status);
+        const labelKey = normalizeShipmentStatusKey(label);
+        if (key && labelKey && key === labelKey && sh.status !== label) {
+          sh.status = label;
+        }
+      });
+      byStatus[label].push(...list);
+    }
+  });
+
+  return {
+    ...data,
+    statuses: order,
+    shipmentsByStatus: byStatus
+  };
+}
+
+function matchNormalizedStatus(value, statuses = []) {
+  if (!value) return '';
+  const key = normalizeShipmentStatusKey(value);
+  if (!key) return '';
+  return (statuses || []).find(status => normalizeShipmentStatusKey(status) === key) || '';
+}
 
 // ───────── CURRENT USER / EMPLOYEE CONTEXT ─────────
 let CURRENT_USER = null;
@@ -166,8 +246,10 @@ function renderNotificationStatusCheckboxes(statuses = []) {
   const container = document.getElementById('shipment-notify-statuses');
   if (!container) return;
 
-  const uniqueStatuses = Array.from(new Set((statuses || []).filter(Boolean)));
-  const selected = new Set(shipmentNotificationPref.statuses || []);
+  const uniqueStatuses = normalizeShipmentStatusList(statuses || []);
+  const selected = new Set(
+    (shipmentNotificationPref.statuses || []).map(normalizeShipmentStatusKey)
+  );
   const defaultChecked = selected.size === 0;
 
   container.innerHTML = '';
@@ -187,7 +269,8 @@ function renderNotificationStatusCheckboxes(statuses = []) {
 
     checkbox.type = 'checkbox';
     checkbox.value = status;
-    checkbox.checked = defaultChecked || selected.has(status);
+    checkbox.checked =
+      defaultChecked || selected.has(normalizeShipmentStatusKey(status));
     span.textContent = status;
 
     label.appendChild(checkbox);
@@ -357,8 +440,8 @@ async function ensureNotificationPermission() {
 function getShipmentsMatchingNotification(pref) {
   const map = shipmentsBoardData?.shipmentsByStatus || {};
   const statuses = Array.isArray(pref.statuses) && pref.statuses.length
-    ? new Set(pref.statuses)
-    : new Set(Object.keys(map));
+    ? new Set(pref.statuses.map(normalizeShipmentStatusKey))
+    : new Set(Object.keys(map).map(normalizeShipmentStatusKey));
 
   const limitToProjects =
     Array.isArray(pref.project_ids) && pref.project_ids.length > 0;
@@ -373,7 +456,7 @@ function getShipmentsMatchingNotification(pref) {
   Object.entries(map).forEach(([statusKey, list]) => {
     (list || []).forEach(sh => {
       const status = sh.status || statusKey || '';
-      if (statuses.size && !statuses.has(status)) return;
+      if (statuses.size && !statuses.has(normalizeShipmentStatusKey(status))) return;
       if (limitToProjects && !projectIds.has(sh.project_id)) return;
       if (limitToIds && !ids.has(sh.id)) return;
       results.push(sh);
@@ -765,6 +848,7 @@ function populateStatusDropdown(statuses) {
   const menu = document.getElementById('status-dropdown-menu');
   const label = document.getElementById('status-dropdown-label');
   const icon = document.getElementById('status-dropdown-icon');
+  const uniqueStatuses = normalizeShipmentStatusList(statuses || []);
 
   menu.innerHTML = '';
 
@@ -781,7 +865,7 @@ function populateStatusDropdown(statuses) {
   menu.appendChild(defaultOption);
 
   // Each status
-  statuses.forEach(st => {
+  uniqueStatuses.forEach(st => {
     const row = document.createElement('div');
     const src = SHIPMENT_STATUS_ICONS[st] || "";
 
@@ -806,7 +890,7 @@ function canVerifyItems(status) {
   if (!status) return false;
   const s = status.trim().toLowerCase();
   return (
-    s === 'cleared - ready for release' ||
+    s === 'cleared - ready for pickup' ||
     s === 'picked up' ||
     s === 'archived'
   );
@@ -2832,6 +2916,7 @@ function updateShipmentsStatusFilter(statuses) {
 
   // Remember the currently selected value (if any)
   const previousValue = select.value;
+  const normalizedStatuses = normalizeShipmentStatusList(statuses);
 
   // Rebuild options, keeping a default "All statuses"
   select.innerHTML = '';
@@ -2840,7 +2925,7 @@ function updateShipmentsStatusFilter(statuses) {
   defaultOpt.textContent = 'All statuses';
   select.appendChild(defaultOpt);
 
-  statuses.forEach(status => {
+  normalizedStatuses.forEach(status => {
     const opt = document.createElement('option');
     opt.value = status;
     opt.textContent = status;
@@ -2848,8 +2933,9 @@ function updateShipmentsStatusFilter(statuses) {
   });
 
   // Restore selection if it still exists in the new list
-  if (previousValue && statuses.includes(previousValue)) {
-    select.value = previousValue;
+  if (previousValue) {
+    const matched = matchNormalizedStatus(previousValue, normalizedStatuses);
+    if (matched) select.value = matched;
   }
 }
 
@@ -2884,12 +2970,17 @@ async function loadShipmentsBoard() {
   if (!isOnline()) {
     const cached = loadShipmentsBoardCache();
     if (cached) {
-      shipmentsBoardData = cached;
-      updateShipmentsStatusFilter(cached.statuses || []);
-      if (cached.statuses) {
-        populateStatusDropdown(cached.statuses);
+      const normalized = normalizeShipmentsBoardData(cached);
+      shipmentsBoardData = normalized;
+      if (currentStatusFilter) {
+        const matched = matchNormalizedStatus(currentStatusFilter, normalized.statuses);
+        if (matched) currentStatusFilter = matched;
       }
-      renderNotificationStatusCheckboxes(cached.statuses || []);
+      updateShipmentsStatusFilter(normalized.statuses || []);
+      if (normalized.statuses) {
+        populateStatusDropdown(normalized.statuses);
+      }
+      renderNotificationStatusCheckboxes(normalized.statuses || []);
       refreshShipmentNotificationOptions();
       renderShipmentsBoard();
       return;
@@ -2899,16 +2990,22 @@ async function loadShipmentsBoard() {
 
   try {
     const data = await fetchJSON('/api/shipments?' + params.toString());
-    shipmentsBoardData = data;
+    const normalized = normalizeShipmentsBoardData(data);
+    shipmentsBoardData = normalized;
 
     // Save fresh copy for offline use
-    saveShipmentsBoardCache(data);
+    saveShipmentsBoardCache(normalized);
 
-    updateShipmentsStatusFilter(data.statuses || []);
-    if (data.statuses) {
-      populateStatusDropdown(data.statuses);
+    if (currentStatusFilter) {
+      const matched = matchNormalizedStatus(currentStatusFilter, normalized.statuses);
+      if (matched) currentStatusFilter = matched;
     }
-    renderNotificationStatusCheckboxes(data.statuses || []);
+
+    updateShipmentsStatusFilter(normalized.statuses || []);
+    if (normalized.statuses) {
+      populateStatusDropdown(normalized.statuses);
+    }
+    renderNotificationStatusCheckboxes(normalized.statuses || []);
     refreshShipmentNotificationOptions();
 
     renderShipmentsBoard();
@@ -2927,12 +3024,17 @@ async function loadShipmentsBoard() {
     // If fetch failed but we *do* have a cache, use it as a fallback
     const cached = loadShipmentsBoardCache();
     if (cached) {
-      shipmentsBoardData = cached;
-      updateShipmentsStatusFilter(cached.statuses || []);
-      if (cached.statuses) {
-        populateStatusDropdown(cached.statuses);
+      const normalized = normalizeShipmentsBoardData(cached);
+      shipmentsBoardData = normalized;
+      if (currentStatusFilter) {
+        const matched = matchNormalizedStatus(currentStatusFilter, normalized.statuses);
+        if (matched) currentStatusFilter = matched;
       }
-      renderNotificationStatusCheckboxes(cached.statuses || []);
+      updateShipmentsStatusFilter(normalized.statuses || []);
+      if (normalized.statuses) {
+        populateStatusDropdown(normalized.statuses);
+      }
+      renderNotificationStatusCheckboxes(normalized.statuses || []);
       refreshShipmentNotificationOptions();
       renderShipmentsBoard();
       if (msgEl) {
@@ -2957,7 +3059,16 @@ async function runShipmentsSummaryReport(e) {
   if (projectId) params.set('project_id', projectId);
   if (start)     params.set('start', start);
   if (end)       params.set('end', end);
-  if (status)    params.set('status', status);
+  if (status === 'all') {
+    params.set('include_archived', '1');
+  } else if (!status || status === 'active') {
+    params.set('include_archived', '0');
+  } else {
+    params.set('status', status);
+    if (status === 'Picked Up') {
+      params.set('include_archived', '1');
+    }
+  }
 
   const tbody = document.getElementById('shipments-report-table-body');
   const msgEl = document.getElementById('shipments-report-message');
@@ -3114,7 +3225,7 @@ function renderShipmentsReportTable() {
     const readyFlag =
       row.items_verified &&
       !row.picked_up_by &&
-      row.status === 'Cleared - Ready for Release';
+      row.status === 'Cleared - Ready for Pickup';
 
     selected.forEach(key => {
       const td = document.createElement('td');
@@ -3207,11 +3318,32 @@ function renderShipmentsReportTable() {
   });
 }
 
+function bindExpandableSelect(select) {
+  if (!select || select.dataset.expandSelectBound) return;
+  const expand = () => {
+    const count = select.options ? select.options.length : 0;
+    if (count > 1) select.size = count;
+  };
+  const collapse = () => {
+    select.size = 1;
+  };
+  select.addEventListener('focus', expand);
+  select.addEventListener('blur', collapse);
+  select.addEventListener('change', () => {
+    collapse();
+    select.blur();
+  });
+  collapse();
+  select.dataset.expandSelectBound = '1';
+}
+
 function initShipmentsReportUI() {
   const form = document.getElementById('shipments-report-form');
   if (form) {
     form.addEventListener('submit', runShipmentsSummaryReport);
   }
+
+  bindExpandableSelect(document.getElementById('shipments-report-status'));
 
   // Column picker
   const colToggle = document.getElementById('report-columns-toggle');
@@ -3778,7 +3910,13 @@ function openShipmentEditModal(shipment, items = []) {
 
   // Status + verification lock handler
   if (statusSelect) {
-    if (shipment.status) statusSelect.value = shipment.status;
+    if (shipment.status) {
+      const match = matchNormalizedStatus(
+        shipment.status,
+        shipmentsBoardData?.statuses || []
+      );
+      statusSelect.value = match || shipment.status;
+    }
     applyStatusColorToSelect(statusSelect);
     toggleShipmentVerificationSection(statusSelect.value);
 
@@ -4204,8 +4342,8 @@ function shipmentStatusClass(status) {
     return 'status-clearance';
   }
 
-  // "Cleared - Ready for Release", "Ready for Pickup"
-  if (contains('ready') && (contains('release') || contains('pickup'))) {
+  // "Cleared - Ready for Pickup", "Ready for Pickup"
+  if (contains('ready') && contains('pickup')) {
     return 'status-ready';
   }
 

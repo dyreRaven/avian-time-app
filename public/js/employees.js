@@ -473,6 +473,11 @@ function renderPendingEmployees() {
     const idLink = emp.id_document_uploaded_at
       ? `<a class="pending-id-link" href="/api/employees/${emp.id}/id-document" target="_blank" rel="noopener">View ID</a>`
       : '';
+    const photoLink = emp.employee_photo_uploaded_at
+      ? `<a class="pending-photo-link" href="/api/employees/${emp.id}/photo" target="_blank" rel="noopener">View photo</a>`
+      : '';
+    const docLinks = [idLink, photoLink].filter(Boolean).join('');
+    const docBlock = docLinks ? `<div class="pending-doc-links">${docLinks}</div>` : '';
     const canCreate = isSuperAdmin && createStatus.enabled;
     const createReason = isSuperAdmin ? createStatus.reason : 'Super admin required.';
     const createButton = canCreate
@@ -485,7 +490,7 @@ function renderPendingEmployees() {
       <td>
         <div>${emp.name || '(no name)'}</div>
         <div class="pending-sub">${reason}</div>
-        ${idLink}
+        ${docBlock}
       </td>
       <td>$${Number(emp.rate || 0).toFixed(2)}</td>
       <td>${emp.nickname || ''}</td>
@@ -838,6 +843,9 @@ function openEmployeeModal(emp) {
   const pinConfirmInput = document.getElementById('edit-employee-pin-confirm');
   const pinStatusEl = document.getElementById('employee-edit-pin-status');
   const emailInput = document.getElementById('edit-employee-email');
+  const photoViewLink = document.getElementById('employee-photo-view');
+  const photoDeleteBtn = document.getElementById('employee-photo-delete');
+  const photoMeta = document.getElementById('employee-photo-meta');
 
   // Title with active/inactive tag
   if (titleEl) {
@@ -900,6 +908,26 @@ function openEmployeeModal(emp) {
     pinStatusEl.textContent = emp.has_pin
       ? 'PIN is currently set for this employee.'
       : 'No PIN set yet for this employee.';
+  }
+
+  const hasPhoto = !!emp.employee_photo_uploaded_at;
+  if (photoViewLink) {
+    if (hasPhoto) {
+      photoViewLink.classList.remove('hidden');
+      photoViewLink.href = `/api/employees/${emp.id}/photo`;
+    } else {
+      photoViewLink.classList.add('hidden');
+      photoViewLink.removeAttribute('href');
+    }
+  }
+  if (photoDeleteBtn) {
+    photoDeleteBtn.classList.toggle('hidden', !hasPhoto);
+    photoDeleteBtn.disabled = !hasPhoto;
+  }
+  if (photoMeta) {
+    photoMeta.textContent = hasPhoto
+      ? `Uploaded ${formatDateTimeLocal(emp.employee_photo_uploaded_at)}`
+      : 'No photo uploaded.';
   }
 
   // Start in view mode
@@ -1172,6 +1200,63 @@ async function toggleEmployeeActiveFromModal() {
   }
 }
 
+async function deleteEmployeePhotoFromModal() {
+  const msgEl = document.getElementById('employee-edit-message');
+  if (!editingEmployeeId) {
+    if (msgEl) {
+      msgEl.textContent = 'No employee selected.';
+      msgEl.style.color = 'red';
+    }
+    return;
+  }
+
+  const ok = window.confirm('Delete this employee photo? This cannot be undone.');
+  if (!ok) return;
+
+  try {
+    await fetchJSON(`/api/employees/${editingEmployeeId}/photo`, {
+      method: 'DELETE'
+    });
+
+    const updateList = (list) => {
+      if (!Array.isArray(list)) return;
+      const emp = list.find(item => Number(item.id) === Number(editingEmployeeId));
+      if (emp) {
+        emp.employee_photo_uploaded_at = null;
+      }
+    };
+    updateList(employeesTableData);
+    updateList(pendingEmployees);
+
+    renderPendingEmployees();
+
+    const photoViewLink = document.getElementById('employee-photo-view');
+    const photoDeleteBtn = document.getElementById('employee-photo-delete');
+    const photoMeta = document.getElementById('employee-photo-meta');
+    if (photoViewLink) {
+      photoViewLink.classList.add('hidden');
+      photoViewLink.removeAttribute('href');
+    }
+    if (photoDeleteBtn) {
+      photoDeleteBtn.classList.add('hidden');
+      photoDeleteBtn.disabled = true;
+    }
+    if (photoMeta) {
+      photoMeta.textContent = 'No photo uploaded.';
+    }
+
+    if (msgEl) {
+      msgEl.textContent = 'Employee photo deleted.';
+      msgEl.style.color = 'green';
+    }
+  } catch (err) {
+    if (msgEl) {
+      msgEl.textContent = 'Error deleting employee photo: ' + err.message;
+      msgEl.style.color = 'red';
+    }
+  }
+}
+
 function initEmployeeModalControls() {
   // Make this safe to call more than once
   if (initEmployeeModalControls._init) return;
@@ -1185,6 +1270,7 @@ function initEmployeeModalControls() {
   const editBtn     = document.getElementById('employee-edit-edit');    // main Edit/Save button
   const saveBtn     = document.getElementById('employee-edit-save');    // if you still have a separate Save button
   const toggleBtn   = document.getElementById('employee-edit-toggle-active');
+  const photoDeleteBtn = document.getElementById('employee-photo-delete');
 
   // Close actions
   [closeBtn, xBtn, cancelBtn].forEach(btn => {
@@ -1225,6 +1311,12 @@ function initEmployeeModalControls() {
   if (toggleBtn) {
     toggleBtn.addEventListener('click', () => {
       toggleEmployeeActiveFromModal();
+    });
+  }
+
+  if (photoDeleteBtn) {
+    photoDeleteBtn.addEventListener('click', () => {
+      deleteEmployeePhotoFromModal();
     });
   }
 }
