@@ -9,17 +9,25 @@
 - Kiosk device auth can be sent via headers `X-Kiosk-Device-Id` and `X-Kiosk-Device-Secret` (preferred for GETs to avoid query strings). POST/PUT still accept `device_id` + `device_secret` in JSON bodies.
 
 ## Auth and Accounts
+### POST /api/auth/bootstrap-signup
+Create the initial super admin login account when no orgs exist.
+- Request: `{ "email": "...", "password": "...", "password_confirm": "..." }`
+- Response: `{ "ok": true, "userId": 1, "email": "..." }`
+Note: only allowed when no orgs exist and no users exist. Starts a session with a pending bootstrap user and returns `X-CSRF-Token` for the org setup step.
+
 ### POST /api/auth/bootstrap
-Create the first super admin user if no users exist.
-- Request: `{ "email": "...", "password": "...", "admin_name": "...", "org_name": "...", "org_timezone": "America/New_York" }`
+Create the first org + admin employee for the pending bootstrap user.
+- Request: `{ "admin_name": "...", "org_name": "...", "org_timezone": "America/New_York" }`
 - Response: `{ "ok": true, "userId": 1, "orgId": 1, "employeeId": 1, "is_super_admin": true }`
 Note: `admin_name` is stored as the full display name; the UI collects first + last name and concatenates them before sending.
 Note: creates org + org_settings, a user membership with `is_super_admin`, and an admin employee (name from admin_name) with desktop_access + kiosk_admin_access plus full permissions. Org timezone is stored on `orgs` (not duplicated in org_settings).
+Note: requires a prior `/api/auth/bootstrap-signup` session; returns 403 if signup has not been completed.
 
 ### POST /api/auth/login
 - Request: `{ "email": "...", "password": "...", "remember": true }`
 - Response (single org): `{ "ok": true, "userId": 1, "orgId": 2, "employeeId": 12 }`
 - Response (multiple orgs): `{ "ok": true, "userId": 1, "orgs": [ { "id": 2, "name": "...", "timezone": "..." } ], "requires_org_selection": true }`
+- Response (bootstrap setup): `{ "ok": true, "userId": 1, "requires_org_setup": true, "email": "..." }`
 Note: when multiple orgs are returned, the client must call `/api/auth/select-org` to set the active org in session.
 Note: only super admin memberships with login_enabled=1 are eligible for login; non-super-admin users cannot sign in.
 
@@ -27,7 +35,7 @@ Note: only super admin memberships with login_enabled=1 are eligible for login; 
 - Response: `{ "ok": true }`
 
 ### GET /api/auth/me
-- Response: `{ "ok": true, "user": { ... }, "org": { "id": 2, "name": "...", "timezone": "..." }, "membership": { "is_super_admin": true, "login_enabled": true }, "employee": { "id": 12, "name": "...", "desktop_access": true, "kiosk_admin_access": true, "worker_timekeeping": true }, "permissions": { "see_shipments": true, "modify_time": true, "view_time_reports": true, "view_all_timesheets": true, "view_payroll": true, "modify_payroll": true, "modify_pay_rates": true }, "ui_mode": "desktop" }`
+- Response: `{ "ok": true, "user": { ... }, "org": { "id": 2, "name": "...", "timezone": "..." }, "membership": { "is_super_admin": true, "login_enabled": true }, "employee": { "id": 12, "name": "...", "desktop_access": true, "kiosk_admin_access": true, "worker_timekeeping": true }, "permissions": { "see_shipments": true, "modify_time": true, "approve_time": true, "view_time_reports": true, "view_all_timesheets": true, "assign_timesheets": true, "view_payroll": true, "modify_payroll": true, "modify_pay_rates": true }, "ui_mode": "desktop" }`
 Note: if the user has multiple orgs and has not selected one yet, return 409 with `{ "ok": false, "requires_org_selection": true, "orgs": [ ... ] }`.
 
 ### GET /api/auth/orgs
@@ -52,6 +60,20 @@ Note: sets the session UI mode; desktop admins on tablets default to kiosk unles
 - Request: `{ "current_password": "...", "new_email": "..." }`
 - Response: `{ "ok": true, "email": "..." }`
 Note: new_email must be unique; requires an active desktop session.
+
+### GET /api/kiosk/admin/account  [kiosk admin]
+- Response: `{ "ok": true, "user": { "id": 1, "email": "..." }, "employee": { "id": 12, "name": "..." } }`
+Note: kiosk admin device auth or admin session required; resolves the logged-in admin's linked login account. Returns 404 if no login account is linked or the user record is missing, 403 if login is disabled or the admin lacks desktop_access.
+
+### POST /api/kiosk/admin/account/email  [kiosk admin]
+- Request: `{ "current_password": "...", "new_email": "...", "admin_id": 12, "device_id": "...", "device_secret": "..." }`
+- Response: `{ "ok": true, "email": "..." }`
+Note: kiosk admin device auth or admin session required; updates the linked login email for the active kiosk admin. new_email must be unique.
+
+### POST /api/kiosk/admin/account/password  [kiosk admin]
+- Request: `{ "current_password": "...", "new_password": "...", "admin_id": 12, "device_id": "...", "device_secret": "..." }`
+- Response: `{ "ok": true }`
+Note: kiosk admin device auth or admin session required; new_password must be at least 8 characters.
 
 ### GET /api/auth/users  [super admin]
 - Response: `{ "ok": true, "users": [ { "user_id": 1, "email": "...", "employee_id": 12, "employee_name": "...", "employee_active": 1, "desktop_access": 1, "is_super_admin": 1, "login_enabled": 1 } ] }`
@@ -79,12 +101,12 @@ Note: requires a linked employee that is active with desktop_access; sets login_
 
 ## QuickBooks
 ### GET /api/status
-- Response: `{ "qbConnected": true, "qbRealmId": "...", "lastSync": { "employees": "YYYY-MM-DDTHH:MM:SSZ", "vendors": "...", "projects": "...", "payroll_accounts": "..." } }`
+- Response: `{ "qbConnected": true, "qbRealmId": "...", "lastSync": { "employees": "YYYY-MM-DDTHH:MM:SSZ", "vendors": "...", "projects": "...", "payroll_accounts": "...", "employee_updates": "..." } }`
 Note: qbConnected is true when the active org has valid tokens + realm_id; if refresh fails, tokens are cleared and qbConnected becomes false.
 Note: lastSync values are null when never synced; they update after each successful Sync Now or payroll-accounts fetch.
 
-### GET /auth/qbo
-- Requires view_payroll + super admin; redirects to Intuit OAuth.
+### POST /api/qbo/connect
+- Requires view_payroll + super admin; returns `{ "ok": true, "url": "..." }` for Intuit OAuth redirect.
 Note: generates a server-stored OAuth state tied to org_id + user_id (10-minute TTL).
 
 ### GET /quickbooks/oauth/callback
@@ -100,8 +122,8 @@ Note: clears qbo_tokens for the active org; existing QBO IDs remain but syncing/
 - Response: `{ "ok": true, "count": 123, "synced_at": "YYYY-MM-DDTHH:MM:SSZ" }`
 Note: sync is manual (admin-triggered "Sync Now"); no scheduled syncs.
 Note: requires an active QBO connection; otherwise return 400 `{ "error": "Not connected to QuickBooks." }`.
-Note: upserts by employee_qbo_id and updates name, email, active, name_on_checks, name_on_checks_qbo_updated_at. name_on_checks uses last-updated precedence (QBO wins when its LastUpdatedTime is newer than local name_on_checks_updated_at/name_on_checks_qbo_updated_at).
-Note: preserves rate, access flags, PIN, language, worker_timekeeping, and local-only employees (no employee_qbo_id).
+Note: upserts by employee_qbo_id and updates name, given_name, family_name, active, name_on_checks, name_on_checks_qbo_updated_at. Email is not synced from QBO.
+Note: preserves rate, access flags, PIN, language, worker_timekeeping, and local-only employees (no employee_qbo_id); skips overwriting local dirty fields and records QBO conflicts.
 Note: new QBO employees default to rate=0, worker_timekeeping=true, language=en, active per QBO.
 Note: pulls active + inactive employees and paginates results to avoid QBO max-result limits.
 Note: sync is single-flight per org; return 409 `{ "error": "Sync already in progress." }` if another sync is running.
@@ -130,11 +152,17 @@ Note: requires an active QBO connection; otherwise return 400 `{ "error": "Not c
 Note: sync is single-flight per org; return 409 `{ "error": "Sync already in progress." }` if another sync is running.
 Note: for upstream QBO errors, return 502/503 with a retryable error; honor Retry-After on 429 and avoid auto-retry loops (manual retry after backoff).
 
+### POST /api/sync/qbo-employee-updates  [view_payroll + super admin]
+- Request: `{ "employee_ids": [1,2,3] }` (optional; omit to sync all pending changes)
+- Response: `{ "ok": true, "synced_at": "YYYY-MM-DDTHH:MM:SSZ", "results": [ { "employee_id": 1, "employee_name": "...", "updated_fields": ["given_name","family_name"], "failed_fields": [], "errors": null } ] }`
+Note: pushes local employee name fields (given_name, family_name, name_on_checks) to QBO; runs only when a desktop admin explicitly triggers it.
+Note: clears only the fields that successfully updated in QBO; conflicts/failed fields remain dirty for review.
+
 ## Employees
 ### GET /api/employees?status=active|inactive|pending  [view_payroll]
-- Response: `[ { "id": 1, "name": "...", ... } ]`
-Note: `pending` returns active employees missing both QBO IDs or with needs_qbo_sync = 1 (including kiosk-added helpers). Response includes needs_qbo_sync so the UI can display the reason.
-Note: response includes `name_on_checks_qbo_warning` (1 when the name-on-checks retry queue has been stuck >7 days) and `name_on_checks_qbo_error` (last error message).
+- Response: `[ { "id": 1, "name": "...", "given_name": "...", "family_name": "...", "name_on_checks": "...", "email": "...", "phone": "...", "language": "en", "worker_timekeeping": 1, "kiosk_admin_access": 0, "desktop_access": 0, "pin_hash": "...", "needs_qbo_sync": 1, "employee_qbo_id": "...", "vendor_qbo_id": "...", "qbo_dirty_fields_json": "[\"given_name\",\"name_on_checks\"]", "qbo_conflict_fields_json": "[\"family_name\"]", "active": 1, "start_date": "YYYY-MM-DD", "termination_date": "YYYY-MM-DD", "id_document_type": "drivers_license", "id_document_uploaded_at": "YYYY-MM-DDTHH:MM:SSZ", "employee_photo_uploaded_at": "YYYY-MM-DDTHH:MM:SSZ", "see_shipments": 0, "modify_time": 0, "approve_time": 0, "view_time_reports": 0, "view_all_timesheets": 0, "assign_timesheets": 0, "view_payroll": 0, "modify_pay_rates": 0, "is_super_admin": 0 } ]`
+Note: `pending` returns active employees missing both QBO IDs, flagged needs_qbo_sync, or with local dirty/conflict fields (including kiosk-added helpers). Response includes qbo_dirty_fields_json + qbo_conflict_fields_json so the UI can display the reason.
+Note: response includes legacy `name_on_checks_qbo_warning`/`name_on_checks_qbo_error` fields (retry queue is disabled for employee name updates).
 Note: if language is missing or invalid, clients should default to English and show an admin warning until corrected.
 
 ### GET /api/kiosk/employees  [kiosk]
@@ -142,9 +170,29 @@ Note: if language is missing or invalid, clients should default to English and s
 Note: requires kiosk device auth or admin session; returns active employees allowed on kiosk (worker_timekeeping or kiosk_admin_access); pin_hash is provided for offline validation only (raw PINs are never returned).
 
 ### GET /api/kiosk/admin/employees  [kiosk admin]
-- Response: `[ { "id": 1, "name": "...", "nickname": "...", "name_on_checks": "...", "language": "en", "worker_timekeeping": 1, "kiosk_admin_access": 0, "desktop_access": 0, "pin_hash": "...", "needs_qbo_sync": 1, "employee_qbo_id": "...", "vendor_qbo_id": "...", "active": 1, "start_date": "YYYY-MM-DD", "termination_date": "YYYY-MM-DD", "id_document_type": "drivers_license", "id_document_uploaded_at": "YYYY-MM-DDTHH:MM:SSZ", "employee_photo_uploaded_at": "YYYY-MM-DDTHH:MM:SSZ", "see_shipments": 0, "modify_time": 0, "view_time_reports": 0, "view_all_timesheets": 0, "view_payroll": 0, "modify_pay_rates": 0 } ]`
+- Response: `[ { "id": 1, "name": "...", "nickname": "...", "name_on_checks": "...", "email": "...", "phone": "...", "language": "en", "worker_timekeeping": 1, "kiosk_admin_access": 0, "desktop_access": 0, "pin_hash": "...", "needs_qbo_sync": 1, "employee_qbo_id": "...", "vendor_qbo_id": "...", "active": 1, "start_date": "YYYY-MM-DD", "termination_date": "YYYY-MM-DD", "id_document_type": "drivers_license", "id_document_uploaded_at": "YYYY-MM-DDTHH:MM:SSZ", "employee_photo_uploaded_at": "YYYY-MM-DDTHH:MM:SSZ", "see_shipments": 0, "modify_time": 0, "approve_time": 0, "view_time_reports": 0, "view_all_timesheets": 0, "assign_timesheets": 0, "view_payroll": 0, "modify_pay_rates": 0, "is_super_admin": 0 } ]`
 Note: requires kiosk admin device auth or admin session; returns all employees in the org (active and inactive), plus QuickBooks sync flags, document timestamps, and start/termination dates.
 Note: pin_hash is provided for offline validation only (raw PINs are never returned).
+
+### GET /api/kiosk/admin/employees/:id/documents  [kiosk admin]
+- Response: `{ "documents": [ { "id": 1, "doc_type": "worker_authorization", "doc_label": "Work Permit", "title": "permit.pdf", "uploaded_at": "YYYY-MM-DDTHH:MM:SSZ", "url": "..." } ] }`
+Note: response includes employee photo and ID documents (doc_type `photo` / `id`) plus any uploaded employee documents.
+
+### POST /api/kiosk/admin/employees/:id/documents  [kiosk admin]
+- Request (multipart/form-data):
+  - `documents`: file (PDF/images)
+  - `doc_type`: `Worker Authorization` | `Other`
+  - `doc_label`: required for `Other`
+  - `admin_id`: required for kiosk device auth
+- Response: `{ "ok": true, "document": { "id": 1, "doc_type": "...", "doc_label": "...", "title": "...", "url": "..." } }`
+Note: kiosk device auth or admin session required.
+
+### GET /api/kiosk/admin/employees/:id/employment-history  [kiosk admin]
+- Response: `{ "history": [ { "start_date": "YYYY-MM-DD", "termination_date": "YYYY-MM-DD", "recorded_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }`
+Note: kiosk admin device auth or admin session required. Returns prior employment periods only.
+
+### GET /api/kiosk/admin/employees/documents/:docId/download  [kiosk admin]
+- Response: binary file (download)
 
 ### POST /api/kiosk/admin/verify-pin  [kiosk admin]
 - Request: `{ "admin_id": 12, "pin": "1234", "device_id": "...", "device_secret": "..." }`
@@ -169,6 +217,13 @@ Note: desktop admin sessions with view_payroll may also use this endpoint (admin
 - Response: binary image (inline)
 Note: kiosk admin device auth or admin session required.
 
+### POST /api/kiosk/admin/employees/:id/photo  [kiosk admin]
+- Request (multipart/form-data):
+  - `employee_photo`: image file
+  - `admin_id`: required for kiosk device auth
+- Response: `{ "ok": true }`
+Note: kiosk admin device auth or admin session required.
+
 ### DELETE /api/kiosk/admin/employees/:id/photo  [kiosk admin]
 - Response: `{ "ok": true }`
 Note: kiosk admin device auth or admin session required.
@@ -177,11 +232,20 @@ Note: kiosk admin device auth or admin session required.
 - Response: file download
 Note: kiosk admin device auth or admin session required.
 
+### POST /api/kiosk/admin/employees/:id/id-document  [kiosk admin]
+- Request (multipart/form-data):
+  - `id_document`: PDF/image file
+  - `id_document_type`: optional (`drivers_license` | `passport` | `other`)
+  - `admin_id`: required for kiosk device auth
+- Response: `{ "ok": true }`
+Note: kiosk admin device auth or admin session required.
+
 ### POST /api/employees  [view_payroll]
 Create or update.
 - Request: `{ "id": 1, "name": "...", "rate": 12.5, "language": "en", "role_title": "Foreman", "permission_template_id": 3, "desktop_access": true, ... }`
 - Response: `{ "ok": true, "id": 1 }`
 Note: when permission_template_id is provided, access/permission defaults are copied from the template and can be overridden by explicit fields in the same request.
+Note: setting `termination_date` (YYYY-MM-DD) will automatically mark the employee inactive.
 
 ### POST /api/employees/:id/active  [view_payroll]
 - Request: `{ "active": true }`
@@ -201,10 +265,35 @@ Note: allowed values are `en`, `es`, `ht`; unknown values default to `en`.
 Note: this persists the employee default language; kiosk worker manual overrides do not call this endpoint.
 Note: desktop admin sessions with view_payroll may also update language (admin_id inferred from session).
 
+### POST /api/employees/:id/name  [kiosk device]
+- Request: `{ "name": "First Last", "admin_id": 12, "device_id": "...", "device_secret": "..." }`
+- Response: `{ "ok": true, "id": 1, "name": "First Last" }`
+Note: kiosk device auth or admin session required. Updates the employee display name and flags the employee for QuickBooks sync.
+
+### POST /api/employees/:id/phone  [kiosk device]
+- Request: `{ "phone": "...", "admin_id": 12, "device_id": "...", "device_secret": "..." }`
+- Response: `{ "ok": true, "id": 1, "phone": "..." }`
+Note: kiosk device auth or admin session required. Updates the employee phone number.
+
+### POST /api/employees/:id/worker-timekeeping  [kiosk device]
+- Request: `{ "worker_timekeeping": true, "admin_id": 12, "device_id": "...", "device_secret": "..." }`
+- Response: `{ "ok": true, "worker_timekeeping": 1 }`
+Note: kiosk device auth or admin session required. Updates whether the employee can use kiosk timekeeping.
+
+### POST /api/employees/:id/employment-dates  [kiosk device]
+- Request: `{ "start_date": "YYYY-MM-DD", "termination_date": "YYYY-MM-DD", "admin_id": 12, "device_id": "...", "device_secret": "..." }`
+- Response: `{ "ok": true, "start_date": "YYYY-MM-DD", "termination_date": "YYYY-MM-DD", "active": 0 }`
+Note: kiosk device auth or admin session required. Date fields may be null/empty; setting termination_date marks the employee inactive.
+
+### POST /api/employees/:id/reactivate  [kiosk device]
+- Request: `{ "start_date": "YYYY-MM-DD", "admin_id": 12, "device_id": "...", "device_secret": "..." }`
+- Response: `{ "ok": true, "start_date": "YYYY-MM-DD", "active": 1 }`
+Note: kiosk device auth or admin session required. Archives prior start/termination dates into employment history and clears termination_date.
+
 ### POST /api/employees/:id/name-on-checks  [view_payroll or kiosk device]
 - Request: `{ "name_on_checks": "...", "admin_id": 12, "device_id": "...", "device_secret": "..." }`
 - Response: `{ "ok": true, "id": 1, "name_on_checks": "...", "qbo_warning": null }`
-Note: if the QBO update fails, the server queues a retry and returns `qbo_warning`.
+Note: updates the local name_on_checks and marks the employee dirty for manual QBO sync; qbo_warning is always null.
 Note: kiosk requests must supply an admin_id with kiosk_admin_access.
 
 ### DELETE /api/employees/:id/id-document  [view_payroll]
@@ -224,10 +313,11 @@ Note: returns 404 if no employee photo exists; access limited to desktop admins 
 Note: deletes the stored employee photo file if present and clears employee_photo_path, employee_photo_uploaded_at, employee_photo_uploaded_by. Missing files do not fail the request.
 
 ### POST /api/employees/:id/link-qbo  [view_payroll + super admin]
-- Request: `{ "employee_qbo_id": "...", "vendor_qbo_id": "..." }`
+- Request: `{ "employee_qbo_id": "...", "vendor_qbo_id": "...", "allow_merge": true }`
 - Response: `{ "ok": true, "warning": null }`
 Note: requires an active QBO connection; provide either ID (or both); updates only provided fields and clears needs_qbo_sync; reject if the provided QBO ID is already linked to another employee.
 Note: on conflict, return 409 with `{ "error": "QBO ID already linked.", "linked_employee_id": 123, "linked_employee_name": "..." }`.
+Note: if allow_merge=true and the duplicate employee has no time entries or punches, merge the QBO-linked record into the target employee and remove the duplicate.
 Note: linking does not create QBO records; if a manual ID is not in the last synced list, allow link but return a warning (client can display).
 
 ### POST /api/employees/:id/qbo-create  [view_payroll + super admin]
@@ -236,7 +326,7 @@ Note: linking does not create QBO records; if a manual ID is not in the last syn
 Note: requires an active QBO connection; creates a QBO Employee and links it to the local employee (sets employee_qbo_id, clears needs_qbo_sync).
 Note: return 409 if the employee already has an employee_qbo_id.
 Note: require at least one successful employees sync before create; if lastSync.employees is null, return 400 `{ "error": "Sync employees first." }`.
-Note: if a duplicate candidate is detected among synced QBO employees (same email or exact name), return 409 `{ "error": "Potential duplicate in QuickBooks.", "matches": [ { "employee_qbo_id": "...", "name": "...", "email": "..." } ] }` and do not create.
+Note: if a duplicate candidate is detected among synced QBO employees (exact name), return 409 `{ "error": "Potential duplicate in QuickBooks.", "matches": [ { "employee_qbo_id": "...", "name": "..." } ] }` and do not create.
 Note: if QBO rejects the create (duplicate or validation), return 400 with the upstream error message and do not link.
 
 ### POST /api/employees/:id/unlink-qbo  [view_payroll + super admin]
@@ -246,7 +336,7 @@ Note: clears the selected QBO ID fields and sets needs_qbo_sync=1. Does not requ
 
 ## Permissions and Settings
 ### GET /api/permission-templates  [super admin]
-- Response: `{ "templates": [ { "id": 1, "name": "Foreman", "role_title": "Foreman", "access": { "worker_timekeeping": true, "desktop_access": false, "kiosk_admin_access": true }, "permissions": { "see_shipments": true, "modify_time": true, "view_time_reports": true, "view_all_timesheets": false, "view_payroll": false, "modify_payroll": false, "modify_pay_rates": false } } ] }`
+- Response: `{ "templates": [ { "id": 1, "name": "Foreman", "role_title": "Foreman", "access": { "worker_timekeeping": true, "desktop_access": false, "kiosk_admin_access": true }, "permissions": { "see_shipments": true, "modify_time": true, "approve_time": false, "view_time_reports": true, "view_all_timesheets": false, "assign_timesheets": false, "view_payroll": false, "modify_payroll": false, "modify_pay_rates": false } } ] }`
 Note: templates are per-org presets for access + permissions; applying a template copies values and does not auto-update employees later.
 
 ### POST /api/permission-templates  [super admin]
@@ -328,7 +418,7 @@ Note: rotates to a new enrollment code; existing enrolled devices remain valid.
 ### POST /api/kiosks/register  [enrollment code or device secret]
 - Request (enroll): `{ "enrollment_code": "...", "device_id": "..." }`
 - Request (refresh): `{ "device_id": "...", "device_secret": "..." }`
-- Response: `{ "ok": true, "org_timezone": "America/...", "kiosk": { "id": 1, "name": "...", "device_id": "...", "device_secret": "...", "project_id": 5 }, "sessions": [ { "id": 10, "project_id": 5, "date": "YYYY-MM-DD" } ], "active_session_id": 10 }`
+- Response: `{ "ok": true, "org_timezone": "America/...", "kiosk": { "id": 1, "name": "...", "device_id": "...", "device_secret": "...", "project_id": 5 }, "sessions": [ { "id": 10, "project_id": 5, "date": "YYYY-MM-DD", "ended_at": "YYYY-MM-DDTHH:MM:SSZ" } ], "active_session_id": 10 }`
 Note: no session required; enrollment code ties the device to the org and returns a device_secret for offline auth.
 Note: enrollment_code must be a 6-digit numeric string; server normalizes by stripping non-digits.
 Note: if the org is suspended/inactive, return 403 (Org access denied).
@@ -339,17 +429,38 @@ Note: if device_secret mismatches (or is missing), return 403/400 and require re
 Note: `sessions` in the response are today's timesheets (kiosk_sessions).
 
 ### GET /api/kiosk-sessions/today  [view_payroll]
-- Response: `[ { "id": 10, "kiosk_id": 2, "project_id": 5, "device_id": "...", "date": "YYYY-MM-DD", "created_at": "...", "created_by_employee_id": 12, "started_by_name": "...", "shared_with_admins": 0, "kiosk_name": "...", "kiosk_location": "...", "project_name": "...", "customer_name": "...", "open_punches": [ { "id": 99, "employee_id": 7, "employee_name": "...", "project_id": 5, "device_id": "...", "clock_in_ts": "..." } ] } ]`
+- Query: `date=YYYY-MM-DD` (optional; defaults to org-local today)
+- Response: `[ { "id": 10, "kiosk_id": 2, "project_id": 5, "device_id": "...", "date": "YYYY-MM-DD", "created_at": "...", "ended_at": "YYYY-MM-DDTHH:MM:SSZ", "created_by_employee_id": 12, "assigned_to_employee_id": 9, "started_by_name": "...", "assigned_to_name": "...", "shared_with_admins": 0, "shared_with_all": 0, "shared_admins": [ { "id": 7, "name": "..." } ], "kiosk_name": "...", "kiosk_location": "...", "project_name": "...", "customer_name": "...", "open_punches": [ { "id": 99, "employee_id": 7, "employee_name": "...", "project_id": 5, "device_id": "...", "clock_in_ts": "..." } ] } ]`
 Note: Timesheets are stored as kiosk_sessions; the endpoint name remains `/api/kiosk-sessions/*`.
-Note: if the requester lacks `view_all_timesheets` and is not a super admin, results are limited to timesheets they created or that are shared.
+Note: if the requester lacks `view_all_timesheets`, `view_payroll`, and is not a super admin, results are limited to timesheets they created, are assigned, or that are shared.
+Note: when a timesheet has no explicit assignee, `assigned_to_employee_id`/`assigned_to_name` default to the creator.
+Note: `shared_with_all` is legacy and always `0`; sharing is only via explicit `shared_admins`, and `shared_with_admins` reflects whether the current admin can view via sharing.
+
+### GET /api/kiosk-sessions/assignees  [assign_timesheets or super admin]
+Note: returns all active admins (desktop or kiosk admin access) eligible to be assigned.
+- Response: `{ "admins": [ { "id": 12, "name": "..." } ] }`
+
+### GET /api/kiosk-sessions/shareable-admins  [super admin]
+- Response: `{ "admins": [ { "id": 12, "name": "..." } ] }`
+
+### POST /api/kiosk-sessions/:id/assign  [assign_timesheets or super admin]
+- Request: `{ "assigned_to_employee_id": 12 }`
+- Response: `{ "ok": true, "assigned_to_employee_id": 12, "assigned_to_name": "..." }`
 
 ### POST /api/kiosk-sessions/:id/share  [super admin]
-- Request: `{ "shared_with_admins": true }`
-- Response: `{ "ok": true, "shared_with_admins": 1 }`
+- Request: `{ "shared_with_employee_ids": [12, 14] }`
+- Response: `{ "ok": true, "shared_with_employee_ids": [12, 14], "shared_admins": [ { "id": 12, "name": "..." }, { "id": 14, "name": "..." } ], "shared_with_all": 0 }`
+
+### POST /api/kiosk-sessions/:id/close  [kiosk admin]
+- Request: `{ "admin_id": 12 }`
+- Response: `{ "ok": true, "ended_at": "YYYY-MM-DDTHH:MM:SSZ", "cleared_active_project": true }`
+Note: rejects with 409 if any open punches remain on the timesheet.
+Note: closing sets `kiosk_sessions.ended_at` and clears the kiosk’s active project when it matches the closed session.
 
 ### GET /api/kiosks/:id/sessions  [view_payroll]
 - Query: `date=YYYY-MM-DD` (defaults to today)
-- Response: `[ { "id": 10, "project_id": 5, "date": "YYYY-MM-DD", "created_at": "...", "created_by_employee_id": 12, "created_by_name": "...", "shared_with_admins": 0, "project_name": "...", "customer_name": "...", "entry_count": 4, "open_count": 1, "first_clock_in_ts": "...", "last_clock_out_ts": "...", "device_entry_count": 3, "device_open_count": 1 } ]`
+- Response: `[ { "id": 10, "project_id": 5, "date": "YYYY-MM-DD", "created_at": "...", "ended_at": "YYYY-MM-DDTHH:MM:SSZ", "created_by_employee_id": 12, "assigned_to_employee_id": 9, "created_by_name": "...", "assigned_to_name": "...", "shared_with_admins": 0, "shared_with_all": 0, "project_name": "...", "customer_name": "...", "entry_count": 4, "open_count": 1, "session_entry_count": 3, "session_open_count": 1, "first_clock_in_ts": "...", "last_clock_out_ts": "...", "device_entry_count": 3, "device_open_count": 1 } ]`
+Note: `session_entry_count` and `session_open_count` are scoped to the kiosk session id (timesheet).
 
 ### POST /api/kiosks/:id/sessions  [kiosk admin]
 - Request: `{ "project_id": 5, "make_active": true, "admin_id": 12, "lat": 18.4, "lng": -66.0, "clock_me_in": true, "clock_in_payload": { "client_id": "...", "device_timestamp": "...", "lat": 18.4, "lng": -66.0, "photo_base64": "..." } }`
@@ -358,6 +469,7 @@ Note: `clock_me_in` creates an immediate clock-in for `admin_id` on the new sess
 Note: if the admin already has an open punch, return 409 and do not create a new punch.
 Note: `clock_me_in` defaults to false; `clock_in_payload` is optional and supports the same fields as `/api/kiosk/punch` (excluding project_id).
 Note: if the project has a geofence and GPS is provided and the kiosk is outside, return 409 with `{ "geofence_mismatch": true, "project_name": "...", "geo_distance_m": 150, "geo_radius_m": 120 }`. Retry with `"confirm_geo_mismatch": true` to proceed and flag the session.
+Note: return 409 if an open timesheet already exists for the same project on this kiosk today (`{ "error": "...", "existing_session_id": 123 }`).
 
 ### DELETE /api/kiosks/:id/sessions/:sessionId  [kiosk admin]
 - Request: `{ "admin_id": 12, "pin": "1234" }`
@@ -387,16 +499,16 @@ Note: foreman is stored per kiosk + date and is attached to punches/time entries
 Note: if no foreman is set, the first employee to clock in auto-sets the foreman for that day.
 
 ## Kiosk Rate Unlock
-### POST /api/kiosk/rates/unlock  [modify_pay_rates]
+### POST /api/kiosk/rates/unlock  [modify_pay_rates + view_payroll]
 - Request: `{ "admin_id": 12, "pin": "1234" }`
 - Response: `{ "ok": true, "expires_in_ms": 600000 }`
 Note: unlock expires after 10 minutes or on sign-out; PIN must be 4 digits. Returns 401 for incorrect PIN, 403 if the admin lacks modify_pay_rates or has no PIN set.
 
-### GET /api/kiosk/rates  [modify_pay_rates]
+### GET /api/kiosk/rates  [modify_pay_rates + view_payroll]
 - Response: `{ "employees": [ { "id": 1, "name": "...", "rate": 12.5 } ] }`
 Note: requires an active unlock; returns 403 if locked. Returns all active employees (including pending/unlinked).
 
-### POST /api/kiosk/rates/:id  [modify_pay_rates]
+### POST /api/kiosk/rates/:id  [modify_pay_rates + view_payroll]
 - Request: `{ "rate": 15.0 }`
 - Response: `{ "ok": true, "rate": 15.0 }`
 Note: requires an active unlock; returns 403 if locked. Successful updates refresh the unlock timer.
@@ -416,24 +528,44 @@ Note: photo_base64 is used for clock-in only and stored as clock_in_photo_path; 
 
 ### GET /api/time-punches/open  [view_time_reports or view_payroll]
 - Response: `[ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "customer_name": "...", "clock_in_ts": "..." } ]`
+Note: if the requester lacks `view_all_timesheets`, `view_payroll`, and is not a super admin, results are limited to open punches tied to timesheets they created, are assigned, or that are shared (legacy sessions without a creator are included).
 
 ### GET /api/time-entries  [view_time_reports or view_payroll]
 - Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id` (defaults to today if empty)
-- Response: `[ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "start_time": "08:00", "end_time": "16:00", "hours": 8, "total_pay": 120, "paid": 0, "paid_date": null, "verified": 0, "verified_at": null, "verified_by_employee_id": null, "resolved": 0, "resolved_at": null, "resolved_by": null, "approval_status": "pending|approved", "approved_at": null, "approved_by_employee_id": null, "updated_at": "YYYY-MM-DDTHH:MM:SSZ", "has_geo_violation": 0, "has_auto_clock_out": 0, "punch_exception_resolved": 0 } ]`
+- Response: `[ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "start_time": "08:00", "end_time": "16:00", "hours": 8, "total_pay": 120, "paid": 0, "paid_date": null, "verified": 0, "verified_at": null, "verified_by_employee_id": null, "resolved": 0, "resolved_status": "open|approved|modified|rejected", "resolved_note": null, "resolved_at": null, "resolved_by": null, "approval_status": "pending|approved", "approved_at": null, "approved_by_employee_id": null, "updated_at": "YYYY-MM-DDTHH:MM:SSZ", "has_geo_violation": 0, "has_auto_clock_out": 0, "punch_exception_resolved": 0 } ]`
 - Note: pay fields (`total_pay`, `paid`, `paid_date`) should be hidden unless `view_payroll` is granted.
-Note: approval_status must be approved by a super admin before payroll can run; any edit resets approval to pending.
+Note: approval_status must be approved by a user with approve_time (payroll permissions) before payroll can run; any edit resets approval to pending. Field review (resolved_status/resolved) is required before approval.
+Note: resolved_status/resolved track field review; entries start open and must be reviewed by a modify_time admin before payroll approval.
 Note: defaults to today when no filters are provided; response is capped (legacy limit 200).
 
-### GET /api/kiosk/time-entries  [kiosk admin + modify_time]
+### GET /api/time-entries/pending-count  [view_time_reports or view_payroll]
+- Response: `{ "pending": 12 }`
+- Note: returns the total count of time entries awaiting field review across all dates for the org.
+
+### GET /api/time-entries/pending  [view_time_reports or view_payroll]
+- Query: `employee_id`, `project_id`, `limit` (optional)
+- Response: `[ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "start_time": "08:00", "end_time": "16:00", "hours": 8, "total_pay": 120, "paid": 0, "paid_date": null, "verified": 0, "verified_at": null, "verified_by_employee_id": null, "resolved": 0, "resolved_status": "open|approved|modified|rejected", "resolved_note": null, "resolved_at": null, "resolved_by": null, "approval_status": "pending|approved", "approved_at": null, "approved_by_employee_id": null, "updated_at": "YYYY-MM-DDTHH:MM:SSZ", "has_geo_violation": 0, "has_auto_clock_out": 0, "punch_exception_resolved": 0 } ]`
+- Note: returns time entries awaiting field review across all dates (limited). Pay fields are hidden unless `view_payroll` is granted.
+
+### GET /api/kiosk/time-entries  [kiosk admin + view_time_reports or view_payroll]
 - Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id` (defaults to today if empty)
 - Response: same shape as `/api/time-entries`
 - Note: pay fields should be hidden unless `view_payroll` is granted.
+
+### GET /api/kiosk/time-entries/pending-count  [kiosk admin + view_time_reports or view_payroll]
+- Response: `{ "pending": 12 }`
+- Note: returns the total count of time entries awaiting field review across all dates for the org.
+
+### GET /api/kiosk/time-entries/pending  [kiosk admin + view_time_reports or view_payroll]
+- Query: `employee_id`, `project_id`, `limit` (optional)
+- Response: same shape as `/api/time-entries/pending`
+- Note: returns pending-review time entries across all dates (limited). Pay fields are hidden unless `view_payroll` is granted.
 
 ### POST /api/time-entries  [modify_time]
 - Request: `{ "employee_id": 1, "project_id": 5, "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "start_time": "08:00", "end_time": "16:00", "hours": 8, "note": "...", "client_id": "..." }`
 - Response: `{ "ok": true, "id": 1, "total_pay": 120 }`
 Note: manual entries are single-day (start_date = end_date); hours should match the provided times. note is required for manual creation. total_pay is computed from the employee's current rate.
-Note: creating or editing a time entry resets approval_status to pending.
+Note: creating or editing a time entry resets field review (resolved/resolved_status) and approval_status to pending.
 Note: note requirements apply only to modify_time actions; view-only users cannot call this endpoint.
 Note: client_id is optional and used to dedupe offline retries.
 Note: duplicate client_id returns ok=true with alreadyProcessed=true.
@@ -442,7 +574,7 @@ Note: duplicate client_id returns ok=true with alreadyProcessed=true.
 - Request: `{ "employee_id": 1, "project_id": 5, "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "start_time": "08:00", "end_time": "16:00", "hours": 8, "note": "...", "client_id": "...", "if_match_updated_at": "YYYY-MM-DDTHH:MM:SSZ" }`
 - Response: `{ "ok": true, "id": 1, "total_pay": 120 }`
 Note: note is required for edits; paid entries return 409 and must be corrected with a new adjustment entry. total_pay is recalculated using the current employee rate.
-Note: editing a time entry resets approval_status to pending.
+Note: editing a time entry resets field review (resolved/resolved_status) and approval_status to pending.
 Note: note requirements apply only to modify_time actions; view-only users cannot call this endpoint.
 Note: client_id is optional and used to dedupe offline retries.
 Note: duplicate client_id returns ok=true with alreadyProcessed=true.
@@ -458,16 +590,22 @@ Note: verify/unverify is an accuracy check and is logged in the audit trail; it 
 - Response: `{ "id": 1, "resolved": 1, "resolved_at": "...", "resolved_by": "admin" }`
 Note: resolve/unresolve marks the entry as resolved without modifying times; use the exception review flow for approve/modify/reject workflows. note is required for resolve/unresolve.
 
-### POST /api/time-entries/:id/approve  [modify_time + super admin]
-- Request: `{ "note": "...", "actor_name": "...", "if_match_updated_at": "YYYY-MM-DDTHH:MM:SSZ" }`
-- Response: `{ "ok": true, "approval_status": "approved", "approved_at": "YYYY-MM-DDTHH:MM:SSZ", "approved_by_employee_id": 12 }`
-Note: note is required when the entry has discrepancies or was manually modified since last approval. Approvals are audited.
+### POST /api/time-entries/:id/send-back  [modify_time]
+- Request: `{ "note": "...", "if_match_updated_at": "YYYY-MM-DDTHH:MM:SSZ" }`
+- Response: `{ "ok": true, "id": 1, "approval_status": "pending", "resolved_status": "open" }`
+Note: send-back clears payroll approval and resets field review to open; note is required. Paid entries return 409 and must be un-paid before sending back.
 Note: if_match_updated_at is optional; when provided and stale, return 409 with the current time entry snapshot.
 
-### POST /api/time-entries/approve  [modify_time + super admin]
+### POST /api/time-entries/:id/approve  [modify_time + approve_time]
+- Request: `{ "note": "...", "actor_name": "...", "if_match_updated_at": "YYYY-MM-DDTHH:MM:SSZ" }`
+- Response: `{ "ok": true, "approval_status": "approved", "approved_at": "YYYY-MM-DDTHH:MM:SSZ", "approved_by_employee_id": 12 }`
+Note: field review (resolved_status/resolved) is required before approval. Note is required when the entry has discrepancies or was manually modified since last approval. Approvals are audited.
+Note: if_match_updated_at is optional; when provided and stale, return 409 with the current time entry snapshot.
+
+### POST /api/time-entries/approve  [modify_time + approve_time]
 - Request: `{ "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "employee_id": 1, "project_id": 5, "approve_all": true }`
 - Response: `{ "ok": true, "approved_count": 42, "skipped": [ { "id": 123, "reason": "requires_note" } ] }`
-Note: bulk approve is allowed only for clean entries (no discrepancies and no manual edits). Entries that require a note must be approved individually.
+Note: bulk approve is allowed only for clean entries (no discrepancies and no manual edits) that have completed field review. Entries that require a note or field review must be approved individually.
 
 ### GET /api/time-exceptions  [view_time_reports or view_payroll]
 - Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id`, `hide_resolved=true|false`
@@ -476,11 +614,11 @@ Note: start/end are required; results combine punch exceptions and time-entry vs
 Note: auto_clock_out_reason values: `midnight_auto`, `catch_up_auto`, `daily_max`, `weekly_max`.
 
 ### POST /api/time-exceptions/:id/review  [modify_time]
-- Request: `{ "source": "punch|time_entry", "action": "approve|modify|reject", "note": "...", "actor_name": "...", "updates": { ... }, "if_match_updated_at": "YYYY-MM-DDTHH:MM:SSZ", "client_id": "..." }`
+- Request: `{ "source": "punch|time_entry", "action": "approve|modify|reject", "note": "...", "actor_name": "...", "updates": { ... }, "resolve": true|false, "if_match_updated_at": "YYYY-MM-DDTHH:MM:SSZ", "client_id": "..." }`
 - Request (updates for punch): `{ "clock_in_ts": "...", "clock_out_ts": "...", "project_id": 5, "clock_out_project_id": 5 }`
 - Request (updates for time_entry): `{ "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "start_time": "08:00", "end_time": "16:00", "hours": 8, "project_id": 5 }`
-- Response: `{ "ok": true, "status": "approved|modified|rejected" }`
-Note: note is required for approve on discrepancies (all time-exception rows) and for modify/reject. Punch edits must stay within a single day (<24h) and clock-in/out projects must match; time entry edits must stay within a single day with valid HH:MM times and hours 0–24. Review actions mark the exception resolved and are audited.
+- Response: `{ "ok": true, "status": "approved|modified|rejected|open" }`
+Note: note is required for approve on discrepancies (all time-exception rows) and for modify/reject. Punch edits must stay within a single day (<24h) and clock-in/out projects must match; time entry edits must stay within a single day with valid HH:MM times and hours 0–24. Review actions mark the exception resolved and are audited. For modify, `resolve=false` applies edits but keeps review status open (pending).
 Note: when reviewing punch exceptions, the linked time entry is created (if missing) or updated on modify, using the employee’s current rate and resetting approval to pending.
 Note: if_match_updated_at is optional; when provided and stale, return 409 with the current exception snapshot. client_id is optional and provides idempotency for offline retries.
 
@@ -511,7 +649,7 @@ Note: when overtime is enabled and includeOvertime=true, totals in the summary/c
 ### GET /api/payroll/time-entries  [view_payroll]
 - Query: `employeeId`, `start=YYYY-MM-DD`, `end=YYYY-MM-DD` (all required)
 - Response: `[ { "id": 1, "employee_id": 7, "project_id": 5, "project_name": "...", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "start_time": "08:00", "end_time": "16:00", "hours": 8, "total_pay": 120, "rate": 15, "resolved_status": "approved", "resolved_note": null, "punch_count": 2, "punch_exception_count": 0, "punch_exception_unapproved_count": 0, "punch_hours": 8 } ]`
-- Note: returns only entries eligible for payroll (exceptions approved or none); hours/total_pay are rounded for display.
+- Note: returns only entries eligible for payroll (field review complete; exceptions approved/modified or none); hours/total_pay are rounded for display.
 Note: total_pay reflects base pay for the entry; overtime adjustments are applied at payroll summary/run time.
 
 ### POST /api/payroll/preflight-checks  [modify_payroll]
@@ -525,7 +663,7 @@ Note: class is required; if missing or not found in QBO, the employee result is 
 Note: validates start/end (YYYY-MM-DD) and enforces a max 31-day range.
 Note: excludeEmployeeIds removes those employees from the draft set; onlyEmployeeIds further limits to a subset (useful for retry).
 Note: missing QBO link yields ok=false with an error like "No QuickBooks payee linked"; UI should alert before create-checks.
-Note: if any time entries in the period are not approved, return 409 with a list of pending approvals.
+Note: if any time entries in the period are missing field review, return 409 with a list of pending reviews; if approvals are missing, return 409 with a list of pending approvals.
 
 ### POST /api/payroll/create-checks  [modify_payroll]
 - Request: `{ "preflight_id": 42, "payload_hash": "sha256:...", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "bankAccountName": "...", "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "...", "includeOvertime": true, "overrides": [ { "employeeId": 1, "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "..." } ], "lineOverrides": [ { "employeeId": 1, "projectId": 5, "expenseAccountName": "...", "description": "...", "className": "..." } ], "customLines": [ { "employeeId": 1, "amount": 50, "description": "...", "expenseAccountName": "...", "className": "...", "projectId": 5 } ], "excludeEmployeeIds": [1, 2], "onlyEmployeeIds": [3], "isRetry": false, "originalPayrollRunId": 10, "fromAttemptId": 5, "idempotencyKey": "...", "run_type": "standard|adjustment", "adjustment_reason": "..." }`
@@ -535,7 +673,7 @@ Note: if idempotencyKey was already completed for the same period and isRetry=fa
 Note: if idempotencyKey exists for the same period and status is PENDING/IN_PROGRESS, return 409 (run already in progress). If status is FAILED/PARTIAL and isRetry=false, return 409 and require a retry flow or a new idempotency key.
 Note: create-checks requires a valid preflight_id + payload_hash that match the request; return 400 if missing, stale, or mismatched.
 Note: if the eligible time-entry snapshot changed since preflight, return 409 and require a new preflight.
-Note: if any time entries in the period are not approved, return 409 with a list of pending approvals.
+Note: if any time entries in the period are missing field review, return 409 with a list of pending reviews; if approvals are missing, return 409 with a list of pending approvals.
 Note: standard runs reject overlapping periods; adjustment runs are allowed only with explicit run_type=adjustment + adjustment_reason.
 Note: the system always creates new checks; it does not merge into existing queued checks.
 Note: per-employee failures return ok=false with an error message; successful employees are marked paid, failed employees remain unpaid.
@@ -566,22 +704,23 @@ Note: raw log (details_json is a string, not parsed). Use /api/reports/payroll-a
 ## Shipments
 ### GET /api/shipments  [see_shipments]
 - Query: `search`, `status`, `project_id`, `vendor_id`
-- Response: `{ "statuses": [ "Pre-Order", "Ordered", "..." ], "shipmentsByStatus": { "Pre-Order": [ { "id": 1, "title": "...", "status": "Pre-Order", "project_id": 5, "project_name": "...", "customer_name": "...", "vendor_name": "...", "items_verified": 0 } ] } }`
+- Response: `{ "statuses": [ "Pre-Order", "Ordered", "..." ], "shipmentsByStatus": { "Pre-Order": [ { "id": 1, "title": "...", "status": "Pre-Order", "project_id": 5, "project_name": "...", "customer_name": "...", "vendor_name": "...", "items_verified": 0, "has_shippers_invoice_doc": 1, "has_bol_doc": 0 } ] } }`
 Note: excludes archived rows by default; if status=Archived is selected, return archived rows (is_archived=1) and only archived shipments.
 Note: search applies to title, po_number, tracking_number, and bol_number (LIKE).
 Note: vendor_id filter matches vendor_id or vendor_name.
 Note: statuses includes the known status list plus any extra status values found in data.
 Note: results are sorted by updated_at DESC (fallback created_at), then created_at DESC.
-Note: payment amount fields (vendor_paid_amount, shipper_paid_amount, customs_paid_amount, total_paid) are null unless the caller has view_payroll.
+Note: has_shippers_invoice_doc and has_bol_doc are computed from shipment_documents (case-insensitive match on doc_type/doc_label for Shippers Invoice and BOL/Bill of Lading).
+Note: payment amount fields (vendor_paid_amount, shipper_paid_amount, customs_paid_amount, storage_paid_amount, total_paid) and paid-by fields (shipper_paid_by, customs_paid_by, storage_paid_by) are null unless the caller has view_payroll.
 
 ### GET /api/shipments/:id  [see_shipments]
 - Response: `{ "shipment": { "id": 1, "title": "...", "status": "Arrived", "project_id": 5, "project_name": "...", "customer_name": "...", "vendor_name": "..." }, "items": [ { "id": 10, "shipment_id": 1, "description": "...", "sku": "...", "quantity": 2, "unit_price": 10, "line_total": 20, "vendor_name": "...", "verified": 1, "notes": "...", "verification": { "status": "verified", "notes": "...", "storage_override": "" } } ] }`
 Note: returns the shipment regardless of is_archived. Items are sorted by id ASC.
 Note: verification is parsed from verification_json when present; fallback uses legacy verified/notes with storage_override="". When present, verification may also include verified_by, verified_at, verified_by_employee_id, verified_by_user_id, verified_via, verified_device_id, issue_type, and history.
-Note: payment amount fields (vendor_paid_amount, shipper_paid_amount, customs_paid_amount, total_paid) are null unless the caller has view_payroll.
+Note: payment amount fields (vendor_paid_amount, shipper_paid_amount, customs_paid_amount, storage_paid_amount, total_paid) and paid-by fields (shipper_paid_by, customs_paid_by, storage_paid_by) are null unless the caller has view_payroll.
 
 ### POST /api/shipments  [see_shipments]
-- Request: `{ "title": "...", "po_number": "...", "project_id": 1, "vendor_id": 2, "vendor_name": "...", "freight_forwarder": "...", "destination": "...", "sku": "...", "quantity": 10, "total_price": 1000, "price_per_item": 100, "expected_ship_date": "YYYY-MM-DD", "expected_arrival_date": "YYYY-MM-DD", "tracking_number": "...", "bol_number": "...", "storage_due_date": "YYYY-MM-DD", "storage_daily_late_fee": 25, "picked_up_by": "...", "picked_up_date": "YYYY-MM-DD", "vendor_paid": true, "vendor_paid_amount": 500, "shipper_paid": false, "customs_paid": false, "total_paid": 500, "items": [ { "description": "...", "sku": "...", "quantity": 1, "unit_price": 100, "line_total": 100, "vendor_name": "...", "verification": { "status": "verified", "notes": "...", "storage_override": "" } } ], "items_verified": true, "verified_by": "...", "verification_notes": "...", "website_url": "...", "notes": "...", "status": "Pre-Order" }`
+- Request: `{ "title": "...", "po_number": "...", "project_id": 1, "vendor_id": 2, "vendor_name": "...", "freight_forwarder": "...", "destination": "...", "sku": "...", "quantity": 10, "total_price": 1000, "price_per_item": 100, "expected_ship_date": "YYYY-MM-DD", "expected_arrival_date": "YYYY-MM-DD", "tracking_number": "...", "bol_number": "...", "storage_due_date": "YYYY-MM-DD", "storage_daily_late_fee": 25, "picked_up_by": "...", "picked_up_date": "YYYY-MM-DD", "vendor_paid": true, "vendor_paid_amount": 500, "shipper_paid": true, "shipper_paid_amount": 200, "shipper_paid_by": "Company", "customs_paid": true, "customs_paid_amount": 150, "customs_paid_by": "Other: Broker", "storage_paid": true, "storage_paid_amount": 75, "storage_paid_by": "Company", "total_paid": 925, "items": [ { "description": "...", "sku": "...", "quantity": 1, "unit_price": 100, "line_total": 100, "vendor_name": "...", "verification": { "status": "verified", "notes": "...", "storage_override": "" } } ], "items_verified": true, "verified_by": "...", "verification_notes": "...", "website_url": "...", "notes": "...", "status": "Pre-Order" }`
 - Response: `{ "shipment": { "id": 12, "title": "...", "status": "Pre-Order", "project_id": 1 } }`
 Note: freight_forwarder is selected from vendors flagged as freight forwarders and stored as a name string.
 Note: total_price is stored as provided; the UI defaults it to the sum of line_total but allows manual override (override does not change line items).
@@ -590,7 +729,7 @@ Note: when vendor_id is provided, server snapshots vendor_name from the vendor r
 Note: storage_daily_late_fee defaults from org settings if omitted by the client.
 
 ### PUT /api/shipments/:id  [see_shipments]
-- Request: same shape as `POST /api/shipments` (full update payload, items replaced)
+- Request: same shape as `POST /api/shipments`; when `items` is provided it replaces all line items, omit `items` to keep existing items.
 - Response: `{ "shipment": { "id": 12, "title": "...", "status": "Sailed" } }`
 Note: optional `if_match_updated_at` can be supplied to detect offline conflicts; when stale, return 409 with the current shipment snapshot.
 Note: optional `client_id` can be supplied for idempotent offline retries.
@@ -636,14 +775,26 @@ Note: created_by is set from the current admin session (user/employee) when avai
 Note: ordered by created_at ASC.
 Note: event_type is "status_change" in legacy; note is optional.
 
+### GET /api/shipments/:id/comment-threads  [see_shipments]
+- Response: `{ "threads": [ { "id": 1, "shipment_id": 12, "title": "General", "category": "General", "created_by": 12, "created_at": "...", "updated_at": "...", "created_by_name": "...", "last_comment_body": "...", "last_comment_at": "...", "last_comment_by_name": "..." } ] }`
+Note: ordered by last comment activity (latest first), falling back to thread updated_at/created_at.
+
+### POST /api/shipments/:id/comment-threads  [see_shipments]
+- Request: `{ "title": "Payments clarification", "category": "Payments", "client_id": "..." }`
+- Response: `{ "ok": true, "thread_id": 9, "thread": { "id": 9, "shipment_id": 12, "title": "...", "category": "...", "created_by": 12, "created_at": "..." } }`
+Note: title is required. category is optional. client_id is optional and used to dedupe retries.
+Note: duplicate client_id returns ok=true with alreadyProcessed=true.
+
 ### GET /api/shipments/:id/comments  [see_shipments]
-- Response: `{ "comments": [ { "id": 1, "shipment_id": 12, "body": "...", "created_by": 12, "created_at": "..." } ] }`
+- Response: `{ "comments": [ { "id": 1, "shipment_id": 12, "thread_id": 9, "body": "...", "created_by": 12, "created_at": "..." } ] }`
 Note: ordered by created_at ASC; soft-deleted comments are excluded.
+Note: `thread_id` query param filters comments to a single thread.
 
 ### POST /api/shipments/:id/comments  [see_shipments]
-- Request: `{ "body": "...", "client_id": "..." }`
+- Request: `{ "body": "...", "thread_id": 9, "client_id": "..." }`
 - Response: `{ "ok": true }`
 Note: body is required. created_by should be set from the current admin session in the rebuild.
+Note: if thread_id is omitted, the server will create or reuse a default "General" thread for the shipment.
 Note: offline kiosk sync replays queued comments to this endpoint using device credentials (employee_id, device_id, device_secret).
 Note: client_id is optional and used to dedupe offline retries.
 Note: duplicate client_id returns ok=true with alreadyProcessed=true.
@@ -654,26 +805,31 @@ Note: soft delete only (set is_deleted=1, deleted_at, deleted_by); the row remai
 Note: deletion is online-only (not queued for offline sync).
 
 ### GET /api/shipments/:id/documents  [see_shipments]
-- Response: `{ "documents": [ { "id": 1, "shipment_id": 12, "title": "...", "category": null, "doc_type": "...", "doc_label": "...", "file_path": "/api/shipments/documents/1/download", "uploaded_at": "...", "url": "/api/shipments/documents/1/download" } ] }`
+- Response: `{ "documents": [ { "id": 1, "shipment_id": 12, "title": "...", "category": null, "doc_type": "...", "doc_label": "...", "file_path": "/api/shipments/documents/1/download", "uploaded_at": "...", "url": "/api/shipments/documents/1/download", "view_url": "/api/shipments/documents/1/view", "download_url": "/api/shipments/documents/1/download" } ] }`
 Note: ordered by uploaded_at DESC, id DESC.
 Note: documents are stored outside the public root; file_path/url are download URLs.
 Note: callers without view_payroll should not receive payment/proof-of-payment documents.
 
 ### GET /api/shipments/documents/:docId/download  [see_shipments]
-- Response: file download (inline)
+- Response: file download (attachment)
+Note: returns Content-Disposition attachment with the original filename when possible.
+Note: return 404 if the file is missing on disk.
+
+### GET /api/shipments/documents/:docId/view  [see_shipments]
+- Response: file view (inline)
 Note: returns Content-Disposition inline with the original filename when possible.
 Note: return 404 if the file is missing on disk.
 
 ### POST /api/shipments/:id/documents  [see_shipments]
 - FormData: `documents[]`, optional `doc_type`, `doc_label`
-- Response: `{ "documents": [ { "id": 1, "shipment_id": 12, "title": "...", "doc_type": "...", "doc_label": "...", "file_path": "/api/shipments/documents/1/download", "url": "/api/shipments/documents/1/download" } ] }`
+- Response: `{ "documents": [ { "id": 1, "shipment_id": 12, "title": "...", "doc_type": "...", "doc_label": "...", "file_path": "/api/shipments/documents/1/download", "url": "/api/shipments/documents/1/download", "view_url": "/api/shipments/documents/1/view", "download_url": "/api/shipments/documents/1/download" } ] }`
 Note: max 10 files per request, 10 MB per file; allowed types are PDF, JPEG/JPG, PNG, GIF, WEBP.
 Note: if doc_type is "Other", doc_label is required for display.
 Note: empty uploads return `{ "documents": [] }`.
 
 ### PUT /api/shipments/:id/documents/:docId  [see_shipments]
 - Request: `{ "doc_type": "...", "doc_label": "..." }` (either field optional; empty string clears)
-- Response: `{ "document": { "id": 1, "shipment_id": 12, "title": "...", "doc_type": "...", "doc_label": "...", "file_path": "/api/shipments/documents/1/download", "url": "/api/shipments/documents/1/download" } }`
+- Response: `{ "document": { "id": 1, "shipment_id": 12, "title": "...", "doc_type": "...", "doc_label": "...", "file_path": "/api/shipments/documents/1/download", "url": "/api/shipments/documents/1/download", "view_url": "/api/shipments/documents/1/view", "download_url": "/api/shipments/documents/1/download" } }`
 Note: callers without view_payroll cannot update payment/proof-of-payment documents.
 
 ### DELETE /api/shipments/:id/documents/:docId  [see_shipments]
@@ -749,8 +905,8 @@ Note: pay fields (Total Pay/Paid/Paid Date) are omitted entirely unless view_pay
 - Note: if `paid` changes, update payroll_checks.paid/paid_date, update time_entries paid flags for the employee/run, and recalc payroll_runs totals. If only `check_number` is updated, do not touch paid or paid_date.
 
 ### GET /api/reports/payroll-audit  [view_payroll]
-- Query: `limit=50` (default 50, max 500)
-- Response: `[ { "id": 1, "event_type": "PAYROLL_RUN_STARTED", "message": "...", "payroll_run_id": 10, "created_at": "...", "details": { ... }, "actor_employee_id": 12 } ]`
+- Query: `limit=50` (default 50, max 500), optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `actor` (name or employee id)
+- Response: `[ { "id": 1, "event_type": "PAYROLL_RUN_STARTED", "message": "...", "payroll_run_id": 10, "created_at": "...", "details": { ... }, "actor_employee_id": 12, "actor_name": "..." } ]`
 - Note: sorted by created_at DESC, then id DESC. `details` is parsed from details_json; null if invalid JSON.
 - Note: event_type values include PAYROLL_RUN_STARTED, PAYROLL_QBO_COMPLETE, PAYROLL_QBO_ERROR, PAYROLL_RUN_SUCCESS, PAYROLL_RUN_PARTIAL, PAYROLL_RUN_FAILURE, PAYROLL_FATAL_ERROR, RETRY_STARTED, RETRY_QBO_COMPLETE, RETRY_SUCCESS, PAYROLL_UNPAY.
 
@@ -758,6 +914,16 @@ Note: pay fields (Total Pay/Paid/Paid Date) are omitted entirely unless view_pay
 - Query: `limit=200` (default 200, max 1000)
 - Response: `{ "ok": true, "logs": [ { "id": 1, "event_type": "PAYROLL_RUN_STARTED", "payroll_run_id": 10, "actor_employee_id": 12, "message": "...", "details_json": "{...}", "created_at": "..." } ] }`
 - Note: raw log; sorted by created_at DESC, then id DESC.
+
+### GET /api/reports/time-entry-audit  [view_time_reports or view_payroll]
+- Query: optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id`, `entry_id`, `actor` (name or employee id), `limit=200` (max 500)
+- Response: `{ "rows": [ { "id": 1, "action": "modify", "actor_name": "...", "actor_employee_id": 12, "note": "...", "created_at": "...", "entry_id": 99, "employee_id": 4, "project_id": 7, "employee_name": "...", "project_name": "...", "before": { ... }, "after": { ... } } ] }`
+- Note: rows are ordered by created_at DESC, then id DESC, and are scoped to the admin’s visible time entries.
+
+### GET /api/reports/audit-log  [admin; domain-specific perms]
+- Query: `domain` (all|access|employees|payroll|shipments|kiosks|settings|notifications|quickbooks|projects|reports), optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `actor` (name or id), `entity_type`, `entity_id`, `limit=200` (max 500)
+- Response: `{ "rows": [ { "id": 1, "action": "shipment.update", "entity_type": "shipment", "entity_id": 9, "note": "...", "created_at": "...", "actor_employee_id": 12, "actor_user_id": 3, "actor_name": "...", "before": { ... }, "after": { ... } } ] }`
+- Note: `domain=all` and `domain=access` are super-admin only. Other domains enforce their respective permissions (see_shipments for shipments; view_payroll for payroll/settings/notifications/projects/reports; super admin for quickbooks).
 
 ### GET /api/reports/shipment-verification  [see_shipments]
 - Query: `shipment_id`, `project_id`, `status`, `ready_for_pickup`, `include_archived=1`, `start=YYYY-MM-DD`, `end=YYYY-MM-DD`
@@ -767,10 +933,10 @@ Note: pay fields (Total Pay/Paid/Paid Date) are omitted entirely unless view_pay
 - Note: if `start`/`end` are omitted, no date filtering is applied; ready_for_pickup remains off unless toggled.
 - Note: date filters are evaluated using org timezone (created_at local date in the org’s timezone).
 - Note: items_verified_count treats legacy rows with empty verification_json + verified=1 as verified.
-- Response (summary): `{ "mode": "summary", "shipments": [ { "id": 1, "title": "...", "bol_number": "...", "sku": "...", "tracking_number": "...", "freight_forwarder": "...", "status": "Cleared - Ready for Pickup", "project_id": 5, "project_name": "...", "customer_name": "...", "items_verified": 1, "items_total": 12, "items_verified_count": 12, "picked_up_by": null, "picked_up_date": null, "picked_up_updated_by": "...", "picked_up_updated_at": "...", "verified_by": "...", "expected_arrival_date": "...", "storage_due_date": "...", "storage_daily_late_fee": 25, "created_at": "...", "total_price": 1200, "vendor_paid": 1, "vendor_paid_amount": 600, "shipper_paid": 0, "shipper_paid_amount": 0, "customs_paid": 0, "customs_paid_amount": 0, "total_paid": 600, "vendor_name": "...", "distinct_item_vendors": 2 } ] }`
+- Response (summary): `{ "mode": "summary", "shipments": [ { "id": 1, "title": "...", "bol_number": "...", "sku": "...", "tracking_number": "...", "freight_forwarder": "...", "status": "Cleared - Ready for Pickup", "project_id": 5, "project_name": "...", "customer_name": "...", "items_verified": 1, "items_total": 12, "items_verified_count": 12, "picked_up_by": null, "picked_up_date": null, "picked_up_updated_by": "...", "picked_up_updated_at": "...", "verified_by": "...", "expected_arrival_date": "...", "storage_due_date": "...", "storage_daily_late_fee": 25, "created_at": "...", "total_price": 1200, "vendor_paid": 1, "vendor_paid_amount": 600, "shipper_paid": 1, "shipper_paid_amount": 200, "shipper_paid_by": "Company", "customs_paid": 1, "customs_paid_amount": 150, "customs_paid_by": "Other: Broker", "storage_paid": 1, "storage_paid_amount": 75, "storage_paid_by": "Company", "total_paid": 1025, "vendor_name": "...", "distinct_item_vendors": 2 } ] }`
 - Response (detail): `{ "mode": "detail", "shipment": { "id": 1, "title": "...", "status": "Arrived" }, "items": [ { "id": 1, "shipment_id": 1, "description": "...", "sku": "...", "quantity": 2, "unit_price": 100, "line_total": 200, "vendor_name": "...", "verified": 1, "notes": "...", "verification": { "status": "verified", "notes": "...", "verified_at": "...", "verified_by": "...", "verified_by_employee_id": 12, "verified_by_user_id": 9, "verified_via": "session", "verified_device_id": null, "storage_override": "", "history": [] } } ] }`
 - Note: detail mode returns the same shipment shape as /api/shipments/:id, and items include `verification` parsed from verification_json. If verification_json is empty/invalid, fall back to `verified` and `notes`, with history defaulting to [].
-Note: paid amount fields (vendor_paid_amount, shipper_paid_amount, customs_paid_amount, total_paid) are omitted or null unless the requester has view_payroll.
+Note: paid amount fields (vendor_paid_amount, shipper_paid_amount, customs_paid_amount, storage_paid_amount, total_paid) are omitted or null unless the requester has view_payroll.
 
 ## Notifications (In-App)
 ### GET /api/notifications  [auth]

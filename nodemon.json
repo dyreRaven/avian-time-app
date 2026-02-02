@@ -3,6 +3,9 @@
     "backups/**",
     "public/uploads/**",
     "*.db",
-    "*.sqlite"
+    "*.sqlite",
+    "*.db-wal",
+    "*.db-shm",
+    "*.db-journal"
   ]
 }

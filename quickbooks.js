@@ -9,6 +9,8 @@ const BANK_ACCOUNT_NAME = '1000 - Bank Accounts:1010 - Checking (Operating)';
 
 require('dotenv').config();
 const axios = require('axios');
+const DEFAULT_QBO_HTTP_TIMEOUT_MS = 60000;
+axios.defaults.timeout = DEFAULT_QBO_HTTP_TIMEOUT_MS;
 const { normalizePayrollRules, applyOvertimeAllocations, roundCurrency } = require('./lib/payroll-utils');
 const {
   APP_TIMEZONE,
@@ -151,6 +153,69 @@ function normalizeQboResults(data, key) {
   const raw = data && data.QueryResponse ? data.QueryResponse[key] : null;
   if (!raw) return [];
   return Array.isArray(raw) ? raw : [raw];
+}
+
+function parseJsonArray(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function stringifyJsonArray(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const unique = Array.from(new Set(values.filter(Boolean)));
+  return unique.length ? JSON.stringify(unique) : null;
+}
+
+function normalizeString(value) {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed ? trimmed : null;
+}
+
+function normalizeEmail(value) {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim().toLowerCase();
+  return trimmed ? trimmed : null;
+}
+
+function normalizeMatchName(value) {
+  if (value === undefined || value === null) return null;
+  const cleaned = String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+  return cleaned ? cleaned : null;
+}
+
+function buildNameMatchKeys(value) {
+  if (value === undefined || value === null) return [];
+  const raw = String(value).trim();
+  if (!raw) return [];
+  const keys = new Set();
+  const normalized = normalizeMatchName(raw);
+  if (normalized) keys.add(normalized);
+
+  const tokens = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (tokens.length >= 2) {
+    const first = tokens[0];
+    const last = tokens[tokens.length - 1];
+    if (first && last) {
+      keys.add(`${first}${last}`);
+      keys.add(`${last}${first}`);
+    }
+  }
+
+  return Array.from(keys);
 }
 
 /* ───────── 1. AUTH URL (for "Connect to QuickBooks" button) ───────── */
@@ -763,7 +828,7 @@ async function syncEmployeesFromQuickBooks(orgId) {
     throw new Error('orgId is required for employee sync.');
   }
   const baseQuery =
-    'SELECT Id, DisplayName, GivenName, FamilyName, Active, PrimaryEmailAddr, PrintOnCheckName, MetaData FROM Employee';
+    'SELECT Id, DisplayName, GivenName, FamilyName, Active, PrintOnCheckName, PrimaryEmailAddr, MetaData FROM Employee';
   const active = await qboQueryAll(
     orgId,
     `${baseQuery} WHERE Active = true`,
@@ -795,10 +860,16 @@ async function syncEmployeesFromQuickBooks(orgId) {
         UPDATE employees
         SET
           name = ?,
+          given_name = ?,
+          family_name = ?,
           name_on_checks = ?,
           name_on_checks_updated_at = ?,
           name_on_checks_qbo_updated_at = ?,
-          email = ?,
+          qbo_last_seen_given_name = ?,
+          qbo_last_seen_family_name = ?,
+          qbo_last_seen_name_on_checks = ?,
+          qbo_conflict_fields_json = ?,
+          qbo_conflict_updated_at = ?,
           active = ?
         WHERE employee_qbo_id = ? AND org_id = ?
       `;
@@ -808,26 +879,36 @@ async function syncEmployeesFromQuickBooks(orgId) {
           org_id,
           employee_qbo_id,
           name,
+          given_name,
+          family_name,
           nickname,
           name_on_checks,
           rate,
           active,
           pin_hash,
-          email,
           language,
           worker_timekeeping,
           desktop_access,
           kiosk_admin_access,
           name_on_checks_updated_at,
           name_on_checks_qbo_updated_at,
-          needs_qbo_sync
+          needs_qbo_sync,
+          qbo_last_seen_given_name,
+          qbo_last_seen_family_name,
+          qbo_last_seen_name_on_checks,
+          qbo_conflict_fields_json,
+          qbo_conflict_updated_at
         )
-        VALUES (?, ?, ?, NULL, ?, 0, ?, NULL, ?, 'en', 1, 0, 0, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, NULL, 'en', 1, 0, 0, ?, ?, 0, ?, ?, ?, ?, ?)
       `;
 
       const getRow = (sql, params) =>
         new Promise((resolve, reject) => {
           db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
+        });
+      const getRows = (sql, params) =>
+        new Promise((resolve, reject) => {
+          db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows || [])));
         });
       const runSql = (sql, params) =>
         new Promise((resolve, reject) => {
@@ -840,21 +921,19 @@ async function syncEmployeesFromQuickBooks(orgId) {
         try {
           for (const emp of employees) {
             const qboId = String(emp.Id);
-            const qboPrintName = (emp.PrintOnCheckName || '').trim();
-            const displayName =
-              qboPrintName ||
-              emp.DisplayName ||
-              [emp.GivenName || '', emp.FamilyName || ''].join(' ').trim();
+            const qboGiven = normalizeString(emp.GivenName);
+            const qboFamily = normalizeString(emp.FamilyName);
+            const qboDisplay =
+              normalizeString(emp.DisplayName) ||
+              [qboGiven, qboFamily].filter(Boolean).join(' ').trim() ||
+              null;
+            const qboPrintName =
+              normalizeString(emp.PrintOnCheckName) || qboDisplay || null;
             const qboUpdatedIso =
               emp.MetaData && emp.MetaData.LastUpdatedTime
                 ? new Date(emp.MetaData.LastUpdatedTime).toISOString()
                 : null;
             const qboUpdatedMs = qboUpdatedIso ? Date.parse(qboUpdatedIso) : 0;
-
-            const email =
-              emp.PrimaryEmailAddr && emp.PrimaryEmailAddr.Address
-                ? emp.PrimaryEmailAddr.Address.trim()
-                : null;
 
             const isActive =
               emp.Active === undefined || emp.Active === null
@@ -866,9 +945,17 @@ async function syncEmployeesFromQuickBooks(orgId) {
             const row = await getRow(
               `
                 SELECT
+                  name,
+                  given_name,
+                  family_name,
                   name_on_checks,
                   name_on_checks_updated_at,
-                  name_on_checks_qbo_updated_at
+                  name_on_checks_qbo_updated_at,
+                  qbo_dirty_fields_json,
+                  qbo_last_seen_given_name,
+                  qbo_last_seen_family_name,
+                  qbo_last_seen_name_on_checks,
+                  qbo_conflict_fields_json
                 FROM employees
                 WHERE employee_qbo_id = ? AND org_id = ?
                 LIMIT 1
@@ -876,34 +963,68 @@ async function syncEmployeesFromQuickBooks(orgId) {
               [qboId, orgId]
             );
 
-            const localName = row ? (row.name_on_checks || '').trim() : '';
-            const localUpdatedMs = row && row.name_on_checks_updated_at
-              ? Date.parse(row.name_on_checks_updated_at)
-              : 0;
-            const localQboUpdatedMs = row && row.name_on_checks_qbo_updated_at
-              ? Date.parse(row.name_on_checks_qbo_updated_at)
-              : 0;
+            const dirtyFields = row ? new Set(parseJsonArray(row.qbo_dirty_fields_json)) : new Set();
+            const localGiven = normalizeString(row?.given_name);
+            const localFamily = normalizeString(row?.family_name);
+            const localNameOnChecks = normalizeString(row?.name_on_checks);
+            const localName = normalizeString(row?.name);
 
-            const shouldTakeQbo =
-              !localName ||
-              (qboUpdatedMs && qboUpdatedMs > Math.max(localUpdatedMs, localQboUpdatedMs));
+            const nextGiven = dirtyFields.has('given_name') ? localGiven : qboGiven;
+            const nextFamily = dirtyFields.has('family_name') ? localFamily : qboFamily;
+            const combinedName = [nextGiven, nextFamily].filter(Boolean).join(' ').trim();
+            const nextName = combinedName || localName || qboDisplay || null;
+            const nextNameOnChecks = dirtyFields.has('name_on_checks')
+              ? localNameOnChecks
+              : (qboPrintName || combinedName || qboDisplay || null);
 
-            const finalNameOnChecks = shouldTakeQbo
-              ? (qboPrintName || displayName)
-              : (row ? row.name_on_checks : (qboPrintName || displayName));
+            const lastSeenGiven = normalizeString(row?.qbo_last_seen_given_name);
+            const lastSeenFamily = normalizeString(row?.qbo_last_seen_family_name);
+            const lastSeenChecks = normalizeString(row?.qbo_last_seen_name_on_checks);
 
-            const finalLocalUpdated = shouldTakeQbo
-              ? row?.name_on_checks_updated_at || null
-              : row?.name_on_checks_updated_at || null;
-            const finalQboUpdated = qboUpdatedIso || row?.name_on_checks_qbo_updated_at || null;
+            const conflicts = [];
+            if (
+              dirtyFields.has('given_name') &&
+              qboGiven !== localGiven &&
+              qboGiven !== lastSeenGiven
+            ) {
+              conflicts.push('given_name');
+            }
+            if (
+              dirtyFields.has('family_name') &&
+              qboFamily !== localFamily &&
+              qboFamily !== lastSeenFamily
+            ) {
+              conflicts.push('family_name');
+            }
+            if (
+              dirtyFields.has('name_on_checks') &&
+              qboPrintName !== localNameOnChecks &&
+              qboPrintName !== lastSeenChecks
+            ) {
+              conflicts.push('name_on_checks');
+            }
+
+            const conflictJson = stringifyJsonArray(conflicts);
+            const conflictUpdatedAt = conflictJson ? new Date().toISOString() : null;
+
+            const finalLocalUpdated = row?.name_on_checks_updated_at || null;
+            const finalQboUpdated = dirtyFields.has('name_on_checks')
+              ? (row?.name_on_checks_qbo_updated_at || null)
+              : (qboUpdatedIso || row?.name_on_checks_qbo_updated_at || null);
 
             if (row) {
               await runSql(updateSql, [
-                displayName,
-                finalNameOnChecks || null,
+                nextName,
+                nextGiven,
+                nextFamily,
+                nextNameOnChecks,
                 finalLocalUpdated,
                 finalQboUpdated,
-                email,
+                qboGiven,
+                qboFamily,
+                qboPrintName,
+                conflictJson,
+                conflictUpdatedAt,
                 isActive,
                 qboId,
                 orgId
@@ -912,12 +1033,18 @@ async function syncEmployeesFromQuickBooks(orgId) {
               await runSql(insertSql, [
                 orgId,
                 qboId,
-                displayName,
-                finalNameOnChecks || null,
+                nextName || qboDisplay || qboPrintName || null,
+                qboGiven,
+                qboFamily,
+                nextNameOnChecks || null,
                 isActive,
-                email,
                 null,
-                qboUpdatedIso || null
+                qboUpdatedIso || null,
+                qboGiven,
+                qboFamily,
+                qboPrintName,
+                null,
+                null
               ]);
             }
             processed += 1;
@@ -955,9 +1082,10 @@ async function setPrintOnCheckName(payeeRef, desiredName, orgId) {
   const type = payeeRef.type === 'Vendor' ? 'Vendor' : 'Employee';
 
   try {
+    const safeId = String(payeeRef.value).replace(/'/g, "\\'");
     const data = await qboQuery(
       orgId,
-      `select Id, SyncToken, DisplayName, PrintOnCheckName from ${type} where Id = '${payeeRef.value}'`
+      `select Id, SyncToken, DisplayName, PrintOnCheckName from ${type} where Id = '${safeId}'`
     );
     const raw = data && data.QueryResponse && data.QueryResponse[type];
     const entity = Array.isArray(raw) ? raw[0] : raw;
@@ -1014,7 +1142,7 @@ async function setPrintOnCheckName(payeeRef, desiredName, orgId) {
   }
 }
 
-async function createEmployeeInQuickBooks({ displayName, givenName, familyName, email, orgId } = {}) {
+async function createEmployeeInQuickBooks({ displayName, givenName, familyName, orgId } = {}) {
   const accessToken = await getAccessToken(orgId);
   const realmId = await getRealmId(orgId);
   if (!accessToken || !realmId) {
@@ -1030,10 +1158,6 @@ async function createEmployeeInQuickBooks({ displayName, givenName, familyName, 
     GivenName: givenName,
     FamilyName: familyName
   };
-
-  if (email) {
-    payload.PrimaryEmailAddr = { Address: email };
-  }
 
   try {
     const url = `${API_BASE}/${realmId}/employee`;
@@ -1073,6 +1197,103 @@ async function createEmployeeInQuickBooks({ displayName, givenName, familyName, 
       }
     }
     return { ok: false, error: friendly };
+  }
+}
+
+async function updateEmployeeInQuickBooks({
+  orgId,
+  employeeQboId,
+  givenName,
+  familyName,
+  printName
+} = {}) {
+  if (!orgId || !employeeQboId) {
+    return { ok: false, error: 'Missing orgId or employeeQboId.' };
+  }
+
+  const accessToken = await getAccessToken(orgId);
+  const realmId = await getRealmId(orgId);
+  if (!accessToken || !realmId) {
+    return { ok: false, error: 'Not connected to QuickBooks.' };
+  }
+
+  try {
+    const safeId = String(employeeQboId).replace(/'/g, "\\'");
+    const data = await qboQuery(
+      orgId,
+      `select Id, SyncToken, DisplayName, GivenName, FamilyName, PrintOnCheckName from Employee where Id = '${safeId}'`
+    );
+    const raw = data && data.QueryResponse && data.QueryResponse.Employee;
+    const entity = Array.isArray(raw) ? raw[0] : raw;
+    if (!entity || !entity.Id || typeof entity.SyncToken === 'undefined') {
+      return { ok: false, error: 'Employee not found in QuickBooks.' };
+    }
+
+    const payload = {
+      sparse: true,
+      Id: entity.Id,
+      SyncToken: entity.SyncToken
+    };
+
+    const finalGiven = givenName !== undefined && givenName !== null ? givenName : entity.GivenName;
+    const finalFamily = familyName !== undefined && familyName !== null ? familyName : entity.FamilyName;
+    const combined = [finalGiven, finalFamily].filter(Boolean).join(' ').trim();
+
+    const updatedFields = [];
+    if (givenName !== undefined) {
+      payload.GivenName = givenName || null;
+      updatedFields.push('given_name');
+    }
+    if (familyName !== undefined) {
+      payload.FamilyName = familyName || null;
+      updatedFields.push('family_name');
+    }
+    if (combined) {
+      payload.DisplayName = combined;
+    } else if (entity.DisplayName) {
+      payload.DisplayName = entity.DisplayName;
+    }
+    if (printName !== undefined) {
+      payload.PrintOnCheckName = printName || null;
+      updatedFields.push('name_on_checks');
+      if (!payload.DisplayName && entity.DisplayName) {
+        payload.DisplayName = entity.DisplayName;
+      }
+    }
+
+    const url = `${API_BASE}/${realmId}/employee`;
+    await axios.post(url, payload, {
+      params: { minorversion: 62 },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return { ok: true, updatedFields };
+  } catch (err) {
+    const status = err.response ? err.response.status : null;
+    let friendly = status ? `HTTP ${status}` : err.message;
+    if (err.response && err.response.data) {
+      const fault = err.response.data.Fault;
+      const firstError =
+        fault && Array.isArray(fault.Error) && fault.Error[0]
+          ? fault.Error[0]
+          : null;
+      if (firstError) {
+        if (firstError.Message) friendly = firstError.Message;
+        if (firstError.Detail) friendly += ' – ' + firstError.Detail;
+      }
+    }
+    if ((status === 401 || status === 403) && orgId) {
+      try {
+        await clearTokens(orgId);
+      } catch (clearErr) {
+        console.warn('[QBO] Failed to clear tokens after auth error:', clearErr.message || clearErr);
+      }
+    }
+    return { ok: false, error: friendly, status };
   }
 }
 
@@ -1500,6 +1721,8 @@ async function buildCheckDrafts(start, end, options = {}) {
       JOIN employees e ON f.employee_id = e.id AND e.org_id = ?
       LEFT JOIN projects p ON f.project_id = p.id AND p.org_id = ?
       WHERE
+        LOWER(COALESCE(f.resolved_status, 'open')) != 'rejected'
+        AND
         (
           -- entry-level exception gate: allow when no exception OR approved
           ${entryExceptionExpr} = 0
@@ -1654,6 +1877,7 @@ async function computePayrollDraftsSnapshot(start, end, options = {}) {
     : [];
   const includeOvertime =
     typeof options.includeOvertime === 'boolean' ? options.includeOvertime : true;
+  const allowNameOnChecksSync = options.allowNameOnChecksSync === true;
   const drafts = await buildCheckDrafts(start, end, {
     excludeEmployeeIds,
     includeOvertime,
@@ -2098,7 +2322,7 @@ async function createChecksForPeriod(start, end, options = {}) {
 
     const desiredPrintName = draft.name_on_checks || draft.employee_name || '';
     let nameWarning = null;
-    if (desiredPrintName) {
+    if (allowNameOnChecksSync && desiredPrintName) {
       const nameRes = await ensurePayeePrintName(payeeRef, desiredPrintName);
       if (!nameRes?.ok && !nameRes?.skipped) {
         nameWarning = `Could not update print name in QuickBooks: ${nameRes.error || 'Unknown error'}`;
@@ -2240,6 +2464,7 @@ module.exports = {
   listPayrollAccounts,
   listClasses,
   createEmployeeInQuickBooks,
+  updateEmployeeInQuickBooks,
   setPrintOnCheckName,
   ensureNameOnChecksColumns
 };

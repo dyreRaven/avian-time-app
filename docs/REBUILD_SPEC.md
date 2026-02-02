@@ -52,8 +52,10 @@
 ### Permissions (legacy set)
 - see_shipments
 - modify_time
+- approve_time
 - view_time_reports
 - view_all_timesheets
+- assign_timesheets
 - view_payroll
 - modify_payroll
 - modify_pay_rates
@@ -67,7 +69,7 @@
 - All API endpoints are gated server-side by permissions.
 - view_payroll is read-only for payroll screens; modify_payroll is required to run checks or unpay.
 - Shipments access uses `see_shipments` for both desktop and kiosk admin; legacy `kiosk_can_view_shipments` is folded into this permission.
-- Timesheet visibility: admins without `view_all_timesheets` only see timesheets they created unless a super admin shares them; super admins can see all timesheets.
+- Timesheet visibility: admins without `view_all_timesheets` or `view_payroll` only see timesheets they created or are assigned; payroll admins and super admins can see all timesheets, and super admins can share timesheets across admins.
 
 ## Routes
 - /auth
@@ -78,7 +80,8 @@
 - /quickbooks/oauth/callback
 
 ## Route Gating
-- /auth: public; handles sign-in, bootstrap (first user only), and org selection.
+- /auth: public; handles sign-in, bootstrap (first org only), and org selection.
+- /: allows a signed-in bootstrap account with no org to complete org setup from the onboarding checklist.
 - /: requires desktop_access and ui_mode=desktop; if ui_mode=kiosk, redirect to /kiosk.
 - /kiosk: public shell; device must be enrolled to submit punches; worker PIN must have worker_timekeeping.
 - /kiosk-admin: requires kiosk_admin_access (PIN-gated on device or session).
@@ -86,8 +89,9 @@
 - /api/*: session + permissions or kiosk device secret as defined in API contracts; UI gating is not sufficient.
 
 ## Auth and Accounts
-- Super Admin bootstrap: first user can create a super admin account if no users exist.
-- Bootstrap collects org name + timezone + admin first/last name and creates the initial org + org_settings defaults.
+- Super Admin bootstrap: initial admin signs up when no orgs exist; signup finalizes the account before org setup.
+- Org setup follows signup and collects org name + timezone + admin first/last name, then creates the initial org + org_settings defaults.
+- If signup is complete but no org exists, the admin lands on the dashboard onboarding checklist to finish org setup.
 - Bootstrap also creates an admin employee linked to the user membership, sets desktop_access + kiosk_admin_access to true, and sets worker_timekeeping to true; grants full permissions by default.
 - Admins create and manage user accounts for others (no self-register for employees).
 - If the email already exists, add the user to the active org instead of creating a new account.
@@ -95,6 +99,7 @@
 - Remember-me sets a 30-day session cookie; otherwise use a browser session cookie.
 - If a user belongs to multiple orgs, they pick the active org at login (org switcher in admin UI).
 - When multiple orgs exist, login returns the org list and requires selection before continuing.
+- If a bootstrap signup exists without an org, login returns a setup-required response to resume org creation.
 - Org selection sets the active org in session (via `/api/auth/select-org`).
 - Only super admins have email/password logins; kiosk admins sign in on devices using their PIN.
 - Super admins can create logins for other super admins in Settings (requires linking to an active employee with desktop_access).
@@ -114,8 +119,8 @@
 - Reports: Time Entry Report, Payroll Reports, Shipment Verification Report.
 - Settings: Settings.
 - Nav items are visible but disabled when the user lacks permissions; tooltips explain required access.
-- Gating: Employees/Vendors/Projects/Timesheets/Payroll/Payroll Reports require view_payroll; Payroll actions (create checks, unpay, retries) require modify_payroll; Time Exceptions + Time Entry Report require view_time_reports or view_payroll; Shipments + Shipment Verification Report require see_shipments; Settings requires view_payroll; Access-control panel inside Settings requires is_super_admin.
-- Timesheets list is filtered to the current admin unless `view_all_timesheets` is granted or the timesheet is shared by a super admin.
+- Gating: Employees/Vendors/Projects/Payroll/Payroll Reports require view_payroll; Payroll actions (create checks, unpay, retries) require modify_payroll; Time Exceptions + Time Entry Report require view_time_reports or view_payroll; Shipments + Shipment Verification Report require see_shipments; Settings requires view_payroll; Access-control panel inside Settings requires is_super_admin.
+- Timesheets: super admins, view_payroll, and view_all_timesheets can see all timesheets; other admins only see timesheets they created or are assigned/shared to.
 - Admin Home is available to any desktop_access user, but cards/actions hide or disable if the user lacks the underlying permission.
 
 ### QuickBooks Connection
@@ -151,33 +156,33 @@
 
 ### Employees
 - Table with search and active/inactive toggle.
-- Create/edit employee with: name, nickname, email, name_on_checks, rate, language (en/es/ht; default en), timekeeping access, desktop access, kiosk admin access, permission toggles.
+- Create/edit employee with: first name, last name, nickname, email, name_on_checks, rate, language (en/es/ht; default en), timekeeping access, desktop access, kiosk admin access, permission toggles.
 - Language is required for every employee; if missing/invalid, the UI defaults to English and shows an admin warning until corrected.
 - Employees list shows a missing-language count and a quick filter to view only employees with missing/invalid language.
 - Kiosk shipments access if enabled.
-- Rate changes require `modify_pay_rates` permission; kiosk rate unlock is PIN + timeout gated (10-minute window).
+- Rate changes require `modify_pay_rates` permission; viewing pay rates requires `view_payroll`; kiosk rate unlock is PIN + timeout gated (10-minute window).
 - QBO linking and pending list: Sync Now pulls QBO employees into the list. Local-only employees (manual or kiosk-created) are flagged needs_qbo_sync and appear in a pending list (linking disabled unless QBO is connected).
-- Pending list shows the reason: missing IDs vs needs_qbo_sync (use the needs_qbo_sync flag).
+- Pending list shows the reason: missing IDs vs local dirty fields vs conflicts (use qbo_dirty_fields_json + qbo_conflict_fields_json).
 - Linking UI: searchable picker of synced QBO Employees/Vendors with manual ID entry fallback; suggested matches by name/email when available. If a manual ID is not found in the last sync list, show a warning but allow link. Optional "Create in QBO" creates the employee in QBO and links it.
-- Pending list actions: Link, Create in QBO, or Mark Inactive; list shows reason tags and last synced state.
+- Pending list actions: Link, Create in QBO, Sync changes to QBO, or Mark Inactive; list shows reason tags and last synced state.
 - QBO link/create/unlink actions are super admin only.
 - Create in QBO button is shown only after an employees Sync Now has completed; if duplicate matches are returned, show them inline and require the admin to link instead of create.
-- Create in QBO requires given_name + family_name; display_name/email optional. If a duplicate match is detected (email or exact name), return matches and require explicit linking instead of create.
+- Create in QBO requires given_name + family_name; display_name optional. If a duplicate match is detected (exact name), return matches and require explicit linking instead of create.
 - Duplicate protection: if a QBO ID is already linked to another employee, block linking with a clear error that names the conflicting employee; admin must unlink first.
 - Unlinking: admins can clear employee/vendor QBO IDs, which sets needs_qbo_sync=1 and returns the employee to pending.
-- Name_on_checks updates sync to QBO with retry queue; vendor QBO ID takes precedence for payee selection when both IDs exist.
+- Name_on_checks updates sync to QBO only when a desktop admin runs the manual “Sync changes to QBO”; vendor QBO ID takes precedence for payee selection when both IDs exist.
 - PINs are 4-digit numeric and hashed server-side; kiosk verifies PIN locally when offline using cached hashes.
-- Name on checks can be edited by kiosk admins; if QBO update fails, queue a retry and show a warning.
+- Name on checks can be edited by kiosk admins; changes are marked dirty for desktop review and manual sync.
 - Kiosk admin onboarding can create a pending employee (helpers/workers) with a manually entered name and captured ID image (driver’s license or passport); no parsing required.
 - Pending helpers appear in the desktop pending list for super admin review and QBO linking before payroll.
 
 #### Employee Profile (Admin)
-- Identity: name, nickname, email, active/inactive.
-- Pay: hourly rate (requires modify_pay_rates), name_on_checks (syncs to QBO), payee linkage (employee/vendor QBO ID; vendor ID wins when both exist).
+- Identity: first name, last name, nickname, email, active/inactive.
+- Pay: hourly rate (requires modify_pay_rates), name_on_checks (syncs to QBO on manual sync), payee linkage (employee/vendor QBO ID; vendor ID wins when both exist).
 - Access: worker_timekeeping, desktop_access, kiosk_admin_access (super admin only).
-- Permissions: see_shipments, modify_time, view_time_reports, view_all_timesheets, view_payroll, modify_pay_rates (super admin only).
+- Permissions: see_shipments, modify_time, approve_time, view_time_reports, view_all_timesheets, assign_timesheets, view_payroll, modify_pay_rates (super admin only).
 - Kiosk settings: PIN set/reset (override required if already set), language default (en/es/ht).
-- QuickBooks: employee/vendor QBO IDs, needs_qbo_sync flag, link actions.
+- QuickBooks: employee/vendor QBO IDs, needs_qbo_sync flag (missing links), qbo_dirty_fields_json/qbo_conflict_fields_json, link actions.
 - Audit: show last_updated timestamps for name_on_checks sync and rate changes.
 - Kiosk admin rate edit: requires modify_pay_rates + PIN unlock; unlock is per-admin session and expires after 10 minutes of inactivity or sign-out.
 - ID document: store captured ID image (driver’s license or passport) with upload metadata; visible to desktop admins only.
@@ -221,13 +226,13 @@
 ### Time Exceptions
 - Filters by employee, project, category, date range.
 - List is grouped by category (auto clock-out, geofence, time discrepancies including time vs punch); category filter narrows the groups shown.
-- Review modal for approve/modify/reject (modify_time only); approve requires a note when the entry has discrepancies or was manually modified; modify/reject always require a note.
+- Review modal for approve/modify/reject (modify_time required); this is the field-review step. Payroll approval is separate and requires approve_time (payroll permissions). Approve requires a note when the entry has discrepancies or was manually modified; modify/reject always require a note.
 - All review actions recorded in an audit trail (who/when/what changed).
 - Exceptions include punch-based flags and time-entry vs punch discrepancies.
 - Manual-entry exceptions: no punches linked, or hours mismatch (>= 0.10h / ~6 min).
 - Modify rules: punch edits must stay on the same day and <24h, and clock-in/out projects must match; time entry edits must be single-day with valid HH:MM times and hours between 0–24.
 - Resolve/unresolve flows are tracked separately from verification.
-- Payroll eligibility: time entries with exceptions require approved/modified review before payroll, and all entries require weekly approval by a super admin; verify does not affect payroll eligibility.
+- Payroll eligibility: all time entries require field review (resolved_status != open or resolved=1); entries with exceptions require approved/modified review. Payroll approval still requires approve_time (payroll permissions). Verify does not affect payroll eligibility.
 - Audit trail storage: time_exception_actions with source_type `punch` or `time_entry`, action (approve/modify/reject/resolve), actor, note, and before/after snapshots; retained for 1 year.
 
 ### Time Entry Report
@@ -240,12 +245,12 @@
 - PDF columns: Date, Time, Employee, Project, Hours, Paid.
 - Pay fields (Total Pay/Paid/Paid Date) are omitted entirely unless view_payroll is granted.
 - Link entries to punches and show verification state.
-- Show approval status (pending/approved) with approver + approved_at in the report.
-- Weekly approval required: a super admin must approve all entries in the pay period before payroll can run.
-- Approval actions live in the Time Entry Report with per-row approve and "Approve all" for clean entries.
-- Bulk approve skips entries that require a note (discrepancies or manual edits); those must be approved individually.
+- Show field review status (pending/approved/modified/rejected) with reviewer + reviewed_at, plus payroll approval status (pending/approved) with approver + approved_at in the report.
+- Weekly approval required: after field review, a user with approve_time must approve all entries in the pay period before payroll can run.
+- Approval actions live in the Time Entry Report with per-row approve and "Approve all" for clean entries (only after field review).
+- Bulk approve skips entries that require a note or are still awaiting field review; those must be approved individually.
 - Approving clean entries requires no note; approving entries with discrepancies or manual edits requires a note.
-- Any edit to a time entry (manual edit or exception modify) resets approval to pending and logs an audit record.
+- Any edit to a time entry (manual edit or exception modify) resets field review and payroll approval to pending and logs an audit record.
 - All edits recorded in an audit trail with before/after snapshots.
 - Paid entries are locked from edits; corrections require a new manual adjustment entry.
 - Verification (accuracy check) is separate from exception resolution.
@@ -265,7 +270,8 @@
 - Preflight checks are required before create-checks (server-enforced); they are preview-only and never create QBO checks.
 - Preflight validates QBO connection, payee links, expense accounts/classes, and returns per-employee ok/error; it also stores a preflight snapshot (preflight_id + time-entry snapshot) for create-checks.
 - Preflight surfaces missing QBO links (per-employee ok=false); UI must alert and list who is missing before running checks.
-- Payroll is blocked until all time entries in the selected period are approved by a super admin (weekly approval requirement).
+- Preflight blocks if any QBO-linked employees have local dirty/conflict fields; admin must sync changes to QBO before payroll.
+- Payroll is blocked until all time entries in the selected period are approved by a user with approve_time (weekly approval requirement).
 - Create checks requires a valid preflight_id and must match the preflight payload (start/end + overrides/lines); reject if expired or mismatched.
 - Create checks validates that eligible time entries match the preflight snapshot; if changed, return a conflict and require a new preflight.
 - Create checks uses a DB lock + idempotency key and runs a backup before sending to QBO; if the backup fails or is skipped due to a lock, the run proceeds but returns a warning and logs PAYROLL_BACKUP_WARNING in payroll_audit_log.
@@ -317,7 +323,7 @@
   - Tracking: tracking_number, bol_number.
   - Line items: description, sku, quantity, unit_price, line_total, vendor_name.
   - Storage/pickup: picked_up_by (shipment-level). Storage location is per line item via verification.storage_override.
-  - Payments summary: vendor_paid/vendor_paid_amount, shipper_paid/shipper_paid_amount, customs_paid/customs_paid_amount, total_paid (payroll-visible only).
+  - Payments summary: vendor_paid/vendor_paid_amount, shipper_paid/shipper_paid_amount/shipper_paid_by, customs_paid/customs_paid_amount/customs_paid_by, storage_paid/storage_paid_amount/storage_paid_by, total_paid (payroll-visible only).
   - Notes/links: website_url, notes.
 - Total price defaults to the sum of line_total but can be manually overridden in the form; overrides do not change line items.
 - Top-level quantity/price_per_item are legacy and unused in the UI.
@@ -327,22 +333,23 @@
   - PO number is optional but included in search and reports.
   - Items start with one blank row; empty rows are ignored on save. line_total is computed as quantity * unit_price.
   - storage_daily_late_fee defaults from org_settings.storage_daily_late_fee_default when blank; if the org default is null/0, treat as no late fee. Storage fee estimate is UI-only.
-  - Paid flags default false; amount inputs are disabled when unchecked; total_paid auto-sums paid amounts.
+  - Paid flags default false; amount inputs are disabled when unchecked (storage fees remain editable to record unpaid fees); total_paid auto-sums paid amounts.
 - Update replaces all items in the payload; items_verified can be explicitly set or inferred from items.
 
 ### Shipments Ops: Storage/Pickup
-- Kiosk-friendly endpoint updates storage and pickup fields without changing status.
+- Kiosk-friendly endpoint updates storage and pickup fields; when both picked_up_by and picked_up_date are set, status auto-moves to Picked Up.
 - Fields: storage_due_date, storage_daily_late_fee, expected_arrival_date, picked_up_by, picked_up_date.
 - Storage location is per line item and stored in verification.storage_override (edited in the item verification UI).
 - Normalization: blank strings become null; storage_daily_late_fee must be numeric or null.
 - picked_up_updated_by is set from employee_id (nickname or name) when provided; picked_up_updated_at is set to now.
-- Does not create timeline entries or auto-set status to Picked Up; status changes remain manual.
+- Auto status updates append status history + timeline entries and send shipment status notifications.
 
 ### Shipments Ops: Payments
-- Payment summary fields live on the shipment record: vendor_paid, vendor_paid_amount, shipper_paid, shipper_paid_amount, customs_paid, customs_paid_amount, total_paid.
+- Payment summary fields live on the shipment record: vendor_paid, vendor_paid_amount, shipper_paid, shipper_paid_amount, shipper_paid_by, customs_paid, customs_paid_amount, customs_paid_by, storage_paid, storage_paid_amount, storage_paid_by, total_paid.
 - Paid flags drive board/report displays; amounts and total_paid are visible only to admins with view_payroll (others see Paid/Unpaid only).
 - When a paid flag is off, its amount should be null/blank; UI disables amount entry when unchecked.
-- total_paid is the sum of vendor/shipper/customs amounts; computed client-side on save and stored for reporting.
+- Paid-by fields capture who covered freight forwarder/customs/storage (Company, customer, or Other); required when the paid flag is on and hidden without view_payroll.
+- total_paid is the sum of vendor/shipper/customs/storage paid amounts; computed client-side on save and stored for reporting.
 - Proof-of-payment documents can auto-toggle paid flags:
   - Freight Forwarder Proof of Payment -> shipper_paid.
   - Customs & Clearing Proof of Payment -> customs_paid.
@@ -353,12 +360,13 @@
 - Ledger entries are admin-only and online-only (not queued for offline sync).
 
 ### Shipments Ops: Documents
-- Documents are stored outside the public root (secure_uploads/shipments) and served via /api/shipments/documents/:docId/download.
+- Documents are stored outside the public root (secure_uploads/shipments) and served via /api/shipments/documents/:docId/download (download) or /api/shipments/documents/:docId/view (inline view).
 - Uploads are only allowed after a shipment exists; no pre-save uploads.
 - Upload constraints: max 10 files per request, 10 MB per file; allowed types are PDF, JPEG/JPG, PNG, GIF, WEBP.
 - FormData fields: documents[] (required), doc_type (optional), doc_label (optional; required when doc_type is Other).
 - Default doc_type list: Shippers Invoice, BOL, Country of Origin Certificate, Tally Sheet, Freight Forwarder Proof of Payment, Customs & Clearing Proof of Payment, Other.
-- Document list is sorted newest-first (uploaded_at DESC, id DESC); each doc includes title, doc_type, doc_label, uploaded_at, and url/file_path download link.
+- Shippers Invoice + BOL are required documents; show a warning on shipment cards and the Documents tab until both are uploaded (uploads can happen anytime after creation).
+- Document list is sorted newest-first (uploaded_at DESC, id DESC); each doc includes title, doc_type, doc_label, uploaded_at, plus view_url and download_url (url/file_path remain download links).
 - Deleting a document removes the DB row and attempts to delete the file; missing files do not fail the request.
 - Payment-doc detection (by doc_type/doc_label/title keywords) auto-toggles shipper/customs paid flags and prompts to mark unpaid on delete.
 - Users without view_payroll should not see payment-related documents (hide proofs/receipts); kiosk already filters these.
@@ -370,7 +378,9 @@
 - When a line item storage location is set for the first time (verification.storage_override transitions from empty to non-empty), append a timeline entry.
 - event_type is "status_change" in legacy; use "storage_location_set" for the initial storage location entry. note may be user-supplied (status endpoint) or system text (main edit form).
 - Timeline list is ordered by created_at ASC.
-- Comments are admin-only; POST requires body text, and list is ordered by created_at ASC.
+- Comments are admin-only and grouped into threads. Thread titles are required; category is optional.
+- The default "General" thread is created automatically if a comment is posted without a thread_id.
+- Comment lists are ordered by created_at ASC (per thread).
 - Comments can be soft-deleted (inactive) via DELETE /api/shipments/:id/comments/:commentId; delete hides from default lists but retains for audit (is_deleted, deleted_at, deleted_by).
 - Rebuild should set created_by for comments/timeline when an admin session is present.
 - Comment posting can be queued offline for kiosk admins and synced on reconnect; comment deletion is online-only; timeline is online-only.
@@ -400,7 +410,7 @@
 - Verification history is stored only in verification_json.history[] (no separate audit log/report for item verification).
 - When storage_override is set for the first time on any item, append a shipment timeline entry (event_type="storage_location_set").
 - Kiosk/field devices can post verification with device credentials + employee_id.
-- UI allows verification only when status is Cleared - Ready for Pickup, Picked Up, or Archived.
+- UI allows verification only when status is Picked Up or Archived; server rejects verification updates otherwise.
 - Inline verification updates are saved immediately via /api/shipments/:id/verify-items.
 
 ### Shipment Templates
@@ -447,6 +457,7 @@
 - Time exception rules + thresholds (org_settings.time_exception_rules).
 - Payroll rules (pay period + overtime; super admin only; org_settings.payroll_rules).
 - Clock-in photo requirement (org-level, super admin only; org_settings.clock_in_photo_required; replaces legacy kiosk_require_photo).
+- Audit log retention days (org-level, super admin only; org_settings.audit_log_retention_days; blank/0 = retain forever).
 - Shipment settings (default daily late fee: org_settings.storage_daily_late_fee_default; default is null/0 until set).
 - Notification settings.
 - Kiosk enrollment code (super admin only): view/copy/rotate; rotation affects new enrollments only and does not invalidate existing devices.
@@ -497,11 +508,15 @@
 ## Kiosk Admin
 ### Timesheets
 - Start new timesheet for device (select project); new timesheet becomes the active timesheet for new punches.
+- Timesheets can only be started for today (past dates are blocked in kiosk admin).
 - Starting a timesheet checks kiosk GPS against the project geofence when available; if outside, require confirmation and flag the session so all associated time entries show geofence exceptions.
 - Optional "clock me in now" on Start Day creates the timesheet and immediately clocks the admin in.
-- Multiple open timesheets can exist (one per project); starting a new one does not close earlier ones.
+- Multiple open timesheets can exist (one per project); starting a new one does not close earlier ones. Duplicate open timesheets for the same project on the same kiosk/day are rejected by the server.
 - Admin can switch the active timesheet; switching only affects new punches.
+- Admin can close a timesheet once all punches are clocked out; closing clears the kiosk’s active project and requires a new timesheet to resume work on that project.
+- Closed timesheets are read-only (cannot be set active or reassigned); admins are prompted to close when the last punch clocks out.
 - Active timesheet is highlighted and labeled "Active" in the list; switching prompts confirmation.
+- If no open timesheet exists for today, kiosk refresh clears the active project so workers see "No active timesheet."
 - Live workers table (per kiosk): list today’s punches for the kiosk device with clock-in/out times and “time on clock”.
 - Live workers defaults to the active timesheet’s project; can view other projects with punches on this kiosk.
 - Open punches (no clock_out_ts) are highlighted as “active”; previous-day open punches are flagged for admin follow-up.
@@ -511,6 +526,7 @@
 - Foreman is stored on punches/time entries for reporting.
 - Admin can view prior timesheets by date range.
 - Timesheets record `created_by_employee_id` for audit.
+- Timesheets can optionally store `assigned_to_employee_id` to track the admin responsible for the session.
 Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 
 ### Time Entries
@@ -647,17 +663,17 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Access tokens refresh on demand; failures require reconnect.
 - Disconnect clears tokens for the org (no automatic unlink of employees/vendors/projects).
 - Sync is manual (Sync Now) and requires an active QBO connection; no scheduled syncs.
-- Store last sync timestamps per entity in org_settings (qbo_last_sync_employees_at, qbo_last_sync_vendors_at, qbo_last_sync_projects_at, qbo_last_sync_payroll_accounts_at).
+- Store last sync timestamps per entity in org_settings (qbo_last_sync_employees_at, qbo_last_sync_vendors_at, qbo_last_sync_projects_at, qbo_last_sync_payroll_accounts_at, qbo_last_sync_employee_updates_at).
 - Sync is idempotent and safe to repeat; no background auto-retry for sync jobs.
 - Sync operations are not atomic; partial updates can occur if a run fails mid-way (rerun to reconcile).
 - Sync endpoints should be single-flight per org (DB-backed lock); concurrent sync requests return 409 "Sync already in progress".
 - Error handling: if QBO returns 401/403, clear tokens and show disconnected; if 429 or 5xx, surface a retryable error and back off (example: 10s → 30s → 2m); honor Retry-After when present.
-- Employee sync: upsert by employee_qbo_id; updates name, email, active, and name_on_checks (QBO wins if its LastUpdatedTime is newer than local name_on_checks_updated_at/name_on_checks_qbo_updated_at); preserves rate, access flags, PIN, language, and worker_timekeeping; new QBO employees default to rate 0, worker_timekeeping=true, language=en. Pulls active + inactive employees and paginates results.
+- Employee sync: upsert by employee_qbo_id; updates name, given_name, family_name, active, and name_on_checks; email is not synced from QBO. Preserves rate, access flags, PIN, language, and worker_timekeeping; new QBO employees default to rate 0, worker_timekeeping=true, language=en. Pulls active + inactive employees and paginates results. If local fields are dirty, skip overwrite and record conflicts when QBO changed since last sync.
 - Vendor sync: upsert by qbo_id; updates name + active; preserves freight_forwarder flag and PIN; local-only vendors untouched. Pulls active + inactive vendors and paginates results.
 - Project sync: upsert by qbo_id; updates name + customer_name + active; preserves geofence/timezone; QBO inactive or missing projects are set inactive. Pulls active + inactive customers/jobs and paginates results.
 - Payroll account/class sync: live fetch for dropdowns; no DB writes.
 - Create checks with per-employee error handling.
-- Name on checks updates with retry queue.
+- Employee outbound updates: manual only (desktop admin runs “Sync changes to QBO”); pushes given_name, family_name, and name_on_checks. Conflicts must be resolved before payroll.
 - Account options fetched for payroll settings (bank/expense).
 
 ## Security
@@ -673,12 +689,12 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 
 ## Retention
 - Clock-in photos: 30 days (purge daily).
-- Audit logs (audit_log, time_exception_actions, payroll_audit_log): 1 year (configurable; purge daily).
+- Audit logs (audit_log, time_exception_actions, payroll_audit_log): retained indefinitely by default; per-org `org_settings.audit_log_retention_days` (positive integer) enables purging older entries; unset/0 means no purge (purge job runs daily only when set).
 - In-app notifications + delivery logs: 90 days (configurable; purge monthly).
 - Idempotency keys: 30 days (purge weekly).
 - ID document images: retained until manually deleted; delete clears id_document_* fields even if the file is already missing.
 - Shipment documents: retained until manually deleted; archiving does not remove docs; missing files return 404 on download and can be removed via delete.
-- Retention windows are configurable via env: NOTIFICATION_RETENTION_DAYS, PHOTO_RETENTION_DAYS, AUDIT_LOG_RETENTION_DAYS, IDEMPOTENCY_RETENTION_DAYS.
+- Retention windows are configurable via env: NOTIFICATION_RETENTION_DAYS, PHOTO_RETENTION_DAYS, IDEMPOTENCY_RETENTION_DAYS.
 
 ## System Jobs
 - Auto clock-out at midnight with hourly catch-up.
@@ -692,9 +708,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
   - Leaves lat/lng empty for auto clock-out; exceptions will include the auto clock-out flag.
   - Uses a per-org DB lock (auto_clockout_lock) with a short TTL to prevent concurrent runs across instances; the lock is refreshed during long runs and expires automatically if a job crashes.
 - Name on checks retry queue processor (QBO sync):
-  - Retries failed name_on_checks updates to QBO for linked employees.
-  - Backoff schedule per employee: 10m, 1h, 6h, 24h; stop after 7 days and surface as a warning in the employee profile.
-  - 401/403 responses clear tokens and mark org as disconnected; retries pause until reconnect.
+  - Disabled for employee name fields; QBO updates happen only on explicit admin sync.
 - Photo purge job: daily delete of clock-in photos older than 30 days; DB rows keep references but file_path becomes null if the file is missing.
 - Payroll retry handling (manual):
   - No background retry job; admin triggers retry from Payroll UI.
@@ -731,7 +745,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 
 ## Screen Inventory (Legacy + Spec)
 ### Core Pages
-- Auth: Sign In + Bootstrap (first user only) + Org selection (if multiple orgs) (/auth).
+- Auth: Sign In + Bootstrap (first org only) + Org selection (if multiple orgs) (/auth).
 - Admin Console Shell (/).
 - Kiosk Worker (/kiosk).
 - Kiosk Admin (/kiosk-admin).

@@ -15,16 +15,16 @@
   ];
 
   const TIME_EVENTS = [
-    { value: 'TIME_EXCEPTION_OPEN', label: 'Exceptions opened' },
-    { value: 'TIME_EXCEPTION_REVIEWED', label: 'Exceptions reviewed' },
-    { value: 'TIME_EXCEPTION_RESOLVED', label: 'Exceptions resolved' },
-    { value: 'TIME_ENTRY_MANUAL_CREATED', label: 'Manual entries created' },
-    { value: 'TIME_ENTRY_MANUAL_EDITED', label: 'Manual entries edited' }
+    { value: 'TIME_SHIFT_LONG', label: 'Long shifts (12+ hours)' },
+    { value: 'TIME_SHIFT_MULTI_DAY', label: 'Multi-day shifts (24+ hours)' },
+    { value: 'TIME_PUNCH_OPEN_LONG', label: 'Open punches (12+ hours)' },
+    { value: 'TIME_PUNCH_OPEN_MULTI_DAY', label: 'Open punches (24+ hours)' },
+    { value: 'TIME_WEEKLY_THRESHOLD_NEAR', label: 'Weekly hours near limit' },
+    { value: 'TIME_WEEKLY_THRESHOLD_EXCEEDED', label: 'Weekly hours exceeded' }
   ];
 
   const PAYROLL_EVENTS = [
     { value: 'PAYROLL_RUN_DUE', label: 'Payroll due' },
-    { value: 'PAYROLL_RUN_STARTED', label: 'Payroll started' },
     { value: 'PAYROLL_RUN_SUCCESS', label: 'Payroll success' },
     { value: 'PAYROLL_RUN_PARTIAL', label: 'Payroll partial' },
     { value: 'PAYROLL_RUN_FAILURE', label: 'Payroll failure' },
@@ -152,20 +152,16 @@
       .map(input => input.value);
   }
 
-  function setSelectedOptions(selectEl, values) {
-    if (!selectEl) return;
-    const set = new Set(values.map(v => Number(v)));
-    Array.from(selectEl.options).forEach(opt => {
-      const id = Number(opt.value);
-      opt.selected = set.has(id);
+  function setProjectCheckboxes(container, values, defaultAll = false) {
+    if (!container) return;
+    const ids = new Set(values.map(v => Number(v)));
+    const inputs = Array.from(container.querySelectorAll('input[type="checkbox"]'));
+    const shouldSelectAll = defaultAll && ids.size === 0;
+    inputs.forEach(input => {
+      const id = Number(input.value);
+      if (!Number.isFinite(id)) return;
+      input.checked = shouldSelectAll ? true : ids.has(id);
     });
-  }
-
-  function getSelectedOptions(selectEl) {
-    if (!selectEl) return [];
-    return Array.from(selectEl.selectedOptions || [])
-      .map(opt => Number(opt.value))
-      .filter(num => Number.isFinite(num));
   }
 
   function renderNotificationRow(item) {
@@ -257,6 +253,18 @@
     }
   }
 
+  async function markNotificationsReadOnView() {
+    await loadNotifications({ reset: true });
+    try {
+      await markNotificationsRead({ all: true });
+    } catch (err) {
+      console.warn('Failed to auto-mark notifications read:', err);
+    }
+    if (unreadOnly) {
+      await loadNotifications({ reset: true });
+    }
+  }
+
   async function loadNotificationPrefs() {
     const msgEl = getEl('notifications-pref-message');
     try {
@@ -290,10 +298,10 @@
     if (shipmentsToggle) shipmentsToggle.checked = shipmentFilters.enabled !== false;
 
     const timeFilters = prefs.time_filters || {};
-    if (timeToggle) timeToggle.checked = timeFilters.enabled !== false;
+    if (timeToggle) timeToggle.checked = !!timeFilters.enabled;
 
     const payrollFilters = prefs.payroll_filters || {};
-    if (payrollToggle) payrollToggle.checked = payrollFilters.enabled !== false;
+    if (payrollToggle) payrollToggle.checked = !!payrollFilters.enabled;
 
     renderStatusCheckboxes(
       statusContainer,
@@ -322,8 +330,8 @@
 
     const projectSelect = getEl('notifications-shipment-projects');
     if (projectSelect) {
-      setSelectedOptions(projectSelect, shipmentFilters.project_ids || []);
-      projectSelect.disabled = !shipmentsToggle?.checked;
+      setProjectCheckboxes(projectSelect, shipmentFilters.project_ids || [], true);
+      setGroupDisabled(projectSelect, !shipmentsToggle?.checked);
     }
 
     if (clockoutTime) {
@@ -356,7 +364,9 @@
       shipment_filters: {
         enabled: !!shipmentsToggle?.checked,
         statuses: getCheckedValues(statusContainer),
-        project_ids: getSelectedOptions(getEl('notifications-shipment-projects'))
+        project_ids: getCheckedValues(getEl('notifications-shipment-projects'))
+          .map(val => Number(val))
+          .filter(num => Number.isFinite(num))
       },
       time_filters: {
         enabled: !!timeToggle?.checked,
@@ -444,16 +454,19 @@
     try {
       const projects = await fetchJSON('/api/projects?status=active');
       projects.forEach(project => {
-        const opt = document.createElement('option');
-        opt.value = project.id;
-        opt.textContent = project.customer_name
-          ? `${project.customer_name} – ${project.name}`
-          : project.name;
-        select.appendChild(opt);
+        const label = document.createElement('label');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = project.id;
+        label.appendChild(input);
+        label.append(
+          ` ${project.customer_name ? `${project.customer_name} – ${project.name}` : project.name}`
+        );
+        select.appendChild(label);
       });
 
       const shipmentFilters = prefsCache?.shipment_filters || {};
-      setSelectedOptions(select, shipmentFilters.project_ids || []);
+      setProjectCheckboxes(select, shipmentFilters.project_ids || [], true);
     } catch (err) {
       console.warn('Failed to load notification projects:', err);
     }
@@ -461,21 +474,18 @@
 
   async function refreshPushStatus() {
     const statusEl = getEl('notifications-push-status');
-    const subscribeBtn = getEl('notifications-push-subscribe');
-    const unsubscribeBtn = getEl('notifications-push-unsubscribe');
+    const pushToggle = getEl('notifications-push-enabled');
 
     const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window;
     if (!pushSupported) {
       setMessage(statusEl, 'Push not supported on this browser.', '#b45309');
-      if (subscribeBtn) subscribeBtn.disabled = true;
-      if (unsubscribeBtn) unsubscribeBtn.disabled = true;
+      if (pushToggle) pushToggle.disabled = true;
       return;
     }
 
     if (!pushPublicKey) {
       setMessage(statusEl, 'Push keys are not configured yet.', '#b45309');
-      if (subscribeBtn) subscribeBtn.disabled = true;
-      if (unsubscribeBtn) unsubscribeBtn.disabled = true;
+      if (pushToggle) pushToggle.disabled = true;
       return;
     }
 
@@ -483,26 +493,33 @@
     const sub = await reg.pushManager.getSubscription();
     if (sub) {
       setMessage(statusEl, 'Push is enabled on this device.', 'green');
-      if (subscribeBtn) subscribeBtn.disabled = true;
-      if (unsubscribeBtn) unsubscribeBtn.disabled = false;
+      if (pushToggle) {
+        pushToggle.disabled = false;
+        pushToggle.checked = true;
+      }
     } else {
       setMessage(statusEl, 'Push is not enabled on this device.');
-      if (subscribeBtn) subscribeBtn.disabled = false;
-      if (unsubscribeBtn) unsubscribeBtn.disabled = true;
+      if (pushToggle) {
+        pushToggle.disabled = false;
+        pushToggle.checked = false;
+      }
     }
   }
 
   async function subscribeToPush() {
     const statusEl = getEl('notifications-push-status');
+    const pushToggle = getEl('notifications-push-enabled');
     try {
       if (!pushPublicKey) {
         setMessage(statusEl, 'Push keys are not configured yet.', '#b45309');
+        if (pushToggle) pushToggle.checked = false;
         return;
       }
 
       const permission = await Notification.requestPermission();
       if (permission !== 'granted') {
         setMessage(statusEl, 'Push permission was not granted.', '#b45309');
+        if (pushToggle) pushToggle.checked = false;
         return;
       }
 
@@ -528,19 +545,23 @@
       });
 
       setMessage(statusEl, 'Push enabled for this device.', 'green');
+      if (pushToggle) pushToggle.checked = true;
       await refreshPushStatus();
     } catch (err) {
       setMessage(statusEl, err.message || 'Failed to enable push.', 'crimson');
+      if (pushToggle) pushToggle.checked = false;
     }
   }
 
   async function unsubscribeFromPush() {
     const statusEl = getEl('notifications-push-status');
+    const pushToggle = getEl('notifications-push-enabled');
     try {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (!sub) {
         setMessage(statusEl, 'Push is already disabled.');
+        if (pushToggle) pushToggle.checked = false;
         await refreshPushStatus();
         return;
       }
@@ -553,6 +574,7 @@
 
       await sub.unsubscribe();
       setMessage(statusEl, 'Push disabled for this device.', 'green');
+      if (pushToggle) pushToggle.checked = false;
       await refreshPushStatus();
     } catch (err) {
       setMessage(statusEl, err.message || 'Failed to disable push.', 'crimson');
@@ -569,8 +591,7 @@
     const unreadToggle = getEl('notifications-unread-only');
     const saveBtn = getEl('notifications-save');
     const testBtn = getEl('notifications-test');
-    const pushSubscribeBtn = getEl('notifications-push-subscribe');
-    const pushUnsubscribeBtn = getEl('notifications-push-unsubscribe');
+    const pushToggle = getEl('notifications-push-enabled');
     const shipmentsToggle = getEl('notifications-shipments-enabled');
     const timeToggle = getEl('notifications-time-enabled');
     const payrollToggle = getEl('notifications-payroll-enabled');
@@ -600,18 +621,21 @@
     if (testBtn) {
       testBtn.addEventListener('click', sendTestNotification);
     }
-    if (pushSubscribeBtn) {
-      pushSubscribeBtn.addEventListener('click', subscribeToPush);
-    }
-    if (pushUnsubscribeBtn) {
-      pushUnsubscribeBtn.addEventListener('click', unsubscribeFromPush);
+    if (pushToggle) {
+      pushToggle.addEventListener('change', async () => {
+        if (pushToggle.checked) {
+          await subscribeToPush();
+        } else {
+          await unsubscribeFromPush();
+        }
+      });
     }
     if (shipmentsToggle) {
       shipmentsToggle.addEventListener('change', () => {
         const container = getEl('notifications-shipment-statuses');
         const projectSelect = getEl('notifications-shipment-projects');
         setGroupDisabled(container, !shipmentsToggle.checked);
-        if (projectSelect) projectSelect.disabled = !shipmentsToggle.checked;
+        if (projectSelect) setGroupDisabled(projectSelect, !shipmentsToggle.checked);
       });
     }
     if (timeToggle) {
@@ -634,10 +658,10 @@
     await loadNotificationPrefs();
     await syncNotificationPrefsQueue();
     await loadProjectsForNotifications();
-    await loadNotifications({ reset: true });
   }
 
   window.initNotificationsSection = initNotificationsSection;
+  window.markNotificationsReadOnView = markNotificationsReadOnView;
   window.addEventListener('online', () => {
     syncNotificationPrefsQueue().catch(err => {
       console.warn('Notification prefs sync failed:', err);

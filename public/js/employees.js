@@ -2,6 +2,7 @@
 
 
 let editingEmployeeId = null;
+let editingEmployeeIsSuperAdmin = false;
 let currentEmployeeIsActive = true;
 let employeeListStatus = 'active'; // 'active' or 'inactive'
 let employeesTableData = [];
@@ -11,7 +12,18 @@ let pendingEmployees = [];
 let pendingQboStatus = null;
 let employeeMissingLanguageFilter = false;
 let employeeMissingLanguageCount = 0;
+
+async function refreshTimesheetAdminsIfAvailable() {
+  if (typeof window.refreshTimesheetAdminLists !== 'function') return;
+  try {
+    await window.refreshTimesheetAdminLists({ rerender: true });
+  } catch (err) {
+    console.warn('Failed to refresh timesheet admin lists', err);
+  }
+}
 let permissionTemplates = [];
+const QBO_SUGGEST_DISMISS_KEY = 'avian_qbo_suggest_dismiss_v1';
+window.__QboLinkConfirmPending = null;
 
 // Track current admin access that may be injected by app.js after settings load
 window.CURRENT_ACCESS_PERMS = window.CURRENT_ACCESS_PERMS || {};
@@ -59,7 +71,6 @@ function applyRateAccessToEmployees(perms = {}) {
 }
 
 function applySuperAdminAccessToEmployees(isSuperAdmin) {
-  const workerTime = document.getElementById('employee-worker-timekeeping');
   const desktopAccess = document.getElementById('employee-desktop-access');
   const kioskAdminAccess = document.getElementById('employee-kiosk-admin-access');
   const roleTitleInput = document.getElementById('employee-role-title');
@@ -68,7 +79,7 @@ function applySuperAdminAccessToEmployees(isSuperAdmin) {
   const modalTemplateSelect = document.getElementById('edit-employee-template');
   const shouldLock = !isSuperAdmin;
 
-  [workerTime, desktopAccess, kioskAdminAccess].forEach(el => {
+  [desktopAccess, kioskAdminAccess].forEach(el => {
     if (el) el.disabled = shouldLock;
   });
   [roleTitleInput, templateSelect, modalRoleTitleInput, modalTemplateSelect].forEach(el => {
@@ -76,6 +87,120 @@ function applySuperAdminAccessToEmployees(isSuperAdmin) {
   });
   if (isSuperAdmin) {
     loadPermissionTemplates({ force: true });
+  }
+}
+
+function forceSuperAdminPermissionChecks() {
+  const ids = [
+    'edit-employee-perm-see-shipments',
+    'edit-employee-perm-modify-time',
+    'edit-employee-perm-view-time-reports',
+    'edit-employee-perm-view-all-timesheets',
+    'edit-employee-perm-assign-timesheets',
+    'edit-employee-perm-view-payroll',
+    'edit-employee-perm-modify-payroll',
+    'edit-employee-perm-modify-pay-rates'
+  ];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.checked = true;
+  });
+}
+
+function getSuggestionDismissKey(orgId, empId) {
+  if (!orgId || !empId) return null;
+  return `${QBO_SUGGEST_DISMISS_KEY}:${orgId}:${empId}`;
+}
+
+function isSuggestionDismissed(orgId, empId) {
+  const key = getSuggestionDismissKey(orgId, empId);
+  if (!key) return false;
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setSuggestionDismissed(orgId, empId, dismissed) {
+  const key = getSuggestionDismissKey(orgId, empId);
+  if (!key) return;
+  try {
+    if (dismissed) {
+      localStorage.setItem(key, '1');
+    } else {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function openQboLinkConfirmModal({ empId, empName, qboId, qboName, onConfirm } = {}) {
+  const modal = document.getElementById('qbo-link-confirm-modal');
+  const backdrop = document.getElementById('qbo-link-confirm-backdrop');
+  const text = document.getElementById('qbo-link-confirm-text');
+  const subtext = document.getElementById('qbo-link-confirm-subtext');
+  if (!modal || !backdrop) {
+    const ok = window.confirm(`Link ${empName || 'this employee'} to ${qboName || 'QuickBooks'} (${qboId})?`);
+    if (ok) {
+      if (typeof onConfirm === 'function') {
+        onConfirm({ empId, qboId, qboName });
+      } else {
+        confirmQboLink({ empId, qboId, qboName });
+      }
+    }
+    return;
+  }
+  modal.dataset.empId = empId;
+  modal.dataset.qboId = qboId;
+  if (text) {
+    text.textContent = `Link ${empName || 'this employee'} to ${qboName || 'QuickBooks'}?`;
+  }
+  if (subtext) {
+    subtext.textContent = qboId ? `QuickBooks ID: ${qboId}` : '';
+  }
+  modal.classList.remove('hidden');
+  backdrop.classList.remove('hidden');
+  window.__QboLinkConfirmPending = { empId, qboId, qboName, onConfirm };
+}
+
+function closeQboLinkConfirmModal() {
+  const modal = document.getElementById('qbo-link-confirm-modal');
+  const backdrop = document.getElementById('qbo-link-confirm-backdrop');
+  if (modal) modal.classList.add('hidden');
+  if (backdrop) backdrop.classList.add('hidden');
+  window.__QboLinkConfirmPending = null;
+}
+
+async function confirmQboLink({ empId, qboId, qboName } = {}) {
+  if (!empId || !qboId) return;
+  const msg = document.getElementById('pending-employees-message');
+  try {
+    if (msg) {
+      msg.textContent = 'Linking to QuickBooks...';
+      msg.style.color = 'black';
+    }
+    await fetchJSON(`/api/employees/${empId}/link-qbo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+      body: JSON.stringify({
+        employee_qbo_id: qboId,
+        allow_merge: true
+      })
+    });
+    if (msg) {
+      msg.textContent = `Linked to QuickBooks${qboName ? ` (${qboName})` : ''}.`;
+      msg.style.color = 'green';
+    }
+    await loadPendingEmployees();
+    await loadEmployeesTable();
+  } catch (err) {
+    console.error('Confirm QBO link error:', err);
+    if (msg) {
+      msg.textContent = err?.message || 'Failed to link to QuickBooks.';
+      msg.style.color = 'crimson';
+    }
   }
 }
 
@@ -126,28 +251,26 @@ function findPermissionTemplate(id) {
 function applyTemplateToCreateForm(template) {
   if (!template) return;
   const roleTitleInput = document.getElementById('employee-role-title');
-  const workerTime = document.getElementById('employee-worker-timekeeping');
   const desktopAccess = document.getElementById('employee-desktop-access');
   const kioskAdminAccess = document.getElementById('employee-kiosk-admin-access');
 
   if (roleTitleInput) {
     roleTitleInput.value = template.role_title || template.name || '';
   }
-  if (workerTime) workerTime.checked = !!template.access?.worker_timekeeping;
   if (desktopAccess) desktopAccess.checked = !!template.access?.desktop_access;
   if (kioskAdminAccess) kioskAdminAccess.checked = !!template.access?.kiosk_admin_access;
 }
 
 function applyTemplateToEditForm(template) {
-  if (!template) return;
+  if (!template || editingEmployeeIsSuperAdmin) return;
   const roleTitleInput = document.getElementById('edit-employee-role-title');
-  const workerTime = document.getElementById('edit-employee-worker-timekeeping');
   const desktopAccess = document.getElementById('edit-employee-desktop-access');
   const kioskAdminAccess = document.getElementById('edit-employee-kiosk-admin-access');
   const permSeeShipments = document.getElementById('edit-employee-perm-see-shipments');
   const permModifyTime = document.getElementById('edit-employee-perm-modify-time');
   const permViewTime = document.getElementById('edit-employee-perm-view-time-reports');
   const permViewAllTimesheets = document.getElementById('edit-employee-perm-view-all-timesheets');
+  const permAssignTimesheets = document.getElementById('edit-employee-perm-assign-timesheets');
   const permViewPayroll = document.getElementById('edit-employee-perm-view-payroll');
   const permModifyPayroll = document.getElementById('edit-employee-perm-modify-payroll');
   const permModifyRates = document.getElementById('edit-employee-perm-modify-pay-rates');
@@ -155,7 +278,6 @@ function applyTemplateToEditForm(template) {
   if (roleTitleInput) {
     roleTitleInput.value = template.role_title || template.name || '';
   }
-  if (workerTime) workerTime.checked = !!template.access?.worker_timekeeping;
   if (desktopAccess) desktopAccess.checked = !!template.access?.desktop_access;
   if (kioskAdminAccess) kioskAdminAccess.checked = !!template.access?.kiosk_admin_access;
 
@@ -163,6 +285,7 @@ function applyTemplateToEditForm(template) {
   if (permModifyTime) permModifyTime.checked = !!template.permissions?.modify_time;
   if (permViewTime) permViewTime.checked = !!template.permissions?.view_time_reports;
   if (permViewAllTimesheets) permViewAllTimesheets.checked = !!template.permissions?.view_all_timesheets;
+  if (permAssignTimesheets) permAssignTimesheets.checked = !!template.permissions?.assign_timesheets;
   if (permViewPayroll) permViewPayroll.checked = !!template.permissions?.view_payroll;
   if (permModifyPayroll) permModifyPayroll.checked = !!template.permissions?.modify_payroll;
   if (permModifyRates) permModifyRates.checked = !!template.permissions?.modify_pay_rates;
@@ -212,8 +335,8 @@ function showCreateCard() {
   }
 
   // optional: focus first field
-  const nameInput = document.getElementById('employee-name');
-  if (nameInput) nameInput.focus();
+  const givenNameInput = document.getElementById('employee-given-name');
+  if (givenNameInput) givenNameInput.focus();
 }
 
 function hideCreateCard() {
@@ -319,12 +442,19 @@ async function loadEmployeesTable() {
     const term = searchInput ? searchInput.value : '';
     renderEmployeesTable(term);
   } catch (err) {
-    console.error('Error loading employees:', err.message);
+    const errMsg = err && err.message ? err.message : 'Error loading employees';
+    console.error('Error loading employees:', errMsg);
     employeesTableData = [];
     employeeMissingLanguageCount = 0;
     updateMissingLanguageButton();
-    tbody.innerHTML =
-      '<tr><td colspan="6">Error loading employees</td></tr>';
+    const needsAccess =
+      /admin privileges required/i.test(errMsg) ||
+      /access denied/i.test(errMsg);
+    const hint = needsAccess
+      ? 'Payroll access required. Link your admin to an employee with desktop access and view payroll.'
+      : errMsg;
+    const safeMsg = typeof escapeHTML === 'function' ? escapeHTML(hint) : hint;
+    tbody.innerHTML = `<tr><td colspan="6">${safeMsg}</td></tr>`;
   }
 
   // Refresh pending list alongside the main table
@@ -361,9 +491,25 @@ function renderEmployeesTable(filterTerm = '') {
         ? `(no ${employeeListStatus} employees)`
         : (employeeMissingLanguageFilter ? '(no employees missing language)' : '(no matching employees)');
 
-    tbody.innerHTML = `<tr><td colspan="6">${label}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5">${label}</td></tr>`;
     return;
   }
+
+  const hasAllOverlordPerms = emp => {
+    const isOn = value => value === true || value === 1 || value === '1' || value === 'true';
+    if (isOn(emp.is_super_admin)) return true;
+    return (
+      isOn(emp.see_shipments) &&
+      isOn(emp.modify_time) &&
+      isOn(emp.approve_time) &&
+      isOn(emp.view_time_reports) &&
+      isOn(emp.view_all_timesheets) &&
+      isOn(emp.assign_timesheets) &&
+      isOn(emp.view_payroll) &&
+      isOn(emp.modify_payroll) &&
+      isOn(emp.modify_pay_rates)
+    );
+  };
 
   tbody.innerHTML = '';
   rows.forEach(emp => {
@@ -375,41 +521,26 @@ function renderEmployeesTable(filterTerm = '') {
     const nameBadge = languageMissing
       ? ' <span class="pill pill-warn" title="Language missing; defaulting to English">Language missing</span>'
       : '';
-    const displayName = `${emp.name || ''}${nameBadge}`;
+    const overlordBadge = hasAllOverlordPerms(emp)
+      ? '<span class="overlord-crown" title="Overlord permissions">♛</span> '
+      : '';
+    const displayName = `${overlordBadge}${emp.name || ''}${nameBadge}`;
     const qboStatus =
       emp.needs_qbo_sync || (!emp.employee_qbo_id && !emp.vendor_qbo_id)
         ? 'Needs link'
         : 'Linked';
 
-    // default off if undefined/null (same as in the modal)
-    const usesTimekeeping = !!emp.worker_timekeeping; // default false
-
-tr.innerHTML = `
-  <td>
-    <div class="tk-tooltip-wrapper">
-      <input
-        type="checkbox"
-        disabled
-        ${usesTimekeeping ? 'checked' : ''}
-        aria-label="Worker timekeeping"
-        class="tk-checkbox"
-      />
-      <div class="tk-tooltip">
-        Edit this employee to change their timekeeping settings
-      </div>
-    </div>
-  </td>
-
-  <td>${displayName}</td>
-  <td>${nickname}</td>
-  <td>${nameOnChecks}</td>
-  <td>$${Number(emp.rate || 0).toFixed(2)}</td>
-  <td>
-    <span class="${qboStatus === 'Linked' ? 'pill pill-good' : 'pill pill-warn'}">
-      ${qboStatus}
-    </span>
-  </td>
-`;
+    tr.innerHTML = `
+      <td>${displayName}</td>
+      <td>${nickname}</td>
+      <td>${nameOnChecks}</td>
+      <td>$${Number(emp.rate || 0).toFixed(2)}</td>
+      <td>
+        <span class="${qboStatus === 'Linked' ? 'pill pill-good' : 'pill pill-warn'}">
+          ${qboStatus}
+        </span>
+      </td>
+    `;
 
 
     tr.addEventListener('click', () => {
@@ -458,7 +589,7 @@ function renderPendingEmployees() {
   if (!body) return;
 
   if (!pendingEmployees.length) {
-    body.innerHTML = '<tr><td colspan="5">(no pending employees)</td></tr>';
+    body.innerHTML = '<tr><td colspan="6">(no pending employees)</td></tr>';
     return;
   }
 
@@ -467,9 +598,43 @@ function renderPendingEmployees() {
 
   body.innerHTML = '';
   pendingEmployees.forEach(emp => {
-    const reason = emp.needs_qbo_sync
-      ? 'Needs QBO sync'
-      : 'Missing QBO IDs';
+    const parseArray = (value) => {
+      if (!value) return [];
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    };
+    const formatField = (field) => {
+      if (field === 'given_name') return 'first name';
+      if (field === 'family_name') return 'last name';
+      if (field === 'name_on_checks') return 'name on checks';
+      return field.replace(/_/g, ' ');
+    };
+    const formatFieldList = (fields) => fields.map(formatField).join(', ');
+
+    const dirtyFields = parseArray(emp.qbo_dirty_fields_json);
+    const conflictFields = parseArray(emp.qbo_conflict_fields_json);
+    const hasMissingLink = !emp.employee_qbo_id && !emp.vendor_qbo_id;
+    const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+    const suggestions = Array.isArray(emp.qbo_suggestions) ? emp.qbo_suggestions : [];
+    const dismissedSuggestion = hasMissingLink && orgId ? isSuggestionDismissed(orgId, emp.id) : false;
+    const primarySuggestion = !dismissedSuggestion && suggestions.length ? suggestions[0] : null;
+    const suggestionBadge = primarySuggestion
+      ? (primarySuggestion.confidence === 'strong' ? 'Strong match' : 'Possible match')
+      : '';
+    const suggestionBadgeClass = primarySuggestion
+      ? (primarySuggestion.confidence === 'strong' ? 'pill pill-good' : 'pill pill-warn')
+      : '';
+
+    const statusLines = [];
+    if (hasMissingLink) statusLines.push('Missing QBO IDs');
+    if (dirtyFields.length) statusLines.push(`Local changes: ${formatFieldList(dirtyFields)}`);
+    if (conflictFields.length) statusLines.push(`Conflict in QBO: ${formatFieldList(conflictFields)}`);
+    const reason = statusLines.length ? statusLines.join(' · ') : 'Needs QBO attention';
+
     const idLink = emp.id_document_uploaded_at
       ? `<a class="pending-id-link" href="/api/employees/${emp.id}/id-document" target="_blank" rel="noopener">View ID</a>`
       : '';
@@ -485,21 +650,58 @@ function renderPendingEmployees() {
       : `<button class="btn secondary btn-sm pending-create-btn" data-emp-id="${emp.id}" disabled title="${createReason}">Create in QBO</button>`;
     const linkDisabledAttr = isSuperAdmin ? '' : 'disabled';
     const linkTitleAttr = isSuperAdmin ? '' : ' title="Super admin required."';
+    const canSync = isSuperAdmin && !hasMissingLink && dirtyFields.length;
+    const syncButton = canSync
+      ? `<button class="btn primary btn-sm pending-sync-btn" data-emp-id="${emp.id}" ${conflictFields.length ? 'data-has-conflict="1"' : ''}>Sync changes to QBO</button>`
+      : '';
+    const suggestionNameAttr = primarySuggestion ? encodeURIComponent(primarySuggestion.name || '') : '';
+    const suggestionBlock = primarySuggestion
+      ? `
+        <div class="pending-suggestion">
+          <div class="pending-sub">Suggested match</div>
+          <div class="pending-suggestion-row">
+            <span>${primarySuggestion.name || 'QuickBooks employee'}${primarySuggestion.employee_qbo_id ? ` (${primarySuggestion.employee_qbo_id})` : ''}</span>
+            <span class="${suggestionBadgeClass}">${suggestionBadge}</span>
+          </div>
+          <div class="pending-suggestion-actions">
+            <button class="btn primary btn-sm pending-suggest-confirm" data-emp-id="${emp.id}" data-qbo-id="${primarySuggestion.employee_qbo_id}" data-qbo-name="${escapeHTML(suggestionNameAttr)}">Confirm link</button>
+            <button class="btn tertiary btn-sm pending-suggest-dismiss" data-emp-id="${emp.id}">Not a match</button>
+            <button class="btn secondary btn-sm pending-suggest-choose" data-emp-id="${emp.id}" data-qbo-id="${primarySuggestion.employee_qbo_id}">Choose different</button>
+          </div>
+        </div>
+      `
+      : '';
+
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>
         <div>${emp.name || '(no name)'}</div>
         <div class="pending-sub">${reason}</div>
+        ${suggestionBlock}
+        ${
+          emp.qbo_dirty_updated_at
+            ? `<div class="pending-sub">Changed ${formatDateTimeLocal(emp.qbo_dirty_updated_at)}${emp.qbo_dirty_by_name ? ` by ${emp.qbo_dirty_by_name}` : ''}${emp.qbo_dirty_source ? ` (${emp.qbo_dirty_source})` : ''}</div>`
+            : ''
+        }
         ${docBlock}
       </td>
       <td>$${Number(emp.rate || 0).toFixed(2)}</td>
       <td>${emp.nickname || ''}</td>
       <td>${emp.name_on_checks || ''}</td>
+      <td class="pending-status">
+        ${hasMissingLink ? 'Link required' : (dirtyFields.length ? 'Ready to sync' : 'Review needed')}
+      </td>
       <td class="pending-actions">
-        <input type="text" placeholder="QBO Employee ID" data-emp-id="${emp.id}" class="pending-qbo-emp" ${linkDisabledAttr} />
-        <input type="text" placeholder="QBO Vendor ID (optional)" data-emp-id="${emp.id}" class="pending-qbo-vendor" ${linkDisabledAttr} />
-        <button class="btn primary btn-sm pending-link-btn" data-emp-id="${emp.id}" ${linkDisabledAttr}${linkTitleAttr}>Mark linked</button>
-        ${createButton}
+        ${
+          hasMissingLink
+            ? `
+              <input type="text" placeholder="QBO Employee ID" data-emp-id="${emp.id}" class="pending-qbo-emp" ${linkDisabledAttr} />
+              <input type="text" placeholder="QBO Vendor ID (optional)" data-emp-id="${emp.id}" class="pending-qbo-vendor" ${linkDisabledAttr} />
+              <button class="btn primary btn-sm pending-link-btn" data-emp-id="${emp.id}" ${linkDisabledAttr}${linkTitleAttr}>Mark linked</button>
+              ${createButton}
+            `
+            : `${syncButton || ''}`
+        }
       </td>
     `;
     body.appendChild(tr);
@@ -543,24 +745,24 @@ async function loadEmployeesForSelect() {
 }
 
 async function saveEmployee() {
-  const nameInput = document.getElementById('employee-name');
+  const givenNameInput = document.getElementById('employee-given-name');
+  const familyNameInput = document.getElementById('employee-family-name');
   const nicknameInput = document.getElementById('employee-nickname');
   const nameOnChecksInput = document.getElementById('employee-name-on-checks');
   const emailInput = document.getElementById('employee-email');
   const rateInput = document.getElementById('employee-rate');
   const roleTitleInput = document.getElementById('employee-role-title');
   const templateSelect = document.getElementById('employee-permission-template');
-  const workerTimeCheckbox = document.getElementById('employee-worker-timekeeping');
   const desktopAccessCheckbox = document.getElementById('employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('employee-kiosk-admin-access');
   const msgEl = document.getElementById('employee-message');
 
-  const name = nameInput.value.trim();
+  const given_name = givenNameInput ? givenNameInput.value.trim() : '';
+  const family_name = familyNameInput ? familyNameInput.value.trim() : '';
   const nickname = nicknameInput.value.trim();
   const name_on_checks = nameOnChecksInput.value.trim();
   const email = emailInput ? emailInput.value.trim() : '';
   const rate = parseFloat(rateInput.value);
-  const worker_timekeeping = workerTimeCheckbox ? workerTimeCheckbox.checked : false;
   const desktop_access = desktopAccessCheckbox ? desktopAccessCheckbox.checked : false;
   const kiosk_admin_access = kioskAdminAccessCheckbox ? kioskAdminAccessCheckbox.checked : false;
   const isSuperAdmin = window.CURRENT_IS_SUPER_ADMIN === true;
@@ -568,14 +770,15 @@ async function saveEmployee() {
   const templateId =
     templateSelect && templateSelect.value ? Number(templateSelect.value) : null;
 
-  if (!name || isNaN(rate)) {
-    msgEl.textContent = 'Name and a numeric rate are required.';
+  if (!given_name || !family_name || isNaN(rate)) {
+    msgEl.textContent = 'First name, last name, and a numeric rate are required.';
     msgEl.style.color = 'red';
     return;
   }
 
   const payload = {
-    name,
+    given_name,
+    family_name,
     rate,
     nickname: nickname || null,
     name_on_checks: name_on_checks || null,
@@ -583,7 +786,7 @@ async function saveEmployee() {
   };
 
   if (isSuperAdmin) {
-    payload.worker_timekeeping = worker_timekeeping ? 1 : 0;
+    payload.worker_timekeeping = 1;
     payload.desktop_access = desktop_access ? 1 : 0;
     payload.kiosk_admin_access = kiosk_admin_access ? 1 : 0;
     if (templateSelect) {
@@ -613,6 +816,7 @@ async function saveEmployee() {
     await loadEmployeesTable();
     await loadEmployeesForSelect();
     await loadPendingEmployees();
+    await refreshTimesheetAdminsIfAvailable();
   } catch (err) {
     msgEl.textContent = 'Error: ' + err.message;
     msgEl.style.color = 'red';
@@ -620,33 +824,34 @@ async function saveEmployee() {
 }
 
 function clearEmployeeForm() {
-  const nameInput = document.getElementById('employee-name');
+  const givenNameInput = document.getElementById('employee-given-name');
+  const familyNameInput = document.getElementById('employee-family-name');
   const nicknameInput = document.getElementById('employee-nickname');
   const nameOnChecksInput = document.getElementById('employee-name-on-checks');
   const emailInput = document.getElementById('employee-email');
   const rateInput = document.getElementById('employee-rate');
   const roleTitleInput = document.getElementById('employee-role-title');
   const templateSelect = document.getElementById('employee-permission-template');
-  const workerTimeCheckbox = document.getElementById('employee-worker-timekeeping');
   const desktopAccessCheckbox = document.getElementById('employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('employee-kiosk-admin-access');
   const msgEl = document.getElementById('employee-message');
 
-  if (nameInput) nameInput.value = '';
+  if (givenNameInput) givenNameInput.value = '';
+  if (familyNameInput) familyNameInput.value = '';
   if (nicknameInput) nicknameInput.value = '';
   if (nameOnChecksInput) nameOnChecksInput.value = '';
   if (emailInput) emailInput.value = '';
   if (rateInput) rateInput.value = '';
   if (roleTitleInput) roleTitleInput.value = '';
   if (templateSelect) templateSelect.value = '';
-  if (workerTimeCheckbox) workerTimeCheckbox.checked = true;  // default ON
   if (desktopAccessCheckbox) desktopAccessCheckbox.checked = false;       // default OFF
   if (kioskAdminAccessCheckbox) kioskAdminAccessCheckbox.checked = false; // default OFF
   if (msgEl) msgEl.textContent = '';
 }
 
 function setEmployeeInputsReadOnly(isReadOnly) {
-  const nameInput = document.getElementById('edit-employee-name');
+  const givenNameInput = document.getElementById('edit-employee-given-name');
+  const familyNameInput = document.getElementById('edit-employee-family-name');
   const nicknameInput = document.getElementById('edit-employee-nickname');
   const roleTitleInput = document.getElementById('edit-employee-role-title');
   const nameOnChecksInput = document.getElementById(
@@ -655,7 +860,6 @@ function setEmployeeInputsReadOnly(isReadOnly) {
   const emailInput = document.getElementById('edit-employee-email');
   const rateInput = document.getElementById('edit-employee-rate');
   const templateSelect = document.getElementById('edit-employee-template');
-  const workerTimeCheckbox = document.getElementById('edit-employee-worker-timekeeping');
   const desktopAccessCheckbox = document.getElementById('edit-employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('edit-employee-kiosk-admin-access');
   const languageSelect = document.getElementById('edit-employee-language');
@@ -663,6 +867,7 @@ function setEmployeeInputsReadOnly(isReadOnly) {
   const permModifyTime = document.getElementById('edit-employee-perm-modify-time');
   const permViewTime = document.getElementById('edit-employee-perm-view-time-reports');
   const permViewAllTimesheets = document.getElementById('edit-employee-perm-view-all-timesheets');
+  const permAssignTimesheets = document.getElementById('edit-employee-perm-assign-timesheets');
   const permViewPayroll = document.getElementById('edit-employee-perm-view-payroll');
   const permModifyPayroll = document.getElementById('edit-employee-perm-modify-payroll');
   const permModifyRates = document.getElementById('edit-employee-perm-modify-pay-rates');
@@ -673,6 +878,14 @@ function setEmployeeInputsReadOnly(isReadOnly) {
   const isSuperAdmin = window.CURRENT_IS_SUPER_ADMIN === true;
 
   // 🔓 App-controlled fields → toggle with edit mode
+  if (givenNameInput) {
+    givenNameInput.readOnly = isReadOnly;
+    givenNameInput.style.backgroundColor = isReadOnly ? '#f9fafb' : '#ffffff';
+  }
+  if (familyNameInput) {
+    familyNameInput.readOnly = isReadOnly;
+    familyNameInput.style.backgroundColor = isReadOnly ? '#f9fafb' : '#ffffff';
+  }
   if (nicknameInput) {
     nicknameInput.readOnly = isReadOnly;
     nicknameInput.style.backgroundColor = isReadOnly ? '#f9fafb' : '#ffffff';
@@ -680,10 +893,6 @@ function setEmployeeInputsReadOnly(isReadOnly) {
   if (emailInput) {
     emailInput.readOnly = isReadOnly;
     emailInput.style.backgroundColor = isReadOnly ? '#f9fafb' : '#ffffff';
-  }
-  if (nameInput) {
-    nameInput.readOnly = isReadOnly;
-    nameInput.style.backgroundColor = isReadOnly ? '#f9fafb' : '#ffffff';
   }
   if (nameOnChecksInput) {
     nameOnChecksInput.readOnly = isReadOnly;
@@ -701,23 +910,27 @@ function setEmployeeInputsReadOnly(isReadOnly) {
     roleTitleInput.style.backgroundColor = lockRole ? '#f9fafb' : '#ffffff';
   }
   if (templateSelect) {
-    templateSelect.disabled = isReadOnly || !isSuperAdmin;
+    templateSelect.disabled = isReadOnly || !isSuperAdmin || editingEmployeeIsSuperAdmin;
   }
 
   // checkboxes use disabled instead of readOnly
   const accessLocked = isReadOnly || !isSuperAdmin;
-  if (workerTimeCheckbox) workerTimeCheckbox.disabled = accessLocked;
   if (desktopAccessCheckbox) desktopAccessCheckbox.disabled = accessLocked;
   if (kioskAdminAccessCheckbox) kioskAdminAccessCheckbox.disabled = accessLocked;
 
-  const permLocked = isReadOnly || !isSuperAdmin;
+  const permLocked = isReadOnly || !isSuperAdmin || editingEmployeeIsSuperAdmin;
   if (permSeeShipments) permSeeShipments.disabled = permLocked;
   if (permModifyTime) permModifyTime.disabled = permLocked;
   if (permViewTime) permViewTime.disabled = permLocked;
   if (permViewAllTimesheets) permViewAllTimesheets.disabled = permLocked;
+  if (permAssignTimesheets) permAssignTimesheets.disabled = permLocked;
   if (permViewPayroll) permViewPayroll.disabled = permLocked;
   if (permModifyPayroll) permModifyPayroll.disabled = permLocked;
   if (permModifyRates) permModifyRates.disabled = permLocked;
+
+  if (editingEmployeeIsSuperAdmin) {
+    forceSuperAdminPermissionChecks();
+  }
 
   if (languageSelect) languageSelect.disabled = isReadOnly;
   if (languageSelect) {
@@ -790,10 +1003,10 @@ function enterEmployeeEditMode() {
   // Show Make Inactive only in edit mode
   if (toggleBtn) toggleBtn.classList.remove('hidden');
 
-  const nameInput = document.getElementById('edit-employee-name');
-  if (nameInput) {
-    nameInput.focus();
-    nameInput.select();
+  const givenNameInput = document.getElementById('edit-employee-given-name');
+  if (givenNameInput) {
+    givenNameInput.focus();
+    givenNameInput.select();
   }
 }
 
@@ -814,26 +1027,29 @@ function openEmployeeModal(emp) {
   if (!emp) return;
 
   editingEmployeeId = emp.id;
+  editingEmployeeIsSuperAdmin = !!emp.is_super_admin;
   currentEmployeeIsActive = emp.active !== 0 && emp.active !== false;
 
   const modal = document.getElementById('employee-edit-modal');
   const backdrop = document.getElementById('employee-edit-backdrop');
 
   const titleEl = document.getElementById('employee-edit-title');
-  const nameInput = document.getElementById('edit-employee-name');
+  const givenNameInput = document.getElementById('edit-employee-given-name');
+  const familyNameInput = document.getElementById('edit-employee-family-name');
   const nicknameInput = document.getElementById('edit-employee-nickname');
   const roleTitleInput = document.getElementById('edit-employee-role-title');
   const nameOnChecksInput = document.getElementById('edit-employee-name-on-checks');
   const rateInput = document.getElementById('edit-employee-rate');
   const templateSelect = document.getElementById('edit-employee-template');
-  const workerTimeCheckbox = document.getElementById('edit-employee-worker-timekeeping');
   const desktopAccessCheckbox = document.getElementById('edit-employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('edit-employee-kiosk-admin-access');
   const languageSelect = document.getElementById('edit-employee-language');
+  const languageWarning = document.getElementById('employee-language-warning');
   const permSeeShipments = document.getElementById('edit-employee-perm-see-shipments');
   const permModifyTime = document.getElementById('edit-employee-perm-modify-time');
   const permViewTime = document.getElementById('edit-employee-perm-view-time-reports');
   const permViewAllTimesheets = document.getElementById('edit-employee-perm-view-all-timesheets');
+  const permAssignTimesheets = document.getElementById('edit-employee-perm-assign-timesheets');
   const permViewPayroll = document.getElementById('edit-employee-perm-view-payroll');
   const permModifyPayroll = document.getElementById('edit-employee-perm-modify-payroll');
   const permModifyRates = document.getElementById('edit-employee-perm-modify-pay-rates');
@@ -858,19 +1074,14 @@ function openEmployeeModal(emp) {
   }
 
   // Basic fields
-  if (nameInput) nameInput.value = emp.name || '';
+  if (givenNameInput) givenNameInput.value = emp.given_name || '';
+  if (familyNameInput) familyNameInput.value = emp.family_name || '';
   if (nicknameInput) nicknameInput.value = emp.nickname || '';
   if (roleTitleInput) roleTitleInput.value = emp.role_title || '';
   if (nameOnChecksInput) nameOnChecksInput.value = emp.name_on_checks || '';
   if (rateInput) rateInput.value = emp.rate != null ? emp.rate : '';
   editingEmployeeOriginalRate = emp.rate != null ? Number(emp.rate) : null;
   editingEmployeeOriginalNameOnChecks = emp.name_on_checks || '';
-
-  if (workerTimeCheckbox) {
-    const val = emp.worker_timekeeping;
-    workerTimeCheckbox.checked =
-      val === undefined || val === null ? true : !!val;
-  }
 
   if (desktopAccessCheckbox) desktopAccessCheckbox.checked = !!emp.desktop_access;
   if (kioskAdminAccessCheckbox) kioskAdminAccessCheckbox.checked = !!emp.kiosk_admin_access;
@@ -879,9 +1090,14 @@ function openEmployeeModal(emp) {
   if (permModifyTime) permModifyTime.checked = !!emp.modify_time;
   if (permViewTime) permViewTime.checked = !!emp.view_time_reports;
   if (permViewAllTimesheets) permViewAllTimesheets.checked = !!emp.view_all_timesheets;
+  if (permAssignTimesheets) permAssignTimesheets.checked = !!emp.assign_timesheets;
   if (permViewPayroll) permViewPayroll.checked = !!emp.view_payroll;
   if (permModifyPayroll) permModifyPayroll.checked = !!emp.modify_payroll;
   if (permModifyRates) permModifyRates.checked = !!emp.modify_pay_rates;
+
+  if (editingEmployeeIsSuperAdmin) {
+    forceSuperAdminPermissionChecks();
+  }
 
   if (templateSelect) {
     const setValue = () => {
@@ -940,14 +1156,16 @@ function openEmployeeModal(emp) {
 
 async function saveEmployeeFromModal() {
   const msgEl = document.getElementById('employee-edit-message');
-  const nameInput = document.getElementById('edit-employee-name');
+  const givenNameInput = document.getElementById('edit-employee-given-name');
+  const familyNameInput = document.getElementById('edit-employee-family-name');
   const nicknameInput = document.getElementById('edit-employee-nickname');
+  const roleTitleInput = document.getElementById('edit-employee-role-title');
   const nameOnChecksInput = document.getElementById(
     'edit-employee-name-on-checks'
   );
   const emailInput = document.getElementById('edit-employee-email');
   const rateInput = document.getElementById('edit-employee-rate');
-  const workerTimeCheckbox = document.getElementById('edit-employee-worker-timekeeping');
+  const templateSelect = document.getElementById('edit-employee-template');
   const desktopAccessCheckbox = document.getElementById('edit-employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('edit-employee-kiosk-admin-access');
   const languageSelect = document.getElementById('edit-employee-language');
@@ -955,6 +1173,7 @@ async function saveEmployeeFromModal() {
   const permModifyTime = document.getElementById('edit-employee-perm-modify-time');
   const permViewTime = document.getElementById('edit-employee-perm-view-time-reports');
   const permViewAllTimesheets = document.getElementById('edit-employee-perm-view-all-timesheets');
+  const permAssignTimesheets = document.getElementById('edit-employee-perm-assign-timesheets');
   const permViewPayroll = document.getElementById('edit-employee-perm-view-payroll');
   const permModifyPayroll = document.getElementById('edit-employee-perm-modify-payroll');
   const permModifyRates = document.getElementById('edit-employee-perm-modify-pay-rates');
@@ -964,6 +1183,10 @@ async function saveEmployeeFromModal() {
   const pinConfirmInput = document.getElementById('edit-employee-pin-confirm');
   const pinStatusEl = document.getElementById('employee-edit-pin-status');
 
+  if (editingEmployeeIsSuperAdmin) {
+    forceSuperAdminPermissionChecks();
+  }
+
   if (!editingEmployeeId) {
     if (msgEl) {
       msgEl.textContent = 'No employee selected to edit.';
@@ -972,7 +1195,8 @@ async function saveEmployeeFromModal() {
     return;
   }
 
-  const name = nameInput ? nameInput.value.trim() : '';
+  const given_name = givenNameInput ? givenNameInput.value.trim() : '';
+  const family_name = familyNameInput ? familyNameInput.value.trim() : '';
   const nickname = nicknameInput ? nicknameInput.value.trim() : '';
   const role_title = roleTitleInput ? roleTitleInput.value.trim() : '';
   const name_on_checks = nameOnChecksInput ? nameOnChecksInput.value.trim() : '';
@@ -981,9 +1205,6 @@ async function saveEmployeeFromModal() {
   const canEditRate = canCurrentAdminModifyPayRates();
   let rate = incomingRate;
 
-  const worker_timekeeping = workerTimeCheckbox
-    ? (workerTimeCheckbox.checked ? 1 : 0)
-    : 1; // default ON if checkbox not found
   const desktop_access = desktopAccessCheckbox && desktopAccessCheckbox.checked ? 1 : 0;
   const kiosk_admin_access =
     kioskAdminAccessCheckbox && kioskAdminAccessCheckbox.checked ? 1 : 0;
@@ -995,9 +1216,9 @@ async function saveEmployeeFromModal() {
     templateSelect && templateSelect.value ? Number(templateSelect.value) : null;
 
 
-  if (!name) {
+  if (!given_name || !family_name) {
     if (msgEl) {
-      msgEl.textContent = 'Name is required.';
+      msgEl.textContent = 'First and last name are required.';
       msgEl.style.color = 'red';
     }
     return;
@@ -1031,7 +1252,8 @@ async function saveEmployeeFromModal() {
 
   const payload = {
     id: editingEmployeeId,
-    name,
+    given_name,
+    family_name,
     rate,
     nickname: nickname || null,
     name_on_checks: name_on_checks || null,
@@ -1040,13 +1262,14 @@ async function saveEmployeeFromModal() {
   };
 
   if (isSuperAdmin) {
-    payload.worker_timekeeping = worker_timekeeping;
+    payload.worker_timekeeping = 1;
     payload.desktop_access = desktop_access;
     payload.kiosk_admin_access = kiosk_admin_access;
     payload.see_shipments = permSeeShipments && permSeeShipments.checked ? 1 : 0;
     payload.modify_time = permModifyTime && permModifyTime.checked ? 1 : 0;
     payload.view_time_reports = permViewTime && permViewTime.checked ? 1 : 0;
     payload.view_all_timesheets = permViewAllTimesheets && permViewAllTimesheets.checked ? 1 : 0;
+    payload.assign_timesheets = permAssignTimesheets && permAssignTimesheets.checked ? 1 : 0;
     payload.view_payroll = permViewPayroll && permViewPayroll.checked ? 1 : 0;
     payload.modify_payroll = permModifyPayroll && permModifyPayroll.checked ? 1 : 0;
     payload.modify_pay_rates = permModifyRates && permModifyRates.checked ? 1 : 0;
@@ -1115,6 +1338,7 @@ async function saveEmployeeFromModal() {
 
     await loadEmployeesTable();
     await loadEmployeesForSelect();
+    await refreshTimesheetAdminsIfAvailable();
     closeEmployeeEditModal();
   } catch (err) {
     if (msgEl) {
@@ -1126,6 +1350,7 @@ async function saveEmployeeFromModal() {
 
 function closeEmployeeEditModal() {
   editingEmployeeId = null;
+  editingEmployeeIsSuperAdmin = false;
   editingEmployeeOriginalRate = null;
   editingEmployeeOriginalNameOnChecks = '';
 
@@ -1185,6 +1410,7 @@ async function toggleEmployeeActiveFromModal() {
 
     await loadEmployeesTable();
     await loadEmployeesForSelect();
+    await refreshTimesheetAdminsIfAvailable();
 
     if (!newActive && employeeListStatus === 'active') {
       // Just made them inactive while viewing the active list → they disappear from the table.
@@ -1371,20 +1597,6 @@ document.addEventListener("click", (e) => {
   });
 })();
 
-// Position fixed tooltip near hovered checkbox
-document.addEventListener("mouseover", (e) => {
-  const wrapper = e.target.closest(".tk-tooltip-wrapper");
-  if (!wrapper) return;
-
-  const tooltip = wrapper.querySelector(".tk-tooltip");
-  if (!tooltip) return;
-
-  const rect = wrapper.getBoundingClientRect();
-
-  tooltip.style.left = rect.left + rect.width / 2 + "px";
-  tooltip.style.top = rect.top - 10 + "px"; // position above
-});
-
 // Live search for employees
 const employeesSearchInput = document.getElementById('employees-search');
 if (employeesSearchInput) {
@@ -1396,6 +1608,45 @@ if (employeesSearchInput) {
 const pendingCard = document.getElementById('pending-employees-card');
 if (pendingCard) {
   pendingCard.addEventListener('click', async e => {
+    const suggestConfirm = e.target.closest('.pending-suggest-confirm');
+    if (suggestConfirm) {
+      const empId = suggestConfirm.dataset.empId;
+      const qboId = suggestConfirm.dataset.qboId;
+      const qboName = suggestConfirm.dataset.qboName
+        ? decodeURIComponent(suggestConfirm.dataset.qboName)
+        : '';
+      const emp = pendingEmployees.find(item => String(item.id) === String(empId));
+      const empName = emp?.name || 'this employee';
+      if (empId && qboId) {
+        openQboLinkConfirmModal({ empId, empName, qboId, qboName });
+      }
+      return;
+    }
+
+    const suggestDismiss = e.target.closest('.pending-suggest-dismiss');
+    if (suggestDismiss) {
+      const empId = suggestDismiss.dataset.empId;
+      const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+      if (empId && orgId) {
+        setSuggestionDismissed(orgId, empId, true);
+        renderPendingEmployees();
+      }
+      return;
+    }
+
+    const suggestChoose = e.target.closest('.pending-suggest-choose');
+    if (suggestChoose) {
+      const empId = suggestChoose.dataset.empId;
+      const qboId = suggestChoose.dataset.qboId || '';
+      const row = suggestChoose.closest('tr');
+      const empInput = row ? row.querySelector('.pending-qbo-emp') : null;
+      if (empInput) {
+        if (qboId) empInput.value = qboId;
+        empInput.focus();
+      }
+      return;
+    }
+
     const createBtn = e.target.closest('.pending-create-btn');
     if (createBtn) {
       const empId = createBtn.dataset.empId;
@@ -1411,18 +1662,16 @@ if (pendingCard) {
         return;
       }
 
-      const fullName = String(emp.name || '').trim();
-      const parts = fullName.split(/\s+/).filter(Boolean);
-      if (parts.length < 2) {
+      const givenName = String(emp.given_name || '').trim();
+      const familyName = String(emp.family_name || '').trim();
+      const fullName = [givenName, familyName].filter(Boolean).join(' ').trim();
+      if (!givenName || !familyName) {
         if (msg) {
           msg.textContent = 'Enter a first and last name before creating in QuickBooks.';
           msg.style.color = 'red';
         }
         return;
       }
-
-      const givenName = parts[0];
-      const familyName = parts.slice(1).join(' ');
 
       try {
         createBtn.disabled = true;
@@ -1436,8 +1685,7 @@ if (pendingCard) {
           body: JSON.stringify({
             display_name: fullName,
             given_name: givenName,
-            family_name: familyName,
-            email: emp.email || null
+            family_name: familyName
           })
         });
         const data = await resp.json().catch(() => ({}));
@@ -1469,6 +1717,47 @@ if (pendingCard) {
       return;
     }
 
+    const syncBtn = e.target.closest('.pending-sync-btn');
+    if (syncBtn) {
+      const empId = syncBtn.dataset.empId;
+      const msg = document.getElementById('pending-employees-message');
+      if (!empId) return;
+
+      const hasConflict = syncBtn.dataset.hasConflict === '1';
+      if (hasConflict) {
+        const ok = window.confirm('This will overwrite QuickBooks values for this employee. Continue?');
+        if (!ok) return;
+      }
+
+      try {
+        syncBtn.disabled = true;
+        if (msg) {
+          msg.textContent = 'Syncing changes to QuickBooks...';
+          msg.style.color = '#111827';
+        }
+        const res = await fetchJSON('/api/sync/qbo-employee-updates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+          body: JSON.stringify({ employee_ids: [Number(empId)] })
+        });
+        if (msg) {
+          msg.textContent = 'QuickBooks sync complete.';
+          msg.style.color = 'green';
+        }
+        await loadPendingEmployees();
+        await loadEmployeesTable();
+      } catch (err) {
+        console.error('Sync QBO updates error:', err);
+        if (msg) {
+          msg.textContent = 'Failed to sync: ' + (err.message || err);
+          msg.style.color = 'red';
+        }
+      } finally {
+        syncBtn.disabled = false;
+      }
+      return;
+    }
+
     const btn = e.target.closest('.pending-link-btn');
     if (!btn) return;
     const empId = btn.dataset.empId;
@@ -1495,7 +1784,8 @@ if (pendingCard) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           employee_qbo_id: qboEmpId || null,
-          vendor_qbo_id: qboVendorId || null
+          vendor_qbo_id: qboVendorId || null,
+          allow_merge: true
         })
       });
       if (msg) {
@@ -1520,3 +1810,43 @@ if (pendingCard) {
     }
   });
 }
+
+function bindQboLinkConfirmModal() {
+  const qboLinkConfirmClose = document.getElementById('qbo-link-confirm-close');
+  const qboLinkConfirmCancel = document.getElementById('qbo-link-confirm-cancel');
+  const qboLinkConfirmSubmit = document.getElementById('qbo-link-confirm-submit');
+  const qboLinkConfirmBackdrop = document.getElementById('qbo-link-confirm-backdrop');
+
+  [qboLinkConfirmClose, qboLinkConfirmCancel].forEach(btn => {
+    if (btn && !btn.dataset.bound) {
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', closeQboLinkConfirmModal);
+    }
+  });
+
+  if (qboLinkConfirmBackdrop && !qboLinkConfirmBackdrop.dataset.bound) {
+    qboLinkConfirmBackdrop.dataset.bound = '1';
+    qboLinkConfirmBackdrop.addEventListener('click', closeQboLinkConfirmModal);
+  }
+
+  if (qboLinkConfirmSubmit && !qboLinkConfirmSubmit.dataset.bound) {
+    qboLinkConfirmSubmit.dataset.bound = '1';
+    qboLinkConfirmSubmit.addEventListener('click', async () => {
+    if (!window.__QboLinkConfirmPending) {
+      closeQboLinkConfirmModal();
+      return;
+    }
+    const { empId, qboId, qboName, onConfirm } = window.__QboLinkConfirmPending;
+    closeQboLinkConfirmModal();
+    if (typeof onConfirm === 'function') {
+      await onConfirm({ empId, qboId, qboName });
+      return;
+    }
+    await confirmQboLink({ empId, qboId, qboName });
+  });
+}
+}
+
+bindQboLinkConfirmModal();
+window.bindQboLinkConfirmModal = bindQboLinkConfirmModal;
+window.openQboLinkConfirmModal = openQboLinkConfirmModal;

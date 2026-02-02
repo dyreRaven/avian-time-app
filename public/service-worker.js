@@ -1,13 +1,13 @@
 // public/service-worker.js
 
-const CACHE_NAME = 'avian-kiosk-cache-v5';
+const CACHE_NAME = 'avian-kiosk-cache-v88';
 
 // List of assets we want to cache for offline
 const OFFLINE_ASSETS = [
   '/',           // main app (optional)
   '/index.html', // main app shell (optional)
   '/js/app.js',
-  '/js/app.js?v=reviewfix16',
+  '/js/app.js?v=reviewfix51',
   '/styles.css',
   '/kiosk',
   '/kiosk.html',
@@ -15,9 +15,9 @@ const OFFLINE_ASSETS = [
   '/kiosk-tablet.css',
   '/kiosk-phone.css',
   '/kiosk-admin.js',
-  '/kiosk-admin.js?v=20241211m',
+  '/kiosk-admin.js?v=20260130y',
   '/kiosk-admin.css',
-  '/kiosk-admin.css?v=20241211m',
+  '/kiosk-admin.css?v=20260130z',
   '/js/bcrypt.min.js',
   '/js/offline-store.js',
   '/js/notifications.js',
@@ -52,6 +52,22 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
+function isKioskRoute(pathname) {
+  return (
+    pathname === '/kiosk' ||
+    pathname === '/kiosk.html' ||
+    pathname.startsWith('/kiosk/')
+  );
+}
+
+function isKioskAdminRoute(pathname) {
+  return (
+    pathname === '/kiosk-admin' ||
+    pathname === '/kiosk-admin.html' ||
+    pathname.startsWith('/kiosk-admin')
+  );
+}
+
 self.addEventListener('fetch', event => {
   const { request } = event;
 
@@ -64,22 +80,41 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // For navigation requests (user entering /kiosk, refreshing, etc),
-  // serve cached shell immediately and update in the background.
+  // For navigation requests, use cache-first for kiosk routes (offline-first),
+  // and network-first for admin/auth routes to prevent stale shells.
   if (request.mode === 'navigate') {
+    const url = new URL(request.url);
+    const pathname = url.pathname;
+    const kioskRoute = isKioskRoute(pathname) || isKioskAdminRoute(pathname);
+
+    if (kioskRoute) {
+      event.respondWith(
+        caches.match(request).then(cached => {
+          const fetchPromise = fetch(request)
+            .then(response => {
+              if (response && response.ok) {
+                const cloned = response.clone();
+                caches.open(CACHE_NAME).then(cache => cache.put(request, cloned));
+              }
+              return response;
+            })
+            .catch(() => cached || caches.match('/kiosk.html'));
+          return cached || fetchPromise;
+        })
+      );
+      return;
+    }
+
     event.respondWith(
-      caches.match(request).then(cached => {
-        const fetchPromise = fetch(request)
-          .then(response => {
-            if (response && response.ok) {
-              const cloned = response.clone();
-              caches.open(CACHE_NAME).then(cache => cache.put(request, cloned));
-            }
-            return response;
-          })
-          .catch(() => cached || caches.match('/kiosk.html'));
-        return cached || fetchPromise;
-      })
+      fetch(request)
+        .then(response => {
+          if (response && response.ok) {
+            const cloned = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(request, cloned));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request) || caches.match('/index.html'))
     );
     return;
   }

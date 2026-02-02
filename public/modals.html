@@ -18,13 +18,18 @@
     <!-- INFORMATION -->
     <div class="form-grid employee-info-grid">
       <div class="form-field">
-        <label for="edit-employee-name">Employee Name</label>
-        <input id="edit-employee-name" type="text" />
+        <label for="edit-employee-given-name">First name</label>
+        <input id="edit-employee-given-name" type="text" />
       </div>
 
       <div class="form-field">
-        <label for="edit-employee-email">Email (from QuickBooks)</label>
-        <input id="edit-employee-email" type="email" readonly />
+        <label for="edit-employee-family-name">Last name</label>
+        <input id="edit-employee-family-name" type="text" />
+      </div>
+
+      <div class="form-field">
+        <label for="edit-employee-email">Email (local)</label>
+        <input id="edit-employee-email" type="email" />
       </div>
 
       <div class="form-field">
@@ -33,8 +38,9 @@
       </div>
 
       <div class="form-field">
-        <label for="edit-employee-role-title">Role title (optional)</label>
+        <label for="edit-employee-role-title">Role title (label only)</label>
         <input id="edit-employee-role-title" type="text" />
+        <p class="field-help">Shown on profiles and reports only. Does not grant access.</p>
       </div>
 
       <div class="form-field">
@@ -62,6 +68,7 @@
       <div class="form-field">
         <label for="edit-employee-template">Role template (optional)</label>
         <select id="edit-employee-template"></select>
+        <p class="field-help">Applies access + permissions from a saved template.</p>
       </div>
     </div>
 
@@ -69,14 +76,6 @@
     <div class="modal-section">
       <h2>Access</h2>
       <div class="two-col">
-        <label class="checkbox-inline">
-          <input
-            type="checkbox"
-            id="edit-employee-worker-timekeeping"
-          />
-          Worker timekeeping
-        </label>
-
         <label class="checkbox-inline">
           <input
             id="edit-employee-desktop-access"
@@ -98,35 +97,66 @@
     <!-- PERMISSIONS -->
     <div class="modal-section">
       <h2>Permissions</h2>
+      <p class="card-sub">
+        These control what this admin can view or do. Payroll access automatically includes time approval.
+      </p>
       <div class="two-col">
-        <label class="checkbox-inline">
-          <input id="edit-employee-perm-see-shipments" type="checkbox" />
-          See shipments
-        </label>
-        <label class="checkbox-inline">
-          <input id="edit-employee-perm-modify-time" type="checkbox" />
-          Modify/approve/reject time
-        </label>
-        <label class="checkbox-inline">
-          <input id="edit-employee-perm-view-time-reports" type="checkbox" />
-          View time reports
-        </label>
-        <label class="checkbox-inline">
-          <input id="edit-employee-perm-view-all-timesheets" type="checkbox" />
-          View all timesheets
-        </label>
-        <label class="checkbox-inline">
-          <input id="edit-employee-perm-view-payroll" type="checkbox" />
-          View payroll info
-        </label>
-        <label class="checkbox-inline">
-          <input id="edit-employee-perm-modify-payroll" type="checkbox" />
-          Modify payroll
-        </label>
-        <label class="checkbox-inline">
-          <input id="edit-employee-perm-modify-pay-rates" type="checkbox" />
-          Modify pay rates
-        </label>
+        <div class="perm-item">
+          <label class="checkbox-inline">
+            <input id="edit-employee-perm-see-shipments" type="checkbox" />
+            <span>See shipments</span>
+          </label>
+          <p class="perm-note">Shipments board, documents, comments, templates, and shipment reports. Payment amounts/docs still require payroll access.</p>
+        </div>
+        <div class="perm-item">
+          <label class="checkbox-inline">
+            <input id="edit-employee-perm-view-time-reports" type="checkbox" />
+            <span>View time reports</span>
+          </label>
+          <p class="perm-note">Approve Time Entries and open punches (view-only). Pay fields remain hidden without payroll access.</p>
+        </div>
+        <div class="perm-item">
+          <label class="checkbox-inline">
+            <input id="edit-employee-perm-modify-time" type="checkbox" />
+            <span>Modify time entries</span>
+          </label>
+          <p class="perm-note">Edit, verify, resolve, and review exceptions. Payroll approval still requires payroll access.</p>
+        </div>
+        <div class="perm-item">
+          <label class="checkbox-inline">
+            <input id="edit-employee-perm-view-all-timesheets" type="checkbox" />
+            <span>View all timesheets</span>
+          </label>
+          <p class="perm-note">See every timesheet and open punch. Without this, visibility is limited to assigned, created, or shared timesheets.</p>
+        </div>
+        <div class="perm-item">
+          <label class="checkbox-inline">
+            <input id="edit-employee-perm-assign-timesheets" type="checkbox" />
+            <span>Assign timesheets</span>
+          </label>
+          <p class="perm-note">Eligible for timesheet assignment. Super admins can reassign and share timesheets.</p>
+        </div>
+        <div class="perm-item">
+          <label class="checkbox-inline">
+            <input id="edit-employee-perm-view-payroll" type="checkbox" />
+            <span>View payroll info</span>
+          </label>
+          <p class="perm-note">Payroll screens, pay fields, employee list, vendors/projects, settings, and QBO status/sync. Includes time approval.</p>
+        </div>
+        <div class="perm-item">
+          <label class="checkbox-inline">
+            <input id="edit-employee-perm-modify-payroll" type="checkbox" />
+            <span>Modify payroll</span>
+          </label>
+          <p class="perm-note">Run payroll (preflight, create checks, unpay) and edit payroll settings. Implies payroll view access.</p>
+        </div>
+        <div class="perm-item">
+          <label class="checkbox-inline">
+            <input id="edit-employee-perm-modify-pay-rates" type="checkbox" />
+            <span>Modify pay rates</span>
+          </label>
+          <p class="perm-note">Edit employee rates (desktop and kiosk unlock). Implies payroll view access.</p>
+        </div>
       </div>
     </div>
 
@@ -210,9 +240,36 @@
     <div class="modal-footer">
       <button id="te-review-cancel" type="button" class="btn secondary">Cancel</button>
       <button id="te-review-save" type="button" class="btn primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+<!-- QBO LINK CONFIRM MODAL -->
+<div id="qbo-link-confirm-backdrop" class="modal-backdrop hidden"></div>
+<div id="qbo-link-confirm-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>Confirm QuickBooks link</h3>
+      <button
+        id="qbo-link-confirm-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close QuickBooks link confirmation"
+      >
+        ×
+      </button>
+    </div>
+    <div class="modal-section">
+      <p id="qbo-link-confirm-text" class="text-sm text-gray-700"></p>
+      <p id="qbo-link-confirm-subtext" class="text-sm text-gray-500"></p>
+    </div>
+    <div class="modal-footer">
+      <button id="qbo-link-confirm-cancel" class="btn secondary" type="button">Cancel</button>
+      <button id="qbo-link-confirm-submit" class="btn primary" type="button">Confirm link</button>
     </div>
   </div>
 </div>
+
 
 
     <!-- PIN SETTINGS -->
@@ -546,6 +603,39 @@
 </div>
 
 
+<!-- TIME ENTRY DETAIL OVERLAY -->
+<div id="time-entry-detail-overlay" class="time-entry-detail-overlay hidden" aria-hidden="true">
+  <div id="time-entry-detail-panel" class="time-entry-detail" role="dialog" aria-modal="true">
+    <div class="time-entry-detail-header">
+      <div>
+        <h3 id="time-entry-detail-title">Entry</h3>
+        <p id="time-entry-detail-sub" class="card-sub"></p>
+      </div>
+      <div class="time-entry-detail-actions">
+        <button id="time-entry-detail-edit" class="btn secondary btn-sm" type="button">Edit entry</button>
+        <button
+          id="time-entry-detail-close"
+          class="icon-button"
+          type="button"
+          aria-label="Close time entry details"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+
+    <div id="time-entry-detail-body" class="time-entry-detail-body"></div>
+
+    <div id="time-entry-edit-container" class="time-entry-edit-container hidden">
+      <div class="time-entry-edit-section">
+        <div class="time-entry-edit-section-title">Edit Entry</div>
+        <div id="time-entry-edit-form-host"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
 <!-- Kiosk Add/Edit Modal -->
 <div id="kiosk-modal-backdrop" class="modal-backdrop hidden"></div>
 
@@ -622,6 +712,16 @@
 >
   <div class="modal-card modal-card-wide">
     <div class="modal-header">
+      <div class="modal-header-actions">
+        <button
+          id="shipment-create-back"
+          class="icon-button"
+          type="button"
+          aria-label="Go back"
+        >
+          ←
+        </button>
+      </div>
       <h3>New Shipment</h3>
       <button
         id="shipment-create-close"
@@ -639,10 +739,35 @@
       <input type="hidden" id="shipment-updated-at" />
 
       <div class="shipment-modal-body">
-        <div id="shipment-form" class="shipment-form-grid">
-                   <!-- LEFT COLUMN -->
-          <div class="shipment-column">
-            <h3 class="shipment-section-title">Basic Info</h3>
+        <div class="shipment-stepper">
+          <div class="shipment-stepper-item active" data-step="1">
+            <span class="shipment-stepper-index">1</span>
+            <span class="shipment-stepper-label">Details</span>
+          </div>
+          <div class="shipment-stepper-item" data-step="2">
+            <span class="shipment-stepper-index">2</span>
+            <span class="shipment-stepper-label">Items</span>
+          </div>
+          <div class="shipment-stepper-item" data-step="3">
+            <span class="shipment-stepper-index">3</span>
+            <span class="shipment-stepper-label">Payments</span>
+          </div>
+          <div class="shipment-stepper-item" data-step="4">
+            <span class="shipment-stepper-index">4</span>
+            <span class="shipment-stepper-label">Documents</span>
+          </div>
+          <div class="shipment-stepper-item" data-step="5">
+            <span class="shipment-stepper-index">5</span>
+            <span class="shipment-stepper-label">Pickup</span>
+          </div>
+        </div>
+
+        <div id="shipment-create-step-1" class="shipment-step">
+          <div id="shipment-form" class="shipment-form-grid shipment-form-grid-single">
+            <!-- LEFT COLUMN -->
+            <div class="shipment-column">
+              <section class="shipment-card">
+                <h3 class="shipment-section-title">Basic Info</h3>
 
             <!-- Title + Status in the same row -->
             <div class="form-row-2">
@@ -708,7 +833,17 @@
     <!-- this can be populated from vendors marked as freight forwarders -->
     <select id="shipment-forwarder" name="freight_forwarder">
       <option value="">Select forwarder…</option>
+      <option value="__forwarder_other__">Other…</option>
     </select>
+    <div id="shipment-forwarder-other-wrap" class="form-subgroup hidden">
+      <label for="shipment-forwarder-other">Other forwarder</label>
+      <input
+        type="text"
+        id="shipment-forwarder-other"
+        placeholder="Enter forwarder name"
+        disabled
+      />
+    </div>
   </div>
 </div>
 
@@ -723,8 +858,10 @@
                 placeholder="Website / Order URL (optional)"
               />
             </div>
+              </section>
 
-            <h3 class="shipment-section-title">Dates &amp; Tracking</h3>
+              <section class="shipment-card">
+                <h3 class="shipment-section-title">Dates &amp; Tracking</h3>
 
             <div class="form-row-2">
               <div class="form-group">
@@ -766,148 +903,266 @@
               </div>
             </div>
 
-            <!-- NOTES now lives INSIDE the left column -->
-            <div class="shipment-notes-section">
-              <div class="form-group">
-                <label for="shipment-notes">Notes</label>
-                <textarea
-                  id="shipment-notes"
-                  name="notes"
-                  rows="4"
-                  placeholder="Extra details, special handling, etc."
-                ></textarea>
+              </section>
+
+              <!-- NOTES now lives INSIDE the left column -->
+              <section class="shipment-card">
+                <div class="form-group">
+                  <label for="shipment-notes">Notes</label>
+                  <textarea
+                    id="shipment-notes"
+                    name="notes"
+                    rows="4"
+                    placeholder="Extra details, special handling, etc."
+                  ></textarea>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+
+        <div id="shipment-create-step-2" class="shipment-step hidden">
+          <!-- FULL-WIDTH ITEMS SECTION -->
+          <section class="shipment-section-items">
+            <div class="form-row between shipment-items-header-row">
+              <h4 class="shipment-section-title">Items in this shipment</h4>
+              <button
+                type="button"
+                class="btn primary"
+                id="shipment-add-item-row"
+              >
+                + Add item
+              </button>
+            </div>
+
+            <div class="shipment-items-header">
+              <div>Name/Description</div>
+              <div>SKU</div>
+              <div>Vendor</div>
+              <div>Qty</div>
+              <div>Price / Unit</div>
+              <div>Total</div>
+              <div>Status</div>
+              <div>Actions</div>
+            </div>
+
+            <div id="shipment-items-rows"></div>
+
+            <div class="shipment-items-footer">
+              <span>Items total:</span>
+              <span id="shipment-items-total-display">$0.00</span>
+            </div>
+            <div class="shipment-items-footer shipment-items-override">
+              <label for="shipment-total-price-override">Total price (override)</label>
+              <input
+                type="number"
+                id="shipment-total-price-override"
+                min="0"
+                step="0.01"
+                placeholder="Use items total"
+              />
+            </div>
+
+            <div
+              id="shipment-items-verification"
+              class="shipment-items-verification hidden"
+            >
+              <div class="form-row between">
+                <label class="checkbox-inline">
+                  <input type="checkbox" id="shipment-verify-all" />
+                  <span>All items verified</span>
+                </label>
+
+              </div>
+            </div>
+
+            <!-- Used by JS when posting to server -->
+            <input
+              type="hidden"
+              id="shipment-total-price"
+              name="total_price"
+            />
+          </section>
+        </div>
+
+        <div id="shipment-create-step-3" class="shipment-step hidden">
+          <div class="shipment-form-grid shipment-form-grid-single">
+            <div class="shipment-column">
+              <h3 class="shipment-section-title">Payments</h3>
+
+              <div class="shipment-payments-stack">
+                <div class="shipment-payment-section">
+                  <h4 class="shipment-payment-title">Freight Forwarder</h4>
+                  <div class="form-row-2">
+                    <div class="form-group payment-flag">
+                      <label>
+                        <input
+                          type="checkbox"
+                          id="shipment-shipper-paid"
+                          name="shipper_paid"
+                        />
+                        Freight Forwarder Paid
+                      </label>
+                      <div class="currency-field">
+                        <span class="currency-prefix">$</span>
+                        <input
+                          type="number"
+                          id="shipment-shipper-paid-amount"
+                          name="shipment-shipper-paid-amount"
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="shipment-shipper-paid-by">Paid By</label>
+                      <select id="shipment-shipper-paid-by" name="shipment-shipper-paid-by"></select>
+                      <input
+                        type="text"
+                        id="shipment-shipper-paid-by-other"
+                        class="hidden"
+                        placeholder="Enter payer"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="shipment-payment-section">
+                  <h4 class="shipment-payment-title">Customs / Clearing</h4>
+                  <div class="form-row-2">
+                    <div class="form-group payment-flag">
+                      <label>
+                        <input
+                          type="checkbox"
+                          id="shipment-customs-paid"
+                          name="customs_paid"
+                        />
+                        Customs Paid
+                      </label>
+                      <div class="currency-field">
+                        <span class="currency-prefix">$</span>
+                        <input
+                          type="number"
+                          id="shipment-customs-paid-amount"
+                          name="shipment-customs-paid-amount"
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="shipment-customs-paid-by">Paid By</label>
+                      <select id="shipment-customs-paid-by" name="shipment-customs-paid-by"></select>
+                      <input
+                        type="text"
+                        id="shipment-customs-paid-by-other"
+                        class="hidden"
+                        placeholder="Enter payer"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="shipment-payment-section">
+                  <h4 class="shipment-payment-title">Storage Fees</h4>
+                  <div class="form-row-2">
+                    <div class="form-group payment-flag">
+                      <label>
+                        <input
+                          type="checkbox"
+                          id="shipment-storage-paid"
+                          name="storage_paid"
+                        />
+                        Storage Fees Paid
+                      </label>
+                      <div class="currency-field">
+                        <span class="currency-prefix">$</span>
+                        <input
+                          type="number"
+                          id="shipment-storage-paid-amount"
+                          name="shipment-storage-paid-amount"
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label for="shipment-storage-paid-by">Paid By</label>
+                      <select id="shipment-storage-paid-by" name="shipment-storage-paid-by"></select>
+                      <input
+                        type="text"
+                        id="shipment-storage-paid-by-other"
+                        class="hidden"
+                        placeholder="Enter payer"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="shipment-payment-section shipment-payment-summary">
+                  <h4 class="shipment-payment-title">Total</h4>
+                  <div class="form-row-2">
+                    <div class="form-group">
+                      <label for="shipment-total-paid-company-display">Total Paid by Company</label>
+                      <div class="currency-field">
+                        <span class="currency-prefix">$</span>
+                        <input
+                          type="text"
+                          id="shipment-total-paid-company-display"
+                          class="readonly-field"
+                          readonly
+                        />
+                      </div>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="shipment-total-paid-other-display">Total Paid by Others</label>
+                      <div class="currency-field">
+                        <span class="currency-prefix">$</span>
+                        <input
+                          type="text"
+                          id="shipment-total-paid-other-display"
+                          class="readonly-field"
+                          readonly
+                        />
+                      </div>
+                    </div>
+
+                    <!-- ⭐ TOTAL PAID (auto-calculated) -->
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                      <label for="shipment-total-paid-display">Total Paid (shipment)</label>
+                      <div class="currency-field">
+                        <span class="currency-prefix">$</span>
+                        <input
+                          type="text"
+                          id="shipment-total-paid-display"
+                          class="readonly-field"
+                          readonly
+                        />
+                      </div>
+
+                      <!-- Hidden field that actually gets sent to the server -->
+                      <input
+                        type="hidden"
+                        id="shipment-total-paid"
+                        name="total_paid"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
+        </div>
 
-
-          <!-- RIGHT COLUMN -->
-          <div class="shipment-column">
-            <h3 class="shipment-section-title">Storage &amp; Pickup</h3>
-
-            <div class="form-row-2">
-              <div class="form-group">
-                <label for="shipment-storage-due-date">Pickup Due Date</label>
-                <input
-                  type="date"
-                  id="shipment-storage-due-date"
-                  name="storage_due_date"
-                />
-              </div>
-              <div class="form-group">
-                <label for="shipment-storage-fees-estimate">Est. Storage Fees (auto)</label>
-                <div class="currency-field">
-                  <input
-                    type="text"
-                    id="shipment-storage-fees-estimate"
-                    class="readonly-field"
-                    readonly
-                  />
-                </div>
-                <p id="shipment-storage-fees-helper" class="small-muted"></p>
-              </div>
-            </div>
-
-            <input
-              type="hidden"
-              id="shipment-storage-daily-fee"
-              name="storage_daily_late_fee"
-            />
-
-            <div class="form-row-2">
-              <div class="form-group">
-                <label for="shipment-picked-up-by">Picked Up By</label>
-                <input
-                  type="text"
-                  id="shipment-picked-up-by"
-                  name="picked_up_by"
-                  placeholder="Person or company"
-                />
-              </div>
-              <div class="form-group">
-                <label for="shipment-picked-up-date">Pickup Date</label>
-                <input
-                  type="date"
-                  id="shipment-picked-up-date"
-                  name="picked_up_date"
-                />
-              </div>
-            </div>
-
-<h3 class="shipment-section-title">Payments</h3>
-
-<div class="form-row-2">
-  <div class="form-group payment-flag">
-    <label>
-      <input
-        type="checkbox"
-        id="shipment-shipper-paid"
-        name="shipper_paid"
-      />
-      Freight Forwarder Paid
-    </label>
-    <div class="currency-field">
-  <span class="currency-prefix">$</span>
-  <input
-    type="number"
-    id="shipment-shipper-paid-amount"
-    name="shipment-shipper-paid-amount"
-    min="0"
-    step="0.01"
-  />
-</div>
-  </div>
-
-  <div class="form-group payment-flag">
-    <label>
-      <input
-        type="checkbox"
-        id="shipment-customs-paid"
-        name="customs_paid"
-      />
-      Customs Paid
-    </label>
-<div class="currency-field">
-  <span class="currency-prefix">$</span>
-  <input
-    type="number"
-    id="shipment-customs-paid-amount"
-    name="shipment-customs-paid-amount"
-    min="0"
-    step="0.01"
-  />
-</div>
-  </div>
-</div>
-
-<div class="form-row-2">
-  <!-- ⭐ TOTAL PAID (auto-calculated) -->
-  <div class="form-group" style="grid-column: 1 / -1;">
-    <label for="shipment-total-paid-display">Total Paid (auto)</label>
-    <div class="currency-field">
-  <span class="currency-prefix">$</span>
-  <input
-    type="text"
-    id="shipment-total-paid-display"
-    class="readonly-field"
-    readonly
-  />
-</div>
-
-
-    <!-- Hidden field that actually gets sent to the server -->
-    <input
-      type="hidden"
-      id="shipment-total-paid"
-      name="total_paid"
-    />
-  </div>
-</div>
-
-
-<!-- DOCUMENTS SECTION -->
-<section id="shipment-docs-section" class="shipment-section">
-  <h3 class="shipment-section-title">Documents</h3>
+        <div id="shipment-create-step-4" class="shipment-step hidden">
+          <div class="shipment-form-grid shipment-form-grid-single">
+            <div class="shipment-column">
+              <!-- DOCUMENTS SECTION -->
+              <section id="shipment-docs-section" class="shipment-card">
+                <h3 class="shipment-section-title">Documents</h3>
 
   <!-- 🔹 Placeholder shown BEFORE first save -->
   <p id="shipment-docs-placeholder" class="small-muted">
@@ -974,93 +1229,97 @@
       <li class="shipment-docs-empty">(No documents uploaded yet.)</li>
     </ul>
   </div>
-</section>
-
-
+              </section>
+            </div>
           </div>
+        </div>
 
-          <!-- FULL-WIDTH ITEMS SECTION ACROSS BOTTOM -->
-<section class="shipment-section shipment-section-items">
-  <div class="form-row between">
-    <h4 class="shipment-section-title">Items in this shipment</h4>
-    <button
-      type="button"
-      class="btn secondary btn-small"
-      id="shipment-add-item-row"
-    >
-      + Add item
-    </button>
-  </div>
+        <div id="shipment-create-step-5" class="shipment-step hidden">
+          <div class="shipment-form-grid shipment-form-grid-single">
+            <div class="shipment-column">
+              <section class="shipment-card">
+                <h3 class="shipment-section-title">Storage &amp; Pickup</h3>
 
-<div class="shipment-items-header">
-  <div>Name/Description</div>
-  <div>SKU</div>
-  <div>Vendor</div>
-  <div>Qty</div>
-  <div>Price / Unit</div>
-  <div>Total</div>
-  <div>Status</div>
-  <div>Actions</div>
-</div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-storage-due-date">Pickup Due Date</label>
+                <input
+                  type="date"
+                  id="shipment-storage-due-date"
+                  name="storage_due_date"
+                />
+              </div>
+              <div class="form-group">
+                <label for="shipment-storage-fees-estimate">Est. Storage Fees (auto)</label>
+                <div class="currency-field">
+                  <input
+                    type="text"
+                    id="shipment-storage-fees-estimate"
+                    class="readonly-field"
+                    readonly
+                  />
+                </div>
+                <p id="shipment-storage-fees-helper" class="small-muted"></p>
+              </div>
+            </div>
 
+            <input
+              type="hidden"
+              id="shipment-storage-daily-fee"
+              name="storage_daily_late_fee"
+            />
 
+            <p id="shipment-pickup-locked-note" class="small-muted hidden">
+              Set the status to “Picked Up” to record pickup details.
+            </p>
 
-
-  <div id="shipment-items-rows"></div>
-
-  <div class="shipment-items-footer">
-    <span>Items total:</span>
-    <span id="shipment-items-total-display">$0.00</span>
-  </div>
-  <div class="shipment-items-footer shipment-items-override">
-    <label for="shipment-total-price-override">Total price (override)</label>
-    <input
-      type="number"
-      id="shipment-total-price-override"
-      min="0"
-      step="0.01"
-      placeholder="Use items total"
-    />
-  </div>
-
-  <div
-    id="shipment-items-verification"
-    class="shipment-items-verification hidden"
-  >
-    <div class="form-row between">
-      <label class="checkbox-inline">
-        <input type="checkbox" id="shipment-verify-all" />
-        <span>All items verified</span>
-      </label>
-
-    </div>
-  </div>
-
-  <!-- Used by JS when posting to server -->
-  <input
-    type="hidden"
-    id="shipment-total-price"
-    name="total_price"
-  />
-</section>
-
-</div><!-- /shipment-form -->
-</div><!-- /shipment-modal-body -->
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="shipment-picked-up-by">Picked Up By</label>
+                <input
+                  type="text"
+                  id="shipment-picked-up-by"
+                  name="picked_up_by"
+                  placeholder="Person or company"
+                />
+              </div>
+              <div class="form-group">
+                <label for="shipment-picked-up-date">Pickup Date</label>
+                <input
+                  type="date"
+                  id="shipment-picked-up-date"
+                  name="picked_up_date"
+                />
+              </div>
+            </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </div><!-- /shipment-modal-body -->
 
 <p id="shipment-create-status" class="message"></p>
 
-<div class="modal-footer">
-  <button type="button" class="btn secondary" id="shipment-close-bottom">
-    Close
-  </button>
+<div class="modal-footer shipment-modal-footer">
+  <div class="modal-footer-group">
+    <button type="button" class="btn danger" id="shipment-close-bottom">
+      Discard &amp; close
+    </button>
+  </div>
 
-  <button type="button" id="shipment-delete-btn" class="btn danger">
-    Delete
-  </button>
+  <div class="modal-footer-group">
+    <button type="button" class="btn secondary" id="shipment-save-close">
+      Save &amp; close
+    </button>
 
-  <button type="submit" class="btn primary">
-    Save shipment
-  </button>
+    <button type="button" class="btn primary" id="shipment-step-next">
+      Next: Items
+    </button>
+
+    <button type="submit" class="btn primary hidden" id="shipment-step-save">
+      Save shipment
+    </button>
+  </div>
 </div>
 </form>
 <!-- 🌟 SINGLE FORM ENDS HERE -->

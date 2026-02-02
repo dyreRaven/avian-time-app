@@ -7,18 +7,23 @@
 
 ## Identity and Access
 - `orgs`: id, name, timezone, status, created_at, updated_at.
-- `org_settings`: org_id, key, value (e.g., clock_in_photo_required, kiosk_enrollment_code, time_exception_rules, payroll_rules, notifications, branding).
+- `org_settings`: org_id, key, value (e.g., clock_in_photo_required, kiosk_enrollment_code, time_exception_rules, payroll_rules, notifications, branding, audit_log_retention_days).
 - `users`: id, email, password_hash, created_at.
 - `user_orgs`: id, user_id, org_id, employee_id, is_super_admin, login_enabled, created_at.
-- `employees`: id, org_id, name, nickname, name_on_checks, rate, active, pin_hash,
+- `employees`: id, org_id, name, given_name, family_name, nickname, name_on_checks, rate, active, pin_hash,
   language, employee_qbo_id, vendor_qbo_id, role_title, permission_template_id, worker_timekeeping,
-  desktop_access, kiosk_admin_access, email, needs_qbo_sync,
+  desktop_access, kiosk_admin_access, email, phone, needs_qbo_sync,
+  qbo_dirty_fields_json, qbo_dirty_updated_at, qbo_dirty_by_employee_id, qbo_dirty_source,
+  qbo_last_seen_given_name, qbo_last_seen_family_name, qbo_last_seen_name_on_checks,
+  qbo_conflict_fields_json, qbo_conflict_updated_at,
   name_on_checks_updated_at, name_on_checks_qbo_updated_at,
   start_date, termination_date,
   id_document_type, id_document_path, id_document_uploaded_at, id_document_uploaded_by,
   employee_photo_path, employee_photo_uploaded_at, employee_photo_uploaded_by, created_at.
+- `employee_documents`: id, org_id, employee_id, doc_type, doc_label, title, file_path, uploaded_by, uploaded_at.
+- `employee_employment_history`: id, org_id, employee_id, start_date, termination_date, recorded_at, recorded_by.
 - `employee_permissions`: employee_id, see_shipments, modify_time,
-  view_time_reports, view_all_timesheets, view_payroll, modify_payroll, modify_pay_rates.
+  approve_time, view_time_reports, view_all_timesheets, assign_timesheets, view_payroll, modify_payroll, modify_pay_rates.
 - `permission_templates`: id, org_id, name, role_title, access_json, permissions_json, created_at, updated_at.
 - `audit_log`: id, org_id, actor_user_id, actor_employee_id, action, entity_type,
   entity_id, before_json, after_json, note, created_at.
@@ -27,7 +32,8 @@
 - `kiosks`: id, org_id, name, location, device_id, device_secret, project_id,
   last_seen_at, created_at.
 - `kiosk_sessions` (timesheets): id, org_id, kiosk_id, device_id, project_id, date,
-  created_by_employee_id, shared_with_admins, geo_lat, geo_lng, geo_distance_m, geo_violation, created_at, ended_at.
+  created_by_employee_id, assigned_to_employee_id, shared_with_admins (legacy), geo_lat, geo_lng, geo_distance_m, geo_violation, created_at, ended_at.
+- `kiosk_session_shares`: id, org_id, kiosk_session_id, employee_id, created_at.
 - `kiosk_foreman_days`: id, org_id, kiosk_id, foreman_employee_id, date, set_by_employee_id, created_at.
 - `time_punches`: id, org_id, client_id, employee_id, project_id,
   clock_in_ts, clock_in_local_date, clock_out_ts, clock_out_local_date, clock_out_project_id,
@@ -88,7 +94,8 @@
   storage_due_date, storage_daily_late_fee,
   picked_up_by, picked_up_date, picked_up_updated_by, picked_up_updated_at,
   vendor_paid, vendor_paid_amount, shipper_paid, shipper_paid_amount,
-  customs_paid, customs_paid_amount, total_paid,
+  shipper_paid_by, customs_paid, customs_paid_amount, customs_paid_by,
+  storage_paid, storage_paid_amount, storage_paid_by, total_paid,
   items_verified, verified_by, verification_notes,
   website_url, notes, status, is_archived, archived_at, created_by, created_at, updated_at.
 - `shipment_items`: id, org_id, shipment_id, description, sku, quantity, unit_price,
@@ -100,7 +107,8 @@
   note, created_by, created_at.
 - `shipment_documents`: id, org_id, shipment_id, title, category, doc_type, doc_label,
   file_path, uploaded_by, uploaded_at.
-- `shipment_comments`: id, org_id, shipment_id, body, created_by, created_at, is_deleted, deleted_by, deleted_at.
+- `shipment_comment_threads`: id, org_id, shipment_id, title, category, created_by, created_at, updated_at.
+- `shipment_comments`: id, org_id, shipment_id, thread_id, body, created_by, created_at, is_deleted, deleted_by, deleted_at.
 - `shipment_templates`: id, org_id, name, title, vendor_id, freight_forwarder,
   destination, project_id, sku, quantity, total_price, price_per_item,
   website_url, notes, created_by, created_at, updated_at.

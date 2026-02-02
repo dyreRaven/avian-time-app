@@ -1,5 +1,30 @@
 # Decisions Log
 
+- 2026-02-02: Audit logs are retained indefinitely by default; orgs can set `audit_log_retention_days` to purge older audit entries.
+- 2026-02-02: Timesheet sharing is per-admin only; shared-with-all is deprecated and ignored (no global share UI).
+- 2026-02-02: Timesheet assignment defaults to the creator; super admins or assign-timesheets admins can reassign; any admin can be assigned.
+- 2026-02-02: Timesheet visibility: super admins, view_payroll, and view_all_timesheets see all; other admins see timesheets they created or are assigned/shared to.
+- 2026-02-02: Super admins always have full admin permissions; permissions are locked on their employee record.
+- 2026-02-02: Storage fee payments now capture who paid (company/customer/other) in the shipment summary fields.
+- 2026-02-02: Shipment comments are threaded with required thread titles; a default "General" thread is created when a comment is posted without a thread_id.
+- 2026-02-01: Shipment item verification is locked until status is Picked Up or Archived; recording pickup auto-sets status to Picked Up and logs the status change.
+- 2026-01-30: Bootstrap now confirms the initial admin account (email/password) before org setup; org creation follows signup.
+- 2026-01-30: After signup, org setup happens from the dashboard onboarding checklist instead of the auth page.
+- 2026-01-30: Shipment payment summaries now include storage fee paid status + amount and roll storage fees into total_paid when marked paid.
+- 2026-01-30: Shipment payment summaries now capture who paid freight forwarder/customs (company/customer/other) when marked paid.
+- 2026-01-30: Timesheet start now separates active-project selection from admin punch switching with explicit toggles.
+- 2026-01-30: Deleting the active timesheet requires selecting a replacement active timesheet when another is available; otherwise deletion clears the active project with a warning.
+- 2026-01-30: Timesheets can be explicitly closed by kiosk admins; closing sets ended_at, clears the kiosk’s active project, and requires a new timesheet to resume work on that project.
+- 2026-01-30: Kiosk admins can only start timesheets for today; the server blocks duplicate open timesheets for the same project on the same kiosk/day.
+- 2026-01-30: If no open timesheet exists for today, kiosk refresh clears the active project so workers aren’t clocked into yesterday’s project.
+- 2026-01-30: First-time onboarding uses a bootstrap-only flow before device selection; device setup happens after org creation.
+- 2026-01-30: Time entry review is now two-step: field review (modify_time) required for all entries before payroll approval; payroll permissions imply approve_time for final approval.
+- 2026-01-30: Payroll permission grants full time-entry visibility and edit authority regardless of timesheet assignment (view_payroll always sees all time entries/timesheets/exceptions).
+- 2026-01-29: Added approve_time permission for final time entry approval (replaces super-admin-only approval).
+- 2026-01-29: Kiosk admin time entry edits offer Save (pending) vs Save + Approve; save-only keeps review status open.
+- 2026-01-29: Added assign_timesheets permission and per-timesheet assignees; assigned admins can view their assigned timesheets.
+- 2026-01-29: Enforced immediate, server-side permission guardrails; money-related data is fully hidden without view_payroll.
+- 2026-01-29: QBO employee updates (first/last/name_on_checks) are manual-only; local dirty/conflict fields block payroll until synced. QBO email is ignored.
 - 2026-01-27: Shipment payments UI tracks freight forwarder and customs paid only; vendor paid is removed from the app.
 - 2026-01-27: Brand green accent color is #0c816d.
 - 2026-01-27: Added view_all_timesheets permission; super admins can share specific timesheets with other admins.

@@ -41,7 +41,7 @@ unsure, check the source docs listed below.
 - Time edits: single-day constraints, valid HH:MM times, and notes required for manual edits/exception actions.
 - Payroll: approvals reset on edits; preflight must block on missing QBO links; retries are manual.
 - Shipments: payment documents hidden from users without view_payroll; storage location is per line item.
-- Retention: photos 30 days; audit logs 1 year; notifications 90 days; idempotency keys 30 days; docs/ID images manual delete.
+- Retention: photos 30 days; audit logs retained indefinitely by default (org-level retention setting); notifications 90 days; idempotency keys 30 days; docs/ID images manual delete.
 - Jobs: auto clock-out at org-local midnight with catch-up; job locks prevent concurrent runs.
 
 ## Configuration (Environment)
@@ -49,7 +49,7 @@ unsure, check the source docs listed below.
 - Cookies: COOKIE_SECURE, COOKIE_SAMESITE.
 - QuickBooks: QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI, optional QBO_API_BASE, QBO_DEBUG.
 - Notifications: SMTP_* for email, WEB_PUSH_* for push, APNS_* for mobile push.
-- Retention: NOTIFICATION_RETENTION_DAYS, PHOTO_RETENTION_DAYS, AUDIT_LOG_RETENTION_DAYS, IDEMPOTENCY_RETENTION_DAYS.
+- Retention: NOTIFICATION_RETENTION_DAYS, PHOTO_RETENTION_DAYS, IDEMPOTENCY_RETENTION_DAYS (audit retention is per-org via org_settings.audit_log_retention_days).
 
 ## Data Model and Migrations
 - SQLite is v1 store; schema should remain portable to Postgres.

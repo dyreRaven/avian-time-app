@@ -1,5 +1,320 @@
 # Change Log
 
+- 2026-02-02: Time entry detail panels now show punch device IDs, and timesheets list/detail surfaces the device ID for open sessions.
+- 2026-02-02: Shipment cards and shipment document details now warn when required Shippers Invoice or BOL documents are missing.
+- 2026-02-02: Restored the admin dashboard overview with onboarding checklist, quick stats, and quick links.
+- 2026-02-02: QuickBooks connection card no longer shows at the top of the dashboard overview.
+- 2026-02-02: Moved the QuickBooks status pill next to the Overview badge on the dashboard.
+- 2026-02-02: Swapped the Today's focus list with the employee/project/vendor totals while keeping the hero copy in place.
+- 2026-02-02: Dashboard current totals now include shipment counts.
+- 2026-02-02: Removed the admin console top header banner.
+- 2026-02-02: Updated Today's focus checklist to emphasize time entry approval, shipments, and payroll.
+- 2026-02-02: Removed the hero quick-action buttons from the dashboard welcome section.
+- 2026-02-02: Renamed the totals panel to Operations and made each stat card link to its section.
+- 2026-02-02: Removed the Operations card from the bottom dashboard grid.
+- 2026-02-02: Dashboard bell icon now opens Notifications instead of settings.
+- 2026-02-02: Added a dashboard attention list with counts for time entry reviews, shipment issues, QBO syncs, and payroll problems.
+- 2026-02-02: Shipment comment notifications now appear in the Notifications feed.
+- 2026-02-02: Notifications are auto-marked read when the Notifications screen is viewed.
+- 2026-02-02: Operations panel now shows open timesheets and current workers.
+- 2026-02-02: Audit log retention now defaults to indefinite; admins can set org-level retention days in Settings.
+- 2026-02-02: Admin console Timesheets now includes a date picker to view past days.
+- 2026-02-02: Timesheet assignment now defaults to the creator and can be reassigned by super admins or assign-timesheets admins.
+- 2026-02-02: Timesheet assignment dropdown now lists all admins (assigners must be super admin or have assign-timesheets).
+- 2026-02-02: Timesheet assignment now allows super admins or assign-timesheets admins to assign any admin.
+- 2026-02-02: Timesheets visibility now includes the creator by default; view_all_timesheets/view_payroll/super admin still see all.
+- 2026-02-02: Admin console Timesheets now show a Shared With dropdown so super admins can manage per-admin shares.
+- 2026-02-02: Timesheets are no longer shared with all admins; sharing only uses explicit per-admin lists.
+- 2026-02-02: Timesheets column label shortened to "On clock" for active worker counts.
+- 2026-02-02: Super admin employee permissions are now locked on and cannot be unchecked.
+- 2026-02-02: Kiosk admin timesheets now show Assign for super admins even without explicit assign-timesheets.
+- 2026-02-02: Kiosk admin shipment item verification now unlocks only when status is Picked Up/Archived, matching the server gate and preventing premature verify actions.
+- 2026-02-02: Kiosk admin shipment item verification now accepts existing notes for issue statuses (notes still required), and verification errors are shown in the items modal instead of the global status bar.
+- 2026-02-02: Kiosk admin shipment items modal clears the search term on open to avoid hidden items after prior searches.
+- 2026-02-02: Kiosk admin shipment document links now include device auth so downloads work without a desktop session.
+- 2026-02-02: Admin shipment draft saves no longer wipe line items; the API only replaces items when they are explicitly included in the update.
+- 2026-02-02: Shipment payment validation now jumps to the Payments step and only enforces paid-by when payroll access is available.
+- 2026-02-02: Shipment create/edit now separates Payments, Documents, and Pickup into dedicated steps; pickup fields are disabled until status is set to Picked Up.
+- 2026-02-02: Shipment stepper pills are now clickable for quick navigation between steps (forward jumps save a draft first).
+- 2026-02-02: Payments summary now shows totals by company, others, and overall shipment.
+- 2026-02-02: Storage fees now capture a paid-by value (Company/Customer/Other) to match other payment fields.
+- 2026-02-02: Fixed shipment edit payments initialization so totals and paid-by values persist when reopening the modal.
+- 2026-02-02: Shipment unsaved-changes prompt now matches the standard modal styling.
+- 2026-02-02: Shipment total override prompt now appears only after user edits item pricing, not on initial edit load.
+- 2026-02-02: Shipments treat total price as auto when it matches item totals, keeping manual override off until explicitly edited again.
+- 2026-02-02: Shipment templates now clear the total override on load when it matches item totals.
+- 2026-02-02: Shipment payment totals now refresh when paid-by changes; override prompts now trigger on the first real item edit and avoid clearing totals when items fail to load.
+- 2026-02-02: Shipment board status colors updated to a more professional palette with readable header text.
+- 2026-02-02: Shipment payments now wait for permissions before loading to avoid transient 403 errors.
+- 2026-02-02: Storage fee estimates now use the pickup date when available and auto-fill storage fees unless manually overridden.
+- 2026-02-02: Shipment detail Comments now show a thread list + message window with author badges and pending-sync markers.
+- 2026-02-02: Refined the shipment comment thread layout with tighter spacing, cleaner sidebar, and a more compact composer.
+- 2026-02-01: Admin desktop “Approve Time Entries” now uses the time entries report with field-review + payroll-approval actions, flags, and notes (replacing Time Exceptions in the nav).
+- 2026-02-01: Approve Time Entries now hides payment columns, filters out paid entries, adds a details panel on row click, and includes a hide-approved toggle.
+- 2026-02-01: Removed the legacy Time Exceptions report section from the admin console UI.
+- 2026-02-01: Shipments board columns are draggable in custom order, with a sort toggle to show arrived/archived first.
+- 2026-02-01: Add shipment button now reads "New Shipment," and Freight Forwarder supports an "Other" entry with custom name.
+- 2026-02-01: Archived shipments now show a short preview on the board with a View all archived button.
+- 2026-02-01: Shipment item verification is locked until pickup is recorded; saving pickup auto-sets status to Picked Up.
+- 2026-02-01: Shipment create/edit now includes a “Save & close” action on every step and a “Discard & close” action in the footer.
+- 2026-02-01: Shipment edit now reloads items when entering the Items step if the list is empty.
+- 2026-02-01: Items step now falls back to cached detail data if the edit fetch fails, preventing empty lists.
+- 2026-02-01: Step 1 draft saves no longer overwrite shipment items (items are sent starting on the Items step).
+- 2026-02-01: Item total changes now prompt when a manual total override is set, offering to recalculate.
+- 2026-02-01: Entering the Items and Documents steps now refreshes items/docs once per edit session to prevent empty lists.
+- 2026-02-01: Added shipment template help text in the Permissions Help page and a Templates-tab help icon.
+- 2026-02-01: Employee details modal now scrolls within the viewport so the full form stays reachable on desktop.
+- 2026-02-01: Bootstrap org setup now requires an authenticated bootstrap session (no implicit fallback).
+- 2026-02-01: QuickBooks connect now uses a CSRF-protected POST endpoint.
+- 2026-02-01: QuickBooks sync is single-flight per org across all sync types.
+- 2026-02-01: Payroll account sync no longer auto-runs on load; use Sync Payroll Accounts when needed.
+- 2026-02-01: QBO onboarding skip/state now keys by org creation time to avoid stale localStorage after resets.
+- 2026-02-01: Removed per-employee “Choose different” button during QBO onboarding; use Review matches/Employees instead.
+- 2026-02-01: Widened the QBO match sheet and clarified that manual linking lives in Employees.
+- 2026-02-01: Added a “Back to setup” button in the QBO match sheet.
+- 2026-02-01: Removed QBO onboarding “Finish later” so only a single “Back to setup” exit remains.
+- 2026-02-01: QBO step 4 now uses “Skip and return to setup,” and keeps the onboarding checklist visible.
+- 2026-02-01: QBO skip now forces the onboarding checklist to stay visible until dismissed.
+- 2026-02-01: Permissions step now only completes after adding another employee or creating a permission template.
+- 2026-02-01: Permissions step no longer auto-completes while onboarding is forced visible (after QBO skip).
+- 2026-02-01: QuickBooks employee sync no longer auto-links local employees; linking remains manual.
+- 2026-02-01: QuickBooks onboarding checklist now respects skipped sync categories.
+- 2026-02-01: QuickBooks linking now surfaces suggested matches with confirm/skip, plus a confirmation modal.
+- 2026-02-01: Onboarding now shows a match-review mini panel after QuickBooks sync.
+- 2026-02-01: QBO onboarding match review adds a "Finish later" action to skip linking for now.
+- 2026-02-01: QBO onboarding now notes that payroll requires QBO links if you finish later.
+- 2026-01-30: Shipment create/detail now open full-screen in the admin console.
+- 2026-01-30: Removed the shipment modal Back button for desktop; users use the browser back button.
+- 2026-01-30: Shipment create/edit is now a three-step flow with draft saves after steps one and two (details → items → payments/documents).
+- 2026-01-30: Shipment create layout now uses card-style sections and a sticky stepper for a more modern feel.
+- 2026-01-30: Shipment create/detail modals in the admin console now dock to the main content area under the top bar instead of covering the full screen.
+- 2026-01-30: Adjusted the login screen layout to be wider and height-aware, with responsive spacing and an in-card scroll fallback for shorter screens.
+- 2026-01-30: Login now uses a two-step flow (email first, then password).
+- 2026-01-30: Bootstrap signup now starts with the admin email + password step before org setup.
+- 2026-01-30: Bootstrap now finalizes the admin account at signup and moves org creation to a follow-up step with a success message.
+- 2026-01-30: Post-bootstrap now lands on the dashboard with a setup checklist card and quick links to device setup, employees, and QuickBooks.
+- 2026-01-30: Post-bootstrap checklist now shows completed steps with checkmarks and auto-dismisses once all steps are done.
+- 2026-01-30: Signup now routes to the dashboard onboarding card; org setup is completed from the checklist instead of the auth page.
+- 2026-01-30: Auth header now stacks the logo with “Avian Group” directly beneath it.
+- 2026-01-30: Shipment payments now capture storage fee paid status/amount and include storage fees in total_paid; kiosk overview shows storage fees when present.
+- 2026-01-30: Kiosk admin shipment overview payments now show separate Freight Forwarder and Customs/Clearing cards with status, amount/doc links, and paid-by customer details.
+- 2026-01-30: Added paid-by tracking for freight forwarder and customs/clearing payments (company/customer/other) in shipment admin edits and kiosk/admin overviews.
+- 2026-01-30: Kiosk admin shipment overview now labels customs payments as "Customs/Clearing Paid".
+- 2026-01-30: Shipment cards now show pickup controls only at “Cleared - Ready for Pickup,” with an optional storage note saved alongside pickup; item verification appears after pickup is recorded.
+- 2026-01-30: Simplified the ready-for-pickup card styling by removing the gray pickup panel background and inline field headers.
+- 2026-01-30: Ready-for-pickup cards now place "Picked up by" and "Pickup date" side by side with narrower inputs.
+- 2026-01-30: Restored the pickup date header on ready-for-pickup cards.
+- 2026-01-30: Moved the pickup date header to sit left of the date selector on ready-for-pickup cards.
+- 2026-01-30: Moved the "Picked up by" header to the left of its dropdown on ready-for-pickup cards.
+- 2026-01-30: Styled ready-for-pickup dropdowns and date inputs with chevron/calendar affordances.
+- 2026-01-30: Unified ready-for-pickup dropdown/date widths and increased the pickup header font size.
+- 2026-01-30: Ready-for-pickup pickup name placeholder now reads "Select Name" and pickup inputs are height-aligned.
+- 2026-01-30: Aligned ready-for-pickup pickup select and date input widths.
+- 2026-01-30: Tightened ready-for-pickup pickup labels and input sizing for a cleaner layout.
+- 2026-01-30: Reduced the pickup date input height to match the pickup name dropdown.
+- 2026-01-30: Aligned the pickup row so the pickup date field no longer sits lower than the pickup name field.
+- 2026-01-30: Tightened the spacing between pickup labels and their fields on ready-for-pickup cards.
+- 2026-01-30: Added more horizontal space between the pickup name and pickup date fields.
+- 2026-01-30: Increased and bolded pickup field headers on ready-for-pickup cards.
+- 2026-01-30: Ready-for-pickup shipment cards hide the tracking number (available in Overview).
+- 2026-01-30: Ready-for-pickup cards move the Overview chevron below the storage note on the right.
+- 2026-01-30: Ready-for-pickup cards now place the Save pickup button and Overview chevron on the same line.
+- 2026-01-30: Added a touch more spacing above the pickup fields and updated the pickup note placeholder copy.
+- 2026-01-30: Reduced bottom padding beneath the pickup actions row on ready-for-pickup cards.
+- 2026-01-30: Tightened the ready-for-pickup pickup card bottom spacing further.
+- 2026-01-30: Removed the ready-for-pickup shipments pill from the kiosk admin header.
+- 2026-01-30: Tightened spacing between the ready-for-pickup header/meta row and pickup fields.
+- 2026-01-30: Forced the pickup date input padding/height so it matches the pickup name dropdown on iPad Safari.
+- 2026-01-30: Kiosk admin pickup cards no longer show Storage due; "Other" pickup selection now requires a name.
+- 2026-01-30: Kiosk admin shipment card titles no longer show the "No charges" label; charge info is shown only in the overdue banner.
+- 2026-01-30: Kiosk admin shipment cards now place the BOL pill to the right of the status pill.
+- 2026-01-30: Moved the kiosk admin shipment card chevron beneath the BOL, aligned with the meta row.
+- 2026-01-30: Shipment card chevrons now hide once pickup is recorded; picked-up cards revert to the verification layout.
+- 2026-01-30: Replaced the kiosk admin shipment card “View more” button with a chevron icon on the right.
+- 2026-01-30: Added a “View more” button on kiosk admin shipment cards to open the Overview sheet.
+- 2026-01-30: Shipment board cards now show only the project name (customer label removed).
+- 2026-01-30: Removed the pickup card’s daily storage fee line; charges are now only communicated via the overdue banner.
+- 2026-01-30: Kiosk admin shipment cards now show Due for pickup in red only before pickup is recorded.
+- 2026-01-30: Kiosk admin bottom nav no longer shifts on swipe/scroll in the Shipments view.
+- 2026-01-30: Kiosk admin shipment cards now show status/tracking/BOL up front, reveal pickup + storage info when ready for pickup, and hide item verification until pickup is recorded.
+- 2026-01-30: Kiosk admin Time Entries review banner now labels the pending count as "Pending Time Entries".
+- 2026-01-30: Updated the sign-in screen with a device mode chooser (admin desktop vs kiosk) and removed the force-desktop checkbox.
+- 2026-01-30: Auth now checks for first-time setup; bootstrap hides device selection and routes new orgs to the admin desktop.
+- 2026-01-30: Added a post-bootstrap prompt that links to Device Setup for kiosk enrollment.
+- 2026-01-30: Added a Device Setup card in Settings with kiosk enrollment code actions.
+- 2026-01-30: Admin Accounts now show kiosk/PIN status and can enable kiosk admin access with a PIN when creating a login.
+- 2026-01-30: Kiosk admin My Account and Settings now open as swipe-to-close sheets from the hamburger menu.
+- 2026-01-30: Enabled swipe-to-close from the header area on kiosk admin sheets (in addition to the close button).
+- 2026-01-30: Kiosk admin Employees now opens as a full-screen sheet when launched from the hamburger menu, with swipe-to-close and the bottom nav hidden while open.
+- 2026-01-30: Added a Permissions Help page in the admin console with a quick reference for access toggles and permission gates.
+- 2026-01-30: Clarified employee permission descriptions in the employee details modal on the admin console.
+- 2026-01-30: Added recommended role templates and a one-click creator in Settings; clarified role title vs. role template in the employee modal.
+- 2026-01-30: Added an Overlord role template and assign it to the org creator during bootstrap.
+- 2026-01-30: Seed recommended role templates during bootstrap so new orgs start with editable presets.
+- 2026-01-30: Blocked kiosk admins from starting a new timesheet for a project when one is already open on the same tablet (with a warning message).
+- 2026-01-30: Start-timesheet modal now keeps the dialog open and shows the duplicate-timesheet warning inline.
+- 2026-01-30: Removed the “set active & delete” shortcut when deleting the active timesheet; admins must set the active timesheet first.
+- 2026-01-30: Timesheet start now uses separate toggles for setting the active project and moving the admin punch.
+- 2026-01-30: Deleting the active timesheet now requires picking a replacement active timesheet if one exists; otherwise it warns that the kiosk will have no active project.
+- 2026-01-30: Active timesheets no longer fall back to another session when none is explicitly set.
+- 2026-01-30: Time entry review is now two-step (field review for every entry, then payroll approval); payroll is blocked until field review is complete.
+- 2026-01-30: Admins can send approved time entries back to field review (note required, approval cleared).
+- 2026-01-30: Kiosk admin time entry detail and review dropdown now include a send-back action for any non-open entry.
+- 2026-01-30: Time entry lists, pending counts, and review actions are now scoped to an admin's assigned/created timesheets when view_all_timesheets is off.
+- 2026-01-30: Payroll permission now grants full visibility and edit access across time entries, punches, exceptions, and timesheets (assignment limits do not apply).
+- 2026-01-30: Manual time entries with no punches are now visible to the admin who created them (when view_all_timesheets is off).
+- 2026-01-30: Kiosk admin shipment item verification now auto-expands notes for issue statuses and requires notes before saving.
+- 2026-01-30: Shipment item verification now requires notes (and edits to existing notes) for missing/damaged/wrong-item statuses; notes remain optional for Not Reviewed and Verified.
+- 2026-01-30: Smoothed the swipe-to-save gesture on kiosk admin shipment item verification rows.
+- 2026-01-30: Moved the shipment item expand/collapse chevron to the left side to free up swipe space.
+- 2026-01-30: Added a right-side swipe gutter after the item status dropdown on the verification sheet and relaxed swipe detection.
+- 2026-01-30: Simplified the shipment item status dropdown/chevron styling to remove the gray circle.
+- 2026-01-30: Closing a failed item save (missing/unchanged note) now collapses the swipe save so only the inline Save now button remains.
+- 2026-01-30: Moved “All” to the top of the item verification status filter.
+- 2026-01-30: Removed the kiosk admin shipment card overview chevron; items are accessed via the View & verify items button.
+- 2026-01-30: Kiosk admin Shipments header now reflects the selected status filter.
+- 2026-01-30: Kiosk PIN validation now shows a submitting state and punch requests time out instead of hanging silently.
+- 2026-01-30: Fixed kiosk clock-in insert to include geo_violation so punches save correctly.
+- 2026-01-29: Admins without see_shipments no longer see Shipments (or its report) in the sidebar; Employees moves to the last nav item for those users.
+- 2026-01-29: Time Entries calendar title now opens a month/year picker for quick navigation.
+- 2026-01-29: Current Workers now respects timesheet visibility (admins without view_all_timesheets only see open punches tied to their assigned/created/shared timesheets).
+- 2026-01-29: Simplified timesheet delete to PIN → delete (removed the extra confirmation step).
+- 2026-01-29: Blocked kiosk timesheet creation when the selected date is in the future.
+- 2026-01-29: Blocked time entries from being created or edited for future dates.
+- 2026-01-29: Hide the timesheet chevron while swipe-delete is active so the delete button stays on top.
+- 2026-01-29: Fixed the swipe-to-delete gap so the delete button sits flush with the timesheet card edge.
+- 2026-01-29: Timesheet delete now uses the kiosk-style PIN modal instead of a browser prompt.
+- 2026-01-29: Fixed kiosk admin bottom nav hiding after closing the Time Entries report sheet by resyncing modal open state once the sheet is fully hidden.
+- 2026-01-29: Removed the delete option from the timesheet switch prompt (swipe delete only).
+- 2026-01-29: Moved the Time Entries calendar above the filter box in kiosk admin.
+- 2026-01-29: Fixed the Time Entries calendar day sheet so entry cards render.
+- 2026-01-29: Kiosk admin can now edit in-progress time entries (open punches) to adjust clock-in time/date and project.
+- 2026-01-29: Timesheet delete now checks the selected timesheet's own entries (session-scoped counts) and prompts for the admin PIN before deleting.
+- 2026-01-29: Added timesheet assignees with a new assign-timesheets permission so admins can assign and view their assigned timesheets.
+- 2026-01-29: Timesheet assignment now uses a dropdown of assign-timesheet admins with the current assignee preselected.
+- 2026-01-30: Timesheet assignments can no longer be cleared (no unassigned option).
+- 2026-01-29: Timesheet rows now show “Ongoing” only for today’s sessions so past days close out cleanly.
+- 2026-01-29: “Start only” on the timesheet prompt no longer switches the kiosk’s active project.
+- 2026-01-29: Time entry detail sheet now shows a Flags row and uses “Approved” vs “Approved as-is” based on flag history.
+- 2026-01-29: Removed the redundant Review row from the time entry detail sheet (status already covers it).
+- 2026-01-29: Added a Time Entries calendar picker that opens a day sheet with entry cards.
+- 2026-01-29: Added a kiosk admin Time Entries review sheet with swipe-to-approve, inline notes, and quick modify/reject actions.
+- 2026-01-29: Fixed kiosk admin bottom nav sticking/floating after saving Time Entry changes by syncing modal open state.
+- 2026-01-29: Stabilized kiosk admin layout height using visual viewport units to keep bottom nav pinned after time entry edits.
+- 2026-01-29: Restored kiosk admin bottom nav position after closing Time Entry modals by forcing viewport/layout sync.
+- 2026-01-29: Time entry date-only edits no longer fail the hours-vs-times check unless times or hours were changed.
+- 2026-01-29: Limited the kiosk admin “Review pending” banner to the Time Entries view only.
+- 2026-01-29: Kiosk admin “Review pending” count now reflects all unresolved time entries across dates.
+- 2026-01-29: Review pending sheet now loads pending entries across all dates (not tied to the date range).
+- 2026-01-29: Added manual QuickBooks employee-change sync (first/last/name_on_checks) with dirty/conflict tracking; payroll now blocks until changes are synced; employee forms now capture first/last name (email is local-only).
+- 2026-01-29: Standardized all UI time displays to 12-hour format with AM/PM across admin, kiosk, payroll, and shipments views.
+- 2026-01-29: Standardized non-localized date displays to MM/DD/YYYY format across admin, kiosk admin, payroll, and shipments views.
+- 2026-01-29: Enforced payroll-only visibility for money fields on kiosk time entries and kiosk employee lists; shipment payment documents are now fully hidden and blocked from upload/edit/delete without payroll access; kiosk employee lists now include kiosk admins; PIN overrides now require an admin identity.
+- 2026-01-29: Moved the kiosk Time Entries view/review toggle into the header subtitle row aligned with the Time Entries title.
+- 2026-01-29: View-mode kiosk Time Entries now use compact cards that open a full-detail sheet (with review actions) instead of inline detail rows.
+- 2026-01-29: Modify Time Entry modal keeps "New total hours" aligned with original hours until clock-in/out times change.
+- 2026-01-29: Kiosk admin time entries now label rejected items as voided, hide approve-as-is for already-approved entries, allow undoing rejections, and exclude voided entries from payroll.
+- 2026-01-29: Hid the Pending Review summary pill in kiosk Time Entries view mode.
+- 2026-01-29: Moved the kiosk Time Entries view/review toggle into the filter controls alongside the Run Report actions.
+- 2026-01-29: Added a labeled Mode row with helper text for the Time Entries view/review toggle to clarify browsing vs reviewing.
+- 2026-01-29: Returned the Review pending banner to the Time Entries header row for quick access, separated from the mode toggle.
+- 2026-01-29: Made the Time Entries Review pending banner larger and visible immediately on load.
+- 2026-01-29: Placed the View/Review toggle inline after “Include in-progress” within the Time Entries filters and removed the helper row.
+- 2026-01-29: Reordered the View/Review toggle ahead of “Include in-progress” and reduced its size.
+- 2026-01-29: Removed the View/Review toggle; Review pending now runs the report in review mode, and Run report returns to view mode.
+- 2026-01-29: Time Entries filters no longer auto-run; results update only after Run report or Review pending.
+- 2026-01-29: Added extra spacing between the Show dropdown and Run report button in Time Entries filters.
+- 2026-01-29: Increased padding around the Time Entries filter container to add more breathing room.
+- 2026-01-29: Increased top/bottom padding in the Time Entries filter container.
+- 2026-01-29: Removed the Time Entries “Show” status dropdown and simplified the filter row layout.
+- 2026-01-29: Restored the Run report button to its normal width in Time Entries filters.
+- 2026-01-29: Stacked the Time Entries Run report button beneath the Include in-progress toggle.
+- 2026-01-29: Left-aligned the Time Entries Include in-progress toggle within the stacked filter controls.
+- 2026-01-29: Tightened vertical gaps under the Time Entries date range row and Include in-progress control.
+- 2026-01-29: Reduced extra top padding on the Time Entries Include in-progress row to further tighten spacing.
+- 2026-01-29: Set equal vertical spacing between the Time Entries filter rows (date range, include toggle, run report).
+- 2026-01-29: Increased vertical spacing between the Time Entries date range row, include toggle, and Run report button.
+- 2026-01-29: Restored the view-mode Time Entries project to the top-right and added a green underline under the name.
+- 2026-01-29: Removed the name underline and restyled the view-mode project label as larger green text (without the “Project” prefix).
+- 2026-01-29: Matched the view-mode project label size to the employee name and set it to the app green accent.
+- 2026-01-29: Increased the view-mode project label size further.
+- 2026-01-29: Bumped kiosk admin CSS cache version to ensure latest Time Entries styles load.
+- 2026-01-29: Fixed view-mode project label sizing to override compact-card defaults.
+- 2026-01-29: Set the view-mode project label size to match the employee name.
+- 2026-01-29: Returned the view-mode project label under the name with green accent styling.
+- 2026-01-29: Restored the view-mode project label to the original light-gray, smaller style under the name.
+- 2026-01-29: Added the status pill to the top-right of view-mode Time Entries cards.
+- 2026-01-29: Refined the Time Entry detail sheet styling (summary cards, meta rows, spacing, and tags).
+- 2026-01-29: Simplified the Time Entry detail sheet into a clean stacked list with actions anchored at the bottom.
+- 2026-01-29: Added a green underline to the Time Entry sheet subtitle (project/date).
+- 2026-01-29: Enlarged the Time Entry sheet header text and added extra spacing beneath the subtitle underline.
+- 2026-01-29: Added a background container around the Time Entry detail info and split clock-in/clock-out into separate rows.
+- 2026-01-29: Added a profile-style header to the Time Entry sheet (avatar + name, with project/date underneath).
+- 2026-01-29: Increased the Time Entry sheet avatar size.
+- 2026-01-29: Increased the Time Entry sheet panel padding for more outer whitespace.
+- 2026-01-29: Swapped the Time Entry sheet background to gray and the inner info container to white.
+- 2026-01-29: Added extra top spacing before the Time Entry detail info container.
+- 2026-01-29: Removed the green underline from the Time Entry sheet subtitle.
+- 2026-01-29: Added a divider between the Time Entry summary (ending with Total Pay) and the status/meta section.
+- 2026-01-29: Standardized Time Entry detail meta row spacing/labels to match the summary rows.
+- 2026-01-29: Rebuilt Time Entry status/punch/meta rows using the same stacked item layout as the summary section.
+- 2026-01-29: Made Time Entry status text plain (no pill) and kept all detail rows visually consistent.
+- 2026-01-29: Removed extra spacing between the Time Entry summary and status/meta rows so all rows align uniformly.
+- 2026-01-29: Removed the extra top divider above the Time Entry status row.
+- 2026-01-29: Removed the Punches row from the Time Entry detail sheet.
+- 2026-01-29: Added the hourly rate alongside Total Pay in the Time Entry detail sheet for payroll viewers.
+- 2026-01-29: Aligned Total Pay and Rate as a two-column row with labels above values and sourced the rate from employee records when available.
+- 2026-01-29: Refined the auto clock-out help icon to use a question mark with per-reason tooltips in the Time Entry detail sheet.
+- 2026-01-29: Restyled help tooltips to use the app light surface and show to the right of the icon.
+- 2026-01-29: Switched help tooltips to a single-line layout for a wider, horizontal presentation.
+- 2026-01-29: Increased Time Entry sheet action button size/spacing and added bottom padding to prevent clipping.
+- 2026-01-29: Moved Time Entry sheet action buttons into the main detail container.
+- 2026-01-29: Added extra vertical padding around Time Entry sheet action buttons.
+- 2026-01-29: Increased spacing between Time Entry sheet action buttons.
+- 2026-01-29: Enabled swipe-to-close on the Time Entry detail sheet from the header area.
+- 2026-01-29: Time Entry detail actions now open the action modal without closing the sheet.
+- 2026-01-29: Time Entry detail sheet auto-closes after saving review actions.
+- 2026-01-29: Refined the Time Entry modify modal into clear "Current" and "Changes" sections for faster readability.
+- 2026-01-29: Kiosk admin avatars now use uploaded employee photos in Current Workers, My Account, and Time Entry detail sheets, falling back to initials.
+- 2026-01-29: Fixed Time Entry modify modal subtitle initialization to restore the modal opening correctly.
+- 2026-01-29: Increased the height of the Modify Time Entry clock-in/clock-out fields and set their background to white.
+- 2026-01-29: Enabled date edits in the Modify Time Entry modal and aligned input heights for consistent spacing.
+- 2026-01-29: Added current/updated total hours to the Modify Time Entry modal with auto-calculated hours based on clock times.
+- 2026-01-29: Restored the Modify Time Entry modal close button, kept the change fields in two columns, and reduced input heights/padding for better tablet fit.
+- 2026-01-29: Prevented Modify Time Entry change inputs from overflowing their grid columns on tablets.
+- 2026-01-29: Added stronger width constraints for Modify Time Entry date/time/select inputs and bumped kiosk admin CSS cache.
+- 2026-01-29: Added iOS Safari safeguards to prevent Modify Time Entry grid inputs from overflowing and bumped kiosk admin CSS cache.
+- 2026-01-29: Reduced Modify Time Entry change input sizing and tightened grid spacing for tablet fit.
+- 2026-01-29: Limited Modify Time Entry change field width to prevent clipping on tablets.
+- 2026-01-29: Bumped kiosk admin asset versions and service worker cache to ensure updated Time Entry UI loads.
+- 2026-01-29: Reduced Modify Time Entry change field column widths for better tablet fit.
+- 2026-01-29: Narrowed Modify Time Entry change field columns further to avoid oversized inputs on iPad.
+- 2026-01-29: Bumped kiosk admin asset versions and service worker cache to force latest Modify Time Entry layout on tablets.
+- 2026-01-29: Reset the Time Entry detail sheet drag state after closing the Modify modal to restore swipe-to-close.
+- 2026-01-29: Hid the kiosk bottom nav while modal sheets are open to avoid overlap.
+- 2026-01-29: Moved kiosk admin scrolling to the main content panel to keep the bottom nav locked during overscroll.
+- 2026-01-29: Time Entries access now follows view_payroll for kiosk admins, Review mode surfaces geofence/auto clock-out flags and resolves punch exceptions on review, and offline time reviews queue correctly on failures.
+- 2026-01-29: Fixed kiosk admin nav spacing after saving time entry reviews by restoring the modal-open state handling.
+- 2026-01-29: Added approve_time permission for final time entry approval; approval no longer requires super-admin access.
+- 2026-01-29: Enforced immediate permission guardrails; non-payroll users no longer see money-related fields or shipment payment documents.
+- 2026-01-28: Kiosk admin Settings now shows only the kiosk device info and sign-out cards.
+- 2026-01-28: Kiosk admin My Account notifications now include channel toggles, shipment/time/payroll alert toggles, daily summary/clock-out scheduling, and server-backed preference syncing with push controls.
+- 2026-01-28: Kiosk admin My Account now uses collapsible cards and includes notification settings.
+- 2026-01-28: Implemented time-entry guardrails and alerts: kiosk long/tiny shift prompts, geofence warning/banner, super-admin gating for manual no-punch entries, mismatch guardrail for large punch/hour deltas, weekly threshold warnings, open-punch alerts, and auto clock-out reasons surfaced in review UIs.
+- 2026-01-28: Reordered the kiosk admin employee detail sheet (profile fields, dates, PIN, docs) and surfaced employee email in the kiosk admin employee list.
+- 2026-01-28: Employee name or name-on-checks edits now flag the employee for QuickBooks sync.
+- 2026-01-28: Kiosk admin can now update employee first/last name from the detail sheet (flags QuickBooks sync).
+- 2026-01-28: Kiosk admin employee detail sheet now allows editing the phone number.
+- 2026-01-28: Kiosk admin employee detail sheet now uses a single Save Changes button for name, phone, language, and name-on-checks updates.
+- 2026-01-28: Kiosk admin employee documents now use the shipment-style upload/list UI with new employee document uploads.
+- 2026-01-28: Removed QuickBooks status/pending indicators from the kiosk admin employees UI.
+- 2026-01-28: Kiosk admin employee detail sheet now allows editing start/termination dates and notes that termination marks the employee inactive.
+- 2026-01-28: Setting an employee termination date now automatically marks them inactive.
+- 2026-01-28: Kiosk admin employee PIN updates now use a dedicated sheet opened from the language row.
+- 2026-01-28: Kiosk admin employee detail sheet now shows an editable hourly rate for admins with pay rate permissions.
+- 2026-01-28: Kiosk admin employee detail sheet now includes a timekeeping toggle (with confirmation) and a disabled geofencing toggle placeholder.
+- 2026-01-28: Improved item verification swipe handling to be easier to trigger and smoother.
+- 2026-01-28: Fixed auto clock-out time-entry inserts to include total_pay + foreman values; time exceptions now label auto clock-out reasons (midnight/catch-up/daily/weekly) and tiny-punch detection includes zero-minute punches; auto clock-out skips punches missing a local date instead of force-closing them; clock-out reminders now only fire when open punches exist and include the open-punch count.
 - 2026-01-28: Renamed the shipment status to "Cleared - Ready for Pickup" across UI and data (migration included).
 - 2026-01-28: Expanded shipment status dropdowns to show all options without scrolling.
 - 2026-01-28: Kiosk admin employee cards now open a detail sheet for language, PIN updates, name-on-checks, QuickBooks status, documents, and employment dates.
@@ -17,6 +332,7 @@
 - 2026-01-27: Kiosk admin item verification now shows a brief “Saved” indicator after saving notes/status.
 - 2026-01-27: Kiosk admin item verification status styling is now outline-only on the status dropdown (no fills or card outlines).
 - 2026-01-27: Restyled the kiosk admin Current Workers list with timesheet-style cards, avatars, status pills, and compact clock details.
+- 2026-01-28: Fixed kiosk admin My Account to update the logged-in admin's login credentials from the kiosk.
 - 2026-01-27: Current Workers now only lists active punches and removes the active glow styling.
 - 2026-01-27: Current Workers now defaults to the active timesheet only, with chevron overrides limited to the selected timesheet until reselected.
 - 2026-01-27: Current Workers cards now show the project label under the name and hide the "Time on clock" label.
@@ -489,6 +805,35 @@
 - 2025-01-XX: Documented clock-in photo purge job (daily delete after 30 days).
 - 2025-01-XX: Clarified ID image and shipment document retention edge cases and added ID document delete endpoint.
 - 2025-01-XX: Documented QBO name_on_checks retry backoff and stop conditions.
+- 2026-01-30: QuickBooks setup now uses a dedicated matching sheet (no automatic jump to Employees) and clarifies that matching is only needed for pre-existing Avian staff.
+- 2026-01-30: QuickBooks auto-linking now matches names with “Last, First” ordering so the admin links automatically.
+- 2026-01-30: Clarified QuickBooks matching copy to indicate it only applies to Avian-created employees.
+- 2026-02-02: Shipments documents now return view/download URLs and the docs lists open inline views with explicit download actions.
+- 2026-02-02: Paid-by dropdowns in the shipment payments step stay editable regardless of paid checkbox state.
+- 2026-02-02: Shipment edit now preserves paid-by selections when reloading payment options and avoids clearing unpaid paid-by values unless explicitly changed.
+- 2026-02-02: Payments step now rehydrates paid-by values from cached detail/server if a dropdown is blank.
+- 2026-02-02: Kiosk admin shipment overview now shows payment ledger entries only when they exist (no empty placeholder).
+- 2026-02-02: Shipment detail payments tab now mirrors the edit modal layout with section cards and totals.
+- 2026-01-30: Rebuilt the kiosk admin time entry edit modal layout (new header/body sections, clearer spacing, and non-overlapping change fields).
+- 2026-01-30: Renamed the kiosk admin time review banner to “Pending Review” and added a “Pending review + flagged” status for flagged entries.
+- 2026-01-30: Time entry detail screen now shows flag explanations in a banner when the Flags row is tapped.
+- 2026-01-30: Kiosk admins can close a timesheet once all punches are clocked out; closing clears the kiosk’s active project and the timesheet cannot be reopened.
+- 2026-01-30: Kiosk admin timesheets: chevron now opens actions, and status pills show Complete vs Complete & Closed; admins are prompted to close when the last punch clocks out.
+- 2026-01-30: Kiosk admin timesheets now keep the date selector visible even when no timesheets exist.
+- 2026-01-30: Start timesheet now re-syncs the kiosk’s active project before switching admin punches, preventing mismatches between the admin dashboard and clock-in screen.
+- 2026-01-30: Kiosk admins cannot start timesheets for past dates; the server blocks duplicate open timesheets for the same project on the same kiosk/day.
+- 2026-01-30: Kiosk refresh now clears the active project when no open timesheet exists for today (prevents yesterday’s project from lingering).
+- 2026-01-30: Worker kiosk now shows a clear message when the active project changes mid‑punch and refreshes the kiosk project state.
+- 2026-01-29: Kiosk admin time review requires a manual note for approvals (no default note).
+- 2026-01-29: Time entry Run report now opens a sheet instead of expanding inline under the calendar.
+- 2026-01-29: Time entry detail sheet now stacks above the report sheet when opening a card.
+- 2026-01-29: Rejecting a time entry now requires a confirmation warning; voided entries show a Reactivate action.
+- 2026-01-29: Kiosk admin time entry edits now support Save (pending) vs Save + Approve, including offline queueing; save-only keeps the entry pending review.
+- 2026-01-29: Added kiosk admin help section for time entry review pill meanings.
+- 2026-01-29: Time entry review issue pills now show inline explanations on click.
+- 2026-01-29: Punch exception pill tooltip now calls out which flags were detected.
+- 2026-01-29: Removed the generic punch exceptions pill to avoid duplicate flags.
+- 2026-01-28: Added kiosk admin employee reactivation flow with employment history and offline-queued edits (name/phone/language/dates/rates/timekeeping).
 - 2025-01-XX: Documented payroll retry handling (manual retry, scoping to failed employees, auth errors).
 - 2025-01-XX: Added shipment search by tracking number, kiosk helper onboarding, and payroll preflight alerts for missing QBO links.
 - 2025-01-XX: Documented org settings for company_email/storage daily fee, legacy setting removals, and kiosk enrollment strictness; updated API summary list.
@@ -509,3 +854,5 @@
 - 2025-01-XX: Clarified QBO create behavior (sync required, duplicate-match blocking).
 - 2025-01-XX: Clarified org timezone single source (orgs), storage_daily_late_fee_default default null/0, and bootstrap admin worker_timekeeping default.
 - 2025-01-XX: Added migration scaffolding (schema_migrations + 0001 foundations), seed script defaults, and DB_PATH config doc updates.
+- 2026-02-02: Payroll approval no longer requires field review completion; approvals can proceed with optional warnings.
+- 2026-02-02: Added an Audit Trails report in Reports with domain filters (time entries, payroll, shipments, access/security, settings, and more).

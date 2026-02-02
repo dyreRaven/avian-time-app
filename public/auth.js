@@ -1,6 +1,9 @@
 // public/auth.js
 
 const CSRF_TOKEN_KEY = 'avian_csrf_token_v1';
+const DEVICE_MODE_KEY = 'avian_device_mode_v1';
+const ONBOARDING_PENDING_KEY = 'avian_onboarding_pending_v1';
+const LAST_ORG_ID_KEY = 'avian_last_org_id_v1';
 let csrfToken = null;
 
 function loadCsrfToken() {
@@ -22,6 +25,47 @@ function storeCsrfToken(token) {
   } catch {
     // ignore storage failures
   }
+}
+
+function loadDeviceMode() {
+  try {
+    const stored = localStorage.getItem(DEVICE_MODE_KEY);
+    if (stored === 'desktop' || stored === 'kiosk') return stored;
+  } catch {
+    // ignore storage failures
+  }
+  return null;
+}
+
+function storeDeviceMode(mode) {
+  try {
+    if (mode === 'desktop' || mode === 'kiosk') {
+      localStorage.setItem(DEVICE_MODE_KEY, mode);
+      return;
+    }
+    localStorage.removeItem(DEVICE_MODE_KEY);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function storeLastOrgId(orgId) {
+  if (!orgId) return;
+  try {
+    localStorage.setItem(LAST_ORG_ID_KEY, String(orgId));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function setOnboardingPending(orgId) {
+  try {
+    const payload = { orgId: orgId || null, pending: true };
+    localStorage.setItem(ONBOARDING_PENDING_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore storage failures
+  }
+  storeLastOrgId(orgId);
 }
 
 // Local JSON helper (does not depend on utils.js)
@@ -52,7 +96,7 @@ const fetchJSON = async (url, options = {}) => {
   return data;
 };
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   const loginForm = document.getElementById('login-form');
   const bootstrapForm = document.getElementById('bootstrap-form');
   const orgSelect = document.getElementById('org-select');
@@ -60,11 +104,32 @@ document.addEventListener('DOMContentLoaded', () => {
   const msgEl = document.getElementById('auth-message');
   const toggleBtn = document.getElementById('auth-toggle-btn');
   const toggleText = document.getElementById('auth-toggle-text');
+  const toggleWrap = document.getElementById('auth-toggle');
+  const loginEmailInput = document.getElementById('login-email');
   const loginPasswordInput = document.getElementById('login-password');
   const passwordToggleBtn = document.getElementById('password-toggle');
+  const loginContinueBtn = document.getElementById('login-continue');
+  const loginChangeEmailBtn = document.getElementById('login-change-email');
+  const loginStepEmail = document.getElementById('login-step-email');
+  const loginStepPassword = document.getElementById('login-step-password');
+  const loginEmailDisplay = document.getElementById('login-email-display');
+  const bootstrapEmailInput = document.getElementById('bootstrap-email');
+  const bootstrapPasswordInput = document.getElementById('bootstrap-password');
+  const bootstrapPasswordConfirmInput = document.getElementById('bootstrap-password-confirm');
+  const bootstrapContinueBtn = document.getElementById('bootstrap-continue');
+  const bootstrapStepAccount = document.getElementById('bootstrap-step-account');
+  const bootstrapStepOrg = document.getElementById('bootstrap-step-org');
+  const bootstrapEmailDisplay = document.getElementById('bootstrap-email-display');
   const tzSelect = document.getElementById('bootstrap-org-timezone');
+  const deviceDesktopBtn = document.getElementById('auth-device-desktop');
+  const deviceKioskBtn = document.getElementById('auth-device-kiosk');
+  const deviceChooser = document.getElementById('auth-device');
+  const headerText = document.querySelector('.auth-header-text');
 
-  let mode = 'login';
+  let mode = 'bootstrap';
+  let bootstrapRequired = false;
+  let loginStep = 'email';
+  let bootstrapStep = 'account';
 
   function showMessage(text, color) {
     if (!msgEl) return;
@@ -72,9 +137,161 @@ document.addEventListener('DOMContentLoaded', () => {
     msgEl.style.color = color || '';
   }
 
+  function setHeader(title, subtitle) {
+    if (!headerText) return;
+    headerText.innerHTML = '';
+    if (title) {
+      const h = document.createElement('h2');
+      h.textContent = title;
+      headerText.appendChild(h);
+    }
+    if (subtitle) {
+      const p = document.createElement('p');
+      p.textContent = subtitle;
+      headerText.appendChild(p);
+    }
+  }
+
+  function setStepEnabled(container, enabled) {
+    if (!container) return;
+    const fields = container.querySelectorAll('input, select, textarea, button');
+    fields.forEach(field => {
+      field.disabled = !enabled;
+    });
+  }
+
+  function setBootstrapHeader() {
+    if (mode !== 'bootstrap') return;
+    if (bootstrapStep === 'org') {
+      setHeader('Set Up Your Organization', 'Add company details and your admin profile.');
+    } else {
+      setHeader('Sign up');
+    }
+  }
+
   function hideOrgSelect() {
     if (orgSelect) orgSelect.classList.add('hidden');
     if (orgSelectList) orgSelectList.innerHTML = '';
+  }
+
+  function setLoginStep(step, { focus = false } = {}) {
+    loginStep = step === 'password' ? 'password' : 'email';
+
+    if (loginStepEmail) {
+      loginStepEmail.classList.toggle('hidden', loginStep !== 'email');
+      setStepEnabled(loginStepEmail, loginStep === 'email');
+    }
+    if (loginStepPassword) {
+      loginStepPassword.classList.toggle('hidden', loginStep !== 'password');
+      setStepEnabled(loginStepPassword, loginStep === 'password');
+    }
+    if (loginEmailDisplay && loginEmailInput) {
+      loginEmailDisplay.textContent = loginEmailInput.value.trim();
+    }
+
+    if (focus) {
+      if (loginStep === 'email' && loginEmailInput) {
+        loginEmailInput.focus();
+      }
+      if (loginStep === 'password' && loginPasswordInput) {
+        loginPasswordInput.focus();
+      }
+    }
+  }
+
+  function setBootstrapStep(step, { focus = false } = {}) {
+    bootstrapStep = step === 'org' ? 'org' : 'account';
+
+    if (bootstrapStepAccount) {
+      bootstrapStepAccount.classList.toggle('hidden', bootstrapStep !== 'account');
+      setStepEnabled(bootstrapStepAccount, bootstrapStep === 'account');
+    }
+    if (bootstrapStepOrg) {
+      bootstrapStepOrg.classList.toggle('hidden', bootstrapStep !== 'org');
+      setStepEnabled(bootstrapStepOrg, bootstrapStep === 'org');
+    }
+    if (bootstrapEmailDisplay && bootstrapEmailInput) {
+      bootstrapEmailDisplay.textContent = bootstrapEmailInput.value.trim();
+    }
+
+    setBootstrapHeader();
+
+    if (focus) {
+      if (bootstrapStep === 'account' && bootstrapEmailInput) {
+        bootstrapEmailInput.focus();
+      }
+      if (bootstrapStep === 'org') {
+        const orgNameInput = document.getElementById('bootstrap-org-name');
+        if (orgNameInput) orgNameInput.focus();
+      }
+    }
+  }
+
+  function advanceLoginStep() {
+    if (!loginEmailInput) return;
+    if (!loginEmailInput.checkValidity()) {
+      loginEmailInput.reportValidity();
+      return;
+    }
+    if (!loginEmailInput.value.trim()) {
+      showMessage('Enter your email to continue.', 'red');
+      loginEmailInput.focus();
+      return;
+    }
+    showMessage('');
+    setLoginStep('password', { focus: true });
+  }
+
+  function advanceBootstrapStep() {
+    if (!bootstrapEmailInput || !bootstrapPasswordInput || !bootstrapPasswordConfirmInput) return;
+
+    if (!bootstrapEmailInput.checkValidity()) {
+      bootstrapEmailInput.reportValidity();
+      return;
+    }
+    if (!bootstrapPasswordInput.checkValidity()) {
+      bootstrapPasswordInput.reportValidity();
+      return;
+    }
+    if (!bootstrapPasswordConfirmInput.checkValidity()) {
+      bootstrapPasswordConfirmInput.reportValidity();
+      return;
+    }
+
+    const email = bootstrapEmailInput.value.trim();
+    if (!email) {
+      showMessage('Enter an admin email to continue.', 'red');
+      bootstrapEmailInput.focus();
+      return;
+    }
+
+    if (bootstrapPasswordInput.value !== bootstrapPasswordConfirmInput.value) {
+      showMessage('Passwords do not match.', 'red');
+      bootstrapPasswordConfirmInput.focus();
+      return;
+    }
+
+    showMessage('Creating admin account...', 'black');
+    fetchJSON('/api/auth/bootstrap-signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        password: bootstrapPasswordInput.value,
+        password_confirm: bootstrapPasswordConfirmInput.value
+      })
+    })
+      .then(data => {
+        if (bootstrapEmailInput && data?.email) {
+          bootstrapEmailInput.value = data.email;
+        }
+        showMessage('Sign up was successful. Redirecting...', 'green');
+        window.location.href = '/';
+      })
+      .catch(err => {
+        console.error('Bootstrap signup error:', err);
+        showMessage(err.message || 'Sign up failed.', 'red');
+      });
   }
 
   function setMode(newMode) {
@@ -86,6 +303,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (bootstrapForm) {
       bootstrapForm.classList.toggle('hidden', mode !== 'bootstrap');
     }
+    if (deviceChooser) {
+      const showChooser = mode === 'login' && !bootstrapRequired;
+      deviceChooser.classList.toggle('hidden', !showChooser);
+    }
 
     if (toggleText) {
       toggleText.textContent =
@@ -94,6 +315,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (toggleBtn) {
       toggleBtn.textContent =
         mode === 'login' ? 'Create company admin' : 'Sign in';
+    }
+
+    if (mode === 'login') {
+      setLoginStep('email');
+      setHeader('', '');
+    }
+    if (mode === 'bootstrap') {
+      setBootstrapStep('account');
     }
 
     hideOrgSelect();
@@ -166,16 +395,30 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   let requestedUiMode = null;
+  const storedDeviceMode = loadDeviceMode();
   const urlParams = new URLSearchParams(window.location.search);
   const forceDesktopParam = (urlParams.get('force_desktop') || '').toLowerCase();
   if (forceDesktopParam === '1' || forceDesktopParam === 'true') {
     requestedUiMode = 'desktop';
-    const forceDesktopEl = document.getElementById('login-force-desktop');
-    if (forceDesktopEl) forceDesktopEl.checked = true;
+  } else if (storedDeviceMode === 'desktop') {
+    requestedUiMode = 'desktop';
   }
 
-  async function setUiModeAndRedirect() {
-    const mode = requestedUiMode || (isTabletDevice() ? 'kiosk' : 'desktop');
+  function setDeviceSelection(mode) {
+    const isDesktop = mode === 'desktop';
+    const isKiosk = mode === 'kiosk';
+    if (deviceDesktopBtn) {
+      deviceDesktopBtn.classList.toggle('is-selected', isDesktop);
+      deviceDesktopBtn.setAttribute('aria-pressed', isDesktop ? 'true' : 'false');
+    }
+    if (deviceKioskBtn) {
+      deviceKioskBtn.classList.toggle('is-selected', isKiosk);
+      deviceKioskBtn.setAttribute('aria-pressed', isKiosk ? 'true' : 'false');
+    }
+  }
+
+  async function setUiModeAndRedirect(forcedMode = null) {
+    const mode = forcedMode || requestedUiMode || (isTabletDevice() ? 'kiosk' : 'desktop');
     try {
       await fetchJSON('/api/auth/ui-mode', {
         method: 'POST',
@@ -199,6 +442,7 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({ org_id: orgId })
       });
       showMessage('Signed in. Redirecting...', 'green');
+      storeLastOrgId(orgId);
       await setUiModeAndRedirect();
     } catch (err) {
       console.error('Select org error:', err);
@@ -230,6 +474,22 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  if (deviceDesktopBtn) {
+    deviceDesktopBtn.addEventListener('click', () => {
+      storeDeviceMode('desktop');
+      requestedUiMode = 'desktop';
+      setDeviceSelection('desktop');
+    });
+  }
+
+  if (deviceKioskBtn) {
+    deviceKioskBtn.addEventListener('click', () => {
+      storeDeviceMode('kiosk');
+      setDeviceSelection('kiosk');
+      window.location.href = '/kiosk';
+    });
+  }
+
   if (passwordToggleBtn && loginPasswordInput) {
     passwordToggleBtn.addEventListener('click', () => {
       const isHidden = loginPasswordInput.type === 'password';
@@ -239,16 +499,33 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  if (bootstrapContinueBtn) {
+    bootstrapContinueBtn.addEventListener('click', advanceBootstrapStep);
+  }
+
+  if (loginContinueBtn) {
+    loginContinueBtn.addEventListener('click', advanceLoginStep);
+  }
+
+  if (loginChangeEmailBtn) {
+    loginChangeEmailBtn.addEventListener('click', () => {
+      setLoginStep('email', { focus: true });
+      showMessage('');
+    });
+  }
+
   if (loginForm) {
     loginForm.addEventListener('submit', async evt => {
       evt.preventDefault();
 
-      const email = document.getElementById('login-email')?.value || '';
+      if (loginStep !== 'password') {
+        advanceLoginStep();
+        return;
+      }
+
+      const email = loginEmailInput?.value || '';
       const password = document.getElementById('login-password')?.value || '';
       const remember = document.getElementById('login-remember')?.checked || false;
-      const forceDesktop =
-        document.getElementById('login-force-desktop')?.checked || false;
-      requestedUiMode = forceDesktop ? 'desktop' : null;
 
       showMessage('Signing in...', 'black');
 
@@ -265,6 +542,14 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
+        if (data.requires_org_setup) {
+          bootstrapRequired = true;
+          showMessage('Sign in successful. Redirecting...', 'green');
+          setOnboardingPending(null);
+          window.location.href = '/';
+          return;
+        }
+
         showMessage('Signed in. Redirecting...', 'green');
         await setUiModeAndRedirect();
       } catch (err) {
@@ -278,6 +563,11 @@ document.addEventListener('DOMContentLoaded', () => {
     bootstrapForm.addEventListener('submit', async evt => {
       evt.preventDefault();
 
+      if (bootstrapStep !== 'org') {
+        advanceBootstrapStep();
+        return;
+      }
+
       const orgName = document.getElementById('bootstrap-org-name')?.value || '';
       const orgTimezone =
         document.getElementById('bootstrap-org-timezone')?.value || '';
@@ -286,39 +576,29 @@ document.addEventListener('DOMContentLoaded', () => {
       const adminLast =
         document.getElementById('bootstrap-admin-last-name')?.value || '';
       const adminName = [adminFirst, adminLast].filter(Boolean).join(' ').trim();
-      const email = document.getElementById('bootstrap-email')?.value || '';
-      const password =
-        document.getElementById('bootstrap-password')?.value || '';
-      const passwordConfirm =
-        document.getElementById('bootstrap-password-confirm')?.value || '';
 
       if (!adminName) {
         showMessage('Admin first and last name are required.', 'red');
         return;
       }
 
-      if (password !== passwordConfirm) {
-        showMessage('Passwords do not match.', 'red');
-        return;
-      }
-
       showMessage('Creating organization...', 'black');
 
       try {
-        await fetchJSON('/api/auth/bootstrap', {
+        const data = await fetchJSON('/api/auth/bootstrap', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             org_name: orgName,
             org_timezone: orgTimezone,
-            admin_name: adminName,
-            email,
-            password
+            admin_name: adminName
           })
         });
 
         showMessage('Bootstrap complete. Redirecting...', 'green');
-        await setUiModeAndRedirect();
+        setOnboardingPending(data?.orgId);
+        requestedUiMode = 'desktop';
+        await setUiModeAndRedirect('desktop');
       } catch (err) {
         console.error('Bootstrap error:', err);
         showMessage(err.message || 'Bootstrap failed.', 'red');
@@ -327,5 +607,40 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   buildTimezoneOptions();
+  setDeviceSelection(storedDeviceMode);
+  setMode('bootstrap');
+
+  try {
+    const status = await fetchJSON('/api/auth/bootstrap-status');
+    bootstrapRequired = !!status?.bootstrap_required;
+    const bootstrapAccountReady = !!status?.bootstrap_account_created;
+    const bootstrapEmail = status?.bootstrap_email || '';
+    if (toggleWrap) {
+      toggleWrap.classList.toggle('hidden', bootstrapRequired && !bootstrapAccountReady);
+    }
+    if (bootstrapRequired) {
+      if (deviceChooser) deviceChooser.classList.add('hidden');
+      if (bootstrapEmailInput && bootstrapEmail) {
+        bootstrapEmailInput.value = bootstrapEmail;
+      }
+      if (bootstrapEmail) {
+        setOnboardingPending(null);
+        window.location.href = '/';
+        return;
+      } else if (bootstrapAccountReady) {
+        setMode('login');
+        setLoginStep('email');
+        setHeader('Sign In', 'Sign in to finish setting up your company.');
+      } else {
+        setMode('bootstrap');
+        setBootstrapStep('account');
+      }
+      return;
+    }
+  } catch (err) {
+    console.warn('Failed to check bootstrap status:', err?.message || err);
+  }
+
+  setHeader('', '');
   setMode('login');
 });

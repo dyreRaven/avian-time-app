@@ -20,143 +20,189 @@
             </div>
           </div>
 
-          <!-- Optional heading container (we're not using it in JS now) -->
-          <div class="auth-header-text"></div>
+          <div class="auth-header-text">
+            <h2>Sign up</h2>
+          </div>
 
           <div class="card-body">
+            <div id="auth-device" class="auth-device hidden">
+              <div class="auth-device-title">Choose this device's mode</div>
+              <div class="auth-device-actions">
+                <button type="button" id="auth-device-desktop" class="btn secondary">
+                  Admin desktop
+                </button>
+                <button type="button" id="auth-device-kiosk" class="btn secondary">
+                  Kiosk tablet
+                </button>
+              </div>
+              <div class="auth-device-note">
+                Admin sign-in is for company owners. Kiosks use PINs and require an enrollment code.
+              </div>
+            </div>
+
             <!-- Sign in form -->
-           <form id="login-form" class="stack-vert" autocomplete="on">
-  <label>
-    <span class="field-label">Email</span>
-    <input
-      id="login-email"
-      type="email"
-      required
-      autocomplete="email"
-    />
-  </label>
+            <form id="login-form" class="stack-vert hidden" autocomplete="on">
+              <div id="login-step-email" class="stack-vert">
+                <label>
+                  <span class="field-label">Email</span>
+                  <input
+                    id="login-email"
+                    type="email"
+                    required
+                    autocomplete="email"
+                  />
+                </label>
 
-  <label>
-    <span class="field-label">Password</span>
-    <div class="auth-password-wrap">
-      <input
-        id="login-password"
-        type="password"
-        required
-        autocomplete="current-password"
-      />
-      <button
-        type="button"
-        id="password-toggle"
-        class="auth-password-toggle"
-        aria-pressed="false"
-        aria-label="Show password"
-      >
-        <svg
-          id="password-toggle-icon"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-          focusable="false"
-        >
-          <path
-            d="M12 5c-5 0-9 5-9 7s4 7 9 7 9-5 9-7-4-7-9-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"
-            fill="currentColor"
-          />
-        </svg>
-      </button>
-    </div>
-  </label>
+                <button type="button" id="login-continue" class="btn primary w-full">
+                  Continue
+                </button>
+              </div>
 
-  <label class="checkbox-inline auth-remember">
-    <input type="checkbox" id="login-remember" />
-    <span>Stay Signed In</span>
-  </label>
+              <div id="login-step-password" class="stack-vert hidden">
+                <div class="auth-email-row">
+                  <div class="auth-email-meta">
+                    <span class="auth-email-label">Email</span>
+                    <span id="login-email-display" class="auth-email-value"></span>
+                  </div>
+                  <button type="button" id="login-change-email" class="btn tertiary">
+                    Change
+                  </button>
+                </div>
 
-  <label class="checkbox-inline auth-remember">
-    <input type="checkbox" id="login-force-desktop" />
-    <span>Open the admin console on this device</span>
-  </label>
+                <label>
+                  <span class="field-label">Password</span>
+                  <div class="auth-password-wrap">
+                    <input
+                      id="login-password"
+                      type="password"
+                      required
+                      autocomplete="current-password"
+                    />
+                    <button
+                      type="button"
+                      id="password-toggle"
+                      class="auth-password-toggle"
+                      aria-pressed="false"
+                      aria-label="Show password"
+                    >
+                      <svg
+                        id="password-toggle-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M12 5c-5 0-9 5-9 7s4 7 9 7 9-5 9-7-4-7-9-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </label>
 
-  <button type="submit" class="btn primary w-full">
-    Sign in
-  </button>
-</form>
+                <label class="checkbox-inline auth-remember">
+                  <input type="checkbox" id="login-remember" />
+                  <span>Stay Signed In</span>
+                </label>
+
+                <button type="submit" class="btn primary w-full">
+                  Sign in
+                </button>
+              </div>
+            </form>
 
 
             <!-- Bootstrap form (hidden by default) -->
             <form
               id="bootstrap-form"
-              class="stack-vert hidden"
+              class="stack-vert"
               autocomplete="on"
             >
-              <label>
-                <span class="field-label">Organization name</span>
-                <input
-                  id="bootstrap-org-name"
-                  type="text"
-                  required
-                  autocomplete="organization"
-                />
-              </label>
+              <div id="bootstrap-step-account" class="stack-vert">
+                <label>
+                  <span class="field-label">Admin email</span>
+                  <input
+                    id="bootstrap-email"
+                    type="email"
+                    required
+                    autocomplete="email"
+                  />
+                </label>
 
-              <label>
-                <span class="field-label">Organization timezone</span>
-                <select id="bootstrap-org-timezone" required></select>
-              </label>
+                <label>
+                  <span class="field-label">Password</span>
+                  <input
+                    id="bootstrap-password"
+                    type="password"
+                    minlength="8"
+                    required
+                    autocomplete="new-password"
+                  />
+                </label>
 
-              <label>
-                <span class="field-label">Admin first name</span>
-                <input
-                  id="bootstrap-admin-first-name"
-                  type="text"
-                  required
-                  autocomplete="given-name"
-                />
-              </label>
+                <label>
+                  <span class="field-label">Confirm password</span>
+                  <input
+                    id="bootstrap-password-confirm"
+                    type="password"
+                    minlength="8"
+                    required
+                    autocomplete="new-password"
+                  />
+                </label>
 
-              <label>
-                <span class="field-label">Admin last name</span>
-                <input
-                  id="bootstrap-admin-last-name"
-                  type="text"
-                  required
-                  autocomplete="family-name"
-                />
-              </label>
+                <button type="button" id="bootstrap-continue" class="btn primary w-full">
+                  Sign up
+                </button>
+              </div>
 
-              <label>
-                <span class="field-label">Admin email</span>
-                <input
-                  id="bootstrap-email"
-                  type="email"
-                  required
-                  autocomplete="email"
-                />
-              </label>
+              <div id="bootstrap-step-org" class="stack-vert hidden">
+                <div class="auth-email-row">
+                  <div class="auth-email-meta">
+                    <span class="auth-email-label">Admin email</span>
+                    <span id="bootstrap-email-display" class="auth-email-value"></span>
+                  </div>
+                </div>
 
-              <label>
-                <span class="field-label">Password</span>
-                <input
-                  id="bootstrap-password"
-                  type="password"
-                  required
-                  autocomplete="new-password"
-                />
-              </label>
+                <label>
+                  <span class="field-label">Organization name</span>
+                  <input
+                    id="bootstrap-org-name"
+                    type="text"
+                    required
+                    autocomplete="organization"
+                  />
+                </label>
 
-              <label>
-                <span class="field-label">Confirm password</span>
-                <input
-                  id="bootstrap-password-confirm"
-                  type="password"
-                  required
-                  autocomplete="new-password"
-                />
-              </label>
+                <label>
+                  <span class="field-label">Organization timezone</span>
+                  <select id="bootstrap-org-timezone" required></select>
+                </label>
 
-              <button type="submit" class="btn primary w-full">
-                Create company admin
-              </button>
+                <label>
+                  <span class="field-label">Admin first name</span>
+                  <input
+                    id="bootstrap-admin-first-name"
+                    type="text"
+                    required
+                    autocomplete="given-name"
+                  />
+                </label>
+
+                <label>
+                  <span class="field-label">Admin last name</span>
+                  <input
+                    id="bootstrap-admin-last-name"
+                    type="text"
+                    required
+                    autocomplete="family-name"
+                  />
+                </label>
+
+                <button type="submit" class="btn primary w-full">
+                  Create company admin
+                </button>
+              </div>
             </form>
 
             <p id="auth-message" class="message auth-message"></p>
@@ -166,7 +212,7 @@
               <div id="org-select-list" class="stack-vert"></div>
             </div>
 
-            <div class="auth-toggle">
+            <div id="auth-toggle" class="auth-toggle hidden">
               <span id="auth-toggle-text">First time here?</span>
               <button
                 id="auth-toggle-btn"

@@ -6,7 +6,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/kiosk-admin.css?v=20260127d" />
+  <link rel="stylesheet" href="/kiosk-admin.css?v=20260130z" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#10b981" />
 
@@ -45,13 +45,43 @@
     </div>
   </header>
   <div class="ka-header-subtitle">
-    <div class="ka-header-page-title">
-      <span id="ka-header-view-title">Timesheets</span>
-      <span class="ka-header-page-sep hidden" id="ka-header-view-sep">—</span>
-      <span class="ka-header-page-date hidden" id="ka-header-view-date"></span>
+    <div class="ka-header-title-row">
+      <button
+        type="button"
+        id="ka-header-menu-toggle-inline"
+        class="ka-header-menu-toggle ka-header-menu-toggle-inline"
+        aria-label="Open menu"
+        aria-controls="ka-header-menu-panel"
+        aria-expanded="false"
+      >
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <div class="ka-header-page-title">
+        <span id="ka-header-view-title">Timesheets</span>
+        <span class="ka-header-page-sep hidden" id="ka-header-view-sep">—</span>
+        <span class="ka-header-page-date hidden" id="ka-header-view-date"></span>
+      </div>
     </div>
     <div class="ka-header-pill-slot" id="ka-header-pill-slot">
+      <button
+        id="ka-time-review-banner"
+        class="ka-time-review-banner"
+        type="button"
+        aria-label="Pending review count"
+      >
+        <span class="ka-review-banner-icon" aria-hidden="true">⚠</span>
+        <span class="ka-review-banner-text">
+          <span id="ka-time-review-prefix"></span>
+          <span id="ka-time-review-count">0</span>
+          <span id="ka-time-review-suffix">Pending Review</span>
+        </span>
+      </button>
       <button id="ka-start-new-btn" class="btn primary btn-sm hidden">New Timesheet</button>
+      <button id="ka-employee-add-cta" class="btn primary btn-sm hidden" aria-controls="ka-employee-add-form" aria-expanded="false">
+        + New Employee
+      </button>
     </div>
   </div>
   <div id="ka-sidebar-backdrop" class="ka-sidebar-backdrop hidden" aria-hidden="true"></div>
@@ -194,9 +224,26 @@
       <button id="ka-clockin-modal-close" class="btn ghost btn-sm ka-modal-close" type="button">×</button>
     </div>
     <p id="ka-clockin-modal-text"></p>
+    <div id="ka-clockin-modal-error" class="ka-modal-error hidden" role="alert"></div>
     <div id="ka-clockin-modal-project-wrap" style="display:none; margin-bottom:12px;">
       <label id="ka-clockin-modal-project-label" class="ka-session-label" for="ka-clockin-modal-project">Choose timesheet</label>
       <select id="ka-clockin-modal-project" class="ka-select-arrow"></select>
+    </div>
+    <div id="ka-clockin-modal-toggles" class="ka-modal-toggles hidden">
+      <div class="ka-modal-toggle">
+        <label class="ka-toggle" id="ka-clockin-modal-active-label">
+          <input type="checkbox" id="ka-clockin-modal-active">
+          <span>Set this as the active project for this kiosk</span>
+        </label>
+        <div id="ka-clockin-modal-active-note" class="ka-muted ka-modal-toggle-note"></div>
+      </div>
+      <div class="ka-modal-toggle">
+        <label class="ka-toggle" id="ka-clockin-modal-punch-label">
+          <input type="checkbox" id="ka-clockin-modal-punch">
+          <span>Move my punch to this project (clock out/in)</span>
+        </label>
+        <div id="ka-clockin-modal-punch-note" class="ka-muted ka-modal-toggle-note"></div>
+      </div>
     </div>
     <div class="ka-modal-actions">
       <button id="ka-clockin-modal-yes" class="btn primary" type="button">Clock in</button>
@@ -213,14 +260,44 @@
       <button id="ka-help-close" class="ka-modal-close" type="button">×</button>
     </div>
     <div class="ka-help-body">
-      <section class="ka-help-section">
+      <section class="ka-help-section" id="ka-help-timesheets">
         <h4>Timesheets</h4>
         <ul>
           <li>Select a project, then create a new timesheet to set the active job for this tablet.</li>
           <li>The active timesheet is where new worker clock-ins go; only one timesheet can be active per tablet.</li>
           <li>Switching the active timesheet does not clock anyone out. It only changes where new clock-ins go.</li>
           <li>To clock workers in at another project, create a new timesheet and set it as the active timesheet. New workers will be clocked in under that timesheet.</li>
+          <li>Use the chevron to open timesheet actions (assign, close, delete).</li>
+          <li>When the last punch clocks out, you’ll be prompted to close the timesheet. Closed timesheets are read-only.</li>
+          <li>Status pills: <strong>Complete</strong> means everyone is clocked out; <strong>Complete &amp; Closed</strong> means an admin closed it.</li>
+          <li>Closed timesheets cannot be set active or assigned; delete is only available when there are zero time entries.</li>
+          <li>Auto clock-out closes open punches at org-local midnight, but it does not close the timesheet.</li>
           <li>Use the filter to view Active (current), Inactive (other sessions), or All sessions for today.</li>
+        </ul>
+      </section>
+      <section class="ka-help-section" id="ka-help-time-entries">
+        <h4>Time Entries — Review Pills</h4>
+        <ul>
+          <li><strong>Missing punches</strong> — the entry has zero punches recorded.</li>
+          <li><strong>Hours mismatch</strong> — punch hours do not match entry hours.</li>
+          <li><strong>Geofence flag</strong> — at least one punch or kiosk session violated the geofence.</li>
+          <li><strong>Auto clock-out: Midnight auto-close</strong> — closed at org midnight for a prior-day open punch.</li>
+          <li><strong>Auto clock-out: Catch-up auto-close</strong> — hourly catch-up closed a prior-day open punch.</li>
+          <li><strong>Auto clock-out: Daily max hours</strong> — closed when daily hours limit was exceeded.</li>
+          <li><strong>Auto clock-out: Weekly max hours</strong> — closed when weekly hours limit was exceeded.</li>
+          <li><strong>Auto clock-out</strong> — auto clock-out recorded without a reason.</li>
+          <li><strong>Needs review</strong> — fallback when no specific issue is detected.</li>
+        </ul>
+      </section>
+      <section class="ka-help-section">
+        <h4>Time Entries — Status Tags</h4>
+        <ul>
+          <li><strong>In progress</strong> — the entry is still open.</li>
+          <li><strong>Pending review</strong> — not yet field-reviewed (flagged or clean).</li>
+          <li><strong>Approved as-is</strong> — field-reviewed with no flags.</li>
+          <li><strong>Approved</strong> — field-reviewed with flags.</li>
+          <li><strong>Modified</strong> — field-reviewed with edits.</li>
+          <li><strong>Rejected</strong> — rejected during field review.</li>
         </ul>
       </section>
     </div>
@@ -313,7 +390,7 @@
         </div>
         <div class="ka-session-inline">
           <label class="ka-session-label" for="ka-project-select">Project</label>
-          <select id="ka-project-select"></select>
+          <select id="ka-project-select" class="ka-select-arrow"></select>
         </div>
         <div class="ka-session-inline ka-session-actions-row">
           <button id="ka-add-session-btn" class="btn primary btn-sm">Create new timesheet</button>
@@ -353,25 +430,7 @@
        VIEW: EMPLOYEES
        ============================ -->
 <section id="ka-view-employees" class="hidden">
-  <div class="card">
-    <div class="card-header">
-      <div>
-        <h2>Employees</h2>
-        <p class="card-sub">
-          Add employees for this kiosk. New employees are flagged for QuickBooks linking in the admin console.
-        </p>
-      </div>
-      <div class="ka-employee-header-actions">
-        <span id="ka-employees-count" class="ka-tag gray">0 Employees</span>
-        <button
-          type="button"
-          id="ka-employee-add-toggle"
-          class="btn primary btn-sm"
-          aria-controls="ka-employee-add-form"
-          aria-expanded="false"
-        >Add employee</button>
-      </div>
-    </div>
+  <div class="card hidden" id="ka-employee-add-card">
     <div class="card-body ka-employee-add hidden" id="ka-employee-add-form">
       <div class="form-grid">
         <div class="form-field">
@@ -416,6 +475,25 @@
       <p id="ka-helper-status" class="ka-status"></p>
     </div>
   </div>
+  <div class="ka-employee-toolbar">
+    <label class="ka-employee-filter">
+      <span class="ka-filter-label">Filter</span>
+      <select id="ka-employee-status-filter" class="ka-select-arrow">
+        <option value="all" selected>All</option>
+        <option value="active">Active</option>
+        <option value="inactive">Inactive</option>
+      </select>
+    </label>
+    <div class="ka-employee-search">
+      <span class="ka-search-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"></circle>
+          <path d="M20 20l-4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+      </span>
+      <input type="search" id="ka-employee-search" class="ka-input-like-select" placeholder="Search employees…" />
+    </div>
+  </div>
   <div id="ka-employees-grid" class="ka-employee-grid"></div>
   <div id="ka-employees-empty" class="ka-employee-empty hidden">No employees found.</div>
 </section>
@@ -444,7 +522,6 @@
             <option value="status:Sailed">Sailed</option>
             <option value="status:Arrived at Port">Arrived at Port</option>
             <option value="status:Awaiting Clearance">Awaiting Clearance</option>
-            <option value="status:Cleared - Ready for Pickup">Cleared - Ready for Pickup</option>
             <option value="status:Picked Up">Picked Up/Archived</option>
         </optgroup>
       </select>
@@ -477,100 +554,109 @@
        ============================ -->
   <section id="ka-view-time" class="hidden">
     <div class="card">
-      <div class="card-header">
-        <div>
-          <p class="card-sub">
-            View and verify time entries for this kiosk over any date range.
-            Paid entries are locked for editing but can still be verified for accuracy.
-          </p>
-        </div>
-      </div>
-
-      <div id="ka-time-orientation" class="ka-orientation-hint">
-        Rotate your tablet to landscape to view the time entries report.
-      </div>
-
       <div class="card-body ka-time-content">
-        <div class="ka-time-filters">
+        <div class="ka-time-calendar-wrap">
+          <div class="ka-time-calendar" id="ka-time-calendar" aria-label="Time entries calendar">
+            <div class="ka-time-calendar-header">
+              <button type="button" class="ka-time-calendar-nav" data-ka-time-cal-nav="prev" aria-label="Previous month">&lt;</button>
+              <div class="ka-time-calendar-title-wrap">
+                <button
+                  type="button"
+                  class="ka-time-calendar-title"
+                  id="ka-time-calendar-title"
+                  data-ka-time-cal-title
+                  aria-haspopup="dialog"
+                  aria-expanded="false"
+                  aria-controls="ka-time-calendar-picker"
+                >Month</button>
+                <div class="ka-time-calendar-picker hidden" id="ka-time-calendar-picker" role="dialog" aria-label="Choose month and year">
+                  <div class="ka-time-calendar-picker-row">
+                    <label class="ka-time-calendar-picker-field">
+                      <span>Month</span>
+                      <span class="select-wrapper">
+                        <select id="ka-time-calendar-month" class="ka-select-arrow"></select>
+                      </span>
+                    </label>
+                    <label class="ka-time-calendar-picker-field">
+                      <span>Year</span>
+                      <span class="select-wrapper">
+                        <select id="ka-time-calendar-year" class="ka-select-arrow"></select>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <button type="button" class="ka-time-calendar-nav" data-ka-time-cal-nav="next" aria-label="Next month">&gt;</button>
+            </div>
+            <div class="ka-time-calendar-weekdays" aria-hidden="true">
+              <span>Sun</span>
+              <span>Mon</span>
+              <span>Tue</span>
+              <span>Wed</span>
+              <span>Thu</span>
+              <span>Fri</span>
+              <span>Sat</span>
+            </div>
+            <div class="ka-time-calendar-grid" id="ka-time-calendar-grid" role="grid"></div>
+          </div>
+        </div>
+
+        <div class="ka-time-filters ka-time-filters-v2">
           <div class="ka-time-filter-row">
-            <label class="ka-shipments-filter-label">
+            <label class="ka-time-field">
               Date Range:
-              <select id="ka-time-range" class="ka-time-range-select ka-select-arrow">
-                <option value="today">Today</option>
-                <option value="yesterday">Yesterday</option>
-                <option value="last7">Last 7 Days</option>
-                <option value="custom">Custom Range</option>
-              </select>
+              <span class="select-wrapper ka-time-range-wrapper">
+                <select id="ka-time-range" class="ka-select-arrow ka-time-filter-width">
+                  <option value="today">Today</option>
+                  <option value="yesterday">Yesterday</option>
+                  <option value="last7">Last 7 Days</option>
+                  <option value="custom">Custom Range</option>
+                </select>
+              </span>
             </label>
-            <label class="ka-shipments-filter-label ka-pay-toggle" style="display:none;">
-              <input type="checkbox" id="ka-time-show-pay" />
-              Show pay info
-            </label>
-            <label class="ka-shipments-filter-label ka-approvals-toggle" style="display:none;">
-              <input type="checkbox" id="ka-time-show-approvals" />
-              Show approvals
-            </label>
-            <label class="ka-shipments-filter-label ka-hide-resolved" style="display:none;">
-              <input type="checkbox" id="ka-time-hide-resolved" />
-              Hide resolved
-            </label>
-            <div style="flex:1"></div>
-            <button id="ka-time-run" class="btn secondary btn-sm ka-time-refresh-btn">
-              Run Report
-            </button>
-          </div>
-          <div class="ka-time-filter-row">
-            <label class="ka-shipments-filter-label">
+            <label class="ka-time-field">
               Employee:
-              <select id="ka-time-employee" class="ka-select-arrow">
-                <option value="">All employees</option>
-              </select>
+              <span class="select-wrapper">
+                <select id="ka-time-employee" class="ka-select-arrow">
+                  <option value="">All employees</option>
+                </select>
+              </span>
             </label>
-            <label class="ka-shipments-filter-label">
+            <label class="ka-time-field">
               Project:
-              <select id="ka-time-project" class="ka-select-arrow">
-                <option value="">All projects</option>
-              </select>
+              <span class="select-wrapper">
+                <select id="ka-time-project" class="ka-select-arrow">
+                  <option value="">All projects</option>
+                </select>
+              </span>
             </label>
           </div>
-          <div class="ka-time-date-row hidden" id="ka-time-custom">
-            <div class="ka-small">
+
+          <div class="ka-time-custom-row hidden" id="ka-time-custom">
+            <label class="ka-time-field ka-time-date-field">
               From:
               <input type="date" id="ka-time-start" />
-            </div>
-            <div class="ka-small">
+            </label>
+            <label class="ka-time-field ka-time-date-field">
               To:
               <input type="date" id="ka-time-end" />
-            </div>
-            <button id="ka-time-refresh" class="btn secondary btn-sm ka-time-refresh-btn">
+            </label>
+            <button id="ka-time-refresh" class="btn secondary btn-sm ka-time-refresh-btn" type="button">
               Apply
             </button>
           </div>
+
+          <div class="ka-time-actions-row">
+            <label class="ka-time-inline-toggle">
+              <input type="checkbox" id="ka-time-include-open" checked />
+              Include in-progress
+            </label>
+            <button id="ka-time-run" class="btn primary btn-sm ka-time-run-btn" type="button">
+              Run report
+            </button>
+          </div>
+
         </div>
-
-        <div class="table-wrapper">
-          <table class="ka-table">
-            <thead>
-              <tr>
-              <th>Employee</th>
-              <th>Project</th>
-                <th>Date</th>
-                <th>Clock In</th>
-                <th>Clock Out</th>
-                <th class="ka-right">Hours</th>
-              <th class="ka-actions-col">Status</th>
-              <th class="ka-approve-col">Reviewed By</th>
-            </tr>
-          </thead>
-          <tbody id="ka-time-body">
-            <tr>
-              <td colspan="8" class="ka-muted">(loading…)</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-        <p id="ka-time-status" class="ka-status"></p>
       </div>
     </div>
   </section>
@@ -582,13 +668,26 @@
     <div class="card">
       <div class="card-body">
         <p id="ka-account-auth-status" class="ka-status"></p>
+        <div class="ka-account-profile">
+          <div class="ka-account-avatar" aria-hidden="true">
+            <img id="ka-account-photo" alt="" class="hidden" />
+            <span id="ka-account-initials">—</span>
+          </div>
+          <div class="ka-account-profile-text">
+            <div class="ka-account-name" id="ka-account-name">My account</div>
+            <div class="ka-account-email" id="ka-account-email">—</div>
+          </div>
+        </div>
         <div class="ka-settings-grid">
-          <div class="ka-settings-tile">
-            <div>
-              <div class="ka-settings-title">Login email</div>
-              <p class="ka-settings-sub">Update the email used to sign in to the admin console.</p>
-            </div>
-            <div class="ka-settings-content">
+          <div class="ka-settings-tile collapsed" data-account-section="email">
+            <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-account-email-card">
+              <div>
+                <div class="ka-settings-title">Login email</div>
+                <p class="ka-settings-sub">Update the email used to sign in to the admin console.</p>
+              </div>
+              <span class="ka-settings-chevron" aria-hidden="true"></span>
+            </button>
+            <div class="ka-settings-content" id="ka-account-email-card">
               <label for="ka-account-email-current">Current email</label>
               <input type="email" id="ka-account-email-current" readonly />
               <label for="ka-account-email-new">New email</label>
@@ -604,12 +703,15 @@
             </div>
           </div>
 
-          <div class="ka-settings-tile">
-            <div>
-              <div class="ka-settings-title">Change password</div>
-              <p class="ka-settings-sub">Use your current password to set a new one.</p>
-            </div>
-            <div class="ka-settings-content">
+          <div class="ka-settings-tile collapsed" data-account-section="password">
+            <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-account-password-card">
+              <div>
+                <div class="ka-settings-title">Change password</div>
+                <p class="ka-settings-sub">Use your current password to set a new one.</p>
+              </div>
+              <span class="ka-settings-chevron" aria-hidden="true"></span>
+            </button>
+            <div class="ka-settings-content" id="ka-account-password-card">
               <label for="ka-account-password-current">Current password</label>
               <input type="password" id="ka-account-password-current" autocomplete="current-password" />
               <label for="ka-account-password-new">New password</label>
@@ -617,8 +719,187 @@
               <label for="ka-account-password-confirm">Confirm new password</label>
               <input type="password" id="ka-account-password-confirm" autocomplete="new-password" />
               <div class="ka-account-actions">
-                <button type="button" id="ka-account-password-save" class="btn secondary btn-sm">Update Password</button>
+                <button type="button" id="ka-account-password-save" class="btn primary btn-sm">Update Password</button>
                 <span id="ka-account-password-status" class="ka-status"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="ka-settings-tile collapsed" data-account-section="notifications" id="ka-notify-settings-tile">
+            <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-account-notify-card">
+              <div>
+                <div class="ka-settings-title">Notifications</div>
+                <p class="ka-settings-sub">Set up notifications for the admin currently logged in.</p>
+              </div>
+              <span class="ka-settings-chevron" aria-hidden="true"></span>
+            </button>
+            <div class="ka-settings-content" id="ka-account-notify-card">
+              <div class="ka-ship-notify-grid">
+                <div class="ka-notify-section">
+                  <div class="ka-settings-title" style="margin-bottom:6px;">Delivery channels</div>
+                  <p class="ka-settings-sub">In-app notifications are always on. Choose how else to be notified.</p>
+                  <div class="ka-notify-section-body">
+                    <label class="ka-toggle">
+                      <input type="checkbox" id="ka-notify-email-enabled" />
+                      <span>Email to your login address</span>
+                    </label>
+                    <label class="ka-toggle">
+                      <input type="checkbox" id="ka-notify-push-enabled" />
+                      <span>Push notifications</span>
+                    </label>
+                    <div class="ka-inline">
+                      <button class="btn secondary btn-sm" id="ka-notify-push-subscribe" type="button">Enable push on this device</button>
+                      <button class="btn secondary btn-sm" id="ka-notify-push-unsubscribe" type="button">Disable push on this device</button>
+                    </div>
+                    <div id="ka-notify-push-status" class="ka-muted small"></div>
+                    <div class="ka-muted small">SMS notifications are not available yet.</div>
+                  </div>
+                </div>
+
+                <div class="ka-notify-section" id="ka-notify-shipments-section">
+                  <div class="ka-notify-enable-row">
+                    <div>
+                      <div class="ka-settings-title">Shipment status updates</div>
+                      <p class="ka-settings-sub">Immediate alerts when shipments change status.</p>
+                    </div>
+                    <label class="ka-toggle">
+                      <input type="checkbox" id="ka-notify-shipments-updates-enabled" />
+                      <span>Enable</span>
+                    </label>
+                  </div>
+
+                  <div id="ka-notify-shipments-filters" class="ka-notify-section-body">
+                    <div class="ka-notify-group">
+                      <label>Status filters</label>
+                      <button id="ka-notify-statuses-btn" class="ka-notify-select" type="button">
+                        <span id="ka-notify-statuses-label" class="placeholder">All statuses</span>
+                        <span class="ka-caret">▾</span>
+                      </button>
+                      <div id="ka-notify-statuses-menu" class="ka-notify-menu hidden"></div>
+                    </div>
+                    <div class="ka-notify-group">
+                      <label for="ka-notify-projects">Project filters</label>
+                      <button id="ka-notify-projects-btn" class="ka-notify-select" type="button">
+                        <span id="ka-notify-projects-label" class="placeholder">All projects</span>
+                        <span class="ka-caret">▾</span>
+                      </button>
+                      <div id="ka-notify-projects-menu" class="ka-notify-menu hidden"></div>
+                    </div>
+                    <div class="ka-muted small">These filters apply to shipment status updates and reminders.</div>
+                  </div>
+
+                  <div class="ka-notify-enable-row">
+                    <div>
+                      <div class="ka-settings-title">Shipment reminders</div>
+                      <p class="ka-settings-sub">Daily reminders for shipments matching your filters.</p>
+                    </div>
+                    <label class="ka-toggle">
+                      <input type="checkbox" id="ka-notify-shipments-reminders-enabled" />
+                      <span>Enable</span>
+                    </label>
+                  </div>
+                  <div id="ka-notify-shipments-reminder-body" class="ka-notify-section-body hidden">
+                    <div class="ka-notify-group ka-notify-inline-row">
+                      <label for="ka-notify-shipments-time">Reminder time</label>
+                      <div class="ka-inline">
+                        <input type="time" id="ka-notify-shipments-time" class="ka-notify-time" value="19:00" />
+                      </div>
+                    </div>
+                    <div class="ka-notify-group ka-notify-inline-row">
+                      <label for="ka-notify-shipments-every-days">Reminder every</label>
+                      <div class="ka-inline">
+                        <input type="number" id="ka-notify-shipments-every-days" min="1" step="1" value="1" class="ka-notify-number" style="max-width: 90px;" />
+                        <span class="ka-muted">day(s)</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="ka-notify-section" id="ka-notify-time-section">
+                  <div class="ka-notify-enable-row">
+                    <div>
+                      <div class="ka-settings-title">Time alerts</div>
+                      <p class="ka-settings-sub">Exceptions, manual edits, long shifts, and weekly thresholds.</p>
+                    </div>
+                    <label class="ka-toggle">
+                      <input type="checkbox" id="ka-notify-time-enabled" />
+                      <span>Enable</span>
+                    </label>
+                  </div>
+                  <div class="ka-notify-section-body">
+                    <div id="ka-notify-time-events" class="ka-notify-options"></div>
+                  </div>
+                </div>
+
+                <div class="ka-notify-section" id="ka-notify-payroll-section">
+                  <div class="ka-notify-enable-row">
+                    <div>
+                      <div class="ka-settings-title">Payroll alerts</div>
+                      <p class="ka-settings-sub">Run status, failures, and QuickBooks errors.</p>
+                    </div>
+                    <label class="ka-toggle">
+                      <input type="checkbox" id="ka-notify-payroll-enabled" />
+                      <span>Enable</span>
+                    </label>
+                  </div>
+                  <div class="ka-notify-section-body">
+                    <div id="ka-notify-payroll-events" class="ka-notify-options"></div>
+                  </div>
+                </div>
+
+                <div class="ka-notify-section" id="ka-notify-summary-section">
+                  <div class="ka-notify-enable-row">
+                    <div>
+                      <div class="ka-settings-title">Daily summary</div>
+                      <p class="ka-settings-sub">Counts of open time exceptions and payroll due.</p>
+                    </div>
+                    <label class="ka-toggle">
+                      <input type="checkbox" id="ka-notify-daily-enabled" />
+                      <span>Enable</span>
+                    </label>
+                  </div>
+                  <div class="ka-notify-section-body hidden" id="ka-notify-daily-body">
+                    <div class="ka-notify-group ka-notify-inline-row">
+                      <label for="ka-notify-daily-time">Send summary at</label>
+                      <div class="ka-inline">
+                        <input type="time" id="ka-notify-daily-time" class="ka-notify-time" value="19:00" />
+                      </div>
+                    </div>
+                    <div class="ka-notify-group ka-notify-inline-row">
+                      <label for="ka-notify-daily-every">Repeat every</label>
+                      <div class="ka-inline">
+                        <input type="number" id="ka-notify-daily-every" min="1" step="1" value="1" class="ka-notify-number" style="max-width: 90px;" />
+                        <span class="ka-muted">day(s)</span>
+                      </div>
+                    </div>
+                    <div class="ka-muted small">Summary items follow your Time and Payroll alert selections.</div>
+                  </div>
+                </div>
+
+                <div class="ka-notify-section" id="ka-notify-clockout-section">
+                  <div class="ka-notify-enable-row">
+                    <div>
+                      <div class="ka-settings-title">Workers still clocked in</div>
+                      <p class="ka-settings-sub">Daily alert if anyone is still on the clock past your cutoff time.</p>
+                    </div>
+                    <label class="ka-toggle">
+                      <input type="checkbox" id="ka-notify-clockout-enabled" />
+                      <span>Enable</span>
+                    </label>
+                  </div>
+                  <div class="ka-notify-group ka-notify-inline-row hidden" id="ka-notify-clockout-body">
+                    <label for="ka-notify-clockout-time">Alert me when workers are still clocked in past</label>
+                    <div class="ka-inline">
+                      <input type="time" id="ka-notify-clockout-time" class="ka-notify-time" value="19:00" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ka-ship-notify-actions">
+                <button class="btn secondary btn-sm" id="ka-notify-test" type="button">Test alerts</button>
+                <button class="btn primary btn-sm" id="ka-notify-save" type="button">Save notification settings</button>
+                <span id="ka-notify-msg" class="ka-status"></span>
               </div>
             </div>
           </div>
@@ -636,141 +917,6 @@
   <div class="card-body">
 
     <div id="ka-admin-settings-block" class="ka-settings-grid">
-      <div class="ka-settings-tile collapsed" data-settings-section="language">
-        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-language">
-          <div>
-            <div class="ka-settings-title">Language preferences</div>
-            <p class="ka-settings-sub">Pick a worker or admin, then set the default language they see on this tablet.</p>
-          </div>
-          <span class="ka-settings-chevron" aria-hidden="true"></span>
-        </button>
-        <div class="ka-settings-content" id="ka-settings-language">
-          <div class="ka-dual-row">
-            <div class="ka-dual-left">
-              <select id="ka-lang-employee" class="ka-select-arrow"></select>
-            </div>
-            <div class="ka-dual-right">
-              <select id="ka-lang-choice" class="ka-select-arrow">
-                <option value="en">English</option>
-                <option value="es">Spanish</option>
-                <option value="ht">Haitian Creole</option>
-              </select>
-            </div>
-          </div>
-          <div class="ka-lang-actions">
-            <button type="button" id="ka-lang-save" class="btn secondary btn-sm">Update Language</button>
-          </div>
-          <p id="ka-lang-status" class="ka-status"></p>
-        </div>
-      </div>
-
-      <div class="ka-settings-tile collapsed" data-settings-section="pin">
-        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-pin">
-          <div>
-            <div class="ka-settings-title">Change PIN (employees &amp; admins)</div>
-            <p class="ka-settings-sub">Choose a person, enter a new 4-digit PIN, and confirm it.</p>
-          </div>
-          <span class="ka-settings-chevron" aria-hidden="true"></span>
-        </button>
-        <div class="ka-settings-content" id="ka-settings-pin">
-          <div class="ka-pin-column">
-            <select id="ka-pin-employee" class="ka-select-arrow"></select>
-            <div class="ka-pin-row">
-              <input type="password" id="ka-pin-new" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" autofill="off" placeholder="New 4-digit PIN" />
-              <input type="password" id="ka-pin-confirm" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" autofill="off" placeholder="Confirm PIN" />
-            </div>
-            <div class="ka-pin-actions">
-              <button type="button" id="ka-pin-save" class="btn primary btn-sm">Update PIN</button>
-            </div>
-          </div>
-          <p id="ka-pin-status" class="ka-status"></p>
-        </div>
-      </div>
-
-      <div class="ka-settings-tile collapsed" data-settings-section="namechecks">
-        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-namechecks">
-          <div>
-            <div class="ka-settings-title">Name on checks</div>
-            <p class="ka-settings-sub">Pick a worker or admin, then set the check-printing name used for payroll.</p>
-          </div>
-          <span class="ka-settings-chevron" aria-hidden="true"></span>
-        </button>
-        <div class="ka-settings-content" id="ka-settings-namechecks">
-          <div class="ka-dual-row">
-            <div class="ka-dual-left">
-              <select id="ka-namechecks-employee" class="ka-select-arrow"></select>
-            </div>
-            <div class="ka-dual-right">
-              <input type="text" id="ka-namechecks-input" placeholder="Name on checks" />
-            </div>
-          </div>
-          <div class="ka-namechecks-actions">
-            <button type="button" id="ka-namechecks-save" class="btn primary btn-sm">Update name on checks</button>
-          </div>
-          <p id="ka-namechecks-status" class="ka-status"></p>
-        </div>
-      </div>
-
-      <div id="ka-admin-console-tile" class="ka-settings-tile collapsed hidden" data-settings-section="admin-console">
-        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-admin-console">
-          <div>
-            <div class="ka-settings-title">Admin console</div>
-            <p class="ka-settings-sub">Switch this session to the full desktop admin console.</p>
-          </div>
-          <span class="ka-settings-chevron" aria-hidden="true"></span>
-        </button>
-        <div class="ka-settings-content" id="ka-settings-admin-console">
-          <button type="button" id="ka-switch-admin-console" class="btn primary btn-sm">Switch to Admin Console</button>
-          <p id="ka-switch-admin-status" class="ka-status"></p>
-        </div>
-      </div>
-
-      <div class="ka-settings-tile collapsed" data-settings-section="rates">
-        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-rates">
-          <div>
-            <div class="ka-settings-title">Rates <span class="ka-restricted-label">(restricted)</span></div>
-            <p class="ka-settings-sub">Enter your PIN to view or change pay rates. Unlocking expires after 10 minutes or after signing out.</p>
-          </div>
-          <span class="ka-settings-chevron" aria-hidden="true"></span>
-        </button>
-        <div class="ka-settings-content" id="ka-settings-rates">
-          <div class="form-field" id="ka-rates-block">
-            <div id="ka-rates-pin-row" class="ka-rates-pin">
-              <input
-                type="password"
-                id="ka-rates-pin"
-                inputmode="numeric"
-                pattern="[0-9]*"
-                maxlength="4"
-                autocomplete="one-time-code"
-                autofill="off"
-                placeholder="Enter your PIN"
-              />
-              <button type="button" id="ka-rates-pin-submit" class="btn primary btn-sm">Unlock</button>
-            </div>
-            <p id="ka-rates-status" class="ka-status"></p>
-          </div>
-
-          <div id="ka-rates-editor" class="ka-rates-editor hidden">
-            <div class="table-wrapper">
-              <table class="ka-table">
-                <thead>
-                  <tr>
-                    <th>Employee</th>
-                    <th class="ka-right">Current rate</th>
-                    <th class="ka-right">New rate</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody id="ka-rates-body">
-                  <tr><td colspan="4" class="ka-muted">(locked)</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <div class="ka-settings-tile collapsed" data-settings-section="device">
         <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-device">
           <div>
@@ -783,109 +929,6 @@
           <div class="ka-info-row">
             <div class="ka-info-label">Device ID</div>
             <div id="ka-kiosk-device-id" class="ka-info-value">—</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="ka-settings-tile collapsed" data-settings-section="notifications" id="ka-notify-settings-tile">
-        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-notify">
-          <div>
-            <div class="ka-settings-title">Notifications</div>
-            <p class="ka-settings-sub">Set up notifications for the admin currently logged in.</p>
-          </div>
-          <span class="ka-settings-chevron" aria-hidden="true"></span>
-        </button>
-        <div class="ka-settings-content" id="ka-settings-notify">
-          <div class="ka-ship-notify-grid">
-            <div class="ka-notify-section">
-              <div class="ka-settings-title" style="margin-bottom:6px;">General notification preferences</div>
-              <div class="ka-notify-section-body">
-                <div class="ka-notify-general-row">
-                  <label class="ka-toggle">
-                    <input type="checkbox" id="ka-notify-phone-enabled" />
-                    <span>Send SMS</span>
-                  </label>
-                  <input type="tel" id="ka-notify-phone" class="hidden" placeholder="Phone number" />
-                </div>
-                <div class="ka-notify-general-row">
-                  <label class="ka-toggle">
-                    <input type="checkbox" id="ka-notify-email-enabled" />
-                    <span>Send email</span>
-                  </label>
-                  <input type="email" id="ka-notify-email" class="hidden" placeholder="Email address" />
-                </div>
-                <div class="ka-notify-general-row">
-                  <div class="ka-notify-question">What time would you like to receive notifications?</div>
-                  <div class="ka-inline" style="justify-content:flex-end;">
-                    <input type="time" id="ka-notify-alert-time" value="19:00" />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="ka-notify-section">
-              <div class="ka-notify-enable-row">
-                <div>
-                  <div class="ka-settings-title">Shipment Notifications</div>
-                  <p class="ka-settings-sub">Alerts when shipments reach the statuses and projects you choose.</p>
-                </div>
-                <label class="ka-toggle">
-                  <input type="checkbox" id="ka-notify-shipments-enabled" />
-                  <span>Enable</span>
-                </label>
-              </div>
-
-              <div id="ka-notify-fields" class="ka-notify-section-body hidden">
-                <div class="ka-notify-group">
-                  <label>Status filters</label>
-                  <button id="ka-notify-statuses-btn" class="ka-notify-select" type="button">
-                    <span id="ka-notify-statuses-label" class="placeholder">All statuses</span>
-                    <span class="ka-caret">▾</span>
-                  </button>
-                  <div id="ka-notify-statuses-menu" class="ka-notify-menu hidden"></div>
-                </div>
-                <div class="ka-notify-group">
-                  <label for="ka-notify-projects">Project filters</label>
-                  <button id="ka-notify-projects-btn" class="ka-notify-select" type="button">
-                    <span id="ka-notify-projects-label" class="placeholder">All projects</span>
-                    <span class="ka-caret">▾</span>
-                  </button>
-                  <div id="ka-notify-projects-menu" class="ka-notify-menu hidden"></div>
-                </div>
-                <div class="ka-notify-group ka-notify-inline-row">
-                  <label for="ka-notify-every-days">Reminder every</label>
-                  <div class="ka-inline">
-                    <input type="number" id="ka-notify-every-days" min="1" step="1" value="1" style="max-width: 90px;" />
-                    <span class="ka-muted">day(s)</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="ka-notify-section">
-              <div class="ka-notify-enable-row">
-                <div>
-                  <div class="ka-settings-title">Workers still clocked in</div>
-                  <p class="ka-settings-sub">Daily alert if anyone is still on the clock past your cutoff time.</p>
-                </div>
-                <label class="ka-toggle">
-                  <input type="checkbox" id="ka-notify-clockout-enabled" />
-                  <span>Enable</span>
-                </label>
-              </div>
-              <div class="ka-notify-group ka-notify-inline-row hidden" id="ka-notify-clockout-body">
-                <label for="ka-notify-alert-time">Alert me when workers are still clocked in past</label>
-                <div class="ka-inline">
-                  <input type="time" id="ka-notify-alert-time" value="19:00" />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="ka-ship-notify-actions">
-            <button class="btn secondary btn-sm" id="ka-notify-test" type="button">Test alerts</button>
-            <button class="btn primary btn-sm" id="ka-notify-save" type="button">Save notification settings</button>
-            <span id="ka-notify-msg" class="ka-status"></span>
           </div>
         </div>
       </div>
@@ -997,9 +1040,95 @@
 </div>
 
 <!-- ============================
+     CUSTOMER SHEET
+     ============================ -->
+<div id="ka-customer-sheet" class="ka-sheet hidden" aria-hidden="true">
+  <div class="ka-sheet-backdrop" data-ka-customer-sheet-close></div>
+  <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-customer-sheet-title">
+    <div class="ka-sheet-handle" data-ka-customer-sheet-handle></div>
+    <div class="ka-sheet-header">
+      <div>
+        <div class="ka-sheet-title" id="ka-customer-sheet-title">Customer</div>
+        <div class="ka-sheet-sub" id="ka-customer-sheet-sub"></div>
+      </div>
+      <button type="button" class="ka-sheet-close" data-ka-customer-sheet-close aria-label="Close">×</button>
+    </div>
+    <div class="ka-sheet-body">
+      <div id="ka-customer-sheet-body"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================
+     EMPLOYEES SHEET
+     ============================ -->
+<div id="ka-employees-sheet" class="ka-sheet ka-sheet--full hidden" aria-hidden="true">
+  <div class="ka-sheet-backdrop" data-ka-employees-sheet-close></div>
+  <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-employees-sheet-title">
+    <div class="ka-sheet-handle" data-ka-employees-sheet-handle></div>
+    <div class="ka-sheet-header">
+      <div>
+        <div class="ka-sheet-title" id="ka-employees-sheet-title">Employees</div>
+        <div class="ka-sheet-sub" id="ka-employees-sheet-sub">Manage employees</div>
+      </div>
+      <div class="ka-employees-sheet-actions" data-ka-employees-sheet-actions>
+        <button type="button" class="ka-sheet-close" data-ka-employees-sheet-close aria-label="Close">×</button>
+      </div>
+    </div>
+    <div class="ka-sheet-body">
+      <div data-ka-employees-sheet-slot></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================
+     MY ACCOUNT SHEET
+     ============================ -->
+<div id="ka-account-sheet" class="ka-sheet ka-sheet--full hidden" aria-hidden="true">
+  <div class="ka-sheet-backdrop" data-ka-account-sheet-close></div>
+  <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-account-sheet-title">
+    <div class="ka-sheet-handle" data-ka-account-sheet-handle></div>
+    <div class="ka-sheet-header">
+      <div>
+        <div class="ka-sheet-title" id="ka-account-sheet-title">My account</div>
+        <div class="ka-sheet-sub" id="ka-account-sheet-sub">Profile & notifications</div>
+      </div>
+      <div class="ka-sheet-actions">
+        <button type="button" class="ka-sheet-close" data-ka-account-sheet-close aria-label="Close">×</button>
+      </div>
+    </div>
+    <div class="ka-sheet-body">
+      <div data-ka-account-sheet-slot></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================
+     SETTINGS SHEET
+     ============================ -->
+<div id="ka-settings-sheet" class="ka-sheet ka-sheet--full hidden" aria-hidden="true">
+  <div class="ka-sheet-backdrop" data-ka-settings-sheet-close></div>
+  <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-settings-sheet-title">
+    <div class="ka-sheet-handle" data-ka-settings-sheet-handle></div>
+    <div class="ka-sheet-header">
+      <div>
+        <div class="ka-sheet-title" id="ka-settings-sheet-title">Settings</div>
+        <div class="ka-sheet-sub" id="ka-settings-sheet-sub">Device & sign out</div>
+      </div>
+      <div class="ka-sheet-actions">
+        <button type="button" class="ka-sheet-close" data-ka-settings-sheet-close aria-label="Close">×</button>
+      </div>
+    </div>
+    <div class="ka-sheet-body">
+      <div data-ka-settings-sheet-slot></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================
      EMPLOYEE DETAIL SHEET
      ============================ -->
-<div id="ka-employee-detail-sheet" class="ka-sheet hidden" aria-hidden="true">
+<div id="ka-employee-detail-sheet" class="ka-sheet ka-sheet--full hidden" aria-hidden="true">
   <div class="ka-sheet-backdrop" data-ka-employee-sheet-close></div>
   <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-employee-detail-title">
     <div class="ka-sheet-handle" data-ka-employee-sheet-handle></div>
@@ -1013,110 +1142,189 @@
     <div class="ka-sheet-body">
       <div id="ka-employee-detail-status" class="ka-status"></div>
 
-      <div class="ka-employee-sheet-section">
-        <div class="ka-employee-sheet-section-title">QuickBooks + dates</div>
-        <div class="ka-employee-meta-grid">
-          <div class="ka-employee-meta-item">
-            <span class="ka-employee-meta-label">QuickBooks</span>
-            <div id="ka-employee-detail-qbo" class="ka-tag gray">Not linked</div>
+      <div class="ka-employee-profile-card">
+        <div class="ka-employee-avatar-wrap">
+          <div class="ka-employee-avatar">
+            <img id="ka-employee-detail-photo" alt="Employee photo" class="hidden" />
+            <div class="ka-employee-avatar-initials" id="ka-employee-detail-initials">EE</div>
           </div>
-          <div class="ka-employee-meta-item">
-            <span class="ka-employee-meta-label">Start date</span>
-            <div id="ka-employee-detail-start">Not set</div>
+          <button type="button" id="ka-employee-detail-photo-btn" class="ka-employee-avatar-btn" aria-label="Upload profile photo">+</button>
+          <input type="file" id="ka-employee-detail-photo-input" class="ka-doc-hidden-input" accept="image/*" />
+        </div>
+        <div class="ka-employee-profile-info">
+          <div class="ka-employee-profile-name" id="ka-employee-detail-name">Employee</div>
+          <div class="ka-employee-profile-meta">
+            <span class="ka-employee-profile-meta-item ka-employee-profile-meta-status" id="ka-employee-detail-state">Active</span>
+            <span class="ka-employee-profile-meta-item" id="ka-employee-detail-meta-lang">Language</span>
+            <span class="ka-employee-profile-meta-item" id="ka-employee-detail-meta-start">Start</span>
           </div>
-          <div class="ka-employee-meta-item">
-            <span class="ka-employee-meta-label">Termination date</span>
-            <div id="ka-employee-detail-term">Not set</div>
-          </div>
+          <div id="ka-employee-detail-photo-status" class="ka-status"></div>
         </div>
       </div>
 
       <div class="ka-employee-sheet-section">
-        <div class="ka-employee-sheet-section-title">Preferences</div>
-        <div class="ka-employee-sheet-row">
+        <div class="ka-employee-sheet-section-title">Profile</div>
+        <div class="form-grid ka-employee-detail-grid">
           <div class="form-field">
-            <label for="ka-employee-detail-language">Language preference</label>
+            <label for="ka-employee-detail-first">First name</label>
+            <input type="text" id="ka-employee-detail-first" placeholder="First name" />
+          </div>
+          <div class="form-field">
+            <label for="ka-employee-detail-last">Last name</label>
+            <input type="text" id="ka-employee-detail-last" placeholder="Last name" />
+          </div>
+          <div class="form-field">
+            <label for="ka-employee-detail-nickname">Nickname</label>
+            <input type="text" id="ka-employee-detail-nickname" class="ka-readonly-input" readonly />
+          </div>
+          <div class="form-field">
+            <label for="ka-employee-detail-email">Email</label>
+            <input type="email" id="ka-employee-detail-email" class="ka-readonly-input" readonly />
+          </div>
+          <div class="form-field">
+            <label for="ka-employee-detail-phone">Phone number</label>
+            <input type="tel" id="ka-employee-detail-phone" placeholder="Phone number" />
+          </div>
+          <div class="form-field">
+            <label for="ka-employee-detail-language">Language</label>
             <select id="ka-employee-detail-language" class="ka-select-arrow">
               <option value="en">English</option>
               <option value="es">Spanish</option>
               <option value="ht">Haitian Creole</option>
             </select>
           </div>
-          <button type="button" id="ka-employee-detail-language-save" class="btn secondary btn-sm">Save</button>
-        </div>
-        <p id="ka-employee-detail-language-status" class="ka-status"></p>
-
-        <div class="ka-employee-sheet-row">
-          <div class="form-field">
+          <div class="form-field ka-employee-namechecks-wide">
             <label for="ka-employee-detail-namechecks">Name on checks</label>
             <input type="text" id="ka-employee-detail-namechecks" placeholder="Name on checks" />
           </div>
-          <button type="button" id="ka-employee-detail-namechecks-save" class="btn secondary btn-sm">Save</button>
+          <div class="form-field ka-employee-rate-field hidden">
+            <label for="ka-employee-detail-rate">Hourly rate</label>
+            <input type="number" id="ka-employee-detail-rate" min="0" step="0.01" placeholder="0.00" />
+          </div>
         </div>
-        <p id="ka-employee-detail-namechecks-status" class="ka-status"></p>
+        <div class="ka-employee-toggle-actions">
+          <div class="ka-employee-toggle-row">
+            <label class="ka-toggle ka-toggle-disabled">
+              <input type="checkbox" id="ka-employee-detail-geofence" disabled />
+              <span>Geofencing required</span>
+            </label>
+          </div>
+          <div class="ka-employee-pin-action-row">
+            <button type="button" id="ka-employee-detail-pin-open" class="btn danger btn-sm">
+              Change PIN
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="ka-employee-sheet-section">
-        <div class="ka-employee-sheet-section-title">PIN</div>
-        <div class="ka-employee-sheet-pin">
+        <div class="ka-employee-sheet-section-title">Employment dates</div>
+        <div class="form-grid ka-employee-detail-grid">
           <div class="form-field">
-            <label for="ka-employee-detail-pin">New PIN</label>
-            <input type="password" id="ka-employee-detail-pin" inputmode="numeric" maxlength="4" placeholder="4 digits" />
+            <label for="ka-employee-detail-start">Start date</label>
+            <input type="date" id="ka-employee-detail-start" />
           </div>
           <div class="form-field">
-            <label for="ka-employee-detail-pin-confirm">Confirm PIN</label>
-            <input type="password" id="ka-employee-detail-pin-confirm" inputmode="numeric" maxlength="4" placeholder="Confirm PIN" />
+            <label for="ka-employee-detail-term">
+              Termination date
+              <span
+                class="ka-info-tip"
+                tabindex="0"
+                role="note"
+                aria-label="Setting this marks the employee inactive."
+                data-tooltip="Setting this marks the employee inactive."
+              >i</span>
+            </label>
+            <input type="date" id="ka-employee-detail-term" />
+            <div class="ka-employee-term-actions">
+              <button type="button" id="ka-employee-detail-reactivate" class="btn secondary btn-sm hidden">
+                Reactivate
+              </button>
+              <button type="button" id="ka-employee-detail-history-open" class="btn secondary btn-sm hidden">
+                View Employment History
+              </button>
+              <div id="ka-employee-detail-reactivate-note" class="ka-muted ka-employee-reactivate-note hidden">
+                Requires a new start date.
+              </div>
+            </div>
           </div>
-          <button type="button" id="ka-employee-detail-pin-save" class="btn primary btn-sm">Update PIN</button>
         </div>
-        <p id="ka-employee-detail-pin-status" class="ka-status"></p>
       </div>
 
       <div class="ka-employee-sheet-section">
         <div class="ka-employee-sheet-section-title">Documents</div>
-        <div class="ka-employee-doc-grid">
-          <div class="ka-employee-doc-card">
-            <div class="ka-employee-doc-head">
-              <div>
-                <div class="ka-employee-doc-title">Photo</div>
-                <div id="ka-employee-detail-photo-date" class="ka-muted"></div>
+        <div class="ka-items-docs ka-employee-docs">
+          <div class="ka-docs-list-wrap" id="ka-employee-docs-list"></div>
+          <div class="ka-docs-divider"></div>
+          <div class="ka-doc-upload-block">
+            <div class="ka-doc-upload">
+              <h5 class="ka-doc-upload-title">Upload New Documents</h5>
+              <div class="ka-doc-upload-file">
+                <div class="ka-doc-upload-step">
+                  <button type="button" class="btn secondary btn-sm" id="ka-employee-docs-upload-choose">Choose File</button>
+                </div>
+                <span id="ka-employee-docs-upload-filename" class="ka-doc-file-name"></span>
+                <input type="file" id="ka-employee-docs-upload-files" class="ka-doc-hidden-input" />
               </div>
+              <label class="ka-doc-upload-type">
+                <div class="ka-doc-upload-step">
+                  <select id="ka-employee-docs-upload-type" class="ka-select-arrow">
+                    <option value="">Select type…</option>
+                    <option value="ID">ID</option>
+                    <option value="Worker Authorization">Worker Authorization</option>
+                    <option value="Photo">Photo</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+              </label>
+              <label class="ka-doc-upload-type" id="ka-employee-docs-upload-label-wrap" hidden>
+                <div class="ka-doc-upload-step">
+                  <input type="text" id="ka-employee-docs-upload-label" placeholder="Describe document type" />
+                </div>
+              </label>
+              <button type="button" class="btn primary btn-sm" id="ka-employee-docs-upload-btn">Upload</button>
             </div>
-            <div class="ka-employee-doc-thumb" id="ka-employee-detail-photo-thumb">
-              <span id="ka-employee-detail-photo-placeholder" class="ka-muted">(no photo)</span>
-              <img id="ka-employee-detail-photo-img" class="hidden" alt="Employee photo" />
-            </div>
-            <div class="ka-employee-doc-actions">
-              <a id="ka-employee-detail-photo-view" class="btn secondary btn-sm" target="_blank" rel="noopener">View photo</a>
-              <button type="button" id="ka-employee-detail-photo-delete" class="btn danger btn-sm">Delete photo</button>
-            </div>
-          </div>
-          <div class="ka-employee-doc-card">
-            <div class="ka-employee-doc-head">
-              <div>
-                <div class="ka-employee-doc-title">ID</div>
-                <div id="ka-employee-detail-id-meta" class="ka-muted"></div>
-              </div>
-            </div>
-            <div class="ka-employee-doc-thumb ka-employee-doc-thumb--compact">
-              <span id="ka-employee-detail-id-placeholder" class="ka-muted">(no ID uploaded)</span>
-            </div>
-            <div class="ka-employee-doc-actions">
-              <a id="ka-employee-detail-id-view" class="btn secondary btn-sm" target="_blank" rel="noopener">View ID</a>
-            </div>
-          </div>
-          <div class="ka-employee-doc-card">
-            <div class="ka-employee-doc-head">
-              <div>
-                <div class="ka-employee-doc-title">Docs</div>
-                <div class="ka-muted">Other documents</div>
-              </div>
-            </div>
-            <div class="ka-employee-doc-thumb ka-employee-doc-thumb--compact">
-              <span id="ka-employee-detail-docs-placeholder" class="ka-muted">(no additional docs)</span>
-            </div>
+            <div id="ka-employee-docs-upload-status" class="ka-status"></div>
           </div>
         </div>
+      </div>
+      <div class="ka-employee-sheet-save">
+        <button type="button" id="ka-employee-detail-save" class="btn primary btn-sm">Save &amp; close</button>
+      </div>
+      <p id="ka-employee-detail-save-status" class="ka-status"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================
+     EMPLOYEE PIN SHEET
+     ============================ -->
+<div id="ka-employee-pin-sheet" class="ka-sheet ka-sheet--full hidden" aria-hidden="true">
+  <div class="ka-sheet-backdrop" data-ka-employee-pin-close></div>
+  <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-employee-pin-title">
+    <div class="ka-sheet-handle" data-ka-employee-pin-handle></div>
+    <div class="ka-sheet-header">
+      <div>
+        <div class="ka-sheet-title" id="ka-employee-pin-title">Change PIN</div>
+        <div class="ka-sheet-sub" id="ka-employee-pin-sub"></div>
+      </div>
+      <button type="button" class="ka-sheet-close" data-ka-employee-pin-close aria-label="Close">×</button>
+    </div>
+    <div class="ka-sheet-body">
+      <div class="ka-employee-sheet-section">
+        <div class="ka-employee-sheet-section-title">PIN</div>
+        <div class="ka-employee-sheet-pin">
+          <div class="form-field">
+            <label for="ka-employee-pin-input">New PIN</label>
+            <input type="password" id="ka-employee-pin-input" inputmode="numeric" maxlength="4" placeholder="4 digits" />
+          </div>
+          <div class="form-field">
+            <label for="ka-employee-pin-confirm">Confirm PIN</label>
+            <input type="password" id="ka-employee-pin-confirm" inputmode="numeric" maxlength="4" placeholder="Confirm PIN" />
+          </div>
+          <button type="button" id="ka-employee-pin-save" class="btn primary btn-sm">Update PIN</button>
+        </div>
+        <p id="ka-employee-pin-status" class="ka-status"></p>
       </div>
     </div>
   </div>
@@ -1125,7 +1333,7 @@
 <script src="/js/utils.js"></script>
 <script src="/js/bcrypt.min.js"></script>
 <script src="/js/offline-store.js"></script>
-<script src="/kiosk-admin.js?v=20260127d"></script>
+<script src="/kiosk-admin.js?v=20260202b"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
@@ -1200,6 +1408,152 @@
   </div>
 </div>
 
+<div id="ka-employee-history-backdrop" class="ka-modal-backdrop hidden">
+  <div class="ka-modal" role="dialog" aria-modal="true" aria-labelledby="ka-employee-history-title">
+    <div class="ka-modal-header">
+      <div>
+        <h3 id="ka-employee-history-title">Employment history</h3>
+        <div class="ka-doc-view-sub">Previous start and end dates</div>
+      </div>
+      <button type="button" class="ka-modal-close" id="ka-employee-history-close">×</button>
+    </div>
+    <div id="ka-employee-history-body" class="ka-employee-history-body"></div>
+    <div class="ka-modal-actions">
+      <button class="btn primary btn-sm" id="ka-employee-history-close-btn" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
+  <div id="ka-time-detail-sheet" class="ka-sheet ka-sheet--full hidden" aria-hidden="true">
+    <div class="ka-sheet-backdrop" data-ka-time-detail-close></div>
+    <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-time-detail-title">
+      <div class="ka-sheet-handle" data-ka-time-detail-handle></div>
+      <div class="ka-sheet-header">
+      <div class="ka-time-detail-header">
+        <div class="ka-time-detail-avatar" aria-hidden="true">
+          <img id="ka-time-detail-photo" alt="" class="hidden" />
+          <span id="ka-time-detail-initials">—</span>
+        </div>
+        <div class="ka-time-detail-header-text">
+          <div class="ka-sheet-title ka-time-detail-name" id="ka-time-detail-title">Time entry</div>
+          <div class="ka-sheet-sub" id="ka-time-detail-sub"></div>
+        </div>
+      </div>
+      <button type="button" class="ka-sheet-close" data-ka-time-detail-close aria-label="Close">×</button>
+    </div>
+    <div class="ka-sheet-body">
+      <div class="ka-time-detail-info">
+        <div id="ka-time-detail-summary" class="ka-time-detail-summary"></div>
+        <div id="ka-time-detail-meta" class="ka-time-detail-meta"></div>
+        <div id="ka-time-detail-flag-banner" class="ka-time-flag-banner hidden" role="status" aria-live="polite">
+          <div class="ka-time-flag-banner-title">Flag details</div>
+          <div id="ka-time-detail-flag-text" class="ka-time-flag-banner-text"></div>
+          <button type="button" class="ka-time-flag-banner-close" data-ka-time-flag-close aria-label="Close">×</button>
+        </div>
+        <div id="ka-time-detail-actions" class="ka-time-detail-actions"></div>
+      </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ka-time-calendar-sheet" class="ka-sheet ka-sheet--full hidden" aria-hidden="true">
+    <div class="ka-sheet-backdrop" data-ka-time-calendar-close></div>
+    <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-time-calendar-sheet-title">
+      <div class="ka-sheet-handle" data-ka-time-calendar-handle></div>
+      <div class="ka-sheet-header">
+        <div>
+          <div class="ka-sheet-title" id="ka-time-calendar-sheet-title">Time entries</div>
+          <div class="ka-sheet-sub" id="ka-time-calendar-sheet-sub"></div>
+        </div>
+        <button type="button" class="ka-sheet-close" data-ka-time-calendar-close aria-label="Close">×</button>
+      </div>
+      <div class="ka-sheet-body">
+        <p id="ka-time-calendar-sheet-status" class="ka-status"></p>
+        <div id="ka-time-calendar-sheet-cards" class="ka-time-cards" aria-live="polite"></div>
+        <div id="ka-time-calendar-sheet-empty" class="ka-time-card ka-time-card-empty hidden">(no time entries for this date)</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ka-time-report-sheet" class="ka-sheet ka-sheet--full hidden" aria-hidden="true">
+    <div class="ka-sheet-backdrop" data-ka-time-report-close></div>
+    <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-time-report-sheet-title">
+      <div class="ka-sheet-handle" data-ka-time-report-handle></div>
+      <div class="ka-sheet-header">
+        <div>
+          <div class="ka-sheet-title" id="ka-time-report-sheet-title">Time entries</div>
+          <div class="ka-sheet-sub" id="ka-time-report-sheet-sub"></div>
+        </div>
+        <button type="button" class="ka-sheet-close" data-ka-time-report-close aria-label="Close">×</button>
+      </div>
+      <div class="ka-sheet-body">
+        <div class="ka-time-report hidden" id="ka-time-report">
+          <div class="ka-time-toolbar ka-items-toolbar">
+            <div class="ka-items-summary" id="ka-time-summary" aria-live="polite">
+              <div class="ka-summary-pill">
+                <span class="ka-summary-label">Pending review</span>
+                <span class="ka-summary-count" id="ka-time-summary-pending">0</span>
+              </div>
+              <button type="button" class="ka-help-btn ka-help-pill" data-ka-help="time-entries" aria-label="Time entry pill guide">
+                Pill guide
+              </button>
+            </div>
+          </div>
+
+          <div class="ka-time-results" id="ka-time-results">
+            <div id="ka-time-cards" class="ka-time-cards" aria-live="polite"></div>
+            <div class="table-wrapper ka-time-table">
+              <table class="ka-table">
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Project</th>
+                    <th>Date</th>
+                    <th>Clock In</th>
+                    <th>Clock Out</th>
+                    <th class="ka-right">Hours</th>
+                    <th class="ka-actions-col">Status</th>
+                    <th class="ka-approve-col">Field Reviewed By</th>
+                  </tr>
+                </thead>
+                <tbody id="ka-time-body">
+                  <tr>
+                    <td colspan="8" class="ka-muted">(loading…)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <p id="ka-time-status" class="ka-status"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ka-time-review-sheet" class="ka-sheet ka-sheet--full hidden" aria-hidden="true">
+    <div class="ka-sheet-backdrop" data-ka-time-review-close></div>
+    <div class="ka-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ka-time-review-title">
+    <div class="ka-sheet-handle" data-ka-time-review-handle></div>
+    <div class="ka-sheet-header">
+      <div>
+        <div class="ka-sheet-title" id="ka-time-review-title">Review pending time entries</div>
+        <div class="ka-sheet-sub" id="ka-time-review-sub"></div>
+      </div>
+      <button type="button" class="ka-sheet-close" data-ka-time-review-close aria-label="Close">×</button>
+    </div>
+    <div class="ka-sheet-body">
+      <div class="ka-time-review-summary">
+        <div class="ka-time-review-count"><span id="ka-time-review-sheet-count">0</span> pending</div>
+        <div class="ka-time-review-hint">Swipe left to approve as-is</div>
+      </div>
+      <p id="ka-time-review-status" class="ka-status"></p>
+      <div id="ka-time-review-list" class="ka-time-review-list"></div>
+      <div id="ka-time-review-empty" class="ka-time-review-empty ka-muted hidden">(No pending time entries in this range.)</div>
+    </div>
+  </div>
+</div>
+
 <!-- Return prompt modal -->
 <div id="ka-return-backdrop" class="ka-modal-backdrop hidden">
   <div class="ka-modal">
@@ -1214,39 +1568,80 @@
 
 <!-- Time entry action modal -->
 <div id="ka-time-action-backdrop" class="ka-modal-backdrop hidden">
-  <div class="ka-modal" style="max-width: 540px;">
-    <h3 id="ka-time-action-title">Update Time Entry</h3>
-    <p id="ka-time-action-sub" class="ka-label-note"></p>
-    <div class="ka-time-action-original">
-      <div class="ka-time-action-pair">
-        <div><strong>Original date:</strong> <span id="ka-time-action-orig-date">—</span></div>
-        <div><strong>New date (locked):</strong> <input type="date" id="ka-time-action-date" disabled /></div>
+  <div class="ka-time-action-modal">
+    <div class="ka-time-action-header">
+      <div class="ka-time-action-title-block">
+        <h3 id="ka-time-action-title">Update Time Entry</h3>
+        <p id="ka-time-action-sub" class="ka-time-action-sub"></p>
       </div>
-      <div class="ka-time-action-pair">
-        <div><strong>Original project:</strong> <span id="ka-time-action-orig-project">—</span></div>
-        <div><strong>New project (optional):</strong> <select id="ka-time-action-project"></select></div>
-      </div>
-      <div class="ka-time-action-pair">
-        <div><strong>Original clock-in:</strong> <span id="ka-time-action-orig-start">—</span></div>
-        <div><strong>New clock-in (optional):</strong> <input type="time" id="ka-time-action-start" /></div>
-      </div>
-      <div class="ka-time-action-pair">
-        <div><strong>Original clock-out:</strong> <span id="ka-time-action-orig-end">—</span></div>
-        <div><strong>New clock-out (optional):</strong> <input type="time" id="ka-time-action-end" /></div>
-      </div>
+      <button type="button" class="ka-modal-close" id="ka-time-action-close" aria-label="Close">×</button>
     </div>
-    <div class="form-field">
-      <label for="ka-time-action-note">Note (required)</label>
-      <textarea id="ka-time-action-note" rows="3" placeholder="Add a brief reason"></textarea>
+    <div class="ka-time-action-body">
+      <div id="ka-time-action-warning" class="ka-time-action-warning hidden" role="note"></div>
+      <div class="ka-time-action-section">
+        <div class="ka-time-action-section-title">Current entry</div>
+        <div class="ka-time-action-summary">
+          <div class="ka-time-action-row">
+            <span class="ka-time-action-label">Date</span>
+            <span class="ka-time-action-value" id="ka-time-action-orig-date">—</span>
+          </div>
+          <div class="ka-time-action-row">
+            <span class="ka-time-action-label">Project</span>
+            <span class="ka-time-action-value" id="ka-time-action-orig-project">—</span>
+          </div>
+          <div class="ka-time-action-row">
+            <span class="ka-time-action-label">Clock in</span>
+            <span class="ka-time-action-value" id="ka-time-action-orig-start">—</span>
+          </div>
+          <div class="ka-time-action-row">
+            <span class="ka-time-action-label">Clock out</span>
+            <span class="ka-time-action-value" id="ka-time-action-orig-end">—</span>
+          </div>
+          <div class="ka-time-action-row">
+            <span class="ka-time-action-label">Total hours</span>
+            <span class="ka-time-action-value" id="ka-time-action-orig-hours">—</span>
+          </div>
+        </div>
+      </div>
+      <div class="ka-time-action-section" id="ka-time-action-changes-section">
+        <div class="ka-time-action-section-title">Changes</div>
+        <div class="ka-time-action-fields">
+          <div class="ka-time-action-field-row">
+            <div class="form-field">
+              <label for="ka-time-action-date">Date</label>
+              <input type="date" id="ka-time-action-date" />
+            </div>
+            <div class="form-field">
+              <label for="ka-time-action-project">Project (optional)</label>
+              <select id="ka-time-action-project" class="ka-select-arrow"></select>
+            </div>
+          </div>
+          <div class="ka-time-action-field-row">
+            <div class="form-field">
+              <label for="ka-time-action-start">Clock in (optional)</label>
+              <input type="time" id="ka-time-action-start" />
+            </div>
+            <div class="form-field">
+              <label for="ka-time-action-end">Clock out (optional)</label>
+              <input type="time" id="ka-time-action-end" />
+            </div>
+          </div>
+          <div class="form-field ka-time-action-field-full" id="ka-time-action-hours-wrap">
+            <label for="ka-time-action-hours">New total hours</label>
+            <input type="text" id="ka-time-action-hours" readonly />
+          </div>
+        </div>
+      </div>
+      <div class="form-field ka-time-action-note">
+        <label for="ka-time-action-note">Note (required)</label>
+        <textarea id="ka-time-action-note" rows="3" placeholder="Add a brief reason"></textarea>
+      </div>
+      <p id="ka-time-action-status" class="ka-status"></p>
     </div>
-    <div class="form-field" id="ka-time-action-hours-wrap">
-      <label for="ka-time-action-hours">Hours (optional)</label>
-      <input type="number" step="0.01" id="ka-time-action-hours" />
-    </div>
-    <p id="ka-time-action-status" class="ka-status"></p>
     <div class="ka-modal-actions">
       <button class="btn secondary btn-sm" id="ka-time-action-cancel">Cancel</button>
       <button class="btn primary btn-sm" id="ka-time-action-submit">Save</button>
+      <button class="btn primary btn-sm hidden" id="ka-time-action-submit-approve">Save + Approve</button>
     </div>
   </div>
 </div>

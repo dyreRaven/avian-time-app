@@ -1,6 +1,7 @@
 /* ───────── ROOT & GLOBAL ───────── */
 
 :root {
+  --ka-vh: 1vh;
   --emerald-500: #0c816d;
   --emerald-600: #059669;
   --emerald-50:  #f1faf6;  /* color of the current tab on the navigation bar */
@@ -42,11 +43,23 @@ body {
   pointer-events: none !important;
 }
 
+[hidden] {
+  display: none !important;
+  pointer-events: none !important;
+}
+
 body.ka-modal-open,
 html.ka-modal-open {
   overflow: hidden;
   height: 100%;
   overscroll-behavior: contain;
+}
+
+/* Prevent background (ka-main) from scrolling behind open sheets/modals */
+body.ka-modal-open .ka-main {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  touch-action: none;
 }
 
 /* ───────── APP LAYOUT ───────── */
@@ -316,7 +329,6 @@ html.ka-modal-open {
   align-items: center;
 }
 
-/* QuickBooks syncing indicator */
 
 .sync-indicator {
   display: inline-flex;
@@ -463,6 +475,7 @@ input[type="number"],
 input[type="date"],
 input[type="password"],
 input[type="email"],
+input[type="tel"],
 select {
 
   border-radius: 10px;
@@ -484,6 +497,7 @@ input[type="number"]:focus,
 input[type="date"]:focus,
 input[type="password"]:focus,
 input[type="email"]:focus,
+input[type="tel"]:focus,
 select:focus {
 
   border-color: var(--emerald-500);
@@ -2924,10 +2938,15 @@ input[type="checkbox"]:disabled {
 #ka-view-workers,
 #ka-view-employees,
 #ka-view-time,
-#ka-view-settings {
+#ka-view-settings,
+#ka-view-account {
   padding: 16px;
   max-width: 100%;
   margin: 0;
+}
+
+#ka-view-time {
+  padding-top: 0;
 }
 
 /* Add spacing between Payroll Settings and Payroll Summary cards */
@@ -3070,10 +3089,12 @@ select:focus {
 .select-wrapper {
   position: relative;
   width: 100%;
+  display: block;
 }
 
 .select-wrapper select {
   padding-right: 32px; /* room for arrow */
+  background-image: none !important;
 }
 
 .select-wrapper::after {
@@ -3085,6 +3106,24 @@ select:focus {
   pointer-events: none;
   color: var(--slate-500);
   font-size: 0.85rem;
+}
+
+.ka-time-range-wrapper::after {
+  display: none;
+}
+
+.ka-time-range-wrapper select {
+  background-image:
+    linear-gradient(45deg, transparent 50%, #111827 50%),
+    linear-gradient(135deg, #111827 50%, transparent 50%),
+    linear-gradient(to right, #e5e7eb, #e5e7eb) !important;
+  background-position:
+    right 14px center,
+    right 9px center,
+    right 26px center;
+  background-size: 8px 8px, 8px 8px, 1px 60%;
+  background-repeat: no-repeat;
+  padding-right: 36px;
 }
 
 /* ───────── CLEAN AUTH PAGE STYLING ───────── */
@@ -3863,13 +3902,15 @@ body {
    SHELL & MAIN LAYOUT
 ========================================= */
 .ka-shell {
-  min-height: 100vh;
-  display: block;
+  min-height: calc(var(--ka-vh) * 100);
+  height: calc(var(--ka-vh) * 100);
+  display: flex;
+  flex-direction: column;
   width: 100vw;
   flex: 1;
   padding: 0 18px 18px;
   background: #ffffff;
-  overflow-x: auto;
+  overflow: hidden;
 }
 
 .ka-main {
@@ -3881,6 +3922,9 @@ body {
   gap: 10px;
   padding-bottom: 120px; /* space for footer + bottom nav */
   overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 #ka-sessions-card {
@@ -3919,6 +3963,13 @@ body {
   margin-bottom: 32px;
   padding-bottom: 12px;
   border-bottom: none;
+}
+
+body.ka-view-workers-active .ka-header,
+body.ka-view-timesheets-active .ka-header,
+body.ka-view-shipments-active .ka-header,
+body.ka-view-time-active .ka-header {
+  display: none;
 }
 
 .ka-header-left {
@@ -4058,6 +4109,69 @@ body {
 .ka-sidebar-clocked-status.is-active {
   background: var(--emerald-50);
   color: var(--emerald-600);
+}
+
+.ka-account-profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #f8fafc;
+  border: 1px solid var(--slate-200);
+  margin-bottom: 16px;
+}
+
+.ka-account-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  background: #e2e8f0;
+  color: #0f172a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  font-weight: 700;
+  position: relative;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.ka-account-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.ka-account-avatar span {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ka-account-profile-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ka-account-name {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.ka-account-email {
+  font-size: 0.9rem;
+  color: var(--slate-500);
+  word-break: break-word;
 }
 
 .ka-account-actions {
@@ -4241,8 +4355,62 @@ body {
   border-bottom: 1px solid rgba(148, 163, 184, 0.35);
 }
 
+.ka-header-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ka-header-menu-toggle-inline {
+  display: none;
+}
+
+body.ka-view-workers-active .ka-header-menu-toggle-inline,
+body.ka-view-timesheets-active .ka-header-menu-toggle-inline,
+body.ka-view-shipments-active .ka-header-menu-toggle-inline,
+body.ka-view-time-active .ka-header-menu-toggle-inline {
+  display: inline-flex;
+}
+
+body.ka-view-time-active .ka-header-subtitle {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+}
+
 .ka-header-pill-slot {
   display: none;
+}
+
+body.ka-view-time-active .ka-header-subtitle {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 12px;
+}
+
+body.ka-view-time-active .ka-header-pill-slot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+#ka-header-pill-slot #ka-time-review-banner {
+  margin-left: auto;
+}
+
+#ka-time-review-count {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+#ka-time-review-banner .ka-review-banner-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 body.ka-view-timesheets-active .ka-header-subtitle {
@@ -4261,6 +4429,36 @@ body.ka-view-timesheets-active .ka-header-pill-slot {
   gap: 12px;
 }
 
+#ka-time-review-banner {
+  display: none;
+}
+
+body.ka-view-time-active #ka-time-review-banner {
+  display: inline-flex;
+}
+
+body:not(.ka-view-time-active) #ka-time-review-banner {
+  display: none !important;
+}
+
+body.ka-view-employees-active .ka-header-subtitle {
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+}
+
+body.ka-view-employees-active .ka-header-pill-slot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+body.ka-view-employees-active .ka-header-subtitle {
+  border-bottom: none;
+}
+
 body:not(.ka-view-timesheets-active) #ka-start-new-btn {
   display: none;
 }
@@ -4272,6 +4470,7 @@ body.ka-view-shipments-active .ka-header-subtitle {
   margin-bottom: 14px;
   padding-bottom: 12px;
 }
+
 
 .ka-header-page-title {
   display: inline-flex;
@@ -4347,6 +4546,136 @@ body.ka-view-shipments-active .ka-header-subtitle {
 .ka-status-ok { color: #15803d; }
 
 .ka-muted { color: var(--slate-500); }
+.ka-info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(12, 129, 109, 0.45);
+  color: var(--emerald-700);
+  background: rgba(12, 129, 109, 0.08);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  position: relative;
+  top: -1px;
+}
+
+.ka-info-tip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2937;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+  font-size: 0.72rem;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: none;
+  width: max-content;
+  text-align: left;
+  line-height: 1.3;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  z-index: 10;
+}
+
+.ka-info-tip:hover::after,
+.ka-info-tip:focus-visible::after {
+  opacity: 1;
+}
+
+.ka-employee-toggle-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.ka-employee-pin-action-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ka-employee-namechecks-wide {
+  grid-column: span 2;
+}
+
+.ka-employee-toggle-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ka-employee-term-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ka-employee-term-actions .btn {
+  align-self: flex-start;
+}
+
+.ka-employee-reactivate-note {
+  font-size: 0.78rem;
+  color: var(--slate-500);
+}
+
+.ka-employee-history-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.ka-employee-history-header,
+.ka-employee-history-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.ka-employee-history-header {
+  font-weight: 600;
+  color: var(--slate-600);
+  border-bottom: 1px solid var(--slate-200);
+  padding-bottom: 6px;
+}
+
+.ka-employee-history-row {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--slate-100);
+}
+
+.ka-employee-history-row:last-child {
+  border-bottom: none;
+}
+
+.ka-toggle-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ka-toggle input:disabled + span {
+  color: var(--slate-400);
+}
 
 .ka-tag {
   display: inline-flex;
@@ -4401,7 +4730,169 @@ body.ka-view-shipments-active .ka-header-subtitle {
   flex-wrap: wrap;
 }
 
-#ka-view-time .table-wrapper {
+.ka-time-header {
+  flex-wrap: wrap;
+}
+
+.ka-time-header-actions {
+  align-items: center;
+  gap: 10px;
+}
+
+.ka-time-toolbar {
+  display: grid;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.ka-time-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+#ka-view-time .ka-items-toolbar,
+#ka-time-report-sheet .ka-items-toolbar {
+  display: grid;
+  position: static;
+  background: transparent;
+  padding: 0 0 12px;
+  grid-template-columns: 1fr;
+}
+
+#ka-time-review-banner {
+  -webkit-appearance: none;
+  appearance: none;
+  border: 2px solid #ef4444;
+  background: #ef4444;
+  color: #fff7ed;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.92rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow:
+    0 10px 22px rgba(239, 68, 68, 0.35),
+    0 4px 10px rgba(15, 23, 42, 0.18);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.2s ease,
+    filter 0.2s ease;
+}
+
+
+#ka-time-review-banner .ka-review-banner-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#ka-time-review-banner:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 16px 30px rgba(239, 68, 68, 0.4),
+    0 4px 10px rgba(15, 23, 42, 0.2);
+}
+
+#ka-time-review-banner:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px rgba(239, 68, 68, 0.35),
+    0 12px 24px rgba(239, 68, 68, 0.4);
+}
+
+#ka-time-review-banner.is-zero {
+  border-color: #e2e8f0;
+  background: #f1f5f9;
+  color: #64748b;
+  box-shadow:
+    0 6px 14px rgba(15, 23, 42, 0.08),
+    0 2px 4px rgba(15, 23, 42, 0.06);
+}
+
+#ka-time-review-banner.is-zero .ka-review-banner-icon {
+  display: none;
+}
+
+#ka-time-review-banner.is-zero:hover {
+  transform: none;
+  box-shadow:
+    0 6px 14px rgba(15, 23, 42, 0.08),
+    0 2px 4px rgba(15, 23, 42, 0.06);
+}
+
+#ka-time-review-banner.hidden {
+  display: none;
+}
+
+#ka-view-time .ka-items-summary,
+#ka-time-report-sheet .ka-items-summary {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: flex-end;
+}
+
+#ka-view-time .ka-summary-pill,
+#ka-time-report-sheet .ka-summary-pill {
+  min-width: 86px;
+  border-radius: 10px;
+  padding: 5px 8px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+}
+
+#ka-view-time .ka-summary-label,
+#ka-time-report-sheet .ka-summary-label {
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #475569;
+  font-weight: 700;
+}
+
+#ka-view-time .ka-summary-count,
+#ka-time-report-sheet .ka-summary-count {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+#ka-view-time .ka-time-toolbar-actions .btn {
+  margin-right: auto;
+}
+
+#ka-view-time .ka-time-toolbar-actions label {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 6px 10px;
+  gap: 8px;
+  font-size: 0.8rem;
+}
+
+#ka-view-time .ka-time-toolbar-actions input[type="checkbox"] {
+  accent-color: #0f766e;
+}
+}
+
+#ka-view-time .ka-time-toolbar-actions .ka-hide-resolved {
+  margin-left: 0;
+}
+
+#ka-view-time .table-wrapper,
+#ka-time-report-sheet .table-wrapper {
   overflow-x: auto;
   width: 100%;
   max-width: min(100%, calc(100vw - 24px));
@@ -4409,30 +4900,39 @@ body.ka-view-shipments-active .ka-header-subtitle {
   scrollbar-gutter: stable;
 }
 
-#ka-view-time .ka-table {
+#ka-view-time .ka-table,
+#ka-time-report-sheet .ka-table {
   width: 100%;
   min-width: 960px;
   table-layout: auto;
 }
 
 #ka-view-time .ka-table .ka-pay-col,
-#ka-view-time .ka-table .ka-rate-col {
+#ka-view-time .ka-table .ka-rate-col,
+#ka-time-report-sheet .ka-table .ka-pay-col,
+#ka-time-report-sheet .ka-table .ka-rate-col {
   white-space: nowrap;
   width: 1%;
 }
 
 #ka-view-time .ka-table th,
-#ka-view-time .ka-table td {
+#ka-view-time .ka-table td,
+#ka-time-report-sheet .ka-table th,
+#ka-time-report-sheet .ka-table td {
   padding: 8px 10px;
 }
 
 #ka-view-time .ka-table th:first-child,
-#ka-view-time .ka-table td:first-child {
+#ka-view-time .ka-table td:first-child,
+#ka-time-report-sheet .ka-table th:first-child,
+#ka-time-report-sheet .ka-table td:first-child {
   min-width: 150px;
 }
 
 #ka-view-time .ka-table td:first-child,
-#ka-view-time .ka-table td:nth-child(2) {
+#ka-view-time .ka-table td:nth-child(2),
+#ka-time-report-sheet .ka-table td:first-child,
+#ka-time-report-sheet .ka-table td:nth-child(2) {
   max-width: 230px;
   white-space: normal;
   word-break: break-word;
@@ -4440,73 +4940,105 @@ body.ka-view-shipments-active .ka-header-subtitle {
 }
 
 #ka-view-time .ka-table th:nth-child(2),
-#ka-view-time .ka-table td:nth-child(2) {
+#ka-view-time .ka-table td:nth-child(2),
+#ka-time-report-sheet .ka-table th:nth-child(2),
+#ka-time-report-sheet .ka-table td:nth-child(2) {
   min-width: 150px;
 }
 
 #ka-view-time .ka-table th:nth-child(3),
-#ka-view-time .ka-table td:nth-child(3) {
+#ka-view-time .ka-table td:nth-child(3),
+#ka-time-report-sheet .ka-table th:nth-child(3),
+#ka-time-report-sheet .ka-table td:nth-child(3) {
   min-width: 96px;
 }
 
 #ka-view-time .ka-table th:nth-child(4),
 #ka-view-time .ka-table td:nth-child(4),
 #ka-view-time .ka-table th:nth-child(5),
-#ka-view-time .ka-table td:nth-child(5) {
+#ka-view-time .ka-table td:nth-child(5),
+#ka-time-report-sheet .ka-table th:nth-child(4),
+#ka-time-report-sheet .ka-table td:nth-child(4),
+#ka-time-report-sheet .ka-table th:nth-child(5),
+#ka-time-report-sheet .ka-table td:nth-child(5) {
   min-width: 96px;
 }
 
 #ka-view-time .ka-table th:nth-child(6),
-#ka-view-time .ka-table td:nth-child(6) {
+#ka-view-time .ka-table td:nth-child(6),
+#ka-time-report-sheet .ka-table th:nth-child(6),
+#ka-time-report-sheet .ka-table td:nth-child(6) {
   min-width: 96px;
 }
 
 #ka-view-time .ka-table th:nth-child(7),
-#ka-view-time .ka-table td:nth-child(7) {
+#ka-view-time .ka-table td:nth-child(7),
+#ka-time-report-sheet .ka-table th:nth-child(7),
+#ka-time-report-sheet .ka-table td:nth-child(7) {
   min-width: 130px;
 }
 
 #ka-view-time .ka-table th:nth-child(8),
-#ka-view-time .ka-table td:nth-child(8) {
+#ka-view-time .ka-table td:nth-child(8),
+#ka-time-report-sheet .ka-table th:nth-child(8),
+#ka-time-report-sheet .ka-table td:nth-child(8) {
   min-width: 120px;
 }
 
-.ka-hide-approvals #ka-view-time .ka-table {
+.ka-hide-approvals #ka-view-time .ka-table,
+.ka-hide-approvals #ka-time-report-sheet .ka-table {
   min-width: 100%;
   table-layout: fixed;
 }
 .ka-hide-approvals #ka-view-time .ka-table th:first-child,
-.ka-hide-approvals #ka-view-time .ka-table td:first-child {
+.ka-hide-approvals #ka-view-time .ka-table td:first-child,
+.ka-hide-approvals #ka-time-report-sheet .ka-table th:first-child,
+.ka-hide-approvals #ka-time-report-sheet .ka-table td:first-child {
   min-width: 0;
 }
 .ka-hide-approvals #ka-view-time .ka-table td:first-child,
-.ka-hide-approvals #ka-view-time .ka-table td:nth-child(2) {
+.ka-hide-approvals #ka-view-time .ka-table td:nth-child(2),
+.ka-hide-approvals #ka-time-report-sheet .ka-table td:first-child,
+.ka-hide-approvals #ka-time-report-sheet .ka-table td:nth-child(2) {
   max-width: none;
 }
 .ka-hide-approvals #ka-view-time .ka-table th:nth-child(2),
-.ka-hide-approvals #ka-view-time .ka-table td:nth-child(2) {
+.ka-hide-approvals #ka-view-time .ka-table td:nth-child(2),
+.ka-hide-approvals #ka-time-report-sheet .ka-table th:nth-child(2),
+.ka-hide-approvals #ka-time-report-sheet .ka-table td:nth-child(2) {
   min-width: 0;
 }
 .ka-hide-approvals #ka-view-time .ka-table th:nth-child(3),
-.ka-hide-approvals #ka-view-time .ka-table td:nth-child(3) {
+.ka-hide-approvals #ka-view-time .ka-table td:nth-child(3),
+.ka-hide-approvals #ka-time-report-sheet .ka-table th:nth-child(3),
+.ka-hide-approvals #ka-time-report-sheet .ka-table td:nth-child(3) {
   min-width: 0;
 }
 .ka-hide-approvals #ka-view-time .ka-table th:nth-child(4),
 .ka-hide-approvals #ka-view-time .ka-table td:nth-child(4),
 .ka-hide-approvals #ka-view-time .ka-table th:nth-child(5),
-.ka-hide-approvals #ka-view-time .ka-table td:nth-child(5) {
+.ka-hide-approvals #ka-view-time .ka-table td:nth-child(5),
+.ka-hide-approvals #ka-time-report-sheet .ka-table th:nth-child(4),
+.ka-hide-approvals #ka-time-report-sheet .ka-table td:nth-child(4),
+.ka-hide-approvals #ka-time-report-sheet .ka-table th:nth-child(5),
+.ka-hide-approvals #ka-time-report-sheet .ka-table td:nth-child(5) {
   min-width: 0;
 }
 .ka-hide-approvals #ka-view-time .ka-table th:nth-child(6),
-.ka-hide-approvals #ka-view-time .ka-table td:nth-child(6) {
+.ka-hide-approvals #ka-view-time .ka-table td:nth-child(6),
+.ka-hide-approvals #ka-time-report-sheet .ka-table th:nth-child(6),
+.ka-hide-approvals #ka-time-report-sheet .ka-table td:nth-child(6) {
   min-width: 0;
 }
 .ka-hide-approvals #ka-view-time .ka-table th,
-.ka-hide-approvals #ka-view-time .ka-table td {
+.ka-hide-approvals #ka-view-time .ka-table td,
+.ka-hide-approvals #ka-time-report-sheet .ka-table th,
+.ka-hide-approvals #ka-time-report-sheet .ka-table td {
   max-width: none;
 }
 
-#ka-view-time .ka-actions-cell {
+#ka-view-time .ka-actions-cell,
+#ka-time-report-sheet .ka-actions-cell {
   text-align: center;
   white-space: nowrap;
 }
@@ -4594,34 +5126,206 @@ body.ka-view-shipments-active .ka-header-subtitle {
   display: none;
 }
 
-.ka-time-action-original {
+/* Time entry action modal (redo layout) */
+#ka-time-action-backdrop .ka-time-action-modal {
+  position: relative;
+  width: min(720px, 94vw);
+  max-width: 720px;
+  border-radius: 22px;
+  padding: 20px 22px;
+}
+
+.ka-time-action-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 14px;
+}
+
+.ka-time-action-title-block h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.ka-time-action-sub {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 0.86rem;
+}
+
+.ka-time-action-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ka-time-action-section {
   background: #f8fafc;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 8px 10px;
-  margin-bottom: 10px;
-  font-size: 0.9rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin: 0;
+}
+
+.ka-time-action-warning {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.85rem;
   line-height: 1.4;
+  font-weight: 600;
 }
 
-.ka-time-action-pair {
+.ka-time-action-section-title {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #64748b;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.ka-time-action-summary {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 10px;
-  margin-bottom: 8px;
-  align-items: center;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
 }
 
-.ka-time-action-pair input,
-.ka-time-action-pair select {
+.ka-time-action-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0;
+  border: none;
+}
+
+.ka-time-action-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.ka-time-action-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.ka-time-action-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   width: 100%;
 }
 
-#ka-view-time .ka-time-row-actions {
+.ka-time-action-field-row {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.ka-time-action-field-full {
+  width: 100%;
+}
+
+.ka-time-action-field-row .form-field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.ka-time-action-field-row .form-field + .form-field {
+  margin-left: 16px;
+}
+
+.ka-time-action-fields input,
+.ka-time-action-fields select {
+  height: 40px;
+  background: #ffffff;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 7px 10px;
+  font-size: 0.92rem;
+  display: block;
+}
+
+/* iOS Safari can ignore min-width in grid items; force shrinkability */
+.ka-time-action-fields .form-field {
+  min-width: 0;
+  width: 100%;
+}
+
+.ka-time-action-fields .form-field > * {
+  min-width: 0;
+}
+
+.ka-time-action-fields .form-field label {
+  display: block;
+}
+
+.ka-time-action-fields input[type="date"],
+.ka-time-action-fields input[type="time"],
+.ka-time-action-fields select {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.ka-time-action-fields .ka-select-arrow {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding-right: 32px;
+  background-position:
+    right 14px center,
+    right 9px center,
+    right 26px center;
+  background-size: 7px 7px, 7px 7px, 1px 60%;
+}
+
+#ka-time-action-hours[readonly] {
+  background: #f1f5f9;
+  border: 1px dashed #cbd5e1;
+  color: #64748b;
+  cursor: default;
+}
+
+.ka-time-action-note textarea {
+  min-height: 90px;
+}
+
+@media (max-width: 560px) {
+  .ka-time-action-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .ka-time-action-field-row {
+    flex-direction: column;
+  }
+
+  .ka-time-action-field-row .form-field + .form-field {
+    margin-left: 0;
+    margin-top: 12px;
+  }
+}
+
+#ka-view-time .ka-time-row-actions,
+#ka-time-report-sheet .ka-time-row-actions {
   position: relative;
 }
 
-#ka-view-time .ka-actions-toggle {
+#ka-view-time .ka-actions-toggle,
+#ka-time-report-sheet .ka-actions-toggle {
   min-width: 125px;
   width: 100%;
   padding: 6px 8px;
@@ -4629,25 +5333,29 @@ body.ka-view-shipments-active .ka-header-subtitle {
   letter-spacing: 0.04em;
 }
 
-#ka-view-time .ka-actions-toggle.approved {
+#ka-view-time .ka-actions-toggle.approved,
+#ka-time-report-sheet .ka-actions-toggle.approved {
   background: #e0f2fe;
   color: #0c4a6e;
   border-color: #bae6fd;
 }
 
-#ka-view-time .ka-actions-toggle.approved-asis {
+#ka-view-time .ka-actions-toggle.approved-asis,
+#ka-time-report-sheet .ka-actions-toggle.approved-asis {
   background: #ecfdf3;
   color: #14532d;
   border-color: #bbf7d0;
 }
 
-#ka-view-time .ka-actions-toggle.rejected {
+#ka-view-time .ka-actions-toggle.rejected,
+#ka-time-report-sheet .ka-actions-toggle.rejected {
   background: #fef2f2;
   color: #b91c1c;
   border-color: #fecdd3;
 }
 
-#ka-view-time .ka-actions-menu {
+#ka-view-time .ka-actions-menu,
+#ka-time-report-sheet .ka-actions-menu {
   position: absolute;
   right: 0;
   top: 100%;
@@ -4662,11 +5370,13 @@ body.ka-view-shipments-active .ka-header-subtitle {
   z-index: 20;
 }
 
-#ka-view-time .ka-actions-menu.hidden {
+#ka-view-time .ka-actions-menu.hidden,
+#ka-time-report-sheet .ka-actions-menu.hidden {
   display: none;
 }
 
-#ka-view-time .ka-actions-item {
+#ka-view-time .ka-actions-item,
+#ka-time-report-sheet .ka-actions-item {
   padding: 8px 10px;
   background: transparent;
   border: none;
@@ -4679,36 +5389,51 @@ body.ka-view-shipments-active .ka-header-subtitle {
 #ka-view-time .ka-table th:nth-child(4),
 #ka-view-time .ka-table td:nth-child(4),
 #ka-view-time .ka-table th:nth-child(5),
-#ka-view-time .ka-table td:nth-child(5) {
+#ka-view-time .ka-table td:nth-child(5),
+#ka-time-report-sheet .ka-table th:nth-child(4),
+#ka-time-report-sheet .ka-table td:nth-child(4),
+#ka-time-report-sheet .ka-table th:nth-child(5),
+#ka-time-report-sheet .ka-table td:nth-child(5) {
   text-align: center;
 }
 #ka-view-time .ka-table th:nth-child(6),
-#ka-view-time .ka-table td:nth-child(6) {
+#ka-view-time .ka-table td:nth-child(6),
+#ka-time-report-sheet .ka-table th:nth-child(6),
+#ka-time-report-sheet .ka-table td:nth-child(6) {
   text-align: right;
 }
-#ka-view-time .ka-table th.ka-actions-col {
+#ka-view-time .ka-table th.ka-actions-col,
+#ka-time-report-sheet .ka-table th.ka-actions-col {
   text-align: center;
 }
 #ka-view-time .ka-table th.ka-pay-col,
-#ka-view-time .ka-table td.ka-pay-col {
+#ka-view-time .ka-table td.ka-pay-col,
+#ka-time-report-sheet .ka-table th.ka-pay-col,
+#ka-time-report-sheet .ka-table td.ka-pay-col {
   white-space: nowrap;
 }
 #ka-view-time .ka-table th.ka-col-hidden,
-#ka-view-time .ka-table td.ka-col-hidden {
+#ka-view-time .ka-table td.ka-col-hidden,
+#ka-time-report-sheet .ka-table th.ka-col-hidden,
+#ka-time-report-sheet .ka-table td.ka-col-hidden {
   display: none;
 }
 #ka-view-time .ka-table th,
-#ka-view-time .ka-table td {
+#ka-view-time .ka-table td,
+#ka-time-report-sheet .ka-table th,
+#ka-time-report-sheet .ka-table td {
   width: auto;
 }
 
 /* Ensure Actions header matches others */
-#ka-view-time .ka-table th.ka-actions-col {
+#ka-view-time .ka-table th.ka-actions-col,
+#ka-time-report-sheet .ka-table th.ka-actions-col {
   background: var(--slate-100);
   color: var(--slate-500);
 }
 
-#ka-view-time .ka-actions-item:hover {
+#ka-view-time .ka-actions-item:hover,
+#ka-time-report-sheet .ka-actions-item:hover {
   background: #f1f5f9;
 }
 
@@ -4726,6 +5451,19 @@ body.ka-view-shipments-active .ka-header-subtitle {
 
 .ka-status-actions .ka-time-row-actions {
   flex-shrink: 0;
+}
+
+#ka-view-time .ka-time-card .ka-status-actions,
+#ka-time-report-sheet .ka-time-card .ka-status-actions {
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+#ka-view-time .ka-time-card .ka-actions-toggle,
+#ka-time-report-sheet .ka-time-card .ka-actions-toggle {
+  min-width: 36px;
+  width: auto;
+  padding: 4px 6px;
 }
 
 .btn-icon {
@@ -4746,19 +5484,25 @@ body.ka-view-shipments-active .ka-header-subtitle {
 }
 
 @media (max-width: 1100px) {
-  #ka-view-time .ka-table {
+  #ka-view-time .ka-table,
+  #ka-time-report-sheet .ka-table {
     min-width: 820px;
   }
   #ka-view-time .ka-table th,
-  #ka-view-time .ka-table td {
+  #ka-view-time .ka-table td,
+  #ka-time-report-sheet .ka-table th,
+  #ka-time-report-sheet .ka-table td {
     padding: 8px 10px;
     font-size: 0.82rem;
   }
   #ka-view-time .ka-table td:first-child,
-  #ka-view-time .ka-table td:nth-child(2) {
+  #ka-view-time .ka-table td:nth-child(2),
+  #ka-time-report-sheet .ka-table td:first-child,
+  #ka-time-report-sheet .ka-table td:nth-child(2) {
     max-width: 180px;
   }
-  #ka-view-time .ka-actions-toggle {
+  #ka-view-time .ka-actions-toggle,
+  #ka-time-report-sheet .ka-actions-toggle {
     min-width: 110px;
   }
 }
@@ -4774,12 +5518,20 @@ body.ka-view-shipments-active .ka-header-subtitle {
 }
 
 @media (orientation: portrait) {
-  #ka-time-orientation { display: block; }
-  #ka-view-time .ka-time-content { display: none; }
+  #ka-time-orientation { display: none; }
+  #ka-view-time .ka-time-content { display: block; }
+  #ka-view-time .ka-time-cards,
+  #ka-time-report-sheet .ka-time-cards { display: grid; }
+  #ka-view-time .ka-time-table,
+  #ka-time-report-sheet .ka-time-table { display: none; }
 }
 
 @media (orientation: landscape) {
   #ka-time-orientation { display: none; }
+  #ka-view-time .ka-time-cards,
+  #ka-time-report-sheet .ka-time-cards { display: none; }
+  #ka-view-time .ka-time-table,
+  #ka-time-report-sheet .ka-time-table { display: block; }
 }
 #ka-view-time .card,
 #ka-view-time .card-body {
@@ -4789,6 +5541,17 @@ body.ka-view-shipments-active .ka-header-subtitle {
   max-width: 100%;
   flex: 1;
   box-sizing: border-box;
+}
+
+#ka-view-time .card {
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 0;
+}
+
+#ka-view-time .card-body {
+  padding: 0;
 }
 
 #ka-view-time .table-wrapper {
@@ -4834,6 +5597,776 @@ body.ka-view-shipments-active .ka-header-subtitle {
 
 .ka-time-filters {
   margin-bottom: 18px;
+  padding: 30px 24px;
+  border-radius: 14px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  display: grid;
+  gap: 18px;
+  --ka-time-filter-width: clamp(200px, 28vw, 260px);
+}
+
+.ka-time-filters-v2 {
+  --ka-time-filter-width: clamp(200px, 26vw, 240px);
+}
+
+.ka-time-filters-v2 .ka-time-filter-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.ka-time-filters-v2 .ka-time-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.ka-time-filters-v2 .ka-time-field select,
+.ka-time-filters-v2 .ka-time-field input[type="date"] {
+  width: 100%;
+  font-size: 0.9rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #0f172a;
+}
+
+.ka-time-filters-v2 .ka-time-filter-width {
+  width: var(--ka-time-filter-width);
+  max-width: var(--ka-time-filter-width);
+}
+
+.ka-time-filters-v2 .ka-time-custom-row {
+  display: grid;
+  grid-template-columns: 150px 150px auto;
+  column-gap: 12px;
+  row-gap: 8px;
+  align-items: end;
+  justify-content: start;
+}
+
+.ka-time-filters-v2 .ka-time-date-field {
+  width: 150px;
+  max-width: 150px;
+}
+
+.ka-time-filters-v2 .ka-time-date-field input[type="date"] {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.ka-time-filters-v2 .ka-time-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.ka-time-filters-v2 .ka-time-inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.8rem;
+  color: #475569;
+  padding: 0 0 4px;
+  align-self: flex-start;
+}
+
+.ka-time-filters-v2 .ka-time-run-btn {
+  width: auto;
+  justify-content: center;
+  margin-top: 0;
+  align-self: flex-start;
+}
+
+.ka-time-calendar-wrap {
+  margin-top: 36px;
+  margin-bottom: 24px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 18px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  width: 100%;
+  max-width: 100%;
+}
+
+.ka-time-calendar {
+  background: transparent;
+  border-radius: 12px;
+  display: grid;
+  gap: 12px;
+  padding-top: 8px;
+  padding-bottom: 10px;
+}
+
+.ka-time-calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ka-time-calendar-title-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  justify-content: center;
+}
+
+.ka-time-calendar-title {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #0f172a;
+  text-align: center;
+  padding: 6px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.1;
+  transition: background 150ms ease;
+}
+
+.ka-time-calendar-title::after {
+  content: "▾";
+  margin-left: 6px;
+  font-size: 0.7rem;
+  color: #64748b;
+  transition: transform 150ms ease;
+}
+
+.ka-time-calendar-title[aria-expanded="true"]::after {
+  transform: rotate(180deg);
+}
+
+.ka-time-calendar-title:hover {
+  background: #f1f5f9;
+}
+
+.ka-time-calendar-title:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.4);
+  outline-offset: 2px;
+}
+
+.ka-time-calendar-picker {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(320px, 90vw);
+  padding: 12px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.18);
+  display: grid;
+  gap: 12px;
+  z-index: 30;
+}
+
+.ka-time-calendar-picker-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ka-time-calendar-picker-field {
+  display: grid;
+  gap: 6px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #94a3b8;
+}
+
+.ka-time-calendar-picker-field select {
+  width: 100%;
+}
+
+.ka-time-calendar-nav {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.ka-time-calendar-nav:hover {
+  border-color: var(--emerald-600);
+  color: var(--emerald-600);
+}
+
+.ka-time-calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+}
+
+.ka-time-calendar-weekdays span {
+  text-align: center;
+}
+
+.ka-time-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ka-time-calendar-day {
+  height: 64px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.ka-time-calendar-day:not(.is-empty):hover {
+  border-color: var(--emerald-600);
+  color: var(--emerald-600);
+  background: var(--emerald-50);
+}
+
+.ka-time-calendar-day.is-empty {
+  border: 1px dashed #e2e8f0;
+  background: transparent;
+  color: transparent;
+  cursor: default;
+}
+
+.ka-time-calendar-day.is-today {
+  border-color: var(--emerald-600);
+  box-shadow: 0 0 0 2px rgba(5, 150, 105, 0.18);
+}
+
+.ka-time-calendar-day.is-selected {
+  background: var(--emerald-600);
+  border-color: var(--emerald-600);
+  color: #ffffff;
+}
+
+.ka-time-calendar-day:focus-visible {
+  outline: 2px solid var(--emerald-600);
+  outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+  .ka-time-filters-v2 .ka-time-inline-toggle {
+    justify-content: flex-start;
+    padding-bottom: 0;
+  }
+  .ka-time-filters-v2 .ka-time-custom-row {
+    grid-template-columns: 1fr;
+  }
+  .ka-time-filters-v2 .ka-time-custom-row input[type="date"] {
+    max-width: 100%;
+  }
+
+  .ka-time-calendar-wrap {
+    padding: 12px;
+    max-width: 100%;
+  }
+
+  .ka-time-calendar-day {
+    height: 52px;
+    font-size: 0.8rem;
+  }
+
+  .ka-time-calendar-picker {
+    width: min(260px, 92vw);
+  }
+
+  .ka-time-calendar-picker-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ka-time-filter-group {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+#ka-view-time .ka-time-filter-group .ka-shipments-filter-label {
+  display: flex;
+}
+
+#ka-view-time .ka-time-date-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+#ka-view-time .ka-time-date-stack .ka-time-date-row {
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+#ka-view-time .ka-time-range-select {
+  width: var(--ka-time-filter-width);
+  max-width: var(--ka-time-filter-width);
+  min-width: var(--ka-time-filter-width);
+}
+
+.ka-time-show-row {
+  display: grid;
+  grid-template-columns: var(--ka-time-filter-width) auto;
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  row-gap: 8px;
+  align-items: center;
+}
+
+.ka-time-show-select {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  width: var(--ka-time-filter-width);
+}
+
+.ka-time-show-select .ka-shipments-filter-label {
+  width: 100%;
+}
+
+.ka-time-show-row .select-wrapper {
+  width: 100%;
+}
+
+.ka-time-inline-toggle {
+  grid-column: 2;
+  grid-row: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  padding: 22px 0 0;
+  color: #475569;
+  font-size: 0.8rem;
+  align-self: center;
+}
+
+.ka-time-inline-toggle input[type="checkbox"] {
+  accent-color: #0f766e;
+}
+
+.ka-time-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.ka-time-filter-actions .btn {
+  margin-left: auto;
+}
+
+#ka-view-time .ka-time-filter-actions .ka-shipments-filter-label {
+  flex-direction: row;
+  align-items: center;
+  font-size: 0.8rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  color: #475569;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 6px 10px;
+  gap: 8px;
+}
+
+.ka-time-report {
+  margin-top: 12px;
+}
+
+#ka-view-time .ka-time-filters .ka-shipments-filter-label {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: #64748b;
+}
+
+#ka-view-time .ka-time-filters .ka-shipments-filter-label select {
+  width: 100%;
+  font-size: 0.9rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #0f172a;
+}
+
+#ka-view-time .ka-time-filters .ka-time-inline-toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #475569;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin-top: 0;
+}
+
+#ka-view-time .ka-time-filters .ka-time-inline-toggle input[type="checkbox"] {
+  accent-color: #0f766e;
+}
+
+.ka-time-run-btn {
+  grid-column: 1;
+  grid-row: 2;
+  width: 100%;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+#ka-view-time .ka-time-filter-actions .ka-shipments-filter-label {
+  flex-direction: row;
+  align-items: center;
+}
+
+.ka-time-results {
+  display: block;
+}
+
+@media (max-width: 720px) {
+  .ka-time-show-row {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+  }
+  .ka-time-inline-toggle {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: flex-start;
+  }
+  .ka-time-run-btn {
+    grid-column: 1;
+    grid-row: 3;
+  }
+}
+
+.ka-time-cards {
+  display: none;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding-bottom: 12px;
+}
+
+#ka-view-time:not(.ka-time-mode-review) #ka-time-summary,
+#ka-time-report-sheet:not(.ka-time-mode-review) #ka-time-summary {
+  display: none;
+}
+
+.ka-time-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 252, 254, 0.98));
+  border: 1px solid rgba(236, 233, 244, 0.9);
+  border-radius: 20px;
+  padding: 14px 16px;
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: visible;
+}
+
+.ka-time-card.ka-time-card-compact {
+  padding: 10px 14px;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.ka-time-card.ka-time-card-compact .ka-time-card-heading {
+  gap: 4px;
+}
+
+.ka-time-card.ka-time-card-compact .ka-time-card-project {
+  font-size: 0.88rem;
+}
+
+
+.ka-time-card.ka-time-card-compact .ka-time-card-meta {
+  gap: 8px;
+}
+
+.ka-time-card-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.ka-time-card-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ka-time-card-name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.ka-time-card-employee {
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: #1f2937;
+}
+
+.ka-time-card-project {
+  font-size: 0.92rem;
+  color: #7a8798;
+}
+
+
+.ka-time-card-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ka-status-actions-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.ka-time-status-select {
+  min-width: 160px;
+  height: 32px;
+  padding: 4px 30px 4px 12px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 700;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #0f172a 50%),
+    linear-gradient(135deg, #0f172a 50%, transparent 50%),
+    linear-gradient(to right, rgba(15, 23, 42, 0.18), rgba(15, 23, 42, 0.18));
+  background-position:
+    right 12px center,
+    right 7px center,
+    right 24px center;
+  background-size: 9px 9px, 9px 9px, 1px 60%;
+  background-repeat: no-repeat;
+}
+
+.ka-status-actions-select {
+  position: relative;
+}
+
+.ka-status-actions-select::after {
+  content: "▾";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: #0f172a;
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+.ka-time-status-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ka-time-status-select:focus {
+  outline: none;
+  border-color: var(--emerald-500);
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.22);
+}
+
+.ka-time-status-select.status-pending_review {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecdd3;
+}
+
+.ka-time-status-select.status-approve_as_is {
+  background: #ecfdf3;
+  color: #14532d;
+  border-color: #bbf7d0;
+}
+
+.ka-time-status-select.status-modify {
+  background: #e0f2fe;
+  color: #0c4a6e;
+  border-color: #bae6fd;
+}
+
+.ka-time-status-select.status-reject {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecdd3;
+}
+
+.ka-time-status-select.is-open {
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.22);
+}
+
+.ka-time-card-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(90px, auto);
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ka-time-card-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.9rem;
+  color: #1f2937;
+}
+
+.ka-time-card-label {
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #475569;
+  font-weight: 700;
+}
+
+.ka-time-card-hours {
+  text-align: right;
+}
+
+.ka-time-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ka-time-card-review {
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.ka-hide-approvals #ka-view-time .ka-time-card-review,
+.ka-hide-approvals #ka-time-report-sheet .ka-time-card-review {
+  display: none;
+}
+
+.ka-time-card-detail {
+  margin-top: 4px;
+}
+
+.ka-time-card-empty {
+  text-align: center;
+  color: #64748b;
+  background: #f8fafc;
+  border-style: dashed;
+}
+
+@media (max-width: 720px) {
+  #ka-view-time .ka-items-summary,
+  #ka-time-report-sheet .ka-items-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .ka-time-filter-actions {
+    justify-content: flex-start;
+  }
+  .ka-time-card-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .ka-time-card-hours {
+    text-align: left;
+  }
+}
+
+@media (max-width: 520px) {
+  .ka-time-filter-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ka-time-filter-actions .btn {
+    width: 100%;
+    margin-left: 0;
+  }
+  .ka-time-card-meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Ensure all dropdowns show an arrow */
+select:not(.visually-hidden-select) {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #111827 50%),
+    linear-gradient(135deg, #111827 50%, transparent 50%),
+    linear-gradient(to right, #e5e7eb, #e5e7eb);
+  background-position:
+    right 14px center,
+    right 9px center,
+    right 26px center;
+  background-size: 8px 8px, 8px 8px, 1px 60%;
+  background-repeat: no-repeat;
+  padding-right: 36px;
+}
+
+@media (min-width: 860px) {
+  #ka-view-time .ka-items-toolbar,
+  #ka-time-report-sheet .ka-items-toolbar {
+    grid-template-columns: 1fr auto;
+    align-items: end;
+  }
 }
 
 .form-divider {
@@ -4959,10 +6492,82 @@ body.ka-view-shipments-active .ka-header-subtitle {
    TIME ENTRY CONTROLS
 ========================================= */
 .ka-time-date-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 200px) minmax(140px, 200px) minmax(90px, max-content);
+  gap: 2px;
+  align-items: end;
+  width: 100%;
+  min-width: 0;
+}
+
+#ka-view-time .ka-time-date-row > * {
+  min-width: 0;
+}
+
+#ka-view-time .ka-time-filters.ka-custom-open .ka-time-date-stack {
+  grid-column: 1 / -1;
+  justify-self: stretch;
+}
+
+#ka-view-time .ka-time-date-row .ka-small {
+  min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #64748b;
+  font-weight: 700;
+}
+
+#ka-view-time .ka-time-date-row input[type="date"] {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-inline-size: 0;
+}
+
+#ka-view-time .ka-time-date-row .ka-time-refresh-btn {
+  align-self: end;
+  justify-self: start;
+}
+
+#ka-view-time #ka-time-custom {
+  display: grid;
+  grid-template-columns: minmax(140px, 200px) minmax(140px, 200px) minmax(90px, max-content);
+  column-gap: 2px;
+  row-gap: 8px;
+  align-items: end;
+  width: 100%;
+  justify-content: start;
+}
+
+#ka-view-time #ka-time-custom .ka-small {
+  padding-inline: 2px;
+}
+
+#ka-view-time #ka-time-custom .ka-small:first-child {
+  padding-left: 0;
+}
+
+#ka-view-time #ka-time-custom .ka-small:nth-child(2) {
+  padding-right: 0;
+}
+
+#ka-view-time #ka-time-custom .ka-small {
+  min-width: 0;
+  justify-self: start;
+}
+
+#ka-view-time #ka-time-custom input[type="date"] {
+  width: 100%;
+  max-width: 200px;
+}
+
+#ka-view-time #ka-time-custom .ka-time-refresh-btn {
+  grid-column: 3;
+  justify-self: start;
 }
 
 .ka-time-date-row input[type="date"] {
@@ -4976,12 +6581,6 @@ body.ka-view-shipments-active .ka-header-subtitle {
   font-size: 0.75rem;
   color: var(--slate-500);
   margin-top: 4px;
-}
-
-.ka-time-filters {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
 
 .ka-time-quick {
@@ -5056,6 +6655,11 @@ body.ka-view-shipments-active .ka-header-subtitle {
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
 }
 
+.ka-modal.ka-time-action-modal {
+  width: min(640px, 94vw);
+  max-width: 640px;
+}
+
 .ka-modal h3 {
   margin: 0 0 10px 0;
   font-size: 1.12rem;
@@ -5065,6 +6669,36 @@ body.ka-view-shipments-active .ka-header-subtitle {
   margin: 0 0 16px 0;
   color: var(--slate-600);
   font-size: 0.95rem;
+}
+
+.ka-modal-error {
+  margin: 0 0 16px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fee2e2;
+  color: #991b1b;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.ka-modal-error.hidden {
+  display: none;
+}
+
+.ka-modal-toggles {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px 0;
+}
+
+.ka-modal-toggle {
+  display: grid;
+  gap: 4px;
+}
+
+.ka-modal-toggle-note {
+  margin-left: 22px;
+  font-size: 0.85rem;
 }
 
 .ka-modal-actions {
@@ -5079,6 +6713,122 @@ body.ka-view-shipments-active .ka-header-subtitle {
   padding: 10px 14px;
   font-size: 0.9rem;
   text-align: center;
+}
+
+.ka-confirm-modal {
+  width: min(420px, 90vw);
+}
+
+.ka-confirm-actions {
+  justify-content: flex-end;
+}
+
+.ka-confirm-actions .btn {
+  flex: 0 0 auto;
+  min-width: 120px;
+}
+
+.ka-timesheet-action-modal .ka-modal-actions {
+  justify-content: flex-end;
+}
+
+.ka-modal.ka-timesheet-action-modal {
+  width: min(420px, 90vw);
+  padding: 24px 26px;
+}
+
+.ka-timesheet-action-modal .ka-modal-header h3 {
+  margin: 0;
+}
+
+.ka-timesheet-action-modal p {
+  margin-bottom: 20px;
+}
+
+.ka-timesheet-action-modal .ka-modal-actions {
+  margin-top: 6px;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.ka-timesheet-action-modal .ka-modal-actions .btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.ka-timesheet-action-modal.is-active-session #ka-timesheet-action-assign-btn {
+  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-600));
+  color: #ecfdf5;
+  box-shadow: 0 10px 20px rgba(16, 185, 129, 0.25);
+  letter-spacing: 0.1em;
+}
+
+.ka-timesheet-action-modal.is-active-session .ka-modal-actions .btn {
+  flex: 0 0 auto;
+}
+
+.ka-timesheet-action-modal.is-active-session .ka-modal-actions {
+  justify-content: center;
+}
+
+.ka-timesheet-action-modal.is-active-session #ka-timesheet-action-assign-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 22px rgba(16, 185, 129, 0.3);
+}
+
+.ka-timesheet-assign-modal .ka-modal-header h3 {
+  margin: 0;
+}
+
+.ka-timesheet-assign-modal p {
+  margin: 4px 0 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #64748b;
+}
+
+.ka-timesheet-assign-field {
+  display: grid;
+  gap: 8px;
+}
+
+.ka-timesheet-assign-label {
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.ka-timesheet-assign-select {
+  width: 100%;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  padding: 0 12px;
+  font-size: 0.95rem;
+  background: #ffffff;
+  color: #0f172a;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.ka-timesheet-assign-select:focus {
+  outline: none;
+  border-color: rgba(13, 148, 136, 0.6);
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.15);
+}
+
+#ka-timesheet-replace-backdrop .ka-modal {
+  width: min(420px, 90vw);
+}
+
+#ka-timesheet-replace-cancel {
+  background: var(--emerald-500);
+  color: #ffffff;
+  border: none;
+  padding: 8px 12px;
+  font-size: 0.85rem;
 }
 
 .ka-verify-btn.is-verified {
@@ -5132,6 +6882,13 @@ body.ka-view-shipments-active .ka-header-subtitle {
   z-index: 100;
   backdrop-filter: blur(10px);
   overflow: visible;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+body.ka-modal-open .ka-bottom-nav {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(100%);
 }
 
 .ka-nav-bg {
@@ -5255,6 +7012,14 @@ body.ka-view-shipments-active .ka-header-subtitle {
   pointer-events: none;
 }
 
+#ka-time-report-sheet {
+  z-index: 155;
+}
+
+#ka-time-detail-sheet {
+  z-index: 170;
+}
+
 .ka-sheet.hidden {
   display: none;
 }
@@ -5277,17 +7042,28 @@ body.ka-view-shipments-active .ka-header-subtitle {
 
 .ka-sheet-panel {
   position: relative;
-  width: min(680px, 100%);
+  width: min(860px, 100%);
   margin: 0 12px;
   background: #ffffff;
   border-radius: 22px 22px 0 0;
-  padding: 10px 18px calc(20px + env(safe-area-inset-bottom));
+  padding: 16px 24px calc(28px + env(safe-area-inset-bottom));
   box-shadow: 0 -18px 40px rgba(15, 23, 42, 0.18);
   transform: translateY(100%);
   transition: transform 0.25s ease;
   max-height: min(80vh, 620px);
   display: flex;
   flex-direction: column;
+}
+
+#ka-time-detail-sheet .ka-sheet-panel {
+  background: #f8fafc;
+}
+
+.ka-sheet--full .ka-sheet-panel {
+  height: 100vh;
+  height: 100dvh;
+  max-height: none;
+  padding-top: calc(10px + env(safe-area-inset-top));
 }
 
 .ka-sheet.is-open .ka-sheet-panel {
@@ -5314,10 +7090,74 @@ body.ka-view-shipments-active .ka-header-subtitle {
   gap: 12px;
 }
 
+#ka-employees-sheet .ka-sheet-header {
+  align-items: center;
+}
+
+.ka-employees-sheet-actions,
+.ka-sheet-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#ka-time-detail-sheet .ka-sheet-header {
+  touch-action: none;
+}
+
+.ka-time-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  touch-action: none;
+}
+
+.ka-time-detail-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  background: rgba(12, 129, 109, 0.12);
+  color: var(--emerald-600);
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.ka-time-detail-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.ka-time-detail-avatar span {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ka-time-detail-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .ka-sheet-title {
   font-size: 1.05rem;
   font-weight: 600;
   color: #1f2937;
+}
+
+#ka-time-detail-title {
+  font-size: 1.2rem;
 }
 
 .ka-sheet-sub {
@@ -5326,24 +7166,592 @@ body.ka-view-shipments-active .ka-header-subtitle {
   margin-top: 2px;
 }
 
+#ka-time-detail-sub {
+  display: inline-block;
+  padding-bottom: 0;
+  border-bottom: none;
+  margin-bottom: 0;
+  font-size: 0.95rem;
+}
+
 .ka-sheet-close {
   border: none;
-  background: #f1f5f9;
+  background: transparent;
   color: #475569;
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
+  width: auto;
+  height: auto;
+  border-radius: 0;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.1rem;
+  font-size: 1.6rem;
+  font-weight: 300;
+  line-height: 1;
+  padding: 2px 4px;
 }
 
 .ka-sheet-body {
-  margin-top: 8px;
+  margin-top: 4px;
   overflow-y: auto;
   padding-right: 2px;
+}
+
+.ka-time-detail-summary,
+.ka-time-detail-meta {
+  margin-top: 12px;
+}
+
+.ka-time-detail-summary,
+.ka-time-detail-meta {
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: #f8fafc;
+}
+
+.ka-time-detail-summary .ka-time-detail-grid {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.ka-time-detail-meta .ka-time-detail-grid {
+  gap: 8px;
+}
+
+.ka-time-detail-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.ka-time-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: #ffffff;
+  box-shadow: 0 8px 14px rgba(15, 23, 42, 0.04);
+}
+
+.ka-time-detail-label {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #64748b;
+  font-weight: 700;
+}
+
+.ka-time-detail-value {
+  font-size: 1.02rem;
+  color: #0f172a;
+}
+
+.ka-time-detail-actions {
+  margin-top: 16px;
+}
+
+.ka-time-detail-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.ka-time-detail-note {
+  font-size: 0.85rem;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px dashed rgba(148, 163, 184, 0.5);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.ka-time-flag-banner {
+  position: relative;
+  margin-top: 12px;
+  padding: 12px 14px 12px 12px;
+  border-radius: 12px;
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.ka-time-flag-banner.hidden {
+  display: none;
+}
+
+.ka-time-flag-banner-title {
+  font-weight: 700;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+
+.ka-time-flag-banner-text {
+  display: grid;
+  gap: 6px;
+}
+
+.ka-time-flag-banner-row {
+  display: grid;
+  gap: 2px;
+}
+
+.ka-time-flag-banner-label {
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.ka-time-flag-banner-help {
+  color: #9a3412;
+}
+
+.ka-time-flag-banner-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  border: none;
+  background: transparent;
+  color: #9a3412;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.ka-time-flag-banner-close:hover {
+  background: rgba(251, 146, 60, 0.18);
+}
+
+.ka-time-flag-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ka-time-flag-text {
+  font-weight: 600;
+}
+
+.ka-time-flag-trigger {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: transparent;
+  color: #94a3b8;
+  font-weight: 700;
+  font-size: 0.65rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.8;
+}
+
+.ka-time-flag-trigger:hover {
+  opacity: 1;
+  color: #64748b;
+  border-color: rgba(148, 163, 184, 0.7);
+}
+
+#ka-time-detail-sheet .ka-detail-row {
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  color: #0f172a;
+}
+
+#ka-time-detail-sheet .ka-detail-row + .ka-detail-row {
+  margin-top: 6px;
+}
+
+#ka-time-detail-sheet .ka-tag {
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+/* Time calendar sheet */
+#ka-time-calendar-sheet .ka-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#ka-time-calendar-sheet .ka-time-cards {
+  display: grid;
+  margin-top: 4px;
+}
+
+#ka-time-calendar-sheet .ka-time-card-empty {
+  margin-top: 8px;
+}
+
+/* Time detail sheet: simplified stacked layout */
+#ka-time-detail-sheet .ka-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#ka-time-detail-sheet .ka-time-detail-info {
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 10px;
+}
+
+#ka-time-detail-sheet .ka-time-detail-summary,
+#ka-time-detail-sheet .ka-time-detail-meta {
+  margin-top: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+#ka-time-detail-sheet .ka-time-detail-meta {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+#ka-time-detail-sheet .ka-time-detail-grid {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+#ka-time-detail-sheet .ka-time-detail-item {
+  padding: 12px 0;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+#ka-time-detail-sheet .ka-time-detail-label {
+  font-size: 0.68rem;
+  color: #94a3b8;
+  letter-spacing: 0.08em;
+}
+
+#ka-time-detail-sheet .ka-time-detail-value {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+#ka-time-detail-sheet .ka-time-detail-rate {
+  color: #64748b;
+  font-weight: 600;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+#ka-time-detail-sheet .ka-time-detail-amount {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+#ka-time-detail-sheet .ka-time-detail-rate-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+#ka-time-detail-sheet .ka-time-detail-item-pay {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 16px;
+  row-gap: 4px;
+  align-items: start;
+}
+
+#ka-time-detail-sheet .ka-time-detail-item-pay .ka-time-detail-rate-label,
+#ka-time-detail-sheet .ka-time-detail-item-pay .ka-time-detail-rate {
+  justify-self: start;
+  text-align: left;
+}
+
+#ka-time-detail-sheet .ka-time-detail-meta .ka-time-detail-value .ka-tag {
+  font-size: 0.75rem;
+}
+
+#ka-time-detail-sheet .ka-time-detail-actions {
+  margin-top: auto;
+  padding-top: 18px;
+  padding-bottom: 18px;
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+#ka-time-detail-sheet .ka-time-detail-actions-row {
+  gap: 18px;
+}
+
+#ka-time-detail-sheet .ka-time-detail-actions-row .btn {
+  padding: 10px 18px;
+  font-size: 0.9rem;
+  line-height: 1.1;
+}
+
+/* =========================================
+   TIME REVIEW SHEET
+========================================= */
+#ka-time-review-sheet .ka-sheet-panel {
+  background: #f8fafc;
+}
+
+#ka-time-review-sheet .ka-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ka-time-review-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.ka-time-review-count {
+  font-weight: 700;
+  color: #0f172a;
+  font-size: 0.95rem;
+}
+
+.ka-time-review-hint {
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.ka-time-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ka-time-review-row {
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+  max-height: 420px;
+  transition: opacity 0.2s ease, transform 0.2s ease, max-height 0.25s ease, margin 0.25s ease;
+}
+
+.ka-time-review-row.is-removing {
+  opacity: 0;
+  transform: translateX(-80px);
+  max-height: 0;
+  margin-bottom: 0;
+}
+
+.ka-time-review-row.is-removing .ka-time-review-swipe-main {
+  transform: translateX(-160px);
+}
+
+.ka-time-review-row.is-busy {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.ka-time-review-swipe {
+  position: relative;
+  width: 100%;
+  touch-action: pan-y;
+}
+
+.ka-time-review-swipe-main {
+  position: relative;
+  z-index: 1;
+  padding: 14px 16px;
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+  touch-action: pan-y;
+}
+
+.ka-time-review-swipe-action {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 120px;
+  border: none;
+  background: var(--emerald-500);
+  color: #ecfdf5;
+  font-weight: 800;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 0;
+  cursor: pointer;
+  border-top-right-radius: 16px;
+  border-bottom-right-radius: 16px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ka-time-review-swipe-action:hover {
+  background: var(--emerald-600);
+}
+
+.ka-time-review-swipe-action:active {
+  background: #047857;
+}
+
+.ka-time-review-row.show-approve .ka-time-review-swipe-main {
+  transform: translateX(-120px);
+}
+
+.ka-time-review-row.show-approve .ka-time-review-swipe-action {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ka-time-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ka-time-review-employee {
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.ka-time-review-sub {
+  font-size: 0.86rem;
+  color: #64748b;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.ka-time-review-meta {
+  font-size: 0.84rem;
+  color: #475569;
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+.ka-time-review-issues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ka-time-review-issue {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #9a3412;
+  background: #ffedd5;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  position: relative;
+}
+
+.ka-time-review-issue:focus-visible {
+  outline: 2px solid rgba(234, 88, 12, 0.35);
+  outline-offset: 2px;
+}
+
+.ka-time-review-issue[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  min-width: 180px;
+  max-width: 240px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1f2937;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.18);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 20;
+}
+
+.ka-time-review-issue.is-tip-open::after,
+.ka-time-review-issue:hover::after,
+.ka-time-review-issue:focus-visible::after {
+  opacity: 1;
+}
+
+.ka-time-review-note {
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  background: #f8fafc;
+  margin-top: 10px;
+}
+
+.ka-time-review-note:focus {
+  outline: none;
+  border-color: rgba(12, 129, 109, 0.55);
+  box-shadow: 0 0 0 2px rgba(12, 129, 109, 0.12);
+  background: #ffffff;
+}
+
+.ka-time-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.ka-time-review-row-status {
+  font-size: 0.75rem;
+  color: #64748b;
+  margin-top: 6px;
+  min-height: 1em;
+}
+
+.ka-time-review-row-status.is-error {
+  color: #b91c1c;
+}
+
+.ka-time-review-empty {
+  border: 1px dashed rgba(148, 163, 184, 0.6);
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 14px 16px;
+  text-align: center;
+  font-size: 0.9rem;
 }
 
 .ka-sheet-list {
@@ -5438,12 +7846,17 @@ body.ka-view-shipments-active .ka-header-subtitle {
 #ka-view-timesheets,
 #ka-view-workers,
 #ka-view-time,
-#ka-view-settings {
+#ka-view-settings,
+#ka-view-account {
   max-width: none;
   margin: 0;
   padding: 32px 16px 40px;
   display: block;
   box-sizing: border-box;
+}
+
+#ka-view-account {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom) + 24px);
 }
 
 #ka-view-shipments {
@@ -5466,7 +7879,8 @@ body.ka-view-shipments-active .ka-header-subtitle {
 .ka-startday-card,
 #ka-time-card,
 #ka-view-shipments .card,
-#ka-view-settings .card {
+#ka-view-settings .card,
+#ka-view-account .card {
   width: 100%;
   max-width: none;
   margin: 0;
@@ -5529,7 +7943,8 @@ body.ka-view-shipments-active .ka-header-subtitle {
 ========================================= */
 #ka-view-time .card,
 #ka-view-employees .card,
-#ka-view-settings .card {
+#ka-view-settings .card,
+#ka-view-account .card {
   width: 100%;
   max-width: none;
 }
@@ -5539,6 +7954,7 @@ body.ka-view-shipments-active .ka-header-subtitle {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .ka-employee-add {
@@ -5562,6 +7978,72 @@ body.ka-view-shipments-active .ka-header-subtitle {
   margin-top: 16px;
 }
 
+.ka-employee-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 0;
+}
+
+.ka-employee-filter {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--slate-600);
+}
+
+.ka-employee-filter select {
+  min-width: 140px;
+}
+
+.ka-employee-search {
+  flex: 1 1 240px;
+  max-width: 360px;
+  position: relative;
+}
+
+.ka-employee-search input {
+  width: 100%;
+  min-height: 46px;
+  font-size: 0.95rem;
+  padding-left: 36px;
+}
+
+.ka-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: rgba(100, 116, 139, 0.55);
+  pointer-events: none;
+  width: 22px;
+  height: 22px;
+}
+
+.ka-search-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.ka-filter-label {
+  font-size: 0.85rem;
+  color: var(--slate-500);
+  font-weight: 600;
+}
+
+.ka-input-like-select {
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #ffffff;
+  font-size: 0.95rem;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
 .ka-employee-card {
   background: #ffffff;
   border-radius: 16px;
@@ -5575,11 +8057,13 @@ body.ka-view-shipments-active .ka-header-subtitle {
   transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
 
-.ka-employee-card:hover {
-  transform: translateY(-1px);
-  box-shadow:
-    0 18px 32px rgba(15, 23, 42, 0.12),
-    0 0 0 1px rgba(59, 130, 246, 0.08);
+@media (hover: hover) {
+  .ka-employee-card:hover {
+    transform: translateY(-1px);
+    box-shadow:
+      0 18px 32px rgba(15, 23, 42, 0.12),
+      0 0 0 1px rgba(59, 130, 246, 0.08);
+  }
 }
 
 .ka-employee-card:focus-visible {
@@ -5642,9 +8126,115 @@ body.ka-view-shipments-active .ka-header-subtitle {
 /* =========================================
    EMPLOYEE DETAIL SHEET
 ========================================= */
+.ka-employee-profile-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 0;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  margin-top: 0;
+}
+
+.ka-employee-avatar {
+  width: 110px;
+  height: 110px;
+  border-radius: 16px;
+  background: #e2e8f0;
+  color: #0f172a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.6rem;
+  font-weight: 700;
+  position: relative;
+  overflow: hidden;
+}
+
+.ka-employee-avatar-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ka-employee-avatar-btn {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: none;
+  background: #ffffff;
+  color: var(--slate-600);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 12px rgba(15, 23, 42, 0.12);
+}
+
+.ka-employee-profile-name {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.ka-employee-profile-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 0.95rem;
+  color: var(--slate-500);
+}
+
+.ka-employee-profile-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ka-employee-profile-meta-item + .ka-employee-profile-meta-item::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--emerald-500);
+  display: inline-block;
+  margin-right: 6px;
+}
+
+.ka-employee-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ka-employee-avatar-initials {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ka-employee-profile-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  text-align: left;
+  margin-top: 52px;
+}
+
+.ka-employee-profile-card .ka-status {
+  margin-top: 2px;
+}
 .ka-employee-sheet-section {
   margin-top: 12px;
-  padding: 12px;
+  padding: 16px;
   border-radius: 14px;
   border: 1px solid #e2e8f0;
   background: #f8fafc;
@@ -5657,12 +8247,43 @@ body.ka-view-shipments-active .ka-header-subtitle {
   margin-bottom: 10px;
 }
 
+.ka-employee-detail-spacer {
+  margin-top: 8px;
+}
+
+.ka-readonly-input {
+  background: #f1f5f9;
+  color: var(--slate-700);
+  border-color: #e2e8f0;
+}
+
+.ka-readonly-input::placeholder {
+  color: #94a3b8;
+}
+
+.ka-readonly-input:focus {
+  border-color: #e2e8f0;
+  box-shadow: none;
+}
+
 .ka-employee-sheet-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: end;
   margin-bottom: 8px;
+}
+
+.ka-employee-sheet-save {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+  margin-bottom: 12px;
+  padding-right: 16px;
+}
+
+.ka-employee-detail-grid {
+  gap: 16px 18px;
 }
 
 .ka-employee-sheet-row .form-field {
@@ -5973,7 +8594,8 @@ body.ka-view-shipments-active .ka-header-subtitle {
   .ka-startday-card,
   #ka-live-card,
   #ka-time-card,
-  #ka-view-settings .card {
+  #ka-view-settings .card,
+  #ka-view-account .card {
     max-width: 100%;
     padding: 24px 18px;
     border-radius: 18px;
@@ -5981,7 +8603,7 @@ body.ka-view-shipments-active .ka-header-subtitle {
 
   /* Time filters on top of the table: a bit tighter */
   .ka-time-date-row {
-    gap: 8px;
+    gap: 2px;
   }
 }
 
@@ -6062,7 +8684,8 @@ body.ka-view-shipments-active .ka-header-subtitle {
   /* Live workers, Time entries, Settings cards all full-width */
   #ka-live-card,
   #ka-time-card,
-  #ka-view-settings .card {
+  #ka-view-settings .card,
+  #ka-view-account .card {
     margin-top: 12px;
     width: 100%;
     max-width: 100%;
@@ -6092,7 +8715,7 @@ body.ka-view-shipments-active .ka-header-subtitle {
 
   /* Time Entries filters: stack nicely */
   .ka-time-date-row {
-    flex-direction: column;
+    grid-template-columns: 1fr;
     align-items: stretch;
     gap: 6px;
   }
@@ -6202,17 +8825,20 @@ body.ka-view-shipments-active .ka-header-subtitle {
 }
 
 /* Apply header background across full time entries table */
-#ka-view-time .ka-table thead {
+#ka-view-time .ka-table thead,
+#ka-time-report-sheet .ka-table thead {
   background: var(--slate-100);
 }
-#ka-view-time .ka-table thead tr {
+#ka-view-time .ka-table thead tr,
+#ka-time-report-sheet .ka-table thead tr {
   display: grid;
   grid-template-columns:
     14% 14% 12% 7% 7% 7% 8% 8%
     repeat(2, minmax(100px, 1fr))
     repeat(2, minmax(110px, 1fr));
 }
-#ka-view-time .ka-table tbody tr {
+#ka-view-time .ka-table tbody tr,
+#ka-time-report-sheet .ka-table tbody tr {
   display: grid;
   grid-template-columns:
     14% 14% 12% 7% 7% 7% 8% 8%
@@ -6238,15 +8864,21 @@ body.ka-view-shipments-active .ka-header-subtitle {
   #ka-view-timesheets,
   #ka-view-workers,
   #ka-view-time,
-  #ka-view-settings {
+  #ka-view-settings,
+  #ka-view-account {
     max-width: 100vw;
     padding: 12px 0 60px;
+  }
+
+  #ka-view-account {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom) + 24px);
   }
 
   #ka-live-card,
   .ka-startday-card,
   #ka-view-time .card,
-  #ka-view-settings .card {
+  #ka-view-settings .card,
+  #ka-view-account .card {
     width: 100vw;
     max-width: 100vw;
     margin: 0;
@@ -6311,6 +8943,8 @@ body.ka-view-shipments-active .ka-header-subtitle {
 #ka-shipments-filter,
 #ka-shipments-project {
   min-width: 180px;
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .ka-shipments-list {
@@ -6495,7 +9129,7 @@ body.ka-view-shipments-active .ka-header-subtitle {
   min-height: 38px;
 }
 
-#ka-notify-alert-time {
+.ka-notify-time {
   font-size: 1.05rem;
   padding: 10px 12px;
   min-width: 280px;
@@ -6506,7 +9140,7 @@ body.ka-view-shipments-active .ka-header-subtitle {
   box-shadow: none;
 }
 
-#ka-notify-alert-time:focus-visible {
+.ka-notify-time:focus-visible {
   border-color: #0f766e;
   box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.15);
   outline: none;
@@ -6556,6 +9190,7 @@ body.ka-view-shipments-active .ka-header-subtitle {
   align-items: center;
   gap: 6px;
   font-weight: 600;
+  font-size: 0.9rem;
 }
 
 .ka-notify-statuses {
@@ -6584,6 +9219,32 @@ body.ka-view-shipments-active .ka-header-subtitle {
 
 .ka-notify-statuses input {
   accent-color: #2563eb;
+}
+
+.ka-notify-options {
+  display: grid;
+  gap: 8px;
+}
+
+.ka-notify-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.ka-notify-options label:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.ka-notify-options input {
+  accent-color: #0c816d;
 }
 
 #ka-notify-fields.hidden {
@@ -6764,6 +9425,184 @@ body.ka-view-shipments-active .ka-header-subtitle {
   overflow-y: auto;
 }
 
+.ka-pin-backdrop {
+  background: rgba(255, 255, 255, 0.28);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  padding-bottom: max(24px, env(safe-area-inset-bottom));
+}
+
+.ka-pin-modal {
+  width: min(440px, 92vw);
+  padding: 24px 20px 36px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  justify-items: stretch;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 24px 50px rgba(4, 7, 7, 0.18);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  position: relative;
+  z-index: 1;
+  color: var(--slate-800);
+  font-family: 'Montserrat', sans-serif;
+  max-height: min(640px, calc(100dvh - 48px));
+  overflow: auto;
+  border-radius: 18px;
+}
+
+.ka-pin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ka-pin-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--slate-800);
+}
+
+.ka-pin-sub {
+  font-size: 0.95rem;
+  color: var(--slate-600);
+  margin-top: 4px;
+}
+
+.ka-pin-close {
+  border: none;
+  background: rgba(12, 129, 109, 0.12);
+  color: var(--emerald-600);
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.ka-pin-close:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.45);
+  outline-offset: 2px;
+}
+
+.ka-pin-body {
+  display: grid;
+  gap: 10px;
+}
+
+.ka-pin-input-wrap {
+  position: relative;
+}
+
+.ka-pin-input {
+  height: 48px;
+  border-radius: 14px;
+  border: 1px solid var(--slate-200);
+  padding: 0 52px 0 16px;
+  font-size: 1.1rem;
+  letter-spacing: 0.4em;
+  text-align: center;
+  box-shadow: 0 12px 22px rgba(4, 7, 7, 0.12);
+  background: #ffffff;
+  color: var(--slate-800);
+  width: 100%;
+}
+
+.ka-pin-input:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.35);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(12, 129, 109, 0.18);
+}
+
+.ka-pin-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: var(--emerald-600);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+
+.ka-pin-toggle:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.35);
+  outline-offset: 2px;
+}
+
+.ka-pin-eye-icon {
+  width: 20px;
+  height: 20px;
+  display: none;
+}
+
+.ka-pin-toggle[data-state="hidden"] .ka-pin-eye-open {
+  display: block;
+}
+
+.ka-pin-toggle[data-state="visible"] .ka-pin-eye-closed {
+  display: block;
+}
+
+.ka-pin-status {
+  min-height: 18px;
+  font-size: 0.9rem;
+  color: var(--slate-600);
+}
+
+.ka-pin-status.is-error {
+  color: #b91c1c;
+}
+
+.ka-pin-actions {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.ka-pin-btn {
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 12px;
+  border: none;
+  background: var(--emerald-600);
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 20px rgba(12, 129, 109, 0.3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ka-pin-btn:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.35);
+  outline-offset: 2px;
+}
+
+.ka-pin-btn-outline {
+  background: transparent;
+  color: var(--emerald-600);
+  border: 1px solid rgba(12, 129, 109, 0.35);
+  box-shadow: none;
+}
+
 .ka-modal-header {
   display: flex;
   align-items: center;
@@ -6888,7 +9727,7 @@ body.ka-view-shipments-active .ka-header-subtitle {
   display: flex;
   align-items: stretch;
   transition: transform 180ms ease;
-  width: 100%;
+  width: calc(100% + var(--ka-session-delete-width, 110px));
 }
 
 .ka-session-main {
@@ -6899,10 +9738,12 @@ body.ka-view-shipments-active .ka-header-subtitle {
   gap: 10px;
   width: 100%;
   min-width: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .ka-session-delete {
-  flex: 0 0 110px;
+  flex: 0 0 var(--ka-session-delete-width, 110px);
   border: none;
   color: #fff;
   background: #ef4444;
@@ -6916,6 +9757,8 @@ body.ka-view-shipments-active .ka-header-subtitle {
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
+  position: relative;
+  z-index: 2;
 }
 
 .ka-session-delete.locked {
@@ -6926,12 +9769,17 @@ body.ka-view-shipments-active .ka-header-subtitle {
 }
 
 .ka-session-row.show-delete .ka-session-swipe {
-  transform: translateX(-110px);
+  transform: translateX(calc(-1 * var(--ka-session-delete-width, 110px)));
 }
 
 .ka-session-row.show-delete .ka-session-delete {
   opacity: 1;
   pointer-events: auto;
+}
+
+.ka-session-row.show-delete .ka-session-detail-btn {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .ka-session-head {
@@ -7893,10 +10741,21 @@ body.ka-view-shipments-active .ka-header-subtitle {
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
-  padding-right: 32px;
-  background-image: url("data:image/svg+xml,%3Csvg width='14' height='14' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 5l4 4 4-4' stroke='%236b7280' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
+  padding-right: 28px;
+  background-image: none;
+}
+
+.ka-status-select::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid #6b7280;
+  border-bottom: 2px solid #6b7280;
+  transform: translateY(-55%) rotate(45deg);
+  pointer-events: none;
 }
 
 .ka-item-status {
@@ -7960,10 +10819,18 @@ body.ka-view-shipments-active .ka-header-subtitle {
 
 .ka-ship-info-box {
   margin-top: 6px;
-  padding: 10px 12px;
+  padding: 0;
   border-radius: 12px;
-  background: #f8fafc;
-  box-shadow: inset 0 0 0 1px #e5e7eb;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ka-ship-card--pickup .ka-ship-info-box {
+  margin-top: 6px;
+}
+
+.ka-ship-card--pickup .ka-ship-detail-grid--pickup {
+  margin-bottom: -8px;
 }
 
 .ka-ship-info-box.collapsed {
@@ -7976,6 +10843,13 @@ body.ka-view-shipments-active .ka-header-subtitle {
   gap: 12px;
 }
 
+.ka-ship-detail-grid--pickup {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+  --ka-pickup-label-width: 84px;
+  align-items: start;
+}
+
 .ka-ship-info-row {
   display: grid;
   grid-template-columns: 140px 1fr;
@@ -7985,6 +10859,87 @@ body.ka-view-shipments-active .ka-header-subtitle {
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   padding: 8px 10px;
+}
+
+.ka-ship-detail-grid--pickup .ka-ship-info-row {
+  grid-template-columns: 1fr;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  grid-column: 1 / -1;
+}
+
+.ka-ship-detail-grid--pickup .ka-ship-info-row--label-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ka-ship-detail-grid--pickup .ka-ship-info-row--label-left .ka-ship-info-label {
+  flex: 0 0 var(--ka-pickup-label-width);
+  white-space: nowrap;
+}
+
+.ka-ship-detail-grid--pickup .ka-ship-info-row--label-left .ka-ship-info-value {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.ka-ship-detail-grid--pickup .ka-ship-info-row--label-left .ka-ship-info-value > select,
+.ka-ship-detail-grid--pickup .ka-ship-info-row--label-left .ka-ship-info-value > input[type="date"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.ka-ship-detail-grid--pickup .ka-ship-info-label {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.ka-ship-detail-grid--pickup .ka-ship-info-row--half {
+  grid-column: span 1;
+}
+
+.ka-ship-chevron-btn--inline {
+  width: 34px;
+  height: 34px;
+  color: #94a3b8;
+}
+
+.ka-ship-detail-grid--pickup select,
+.ka-ship-detail-grid--pickup input[type="date"] {
+  width: 100%;
+  max-width: 100%;
+  padding: 8px 34px 8px 10px;
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 16px 16px;
+  height: 38px;
+  line-height: 1.2;
+  font-size: 0.95rem;
+}
+
+.ka-ship-detail-grid--pickup select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+}
+
+.ka-ship-detail-grid--pickup input[type="date"] {
+  padding: 6px 34px 6px 10px;
+  height: 38px;
+  min-height: 38px;
+  max-height: 38px;
+  line-height: 1.1;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='5' width='18' height='16' rx='2'/%3E%3Cpath d='M8 3v4M16 3v4M3 10h18'/%3E%3C/svg%3E");
 }
 
 .ka-ship-info-row.wide {
@@ -8037,6 +10992,20 @@ body.ka-view-shipments-active .ka-header-subtitle {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.ka-storage-actions--pickup {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.ka-storage-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
 }
 
 .ka-storage-estimate {
@@ -8253,17 +11222,35 @@ body.ka-view-shipments-active .ka-header-subtitle {
   margin-bottom: 8px;
 }
 
+.ka-ship-card--pickup .ka-ship-meta-row {
+  margin-bottom: 2px;
+}
+
 .ka-ship-meta-text {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
 
+.ka-ship-meta-text--due {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
 .ka-ship-header-right {
   flex-shrink: 0;
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.ka-ship-header-top {
+  display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .ka-ship-status-pill {
@@ -8430,6 +11417,7 @@ body.ka-view-shipments-active .ka-header-subtitle {
   justify-content: center;
   padding: 0;
   cursor: pointer;
+  align-self: center;
 }
 
 .ka-ship-chevron-btn:hover {
@@ -8793,6 +11781,180 @@ body.ka-view-shipments-active .ka-header-subtitle {
   border-radius: 6px;
 }
 
+.ka-payments-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.ka-payment-inline {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.95rem;
+}
+
+.ka-payment-inline-label {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.ka-payment-inline-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.ka-payment-inline-amount {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.ka-payment-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.ka-payment-card-title {
+  font-weight: 600;
+  color: #0f172a;
+  font-size: 0.95rem;
+  margin-bottom: 6px;
+}
+
+.ka-payment-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 0.95rem;
+}
+
+.ka-payment-card-row:last-child {
+  border-bottom: none;
+}
+
+.ka-payment-card-row span {
+  color: #64748b;
+  font-weight: 400;
+}
+
+.ka-payment-card-row strong {
+  font-weight: 500;
+  color: #0f172a;
+}
+
+.ka-payment-ledger {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.ka-ledger-title {
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.ka-ledger-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ka-ledger-row {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #ffffff;
+}
+
+.ka-ledger-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+
+.ka-ledger-amount {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.ka-ledger-status {
+  font-size: 0.75rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ka-ledger-meta {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.ka-ledger-notes {
+  margin-top: 4px;
+  font-size: 0.85rem;
+  color: #334155;
+}
+
+.ka-payment-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ka-payment-status.is-paid {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.ka-payment-status.is-unpaid {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.ka-pay-paidby-link {
+  border: none;
+  background: transparent;
+  color: #0f766e;
+  text-decoration: underline;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+
+.ka-pay-paidby-link:hover {
+  color: #0c4a3f;
+}
+
+.ka-pay-paidby-link:focus-visible {
+  outline: 2px solid rgba(12, 129, 109, 0.35);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
 .ka-tracking-link {
   color: #0f766e;
   text-decoration: underline;
@@ -9026,6 +12188,10 @@ body.ka-view-shipments-active .ka-header-subtitle {
   justify-self: start;
 }
 
+.ka-doc-upload .ka-doc-upload-step .btn {
+  width: auto;
+}
+
 .ka-doc-upload .ka-doc-file-name {
   grid-column: 1;
   grid-row: 2;
@@ -9040,6 +12206,54 @@ body.ka-view-shipments-active .ka-header-subtitle {
 .ka-doc-upload > .btn {
   grid-column: 3;
   grid-row: 1;
+}
+
+/* Employee sheet docs: title + choose + type inline, upload underneath */
+.ka-employee-docs .ka-doc-upload {
+  grid-template-columns: auto auto minmax(200px, 240px);
+  column-gap: 8px;
+}
+
+.ka-employee-docs .ka-doc-upload-title {
+  margin: 0;
+  padding-left: 0;
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+}
+
+.ka-employee-docs .ka-doc-upload .ka-doc-upload-step {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.ka-employee-docs .ka-doc-upload .ka-doc-upload-step .btn {
+  width: auto;
+  min-width: 140px;
+}
+
+.ka-employee-docs .ka-doc-upload .ka-doc-file-name {
+  grid-column: 2;
+  grid-row: 2;
+  padding-left: 0;
+}
+
+.ka-employee-docs .ka-doc-upload-type {
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 200px;
+}
+
+.ka-employee-docs #ka-employee-docs-upload-label-wrap {
+  grid-column: 1 / -1;
+  grid-row: 3;
+}
+
+.ka-employee-docs .ka-doc-upload > .btn {
+  grid-column: 1 / -1;
+  grid-row: 4;
+  justify-self: start;
+  margin-top: 4px;
 }
 
 .ka-doc-upload-step select {
@@ -9255,6 +12469,11 @@ body.ka-view-shipments-active .ka-header-subtitle {
   gap: 12px;
 }
 
+.ka-items-locked-note {
+  margin-top: 4px;
+  font-size: 0.9rem;
+}
+
 .ka-item-row {
   border: 1px solid #e2e8f0;
   border-radius: 16px;
@@ -9268,6 +12487,10 @@ body.ka-view-shipments-active .ka-header-subtitle {
   overflow: hidden;
 }
 
+.ka-item-row.ka-item-locked {
+  opacity: 0.7;
+}
+
 .ka-item-row-head {
   display: flex;
   align-items: center;
@@ -9279,6 +12502,9 @@ body.ka-view-shipments-active .ka-header-subtitle {
 .ka-item-head-left {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .ka-item-swipe {
@@ -9294,8 +12520,10 @@ body.ka-view-shipments-active .ka-header-subtitle {
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px;
+  padding-right: calc(18px + clamp(28px, 6vw, 56px));
   transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
+  touch-action: pan-y;
 }
 
 .ka-item-swipe-action {
@@ -9346,6 +12574,8 @@ body.ka-view-shipments-active .ka-header-subtitle {
 
 .ka-item-row.is-dragging .ka-item-swipe-main {
   transition: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .ka-item-actions-row {
@@ -9424,6 +12654,13 @@ body.ka-view-shipments-active .ka-header-subtitle {
   gap: 8px;
 }
 
+.ka-item-head-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
 .ka-item-status-chip {
   display: inline-flex;
   align-items: center;
@@ -9443,8 +12680,10 @@ body.ka-view-shipments-active .ka-header-subtitle {
   border: none;
   background: transparent;
   color: #0f172a;
-  border-radius: 0;
-  padding: 2px 18px; /* keep hit area but rely on glyph stretch for width */
+  border-radius: 999px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -9453,7 +12692,11 @@ body.ka-view-shipments-active .ka-header-subtitle {
   font-weight: 500;
   line-height: 0.9;
   position: relative;
-  transform: translateY(-2px) scaleX(1.6); /* widen caret without thickening stroke much */
+}
+
+.ka-item-collapse:focus-visible {
+  outline: 2px solid #0f766e;
+  outline-offset: 2px;
 }
 
 .ka-item-body {
@@ -11044,11 +14287,27 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
   font-weight: 700;
   color: #0f766e;
   flex: 0 0 auto;
+  position: relative;
+  overflow: hidden;
+}
+
+#ka-view-workers .ka-live-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 #ka-view-workers .ka-live-initials {
   font-size: 1.05rem;
   letter-spacing: 0.04em;
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 #ka-view-workers .ka-live-details {
@@ -11177,9 +14436,9 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
   --ka-timesheet-card-pad-right: 112px;
   --ka-timesheet-chevron-shift: 96px;
   --ka-timesheet-control-radius: 20px;
-  --ka-timesheet-metric-shift: 40px;
-  --ka-timesheet-header-shift: -16px;
-  --ka-timesheet-pill-extend: 64px;
+  --ka-timesheet-metric-shift: 6px;
+  --ka-timesheet-header-shift: -52px;
+  --ka-timesheet-pill-extend: 0px;
   --ka-session-delete-width: 110px;
 }
 
@@ -11455,7 +14714,7 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
 
 #ka-view-timesheets .ka-session-columns {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 180px 150px;
+  grid-template-columns: minmax(0, 1fr) 180px 150px 44px;
   gap: 12px;
   font-size: 0.7rem;
   letter-spacing: 0.16em;
@@ -11478,7 +14737,6 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
   transform: translateX(var(--ka-timesheet-header-shift));
 }
 
-#ka-view-timesheets.ka-timesheet-empty-day .ka-timesheet-toolbar,
 #ka-view-timesheets.ka-timesheet-empty-day #ka-session-list {
   display: none;
 }
@@ -11622,19 +14880,12 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
 #ka-view-timesheets .ka-session-row.is-active {
   border-color: rgba(12, 129, 109, 0.35);
   box-shadow:
+    0 0 0 2px rgba(12, 129, 109, 0.12),
     0 10px 18px rgba(15, 23, 42, 0.05);
 }
 
 #ka-view-timesheets .ka-session-row.is-active::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border: 1px solid rgba(12, 129, 109, 0.25);
-  border-radius: inherit;
-  box-shadow:
-    0 0 0 2px rgba(12, 129, 109, 0.12),
-    0 0 18px rgba(12, 129, 109, 0.28);
-  pointer-events: none;
+  content: none;
 }
 
 #ka-view-timesheets .ka-session-row {
@@ -11649,7 +14900,7 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
 
 #ka-view-timesheets .ka-session-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 180px 150px;
+  grid-template-columns: minmax(0, 1fr) 180px 150px 44px;
   gap: 12px;
   align-items: center;
   position: relative;
@@ -11685,6 +14936,23 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
   white-space: nowrap;
 }
 
+#ka-view-timesheets .ka-session-assign {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  white-space: normal;
+}
+
+#ka-view-timesheets .ka-session-assign-select {
+  font-size: 0.9rem;
+  padding: 4px 28px 4px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background-color: rgba(255, 255, 255, 0.85);
+  color: #334155;
+}
+
 #ka-view-timesheets .ka-session-meta {
   display: flex;
   align-self: stretch;
@@ -11706,16 +14974,23 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   min-width: 0;
-  flex: 0 0 calc(100% + var(--ka-timesheet-card-pad-right) + var(--ka-timesheet-pill-extend));
+  flex: 0 0 calc(100% + var(--ka-timesheet-card-pad-right) - var(--ka-timesheet-card-pad-left) + var(--ka-timesheet-pill-extend));
   padding: 8px 16px 8px 12px;
   border-radius: var(--ka-timesheet-control-radius);
   background: var(--ka-timesheet-pill-bg);
   border: 1px solid var(--ka-timesheet-pill-border);
   box-shadow: var(--ka-timesheet-pill-shadow);
-  width: calc(100% + var(--ka-timesheet-card-pad-right) + var(--ka-timesheet-pill-extend));
-  margin-right: calc(-1 * (var(--ka-timesheet-card-pad-right) + var(--ka-timesheet-pill-extend)));
+  width: calc(100% + var(--ka-timesheet-card-pad-right) - var(--ka-timesheet-card-pad-left) + var(--ka-timesheet-pill-extend));
+  margin-right: calc(-1 * (var(--ka-timesheet-card-pad-right) - var(--ka-timesheet-card-pad-left) + var(--ka-timesheet-pill-extend)));
+}
+
+#ka-view-timesheets .ka-session-time-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 #ka-view-timesheets .ka-session-time {
@@ -11770,8 +15045,8 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
 }
 
 #ka-view-timesheets .ka-session-detail-btn {
-  width: 58px;
-  height: 58px;
+  width: 40px;
+  height: 40px;
   border: none;
   background: transparent;
   color: #c0c6d1;
@@ -11780,11 +15055,10 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
   justify-content: center;
   padding: 0;
   cursor: pointer;
-  position: absolute;
-  right: calc(-1 * (var(--ka-timesheet-card-pad-right) - 20px + var(--ka-timesheet-chevron-shift)));
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
+  position: static;
+  transform: translateX(var(--ka-timesheet-chevron-shift));
+  z-index: 1;
+  justify-self: end;
 }
 
 #ka-view-timesheets .ka-session-detail-btn:hover {
@@ -11801,6 +15075,57 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
   width: 34px;
   height: 34px;
   display: block;
+}
+
+.ka-tap-debug {
+  position: fixed;
+  z-index: 65000;
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  font-size: 0.72rem;
+  padding: 6px 10px;
+  border-radius: 999px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.25);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.ka-tap-debug.is-fade {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.ka-tap-debug-panel {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 65000;
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  padding: 10px 12px;
+  border-radius: 12px;
+  min-width: 220px;
+  max-width: 320px;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.3);
+  pointer-events: none;
+}
+
+.ka-tap-debug-title {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  color: rgba(248, 250, 252, 0.85);
+}
+
+.ka-tap-debug-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  opacity: 0.92;
 }
 
 #ka-view-timesheets .ka-session-metric-label {
@@ -11827,9 +15152,9 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
     --ka-timesheet-card-pad-right: 72px;
     --ka-timesheet-card-pad-left: 16px;
     --ka-timesheet-chevron-shift: 48px;
-    --ka-timesheet-metric-shift: 18px;
-    --ka-timesheet-header-shift: -8px;
-    --ka-timesheet-pill-extend: 32px;
+    --ka-timesheet-metric-shift: 4px;
+    --ka-timesheet-header-shift: -34px;
+    --ka-timesheet-pill-extend: 0px;
   }
 
   .ka-timesheet-header {
@@ -11858,21 +15183,158 @@ body.ka-view-workers-active #ka-view-workers.ka-live-empty #ka-live-card {
   }
 
   .ka-timesheet-columns {
-    grid-template-columns: 1fr minmax(120px, 1fr) minmax(120px, 1fr);
+    grid-template-columns: 1fr minmax(120px, 1fr) minmax(120px, 1fr) 36px;
   }
 
   #ka-view-timesheets .ka-session-head {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 1fr) minmax(120px, 1fr) 36px;
     align-items: flex-start;
   }
 
   #ka-view-timesheets .ka-session-meta-right {
-    justify-items: start;
+    display: contents;
   }
 
   #ka-view-timesheets .ka-session-metric {
-    align-items: flex-start;
-    text-align: left;
-    justify-self: start;
+    align-items: flex-end;
+    text-align: right;
+    justify-self: end;
+  }
+}
+
+.ka-customer-summary {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  margin-bottom: 14px;
+}
+
+.ka-customer-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
+.ka-customer-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.ka-customer-meta {
+  margin-top: 4px;
+  font-size: 0.9rem;
+  color: #64748b;
+}
+
+.ka-customer-section-title {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.ka-customer-projects {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ka-customer-project {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.ka-customer-project-name {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.ka-customer-project-meta {
+  margin-top: 4px;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+/* Force time entry action modal layout + spacing (override global modal styles) */
+#ka-time-action-backdrop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+}
+
+#ka-time-action-backdrop.hidden {
+  display: none !important;
+}
+
+#ka-time-action-backdrop .ka-time-action-modal {
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  transform: none !important;
+  margin: 0;
+  background: #ffffff;
+  border: 1px solid #dbe4ef;
+  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.28);
+  border-radius: 22px;
+  padding: 20px 22px;
+  width: min(720px, 94vw);
+  max-width: 720px;
+  max-height: min(86vh, 900px);
+  overflow-y: auto;
+}
+
+#ka-time-action-backdrop .ka-time-action-fields {
+  width: 100%;
+}
+
+#ka-time-action-backdrop .ka-time-action-field-row {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+  width: 100%;
+}
+
+#ka-time-action-backdrop .ka-time-action-field-row .form-field {
+  min-width: 0;
+  width: 100%;
+}
+
+#ka-time-action-backdrop .ka-time-action-field-row .form-field + .form-field {
+  margin-left: 0;
+}
+
+#ka-time-action-backdrop .ka-time-action-field-full {
+  width: 100%;
+}
+
+#ka-time-action-backdrop .ka-time-action-fields input,
+#ka-time-action-backdrop .ka-time-action-fields select,
+#ka-time-action-backdrop .ka-time-action-fields textarea {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+#ka-time-action-backdrop .ka-time-action-field-row .form-field:first-child {
+  padding-right: 8px;
+}
+
+#ka-time-action-backdrop .ka-time-action-field-row .form-field:last-child {
+  padding-left: 8px;
+}
+
+@media (max-width: 560px) {
+  #ka-time-action-backdrop .ka-time-action-field-row {
+    grid-template-columns: 1fr;
   }
 }

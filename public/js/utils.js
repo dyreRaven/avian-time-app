@@ -46,11 +46,43 @@ async function fetchJSON(url, options = {}) {
   const res = await fetch(url, opts);
   const nextToken = res.headers.get('X-CSRF-Token');
   if (nextToken) storeCsrfToken(nextToken);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = data.error || data.message || 'Request failed';
-    throw new Error(msg);
+
+  let text = '';
+  try {
+    text = await res.text();
+  } catch {
+    text = '';
   }
+
+  const contentType = res.headers.get('content-type') || '';
+  const isHtmlResponse =
+    /text\/html/i.test(contentType) ||
+    /^\s*<!doctype html/i.test(text) ||
+    /^\s*<html/i.test(text);
+
+  let data = {};
+  if (text && !isHtmlResponse) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {};
+    }
+  }
+
+  if (!res.ok) {
+    const msg =
+      data.error ||
+      data.message ||
+      (!isHtmlResponse ? text : '') ||
+      (isHtmlResponse
+        ? `Request failed (${res.status}). Unexpected HTML response.`
+        : `Request failed (${res.status})`);
+    const err = new Error(msg);
+    err.status = res.status;
+    err.body = data;
+    throw err;
+  }
+
   return data;
 }
 
@@ -58,7 +90,50 @@ function formatDateTimeLocal(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
+  const datePart = formatDateUS(d);
+  const timePart = d.toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+  return `${datePart}, ${timePart}`;
+}
+
+function formatTimeValue12(value) {
+  if (!value) return '';
+  if (value instanceof Date) {
+    return value.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  }
+  const raw = String(value).trim();
+  if (!raw) return '';
+  if (/(^|\\s)(am|pm)\\b/i.test(raw)) return raw;
+  if (raw.includes('T') || raw.includes('-') || raw.includes('/')) {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+    }
+  }
+  const parts = raw.split(':');
+  if (parts.length >= 2) {
+    const hours = Number(parts[0]);
+    const minutes = Number(parts[1]);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return raw;
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return raw;
+    const hour12 = hours % 12 || 12;
+    const hh = String(hour12).padStart(2, '0');
+    const mm = String(minutes).padStart(2, '0');
+    const suffix = hours >= 12 ? 'PM' : 'AM';
+    return `${hh}:${mm} ${suffix}`;
+  }
+  return raw;
 }
 
 // Safely escape text for insertion into HTML attributes / text nodes

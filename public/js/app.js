@@ -4,9 +4,100 @@
 // Run Payroll tab wiring & data loads only once
 console.log('[App] app.js loaded');
 let payrollTabInitialized = false;
-let timeExceptionsInitialized = false;
-let timeExceptionProjects = [];
+let timeEntriesInitialized = false;
+let dashboardSnapshotLoading = false;
+let dashboardSnapshotLast = 0;
+const timeEntryApprovalSelection = new Set();
+const timeEntryApprovalNotes = new Map();
+let timeEntryEditInModal = false;
+let timeEntryFormOriginalParent = null;
+let timeEntryFormOriginalNextSibling = null;
+let timeEntryCurrentPage = 1;
+const timeEntryPageSize = 25;
+let timeEntryLastFilters = {};
 window.CURRENT_ACCESS_PERMS = window.CURRENT_ACCESS_PERMS || {};
+window.ONBOARDING_SHOW_QB = window.ONBOARDING_SHOW_QB || false;
+
+function coerceAccessFlag(value) {
+  return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function applyShipmentsNavForAccess(perms = {}) {
+  if (coerceAccessFlag(perms.see_shipments)) return;
+
+  const navList = document.querySelector('.nav-list');
+  const shipmentsItem = document.querySelector('.nav-item[data-section="shipments"]');
+  const shipmentsReportItem = document.querySelector('.nav-item[data-section="shipments-report"]');
+  const employeesItem = document.querySelector('.nav-item[data-section="employees"]');
+  const shipmentsSection = document.getElementById('section-shipments');
+  const employeesSection = document.getElementById('section-employees');
+
+  if (shipmentsItem) shipmentsItem.remove();
+  if (shipmentsReportItem) shipmentsReportItem.remove();
+
+  if (navList && employeesItem) {
+    navList.appendChild(employeesItem);
+  }
+
+  if (shipmentsSection && shipmentsSection.classList.contains('active')) {
+    document.querySelectorAll('.nav-item').forEach(btn => btn.classList.remove('active'));
+    if (employeesItem) employeesItem.classList.add('active');
+    shipmentsSection.classList.remove('active');
+    if (employeesSection) employeesSection.classList.add('active');
+  }
+}
+
+function navigateToSection(sectionKey, { force = false } = {}) {
+  if (!sectionKey) return false;
+  const navItems = document.querySelectorAll('.nav-item');
+  const sections = document.querySelectorAll('.section');
+  const item = document.querySelector(`.nav-item[data-section="${sectionKey}"]`);
+  if (!item) return false;
+
+  const isDisabled = item.dataset.disabled === 'true';
+  if (isDisabled && !force) return false;
+
+  navItems.forEach(btn => btn.classList.remove('active'));
+  item.classList.add('active');
+
+  sections.forEach(sec => {
+    const shouldBeActive = sec.id === `section-${sectionKey}`;
+    sec.classList.toggle('active', shouldBeActive);
+  });
+
+  updateQbCardForSection(sectionKey);
+
+  if (sectionKey === 'dashboard') {
+    updateDashboardHero();
+    refreshDashboardSnapshot();
+  }
+
+  if (sectionKey === 'payroll') {
+    initPayrollTabIfNeeded();
+  }
+
+  if (sectionKey === 'time-entries') {
+    initTimeEntriesIfNeeded();
+  }
+
+  if (sectionKey === 'my-account' || sectionKey === 'settings' || sectionKey === 'notifications') {
+    if (typeof window.initNotificationsSection === 'function') {
+      Promise.resolve(window.initNotificationsSection()).then(() => {
+        if (sectionKey === 'notifications' &&
+            typeof window.markNotificationsReadOnView === 'function') {
+          window.markNotificationsReadOnView();
+        }
+      });
+    }
+  }
+
+  debugSectionLayout(sectionKey);
+  return true;
+}
+
+window.navigateToSection = navigateToSection;
+window.forceNavigateSection = (sectionKey) =>
+  navigateToSection(sectionKey, { force: true });
 
 function setupSidebarNavigation() {
   const navItems = document.querySelectorAll('.nav-item');
@@ -15,10 +106,9 @@ function setupSidebarNavigation() {
   console.log('[NAV] setupSidebarNavigation: found', navItems.length, 'nav items and', sections.length, 'sections');
 
   navItems.forEach(item => {
-    const isDisabled = item.dataset.disabled === 'true';
-
     item.addEventListener('click', () => {
       const sectionKey = item.dataset.section;
+      const isDisabled = item.dataset.disabled === 'true';
       console.log('[NAV] Clicked nav item', {
         text: item.textContent?.trim(),
         sectionKey,
@@ -26,49 +116,10 @@ function setupSidebarNavigation() {
       });
 
       // 🔒 Do nothing if this nav item is disabled
-      if (isDisabled) {
+      if (!navigateToSection(sectionKey)) {
         console.log('[NAV] Item is disabled, ignoring click.');
         return;
       }
-
-      // Update active nav button
-      navItems.forEach(btn => btn.classList.remove('active'));
-      item.classList.add('active');
-
-      // Show matching section
-      sections.forEach(sec => {
-        const shouldBeActive = sec.id === `section-${sectionKey}`;
-        sec.classList.toggle('active', shouldBeActive);
-      });
-
-      // Log which sections are active
-      const activeIds = [...sections]
-        .filter(sec => sec.classList.contains('active'))
-        .map(sec => sec.id);
-      console.log('[NAV] Active sections after click:', activeIds);
-
-      // Update QB card visibility / buttons
-      updateQbCardForSection(sectionKey);
-
-      // ✅ Initialize payroll tab once, when first opened
-      if (sectionKey === 'payroll') {
-        console.log('[NAV] Initializing payroll tab (if not already).');
-        initPayrollTabIfNeeded();
-      }
-
-      // Initialize Time Exceptions when that tab is opened directly
-      if (sectionKey === 'time-exceptions') {
-        initTimeExceptionsIfNeeded();
-      }
-
-      if (sectionKey === 'notifications') {
-        if (typeof window.initNotificationsSection === 'function') {
-          window.initNotificationsSection();
-        }
-      }
-
-      // Layout debug for the active section
-      debugSectionLayout(sectionKey);
     });
   });
 }
@@ -100,12 +151,411 @@ function debugSectionLayout(sectionKey) {
   });
 }
 
+/* ───────── DASHBOARD (ADMIN CONSOLE) ───────── */
+
+function formatDashboardDate(timezone) {
+  const now = new Date();
+  try {
+    if (timezone) {
+      return new Intl.DateTimeFormat('en-US', {
+        weekday: 'long',
+        month: 'short',
+        day: 'numeric',
+        timeZone: timezone
+      }).format(now);
+    }
+  } catch {
+    // fall back to local formatting
+  }
+  return now.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric'
+  });
+}
+
+function updateDashboardHero() {
+  const adminNameEl = document.getElementById('dashboard-admin-name');
+  const orgNameEl = document.getElementById('dashboard-org-name');
+  const orgTzEl = document.getElementById('dashboard-org-timezone');
+  const todayEl = document.getElementById('dashboard-today');
+
+  const org = window.CURRENT_ORG || {};
+  const employee = window.CURRENT_EMPLOYEE || {};
+
+  if (adminNameEl) {
+    adminNameEl.textContent = employee.name || 'Admin';
+  }
+  if (orgNameEl) {
+    orgNameEl.textContent = org.name || 'Your organization';
+  }
+  if (orgTzEl) {
+    orgTzEl.textContent = org.timezone || 'Local timezone';
+  }
+  if (todayEl) {
+    todayEl.textContent = formatDashboardDate(org.timezone);
+  }
+}
+
+function setDashboardStat(key, value, note = '') {
+  const valueEl = document.getElementById(`dashboard-stat-${key}`);
+  const noteEl = document.getElementById(`dashboard-stat-${key}-note`);
+  if (valueEl) {
+    valueEl.textContent = value;
+  }
+  if (noteEl) {
+    noteEl.textContent = note || '';
+  }
+}
+
+function setDashboardTask(key, value, note = null) {
+  const valueEl = document.getElementById(`dashboard-task-${key}-count`);
+  const noteEl = document.getElementById(`dashboard-task-${key}-note`);
+  if (valueEl) {
+    valueEl.textContent = value;
+    valueEl.classList.remove('is-ok', 'is-warn');
+    const num = Number(value);
+    if (Number.isFinite(num)) {
+      valueEl.classList.add(num > 0 ? 'is-warn' : 'is-ok');
+    }
+  }
+  if (noteEl) {
+    if (!noteEl.dataset.defaultText) {
+      noteEl.dataset.defaultText = noteEl.textContent || '';
+    }
+    if (note !== null) {
+      noteEl.textContent = note || '';
+    } else {
+      noteEl.textContent = noteEl.dataset.defaultText || '';
+    }
+  }
+}
+
+function formatDashboardCount(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '--';
+  return num.toLocaleString('en-US');
+}
+
+function getDashboardTodayIso(timezone) {
+  const now = new Date();
+  try {
+    if (timezone) {
+      return new Intl.DateTimeFormat('en-CA', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        timeZone: timezone
+      }).format(now);
+    }
+  } catch {
+    // fall back to local formatting
+  }
+  return now.toISOString().slice(0, 10);
+}
+
+async function refreshDashboardSnapshot({ force = false } = {}) {
+  const now = Date.now();
+  if (dashboardSnapshotLoading) return;
+  if (!force && dashboardSnapshotLast && now - dashboardSnapshotLast < 30000) return;
+
+  dashboardSnapshotLoading = true;
+  dashboardSnapshotLast = now;
+
+  const perms = window.CURRENT_ACCESS_PERMS || {};
+  const canViewPayroll = !!perms.view_payroll;
+  const canSeeShipments = !!perms.see_shipments;
+  const canViewTime = !!(perms.view_time_reports || perms.view_payroll);
+  const canViewTimesheets = !!(perms.view_time_reports || perms.view_payroll || perms.view_all_timesheets);
+
+  if (!canViewPayroll) {
+    setDashboardStat('employees', '--', 'Payroll access required');
+  }
+  if (!canViewPayroll && !canSeeShipments) {
+    setDashboardStat('projects', '--', 'Access required');
+    setDashboardStat('vendors', '--', 'Access required');
+  }
+  if (!canSeeShipments) {
+    setDashboardStat('shipments', '--', 'Access required');
+  }
+  if (!canViewTimesheets) {
+    setDashboardStat('open-timesheets', '--', 'Access required');
+    setDashboardStat('current-workers', '--', 'Access required');
+  }
+  if (!canViewTime) {
+    setDashboardTask('time-entries', '--', 'Access required');
+  }
+  if (!canSeeShipments) {
+    setDashboardTask('missing-docs', '--', 'Access required');
+    setDashboardTask('unread-comments', '--', 'Access required');
+    setDashboardTask('pickup-storage', '--', 'Access required');
+  }
+  if (!canViewPayroll) {
+    setDashboardTask('qbo-sync', '--', 'Payroll access required');
+    setDashboardTask('payroll-issues', '--', 'Payroll access required');
+  }
+
+  const tasks = [];
+
+  if (canViewTime) {
+    tasks.push(
+      fetchJSON('/api/time-entries/pending-count')
+        .then(res => {
+          const pending = Number(res?.pending || 0);
+          setDashboardTask('time-entries', formatDashboardCount(pending));
+        })
+        .catch(() => {
+          setDashboardTask('time-entries', '--', 'Unavailable');
+        })
+    );
+  }
+
+  if (canViewPayroll) {
+    tasks.push(
+      fetchJSON('/api/employees?status=active')
+        .then(list => {
+          const count = Array.isArray(list) ? list.length : 0;
+          setDashboardStat('employees', formatDashboardCount(count));
+        })
+        .catch(() => {
+          setDashboardStat('employees', '--', 'Unavailable');
+        })
+    );
+  }
+
+  if (canViewPayroll || canSeeShipments) {
+    tasks.push(
+      fetchJSON('/api/projects?status=active')
+        .then(list => {
+          const count = Array.isArray(list) ? list.length : 0;
+          setDashboardStat('projects', formatDashboardCount(count));
+        })
+        .catch(() => {
+          setDashboardStat('projects', '--', 'Unavailable');
+        })
+    );
+
+    tasks.push(
+      fetchJSON('/api/vendors?status=active')
+        .then(list => {
+          const count = Array.isArray(list) ? list.length : 0;
+          setDashboardStat('vendors', formatDashboardCount(count));
+        })
+        .catch(() => {
+          setDashboardStat('vendors', '--', 'Unavailable');
+        })
+    );
+  }
+
+  if (canSeeShipments) {
+    tasks.push(
+      fetchJSON('/api/shipments')
+        .then(data => {
+          const shipmentsByStatus = data?.shipmentsByStatus;
+          let count = 0;
+          let missingDocs = 0;
+          let pickupStorage = 0;
+          const todayIso = getDashboardTodayIso(window.CURRENT_ORG?.timezone);
+
+          if (shipmentsByStatus && typeof shipmentsByStatus === 'object') {
+            Object.values(shipmentsByStatus).forEach(list => {
+              if (!Array.isArray(list)) return;
+              list.forEach(shipment => {
+                if (!shipment) return;
+                count += 1;
+                const missingInvoice = Number(shipment.has_shippers_invoice_doc) !== 1;
+                const missingBol = Number(shipment.has_bol_doc) !== 1;
+                if (missingInvoice || missingBol) {
+                  missingDocs += 1;
+                }
+                const status = shipment.status || '';
+                const readyForPickup = status === 'Cleared - Ready for Pickup';
+                const storageDueDate = shipment.storage_due_date;
+                const storagePaid = Number(shipment.storage_paid) === 1;
+                const storageDue =
+                  storageDueDate &&
+                  !storagePaid &&
+                  status !== 'Picked Up' &&
+                  status !== 'Archived' &&
+                  storageDueDate <= todayIso;
+                if (readyForPickup || storageDue) {
+                  pickupStorage += 1;
+                }
+              });
+            });
+          }
+
+          setDashboardStat('shipments', formatDashboardCount(count));
+          setDashboardTask('missing-docs', formatDashboardCount(missingDocs));
+          setDashboardTask('pickup-storage', formatDashboardCount(pickupStorage));
+        })
+        .catch(() => {
+          setDashboardStat('shipments', '--', 'Unavailable');
+          setDashboardTask('missing-docs', '--', 'Unavailable');
+          setDashboardTask('pickup-storage', '--', 'Unavailable');
+        })
+    );
+  }
+
+  if (canViewTimesheets) {
+    tasks.push(
+      fetchJSON(`/api/kiosk-sessions/today?date=${encodeURIComponent(getDashboardTodayIso(window.CURRENT_ORG?.timezone))}`)
+        .then(list => {
+          const sessions = Array.isArray(list) ? list : [];
+          const openSessions = sessions.filter(session => !session?.ended_at);
+          const openTimesheets = openSessions.length;
+          const currentWorkers = openSessions.reduce((sum, session) => {
+            const punches = Array.isArray(session?.open_punches) ? session.open_punches.length : 0;
+            return sum + punches;
+          }, 0);
+          setDashboardStat('open-timesheets', formatDashboardCount(openTimesheets));
+          setDashboardStat('current-workers', formatDashboardCount(currentWorkers));
+        })
+        .catch(() => {
+          setDashboardStat('open-timesheets', '--', 'Unavailable');
+          setDashboardStat('current-workers', '--', 'Unavailable');
+        })
+    );
+  }
+
+  if (canSeeShipments) {
+    tasks.push(
+      fetchJSON('/api/notifications?unread_only=1&limit=200')
+        .then(res => {
+          const notifications = Array.isArray(res?.notifications) ? res.notifications : [];
+          const count = notifications.filter(item => item?.type === 'shipment_comment').length;
+          setDashboardTask('unread-comments', formatDashboardCount(count));
+        })
+        .catch(() => {
+          setDashboardTask('unread-comments', '--', 'Unavailable');
+        })
+    );
+  }
+
+  if (canViewPayroll) {
+    tasks.push(
+      fetchJSON('/api/employees?status=pending')
+        .then(list => {
+          const count = Array.isArray(list) ? list.length : 0;
+          const qbConnected = window.QBO_STATUS && window.QBO_STATUS.qbConnected === false;
+          setDashboardTask(
+            'qbo-sync',
+            formatDashboardCount(count),
+            qbConnected ? 'QuickBooks not connected' : null
+          );
+        })
+        .catch(() => {
+          setDashboardTask('qbo-sync', '--', 'Unavailable');
+        })
+    );
+
+    tasks.push(
+      fetchJSON('/api/reports/payroll-runs')
+        .then(list => {
+          const rows = Array.isArray(list) ? list : [];
+          const count = rows.filter(row => {
+            const status = String(row?.status || '').toLowerCase();
+            return status === 'failed' || status === 'partial' || !!row?.last_error;
+          }).length;
+          setDashboardTask('payroll-issues', formatDashboardCount(count));
+        })
+        .catch(() => {
+          setDashboardTask('payroll-issues', '--', 'Unavailable');
+        })
+    );
+  }
+
+  await Promise.allSettled(tasks);
+  dashboardSnapshotLoading = false;
+}
+
+function updateDashboardQboBadge(status = window.QBO_STATUS) {
+  const pill = document.getElementById('dashboard-qbo-pill');
+  if (!pill) return;
+
+  pill.classList.remove('is-ok', 'is-warn', 'is-muted');
+  const perms = window.CURRENT_ACCESS_PERMS || {};
+  if (!perms.view_payroll) {
+    pill.textContent = 'QuickBooks: Access required';
+    pill.classList.add('is-muted');
+    return;
+  }
+
+  if (!status || typeof status.qbConnected === 'undefined') {
+    pill.textContent = 'QuickBooks: Checking...';
+    pill.classList.add('is-muted');
+    return;
+  }
+
+  if (status.qbConnected) {
+    pill.textContent = 'QuickBooks: Connected';
+    pill.classList.add('is-ok');
+  } else {
+    pill.textContent = 'QuickBooks: Not connected';
+    pill.classList.add('is-warn');
+  }
+}
+
+function setupDashboardQuickLinks() {
+  const links = document.querySelectorAll('[data-dashboard-link]');
+  links.forEach(link => {
+    if (link.dataset.bound) return;
+    link.dataset.bound = '1';
+    link.addEventListener('click', () => {
+      const key = link.dataset.dashboardLink;
+      if (!key) return;
+      const navItem = document.querySelector(`.nav-item[data-section="${key}"]`);
+      if (navItem) {
+        navItem.click();
+      }
+    });
+  });
+}
+
+function applyDashboardLinkVisibility() {
+  const links = document.querySelectorAll('[data-dashboard-link]');
+  links.forEach(link => {
+    const key = link.dataset.dashboardLink;
+    if (!key) return;
+    const navItem = document.querySelector(`.nav-item[data-section="${key}"]`);
+    const shouldHide = !navItem;
+    link.classList.toggle('hidden', shouldHide);
+    if (shouldHide) {
+      link.setAttribute('disabled', 'disabled');
+    } else {
+      link.removeAttribute('disabled');
+    }
+  });
+
+  document.querySelectorAll('.dashboard-link-card').forEach(card => {
+    const actions = Array.from(card.querySelectorAll('[data-dashboard-link]'));
+    const hasVisible = actions.some(btn => !btn.classList.contains('hidden'));
+    if (!hasVisible) {
+      card.classList.add('hidden');
+    }
+  });
+
+  document.querySelectorAll('.dashboard-checklist-item').forEach(item => {
+    const action = item.querySelector('[data-dashboard-link]');
+    if (!action) return;
+    if (action.classList.contains('hidden')) {
+      item.classList.add('hidden');
+    }
+  });
+}
+
 /* ───────── 2. QUICKBOOKS STATUS & SYNC ───────── */
 
 async function checkStatus() {
   try {
-    const data = await fetchJSON('/api/status');
+    const res = await fetch('/api/status', { credentials: 'same-origin' });
+    if (res.status === 401 || res.status === 403) {
+      updateDashboardQboBadge();
+      return;
+    }
+    const data = await res.json();
     window.QBO_STATUS = data;
+    updateDashboardQboBadge(data);
     const el = document.getElementById('qb-status');
     if (data.qbConnected) {
       el.textContent = '🔗 Connected to QuickBooks. Click “Connect” to refresh authorization.';
@@ -115,6 +565,7 @@ async function checkStatus() {
   } catch (err) {
     document.getElementById('qb-status').textContent =
       'Error checking status: ' + err.message;
+    updateDashboardQboBadge();
   }
 }
 
@@ -155,7 +606,13 @@ function updateQbCardForSection(key) {
     accountsBtn.onclick = null;
   }
 
-  // 🔹 Only show the QB card + relevant button on these three tabs
+  const onboardingBlocksQb =
+    document.body.classList.contains('onboarding-first') && !window.ONBOARDING_SHOW_QB;
+  if (onboardingBlocksQb) {
+    return;
+  }
+
+  // 🔹 Only show the QB card + relevant button on these tabs
   switch (key) {
     case 'employees':
       if (qbCard) qbCard.style.display = ''; // show card
@@ -244,7 +701,14 @@ function computeQboSyncBackoffSeconds(route, retryAfterHeader) {
 }
 
 
-async function syncRoute(route, onSuccess) {
+async function syncRoute(route, onSuccess, options = {}) {
+  if (onSuccess && typeof onSuccess === 'object') {
+    options = onSuccess;
+    onSuccess = null;
+  }
+  const silent = !!options.silent;
+  const statusEl = options.statusEl || null;
+  const throwOnError = !!options.throwOnError;
   const indicator   = document.getElementById('qb-sync-indicator');
   const employeesBtn = document.getElementById('sync-employees');
   const vendorsBtn  = document.getElementById('sync-vendors');
@@ -289,7 +753,12 @@ async function syncRoute(route, onSuccess) {
     resetQboSyncBackoff(route);
     const fallbackMessage =
       typeof data.count === 'number' ? `Synced ${data.count} record(s).` : 'Sync complete.';
-    alert(data.message || fallbackMessage);
+    if (!silent) {
+      alert(data.message || fallbackMessage);
+    } else if (statusEl) {
+      statusEl.textContent = data.message || fallbackMessage;
+      statusEl.style.color = 'green';
+    }
 
     // After syncing from QuickBooks, reload what depends on it
     if (route === '/api/sync/vendors' || route === '/api/sync/employees') {
@@ -309,7 +778,15 @@ async function syncRoute(route, onSuccess) {
       await onSuccess(data);
     }
   } catch (err) {
-    alert('Error: ' + err.message);
+    if (!silent) {
+      alert('Error: ' + err.message);
+    } else if (statusEl) {
+      statusEl.textContent = err.message || 'Sync failed.';
+      statusEl.style.color = 'crimson';
+    }
+    if (throwOnError) {
+      throw err;
+    }
   } finally {
     // Hide indicator + re-enable buttons
     if (indicator) {
@@ -374,13 +851,89 @@ function updateManualTimeHoursPreview() {
   }
 }
 
+function deriveFieldReviewState(entry = {}) {
+  const status = String(entry.resolved_status || '').toLowerCase();
+  const resolvedFlag = entry.resolved === 1 || entry.resolved === true || entry.resolved === '1';
+  const isRejected = status === 'rejected';
+  const isModified = status === 'modified';
+  const isApproved = status === 'approved';
+  const isReviewed = resolvedFlag || isRejected || isModified || isApproved;
+  let label = 'Pending review';
+  if (isRejected) {
+    label = 'Rejected';
+  } else if (isModified) {
+    label = 'Modified';
+  } else if (isApproved) {
+    label = 'Approved';
+  } else if (resolvedFlag) {
+    label = 'Reviewed';
+  }
+  return { label, isReviewed, isRejected, isModified, isApproved };
+}
+
+async function loadTimeEntryFlagsMap(filters = {}) {
+  const params = new URLSearchParams();
+  const hasFilters = !!(
+    filters.start ||
+    filters.end ||
+    filters.employee_id ||
+    filters.project_id
+  );
+
+  if (hasFilters) {
+    if (filters.start) params.set('start', filters.start);
+    if (filters.end) params.set('end', filters.end);
+    if (filters.employee_id) params.set('employee_id', filters.employee_id);
+    if (filters.project_id) params.set('project_id', filters.project_id);
+  } else {
+    const today = new Date().toISOString().slice(0, 10);
+    params.set('start', today);
+    params.set('end', today);
+  }
+
+  params.set('hide_resolved', '0');
+
+  try {
+    const data = await fetchJSON(`/api/time-exceptions?${params.toString()}`);
+    const map = new Map();
+    (Array.isArray(data) ? data : []).forEach(row => {
+      const entryId =
+        row.time_entry_id ||
+        (row.source === 'time_entry' ? row.id : null);
+      if (!entryId) return;
+
+      const list = map.get(String(entryId)) || [];
+      const flags = Array.isArray(row.flags) ? [...row.flags] : [];
+      const autoReason = formatAutoClockoutReason(row.auto_clock_out_reason);
+      if (autoReason) {
+        flags.push(`Auto clock-out: ${autoReason}`);
+      }
+      flags.forEach(flag => {
+        const text = String(flag || '').trim();
+        if (!text) return;
+        if (!list.includes(text)) {
+          list.push(text);
+        }
+      });
+      map.set(String(entryId), list);
+    });
+    return map;
+  } catch (err) {
+    console.warn('Failed to load time entry flags:', err?.message || err);
+    return new Map();
+  }
+}
+
 async function loadTimeEntriesTable(filters = {}) {
   const tbody   = document.getElementById('time-table-body');
   const heading = document.getElementById('time-entries-heading');
   if (!tbody) return;
 
-  // columns: Entry ID, Employee, Project, Date, Hours, Pay, Paid?, Paid on, Approval
+  // columns: Employee, Project, Date, Clock in, Clock out, Hours, Flags, Field Review, Approve
   tbody.innerHTML = '<tr><td colspan="9">Loading...</td></tr>';
+  timeEntryApprovalSelection.clear();
+  timeEntryApprovalNotes.clear();
+  updateApproveSelectedButton();
 
   const hasFilters = !!(
     filters.start ||
@@ -393,11 +946,20 @@ async function loadTimeEntriesTable(filters = {}) {
     heading.textContent = hasFilters ? 'Selected Entries' : "Today's Entries";
   }
 
+  const page = Number(filters.page || timeEntryCurrentPage || 1);
+  const pageSize = Number(filters.page_size || timeEntryPageSize || 25);
+  timeEntryCurrentPage = Number.isFinite(page) && page > 0 ? page : 1;
+  timeEntryLastFilters = { ...filters, page: timeEntryCurrentPage, page_size: pageSize };
+
   const params = [];
   if (filters.start)       params.push(`start=${encodeURIComponent(filters.start)}`);
   if (filters.end)         params.push(`end=${encodeURIComponent(filters.end)}`);
   if (filters.employee_id) params.push(`employee_id=${encodeURIComponent(filters.employee_id)}`);
   if (filters.project_id)  params.push(`project_id=${encodeURIComponent(filters.project_id)}`);
+  if (filters.hide_paid)   params.push('hide_paid=1');
+  if (filters.hide_approved) params.push('hide_payroll_approved=1');
+  params.push(`limit=${encodeURIComponent(pageSize)}`);
+  params.push(`offset=${encodeURIComponent((timeEntryCurrentPage - 1) * pageSize)}`);
 
   let url = '/api/time-entries';
   if (params.length) {
@@ -405,7 +967,17 @@ async function loadTimeEntriesTable(filters = {}) {
   }
 
   try {
-    const entries = await fetchJSON(url);
+    const data = await fetchJSONWithTimeout(url, {}, 12000);
+    const entries = Array.isArray(data) ? data : (data && data.rows) ? data.rows : [];
+    const total = !Array.isArray(data) && data && Number.isFinite(Number(data.total)) ? Number(data.total) : entries.length;
+
+    const pageStatus = document.getElementById('te-page-status');
+    const prevBtn = document.getElementById('te-page-prev');
+    const nextBtn = document.getElementById('te-page-next');
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (pageStatus) pageStatus.textContent = `Page ${timeEntryCurrentPage} of ${totalPages}`;
+    if (prevBtn) prevBtn.disabled = timeEntryCurrentPage <= 1;
+    if (nextBtn) nextBtn.disabled = timeEntryCurrentPage >= totalPages;
 
     if (!entries.length) {
       tbody.innerHTML =
@@ -437,55 +1009,49 @@ async function loadTimeEntriesTable(filters = {}) {
         dateLabel = formatDateUS(e.end_date);
       }
 
-      // ─────────────────────────────────────────────
-      // PAID / UNPAID LOGIC
-      // ─────────────────────────────────────────────
-      const paidValue = e.paid;
-      const paidLabel =
-        paidValue === 1 ||
-        paidValue === true ||
-        paidValue === '1'
-          ? 'Paid'
-          : 'Unpaid';
-
-      const paidDateLabel = e.paid_date ? formatDateUS(e.paid_date) : '';
-
-      const approvalStatus =
-        String(e.approval_status || '').toLowerCase() === 'approved'
-          ? 'Approved'
-          : 'Pending';
-      const approvedBy =
-        e.approved_by_name ||
-        (e.approved_by_employee_id ? `#${e.approved_by_employee_id}` : '—');
-      const approvedAt = e.approved_at ? formatDateTimeLocal(e.approved_at) : '';
-      const canApprove = !!window.CURRENT_IS_SUPER_ADMIN;
-      let approvalHtml = `<div>${approvalStatus}</div>`;
-      if (approvalStatus === 'Approved') {
-        approvalHtml += `<div class="text-xs text-gray-600">by ${escapeHTML(approvedBy)}</div>`;
-        if (approvedAt) {
-          approvalHtml += `<div class="text-xs text-gray-600">${escapeHTML(approvedAt)}</div>`;
+      const reviewState = deriveFieldReviewState(e);
+      const canModify = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.modify_time);
+      const reviewBy = e.resolved_by || '';
+      const reviewAt = e.resolved_at ? formatDateTimeLocal(e.resolved_at) : '';
+      let reviewHtml = `<div>${reviewState.label}</div>`;
+      if (reviewState.isReviewed) {
+        if (reviewBy) {
+          reviewHtml += `<div class="text-xs text-gray-600">by ${escapeHTML(reviewBy)}</div>`;
         }
-      } else if (canApprove) {
-        approvalHtml += `
-          <button class="btn primary btn-xs te-approve-btn" data-approve-id="${e.id}">
-            Approve
-          </button>
-        `;
+        if (reviewAt) {
+          reviewHtml += `<div class="text-xs text-gray-600">${escapeHTML(reviewAt)}</div>`;
+        }
       }
+
+      const flagsStr = '…';
+      let actionHtml = '—';
+      const canApprove = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
+      if (canApprove) {
+        actionHtml = `
+          <label class="checkbox-inline">
+            <input type="checkbox" class="te-approve-checkbox" data-approve-id="${e.id}" />
+          </label>
+        `;
+      } else {
+        actionHtml = '<span class="text-xs text-gray-600">No approval access</span>';
+      }
+
+      const clockInLabel = formatTime12(e.start_time);
+      const clockOutLabel = formatTime12(e.end_time);
 
       // ─────────────────────────────────────────────
       // BUILD THE TABLE ROW
       // ─────────────────────────────────────────────
       tr.innerHTML = `
-        <td>${e.id != null ? e.id : ''}</td>
         <td>${e.employee_name || ''}</td>
         <td>${e.project_name || ''}</td>
         <td>${dateLabel}</td>
+        <td>${clockInLabel}</td>
+        <td>${clockOutLabel}</td>
         <td>${Number(e.hours || 0).toFixed(2)}</td>
-        <td>$${Number(e.total_pay || 0).toFixed(2)}</td>
-        <td>${paidLabel}</td>
-        <td>${paidDateLabel}</td>
-        <td>${approvalHtml}</td>
+        <td class="te-flags-cell" data-entry-id="${e.id}">${escapeHTML(flagsStr)}</td>
+        <td>${reviewHtml}</td>
+        <td>${actionHtml}</td>
       `;
 
       // store raw values on the row for editing
@@ -499,18 +1065,43 @@ async function loadTimeEntriesTable(filters = {}) {
       tr.dataset.startTime  = e.start_time || '';
       tr.dataset.endTime    = e.end_time || '';
       tr.dataset.updatedAt  = e.updated_at || '';
+      tr.dataset.fieldReviewed = reviewState.isReviewed ? '1' : '0';
+      tr.dataset.fieldReviewRejected = reviewState.isRejected ? '1' : '0';
 
-      // clicking a row loads it into the form for editing
-      tr.addEventListener('click', () => {
-        loadTimeEntryIntoFormFromRow(tr);
+      tr.addEventListener('click', (evt) => {
+        if (evt.target && evt.target.closest('button, input, label, .checkbox-inline')) {
+          return;
+        }
+        const flagsCell = tr.querySelector('.te-flags-cell');
+        const flagsVal = flagsCell ? flagsCell.textContent : 'None';
+        const flags = flagsVal && flagsVal !== '…' && flagsVal !== 'None'
+          ? flagsVal.split(',').map(s => s.trim()).filter(Boolean)
+          : [];
+        showTimeEntryDetails({ entry: e, flags, rowElement: tr });
       });
 
       tbody.appendChild(tr);
     });
 
-    tbody.querySelectorAll('.te-approve-btn').forEach(btn => {
-      btn.addEventListener('click', handleTimeEntryApproveClick);
+    tbody.querySelectorAll('.te-approve-checkbox').forEach(cb => {
+      cb.addEventListener('change', handleTimeEntryApproveToggle);
+      cb.addEventListener('click', evt => evt.stopPropagation());
     });
+
+    // Load flags asynchronously so table doesn't hang if flags are slow.
+    try {
+      const flagsMap = await loadTimeEntryFlagsMap(filters);
+      tbody.querySelectorAll('.te-flags-cell').forEach(cell => {
+        const entryId = cell.getAttribute('data-entry-id');
+        if (!entryId) return;
+        const flags = flagsMap.get(String(entryId)) || [];
+        cell.textContent = flags.length ? flags.join(', ') : 'None';
+      });
+    } catch (err) {
+      tbody.querySelectorAll('.te-flags-cell').forEach(cell => {
+        if (cell.textContent === '…') cell.textContent = 'None';
+      });
+    }
 
   } catch (err) {
     console.error('Error loading time entries:', err.message);
@@ -519,45 +1110,522 @@ async function loadTimeEntriesTable(filters = {}) {
   }
 }
 
-async function handleTimeEntryApproveClick(evt) {
-  evt.stopPropagation();
-  const btn = evt.currentTarget;
-  const id = btn?.getAttribute('data-approve-id');
+function entryRequiresNote(row) {
+  if (!row) return false;
+  const flagsCell = row.querySelector('.te-flags-cell');
+  const flagsVal = flagsCell ? String(flagsCell.textContent || '').trim() : '';
+  return !!(flagsVal && flagsVal !== 'None' && flagsVal !== '—' && flagsVal !== '…');
+}
+
+async function handleTimeEntryApproveToggle(evt) {
+  const cb = evt.currentTarget;
+  const id = cb?.getAttribute('data-approve-id');
   if (!id) return;
+  if (cb.checked) {
+    const row = cb.closest('tr');
+    if (row && row.dataset.fieldReviewed !== '1') {
+      const ok = await showTimeEntryReviewWarningModal(
+        'Field review has not been completed for this entry. Approve anyway?'
+      );
+      if (!ok) {
+        cb.checked = false;
+        timeEntryApprovalSelection.delete(String(id));
+        updateApproveSelectedButton();
+        return;
+      }
+    }
 
-  const row = btn.closest('tr');
-  const updatedAt = row?.dataset?.updatedAt || '';
+    if (entryRequiresNote(row)) {
+      const noteInput = await showTimeEntryApproveNoteModal({
+        message: 'A note is required because this entry has flags or manual edits. Enter a note to continue.',
+        required: true
+      });
+      if (noteInput === null) {
+        cb.checked = false;
+        timeEntryApprovalSelection.delete(String(id));
+        updateApproveSelectedButton();
+        return;
+      }
+      const note = String(noteInput || '').trim();
+      if (!note) {
+        showTimeEntryNoteModal(
+          'A note is required because this entry has flags or manual edits. Enter a note to continue.'
+        );
+        cb.checked = false;
+        timeEntryApprovalSelection.delete(String(id));
+        updateApproveSelectedButton();
+        return;
+      }
+      timeEntryApprovalNotes.set(String(id), note);
+    }
+  }
+  if (cb.checked) {
+    timeEntryApprovalSelection.add(String(id));
+  } else {
+    timeEntryApprovalSelection.delete(String(id));
+    timeEntryApprovalNotes.delete(String(id));
+  }
+  updateApproveSelectedButton();
+}
 
-  const noteInput = window.prompt(
-    'Add a note if needed (required for discrepancies or manual edits). Leave blank for clean entries.'
-  );
-  if (noteInput === null) return;
-  const note = noteInput.trim();
+function updateApproveSelectedButton() {
+  const btn = document.getElementById('te-approve-selected');
+  if (!btn) return;
+  const count = timeEntryApprovalSelection.size;
+  btn.disabled = count === 0;
+  btn.textContent = count > 0 ? `Approve checked entries (${count})` : 'Approve checked entries';
+}
+
+function setApproveSelectionForVisibleRows(checked) {
+  const boxes = document.querySelectorAll('.te-approve-checkbox');
+  boxes.forEach(cb => {
+    cb.checked = checked;
+    const id = cb.getAttribute('data-approve-id');
+    if (!id) return;
+    if (checked) {
+      timeEntryApprovalSelection.add(String(id));
+    } else {
+      timeEntryApprovalSelection.delete(String(id));
+    }
+  });
+  updateApproveSelectedButton();
+}
+
+async function approveSelectedTimeEntries() {
+  const ids = Array.from(timeEntryApprovalSelection);
+  if (!ids.length) return;
+
+  for (const id of ids) {
+    try {
+      const row = document.querySelector(`.te-approve-checkbox[data-approve-id="${CSS.escape(String(id))}"]`)?.closest('tr');
+      if (entryRequiresNote(row) && !timeEntryApprovalNotes.get(String(id))) {
+        const noteInput = await showTimeEntryApproveNoteModal({
+          message: 'A note is required because this entry has flags or manual edits. Enter a note to continue.',
+          required: true
+        });
+        if (noteInput === null) return;
+        const note = String(noteInput || '').trim();
+        if (!note) {
+          showTimeEntryNoteModal(
+            'A note is required because this entry has flags or manual edits. Enter a note to continue.'
+          );
+          return;
+        }
+        timeEntryApprovalNotes.set(String(id), note);
+      }
+
+      const payload = {};
+      const note = timeEntryApprovalNotes.get(String(id));
+      if (note) payload.note = note;
+      await fetchJSON(`/api/time-entries/${encodeURIComponent(id)}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    } catch (err) {
+      window.alert(err?.message || `Failed to approve entry ${id}.`);
+      return;
+    }
+  }
+
+  const filters = getTimeEntryFiltersFromUi();
+  if (hasActiveTimeEntryFilters(filters)) {
+    resetTimeEntryPagination();
+    await loadTimeEntriesTable(filters);
+  } else {
+    resetTimeEntryPagination();
+    await loadTimeEntriesTable();
+  }
+}
+
+let currentTimeEntryDetail = null;
+let timeEntryPunchesRequestId = 0;
+
+function formatDetailValue(value) {
+  if (value == null || value === '') return '—';
+  return String(value);
+}
+
+let toastTimer = null;
+function showToast(message, { durationMs = 2500 } = {}) {
+  const el = document.getElementById('global-toast');
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove('hidden');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.classList.add('hidden');
+  }, durationMs);
+}
+
+async function fetchJSONWithTimeout(url, options = {}, timeoutMs = 10000) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      fetchJSON(url, options),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Request timed out.')), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function formatTime12(value) {
+  if (!value) return '—';
+  const raw = String(value).trim();
+  const match = /^([0-1]?\d|2[0-3]):([0-5]\d)/.exec(raw);
+  if (!match) return raw;
+  let hours = Number(match[1]);
+  const minutes = match[2];
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  return `${hours}:${minutes} ${ampm}`;
+}
+
+function formatAutoClockoutReason(reason) {
+  const raw = String(reason || '').trim().toLowerCase();
+  if (!raw) return '';
+  const map = {
+    midnight_auto: 'Midnight auto-close',
+    catch_up_auto: 'Catch-up auto-close',
+    daily_max: 'Daily max hours',
+    weekly_max: 'Weekly max hours'
+  };
+  return map[raw] || reason;
+}
+
+function formatPunchDateTime(value) {
+  if (!value) return '—';
+  return formatDateTimeLocal(value);
+}
+
+async function loadTimeEntryPunches(entryId) {
+  const grid = document.getElementById('time-entry-punches-grid');
+  if (!grid) return;
+
+  const requestId = ++timeEntryPunchesRequestId;
+  grid.innerHTML = '<div class="time-entry-punches-loading">Loading punches...</div>';
 
   try {
-    const payload = {};
-    if (note) payload.note = note;
-    if (updatedAt) payload.if_match_updated_at = updatedAt;
-    await fetchJSON(`/api/time-entries/${encodeURIComponent(id)}/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+    const rows = await fetchJSON(`/api/time-entries/${encodeURIComponent(entryId)}/punches`);
+    if (requestId !== timeEntryPunchesRequestId) return;
 
-    const filters = getTimeEntryFiltersFromUi();
-    if (hasActiveTimeEntryFilters(filters)) {
-      await loadTimeEntriesTable(filters);
-    } else {
-      await loadTimeEntriesTable();
+    if (!Array.isArray(rows) || !rows.length) {
+      grid.innerHTML = '<div class="time-entry-punches-empty">No punches recorded.</div>';
+      return;
     }
+
+    grid.innerHTML = `
+      <div class="time-entry-punches-header">Clock in</div>
+      <div class="time-entry-punches-header">Clock out</div>
+      <div class="time-entry-punches-header">Device ID</div>
+      ${rows.map(row => {
+        const clockIn = formatPunchDateTime(row.clock_in_ts);
+        const clockOut = row.clock_out_ts ? formatPunchDateTime(row.clock_out_ts) : 'Open';
+        const deviceId = row.device_id ? escapeHTML(String(row.device_id)) : '—';
+        return `
+          <div class="time-entry-punches-cell">${escapeHTML(clockIn)}</div>
+          <div class="time-entry-punches-cell">${escapeHTML(clockOut)}</div>
+          <div class="time-entry-punches-cell">${deviceId}</div>
+        `;
+      }).join('')}
+    `;
   } catch (err) {
-    window.alert(err?.message || 'Failed to approve time entry.');
+    if (requestId !== timeEntryPunchesRequestId) return;
+    grid.innerHTML = '<div class="time-entry-punches-empty">Unable to load punches.</div>';
+  }
+}
+
+function showTimeEntryDetails({ entry, flags = [], rowElement } = {}) {
+  if (!entry) return;
+  currentTimeEntryDetail = { entry, rowElement };
+
+  const overlay = document.getElementById('time-entry-detail-overlay');
+  const panel = document.getElementById('time-entry-detail-panel');
+  const title = document.getElementById('time-entry-detail-title');
+  const sub = document.getElementById('time-entry-detail-sub');
+  const body = document.getElementById('time-entry-detail-body');
+  const editContainer = document.getElementById('time-entry-edit-container');
+  const editBtn = document.getElementById('time-entry-detail-edit');
+
+  if (!panel || !body) return;
+
+  if (title) {
+    title.textContent = `Entry #${entry.id}`;
+  }
+  if (sub) {
+    sub.textContent = `${entry.employee_name || 'Employee'} • ${entry.project_name || 'No project'}`;
+  }
+
+  const dateLabel = entry.start_date
+    ? (entry.start_date === entry.end_date ? formatDateUS(entry.start_date) : `${formatDateUS(entry.start_date)} → ${formatDateUS(entry.end_date)}`)
+    : '—';
+  const timeLabel = entry.start_time || entry.end_time
+    ? `${formatTime12(entry.start_time)} → ${formatTime12(entry.end_time)}`
+    : '—';
+  const fieldStatus = deriveFieldReviewState(entry).label;
+  const payrollStatus = String(entry.approval_status || '').toLowerCase() === 'approved' ? 'Approved' : 'Pending';
+
+  const sections = [
+    {
+      title: 'Entry Details',
+      items: [
+        { label: 'Entry ID', value: entry.id },
+        { label: 'Employee', value: entry.employee_name || '' },
+        { label: 'Project', value: entry.project_name || '' },
+        { label: 'Date', value: dateLabel },
+        { label: 'Time', value: timeLabel },
+        { label: 'Hours', value: entry.hours != null ? Number(entry.hours).toFixed(2) : '—' },
+        { label: 'Flags', value: flags.length ? flags.join(', ') : 'None' },
+        { label: 'Last Updated', value: entry.updated_at ? formatDateTimeLocal(entry.updated_at) : '—' }
+      ]
+    },
+    {
+      title: 'Field Review',
+      items: [
+        { label: 'Status', value: fieldStatus },
+        { label: 'Reviewed By', value: entry.resolved_by || '—' },
+        { label: 'Reviewed At', value: entry.resolved_at ? formatDateTimeLocal(entry.resolved_at) : '—' },
+        { label: 'Notes', value: entry.resolved_note || '—' }
+      ],
+      includeChanges: true
+    },
+    {
+      title: 'Payroll Approval',
+      items: [
+        { label: 'Status', value: payrollStatus },
+        { label: 'Approved By', value: entry.approved_by_name || entry.approved_by_employee_id || '—' },
+        { label: 'Approved At', value: entry.approved_at ? formatDateTimeLocal(entry.approved_at) : '—' },
+        { label: 'Notes', value: entry.approval_note || '—' }
+      ]
+    }
+  ];
+
+  const sectionHtml = sections
+    .map(section => {
+      const itemsHtml = section.items
+        .map(item => {
+          return `
+            <div>
+              <div class="detail-label">${escapeHTML(item.label)}</div>
+              <div class="detail-value">${escapeHTML(formatDetailValue(item.value))}</div>
+            </div>
+          `;
+        })
+        .join('');
+      const changesHtml = section.includeChanges
+        ? `
+          <div id="time-entry-change-section" class="time-entry-change-section hidden">
+            <div class="time-entry-detail-section-title">Field Review Changes</div>
+            <div class="time-entry-change-meta" id="time-entry-change-meta"></div>
+            <div class="time-entry-change-grid" id="time-entry-change-grid"></div>
+          </div>
+        `
+        : '';
+      return `
+        <div class="time-entry-detail-section">
+          <h4 class="time-entry-detail-section-title">${escapeHTML(section.title)}</h4>
+          <div class="time-entry-detail-grid">
+            ${itemsHtml}
+          </div>
+          ${changesHtml}
+        </div>
+      `;
+    })
+    .join('');
+
+  const punchesHtml = `
+    <div class="time-entry-detail-section">
+      <h4 class="time-entry-detail-section-title">Punches</h4>
+      <div id="time-entry-punches-grid" class="time-entry-punches-grid">
+        <div class="time-entry-punches-loading">Loading punches...</div>
+      </div>
+    </div>
+  `;
+
+  body.innerHTML = sectionHtml + punchesHtml;
+  loadTimeEntryChangeSummary(entry.id);
+  loadTimeEntryPunches(entry.id);
+
+  if (editContainer) {
+    editContainer.classList.add('hidden');
+  }
+  body.classList.remove('hidden');
+
+  if (editBtn) {
+    editBtn.disabled = !rowElement;
+  }
+
+  if (overlay) {
+    overlay.classList.remove('hidden');
+    overlay.setAttribute('aria-hidden', 'false');
+  }
+}
+
+function closeTimeEntryDetails() {
+  const overlay = document.getElementById('time-entry-detail-overlay');
+  if (timeEntryEditInModal) {
+    restoreTimeEntryFormToCard();
+  }
+  if (overlay) {
+    overlay.classList.add('hidden');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+  currentTimeEntryDetail = null;
+}
+
+function showTimeEntryNoteModal(message) {
+  const backdrop = document.getElementById('time-entry-note-backdrop');
+  const modal = document.getElementById('time-entry-note-modal');
+  const msgEl = document.getElementById('time-entry-note-message');
+  if (!backdrop || !modal || !msgEl) {
+    window.alert(message);
+    return;
+  }
+  msgEl.textContent = message;
+  backdrop.classList.remove('hidden');
+  modal.classList.remove('hidden');
+}
+
+function closeTimeEntryNoteModal() {
+  const backdrop = document.getElementById('time-entry-note-backdrop');
+  const modal = document.getElementById('time-entry-note-modal');
+  if (backdrop) backdrop.classList.add('hidden');
+  if (modal) modal.classList.add('hidden');
+}
+
+let timeEntryApproveNoteResolver = null;
+
+function showTimeEntryApproveNoteModal({ message, required = false } = {}) {
+  const backdrop = document.getElementById('time-entry-approve-note-backdrop');
+  const modal = document.getElementById('time-entry-approve-note-modal');
+  const msgEl = document.getElementById('time-entry-approve-note-message');
+  const input = document.getElementById('time-entry-approve-note-input');
+  const submitBtn = document.getElementById('time-entry-approve-note-submit');
+
+  if (!backdrop || !modal || !msgEl || !input || !submitBtn) {
+    const fallback = window.prompt(message || 'Add a note (optional).');
+    return Promise.resolve(fallback === null ? null : String(fallback));
+  }
+
+  msgEl.textContent = message || 'Add a note (optional).';
+  input.value = '';
+  submitBtn.textContent = required ? 'Submit note' : 'Submit';
+
+  backdrop.classList.remove('hidden');
+  modal.classList.remove('hidden');
+
+  return new Promise(resolve => {
+    timeEntryApproveNoteResolver = resolve;
+    setTimeout(() => input.focus(), 0);
+  });
+}
+
+function closeTimeEntryApproveNoteModal(result = null) {
+  const backdrop = document.getElementById('time-entry-approve-note-backdrop');
+  const modal = document.getElementById('time-entry-approve-note-modal');
+  if (backdrop) backdrop.classList.add('hidden');
+  if (modal) modal.classList.add('hidden');
+  if (timeEntryApproveNoteResolver) {
+    timeEntryApproveNoteResolver(result);
+    timeEntryApproveNoteResolver = null;
+  }
+}
+
+let timeEntryReviewWarningResolver = null;
+
+function showTimeEntryReviewWarningModal(message) {
+  const backdrop = document.getElementById('time-entry-review-warning-backdrop');
+  const modal = document.getElementById('time-entry-review-warning-modal');
+  const msgEl = document.getElementById('time-entry-review-warning-message');
+
+  if (!backdrop || !modal || !msgEl) {
+    return Promise.resolve(window.confirm(message));
+  }
+
+  msgEl.textContent = message || 'Field review has not been completed for this entry. Approve anyway?';
+  backdrop.classList.remove('hidden');
+  modal.classList.remove('hidden');
+
+  return new Promise(resolve => {
+    timeEntryReviewWarningResolver = resolve;
+  });
+}
+
+function closeTimeEntryReviewWarningModal(result = false) {
+  const backdrop = document.getElementById('time-entry-review-warning-backdrop');
+  const modal = document.getElementById('time-entry-review-warning-modal');
+  if (backdrop) backdrop.classList.add('hidden');
+  if (modal) modal.classList.add('hidden');
+  if (timeEntryReviewWarningResolver) {
+    timeEntryReviewWarningResolver(result);
+    timeEntryReviewWarningResolver = null;
+  }
+}
+
+async function loadTimeEntryChangeSummary(entryId) {
+  const section = document.getElementById('time-entry-change-section');
+  const grid = document.getElementById('time-entry-change-grid');
+  const meta = document.getElementById('time-entry-change-meta');
+  if (!section || !grid) return;
+
+  grid.innerHTML = '';
+  if (meta) meta.textContent = 'Loading changes...';
+
+  try {
+    const data = await fetchJSON(`/api/time-entries/${encodeURIComponent(entryId)}/changes`);
+    const changes = data && data.changes;
+    if (!changes || !Array.isArray(changes.fields) || !changes.fields.length) {
+      section.classList.add('hidden');
+      return;
+    }
+
+    const when = changes.created_at ? formatDateTimeLocal(changes.created_at) : '';
+    const who = changes.actor_name ? `by ${changes.actor_name}` : '';
+    const note = changes.note ? ` • Note: ${changes.note}` : '';
+    if (meta) {
+      meta.textContent = `${when}${when && who ? ' ' : ''}${who}${note}`;
+    }
+
+    const formatChangeValue = (label, value) => {
+      if (!value) return '—';
+      if (label === 'Clock in' || label === 'Clock out') {
+        return formatTime12(value);
+      }
+      if (label === 'Date') {
+        return formatDateUS(value);
+      }
+      return String(value);
+    };
+
+    grid.innerHTML = `
+      <div class="time-entry-change-header">Field</div>
+      <div class="time-entry-change-header">Before</div>
+      <div class="time-entry-change-header">After</div>
+      ${changes.fields.map(item => {
+        const label = item.label || '';
+        const beforeVal = formatChangeValue(label, item.before);
+        const afterVal = formatChangeValue(label, item.after);
+        return `
+          <div class="time-entry-change-cell">${escapeHTML(label)}</div>
+          <div class="time-entry-change-cell">${escapeHTML(beforeVal)}</div>
+          <div class="time-entry-change-cell">${escapeHTML(afterVal)}</div>
+        `;
+      }).join('')}
+    `;
+
+    section.classList.remove('hidden');
+  } catch (err) {
+    section.classList.add('hidden');
   }
 }
 
 async function approveAllTimeEntries() {
-  if (!window.CURRENT_IS_SUPER_ADMIN) {
-    window.alert('Super admin access required.');
+  if (!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time)) {
+    window.alert('Payroll approval access required.');
     return;
   }
 
@@ -567,7 +1635,7 @@ async function approveAllTimeEntries() {
   const end = filters.end || start;
 
   const confirmed = window.confirm(
-    `Approve all clean entries from ${start} to ${end}? Entries requiring a note will be skipped.`
+    `Approve all clean entries from ${start} to ${end}? Entries still awaiting field review or requiring a note will be skipped.`
   );
   if (!confirmed) return;
 
@@ -586,14 +1654,33 @@ async function approveAllTimeEntries() {
     });
 
     const approvedCount = resp?.approved_count || 0;
-    const skippedCount = Array.isArray(resp?.skipped) ? resp.skipped.length : 0;
-    window.alert(
-      `Approved ${approvedCount} entries. Skipped ${skippedCount} entries that require a note.`
-    );
+    const skippedList = Array.isArray(resp?.skipped) ? resp.skipped : [];
+    const skippedCount = skippedList.length;
+    const skippedByReason = skippedList.reduce((acc, item) => {
+      const key = item && item.reason ? item.reason : 'other';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const reasonParts = [];
+    if (skippedByReason.needs_field_review) {
+      reasonParts.push(`${skippedByReason.needs_field_review} need field review`);
+    }
+    if (skippedByReason.requires_note) {
+      reasonParts.push(`${skippedByReason.requires_note} need a note`);
+    }
+    if (skippedByReason.rejected) {
+      reasonParts.push(`${skippedByReason.rejected} rejected`);
+    }
+    const skippedMsg = skippedCount
+      ? ` Skipped ${skippedCount} entries${reasonParts.length ? ` (${reasonParts.join(', ')})` : ''}.`
+      : '';
+    window.alert(`Approved ${approvedCount} entries.${skippedMsg}`);
 
     if (hasActiveTimeEntryFilters(filters)) {
+      resetTimeEntryPagination();
       await loadTimeEntriesTable(filters);
     } else {
+      resetTimeEntryPagination();
       await loadTimeEntriesTable();
     }
   } catch (err) {
@@ -604,7 +1691,8 @@ async function approveAllTimeEntries() {
 function applyTimeEntryApprovalAccess() {
   const approveAllBtn = document.getElementById('te-approve-all');
   if (!approveAllBtn) return;
-  approveAllBtn.style.display = window.CURRENT_IS_SUPER_ADMIN ? 'inline-flex' : 'none';
+  const canApprove = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
+  approveAllBtn.style.display = canApprove ? 'inline-flex' : 'none';
 }
 
 function getTimeEntryFiltersFromUi() {
@@ -612,12 +1700,15 @@ function getTimeEntryFiltersFromUi() {
   const projFilter  = document.getElementById('te-filter-project');
   const startFilter = document.getElementById('te-filter-start');
   const endFilter   = document.getElementById('te-filter-end');
+  const hideApproved = document.getElementById('te-filter-hide-approved');
 
   return {
     employee_id: empFilter && empFilter.value ? empFilter.value : '',
     project_id:  projFilter && projFilter.value ? projFilter.value : '',
     start:       startFilter && startFilter.value ? startFilter.value : '',
-    end:         endFilter && endFilter.value ? endFilter.value : ''
+    end:         endFilter && endFilter.value ? endFilter.value : '',
+    hide_paid:   true,
+    hide_approved: hideApproved ? !!hideApproved.checked : false
   };
 }
 
@@ -626,8 +1717,13 @@ function hasActiveTimeEntryFilters(filters = {}) {
     (filters.employee_id && String(filters.employee_id).trim()) ||
     (filters.project_id && String(filters.project_id).trim())  ||
     (filters.start && String(filters.start).trim())            ||
-    (filters.end && String(filters.end).trim())
+    (filters.end && String(filters.end).trim())                ||
+    filters.hide_approved === true
   );
+}
+
+function resetTimeEntryPagination() {
+  timeEntryCurrentPage = 1;
 }
 
 function buildTimeEntriesExportUrl(format) {
@@ -647,7 +1743,7 @@ function buildTimeEntriesExportUrl(format) {
   return `/api/time-entries/export/${format}` + (qs ? `?${qs}` : '');
 }
 
-async function loadTimeEntryIntoFormFromRow(row) {
+async function loadTimeEntryIntoFormFromRow(row, { showFormCard = true } = {}) {
   const teFormCard    = document.getElementById('time-entry-create-card');
   const teToggleBtn   = document.getElementById('time-entry-toggle-form');
   const teToggleContainerForm   = document.getElementById('time-entry-toggle-container-form');
@@ -662,18 +1758,20 @@ async function loadTimeEntryIntoFormFromRow(row) {
   }
 
   // Ensure the manual-entry card is visible
-  if (teFormCard && teFormCard.classList.contains('hidden')) {
+  if (showFormCard && teFormCard && teFormCard.classList.contains('hidden')) {
     teFormCard.classList.remove('hidden');
 
     moveToggleToFormLocal();
 
     await loadEmployeesForSelect();
     await loadProjectsForTimeEntries();
-
     teFormCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  } else {
+  } else if (showFormCard) {
     // Card already open – still ensure toggle is in the right container
     moveToggleToFormLocal();
+  } else {
+    await loadEmployeesForSelect();
+    await loadProjectsForTimeEntries();
   }
 
   const idInput        = document.getElementById('te-id');
@@ -687,9 +1785,18 @@ async function loadTimeEntryIntoFormFromRow(row) {
   const noteInput      = document.getElementById('te-note');
   const updatedAtInput = document.getElementById('te-updated-at');
   const msgEl          = document.getElementById('time-entry-message');
+  const origBlock      = document.getElementById('te-original');
+  const origDateEl     = document.getElementById('te-original-date');
+  const origProjEl     = document.getElementById('te-original-project');
+  const origTimesEl    = document.getElementById('te-original-times');
 
 
   if (idInput) idInput.value = row.dataset.entryId || '';
+  console.log('[TimeEntry] populated form', {
+    id: idInput?.value,
+    employee: employeeSelect?.value,
+    project: projectSelect?.value
+  });
   if (updatedAtInput) updatedAtInput.value = row.dataset.updatedAt || '';
 
   if (employeeSelect && row.dataset.employeeId) {
@@ -704,7 +1811,7 @@ async function loadTimeEntryIntoFormFromRow(row) {
   if (endInput)   endInput.value   = row.dataset.endDate || '';
   if (hoursInput) hoursInput.value = row.dataset.hours || '';
   if (startTimeInput) startTimeInput.value = row.dataset.startTime || '';
-if (endTimeInput)   endTimeInput.value   = row.dataset.endTime || '';
+  if (endTimeInput)   endTimeInput.value   = row.dataset.endTime || '';
   if (noteInput) noteInput.value = '';
 
   if (origBlock) {
@@ -723,6 +1830,67 @@ if (endTimeInput)   endTimeInput.value   = row.dataset.endTime || '';
   if (saveBtn) {
     saveBtn.textContent = 'Update Time Entry';
   }
+
+  const origDateEdit = document.getElementById('te-edit-orig-date');
+  const origProjectEdit = document.getElementById('te-edit-orig-project');
+  const origStartEdit = document.getElementById('te-edit-orig-start');
+  const origEndEdit = document.getElementById('te-edit-orig-end');
+  const origHoursEdit = document.getElementById('te-edit-orig-hours');
+
+  if (origDateEdit) {
+    origDateEdit.textContent = row.dataset.startDate || row.dataset.endDate || '—';
+  }
+  if (origProjectEdit) {
+    origProjectEdit.textContent = row.dataset.projectName || row.dataset.projectId || '—';
+  }
+  if (origStartEdit) {
+    origStartEdit.textContent = formatTime12(row.dataset.startTime || '');
+  }
+  if (origEndEdit) {
+    origEndEdit.textContent = formatTime12(row.dataset.endTime || '');
+  }
+  if (origHoursEdit) {
+    origHoursEdit.textContent = row.dataset.hours || '—';
+  }
+}
+
+function enterTimeEntryEditModal() {
+  const wrapper = document.getElementById('time-entry-form-wrapper');
+  const editContainer = document.getElementById('time-entry-edit-container');
+  const detailBody = document.getElementById('time-entry-detail-body');
+  const formHost = document.getElementById('time-entry-edit-form-host');
+
+  if (!wrapper || !editContainer || !formHost) return;
+
+  if (!timeEntryFormOriginalParent) {
+    timeEntryFormOriginalParent = wrapper.parentElement;
+    timeEntryFormOriginalNextSibling = wrapper.nextSibling;
+  }
+
+  editContainer.classList.remove('hidden');
+  if (detailBody) detailBody.classList.add('hidden');
+  formHost.appendChild(wrapper);
+  wrapper.classList.add('time-entry-edit-mode');
+  timeEntryEditInModal = true;
+}
+
+function restoreTimeEntryFormToCard() {
+  const wrapper = document.getElementById('time-entry-form-wrapper');
+  const editContainer = document.getElementById('time-entry-edit-container');
+  const detailBody = document.getElementById('time-entry-detail-body');
+
+  if (!wrapper || !timeEntryFormOriginalParent) return;
+
+  if (timeEntryFormOriginalNextSibling && timeEntryFormOriginalNextSibling.parentElement === timeEntryFormOriginalParent) {
+    timeEntryFormOriginalParent.insertBefore(wrapper, timeEntryFormOriginalNextSibling);
+  } else {
+    timeEntryFormOriginalParent.appendChild(wrapper);
+  }
+
+  if (editContainer) editContainer.classList.add('hidden');
+  if (detailBody) detailBody.classList.remove('hidden');
+  wrapper.classList.remove('time-entry-edit-mode');
+  timeEntryEditInModal = false;
 }
 
 async function loadOpenPunches() {
@@ -968,6 +2136,10 @@ async function saveTimeEntry() {
       msgEl.style.color = '#b45309';
     }
     resetTimeEntryFormToNewMode();
+    if (timeEntryEditInModal) {
+      restoreTimeEntryFormToCard();
+      closeTimeEntryDetails();
+    }
     return;
   }
 
@@ -984,9 +2156,14 @@ async function saveTimeEntry() {
         : 'Time entry saved.';
       msgEl.style.color = 'green';
     }
+    showToast(isEdit ? 'Time entry updated.' : 'Time entry saved.');
 
     // Reset form back to "new" mode
     resetTimeEntryFormToNewMode();
+    if (timeEntryEditInModal) {
+      restoreTimeEntryFormToCard();
+      closeTimeEntryDetails();
+    }
 
     // ───────── RELOAD TABLE WITH EXISTING FILTERS (IF ANY) ─────────
     const filters = getTimeEntryFiltersFromUi();
@@ -1011,6 +2188,10 @@ async function saveTimeEntry() {
         msgEl.style.color = '#b45309';
       }
       resetTimeEntryFormToNewMode();
+      if (timeEntryEditInModal) {
+        restoreTimeEntryFormToCard();
+        closeTimeEntryDetails();
+      }
       return;
     }
     if (msgEl) {
@@ -1030,6 +2211,7 @@ function resetTimeEntryFormToNewMode() {
   const endTimeInput   = document.getElementById('te-end-time');
   const hoursInput     = document.getElementById('te-hours');
   const noteInput      = document.getElementById('te-note');
+  const updatedAtInput = document.getElementById('te-updated-at');
   const origBlock      = document.getElementById('te-original');
   const msgEl          = document.getElementById('time-entry-message');
   const saveBtn        = document.getElementById('time-entry-save-btn');
@@ -1056,894 +2238,6 @@ function resetTimeEntryFormToNewMode() {
   }
 }
 
-function setupTimeExceptionsSection() {
-  const applyBtn = document.getElementById('te-ex-apply');
-  const clearBtn = document.getElementById('te-ex-clear');
-  const hideResolvedEl = document.getElementById('te-ex-hide-resolved');
-  const categorySel = document.getElementById('te-ex-filter-category');
-  const reviewClose = document.getElementById('te-review-close');
-  const reviewCancel = document.getElementById('te-review-cancel');
-  const reviewSave = document.getElementById('te-review-save');
-  const reviewBackdrop = document.getElementById('time-exception-review-backdrop');
-  const reviewAction = document.getElementById('te-review-action');
-
-  // APPLY button → reload table with selected filters
-  if (applyBtn) {
-    applyBtn.addEventListener('click', () => {
-      loadTimeExceptionsTable();
-    });
-  }
-
-  // CLEAR button → reset all filters back to defaults
-if (clearBtn) {
-  clearBtn.addEventListener('click', () => {
-    const empSel  = document.getElementById('te-ex-filter-employee');
-    const projSel = document.getElementById('te-ex-filter-project');
-    const startEl = document.getElementById('te-ex-filter-start');
-    const endEl   = document.getElementById('te-ex-filter-end');
-    const catSel  = document.getElementById('te-ex-filter-category');
-
-    if (empSel) empSel.value = '';
-    if (projSel) projSel.value = '';
-    if (catSel) catSel.value = '';
-
-    // reset dates to today
-    const today = new Date().toISOString().slice(0, 10);
-    if (startEl) startEl.value = today;
-    if (endEl)   endEl.value   = today;
-
-    loadTimeExceptionsTable();
-  });
-}
-
-
-  // HIDE RESOLVED checkbox → reload whenever toggled
-  if (hideResolvedEl) {
-    hideResolvedEl.addEventListener('change', () => {
-      loadTimeExceptionsTable();
-    });
-  }
-
-    // CATEGORY dropdown → client-side filter only
-  if (categorySel) {
-    categorySel.addEventListener('change', () => {
-      applyTimeExceptionCategoryFilter();
-    });
-  }
-
-  // Delegate review button clicks so wiring survives table reloads
-  const tbody = document.getElementById('time-exceptions-body');
-  if (tbody) {
-    tbody.addEventListener('click', evt => {
-      const btn = evt.target.closest('.te-review-btn');
-      if (!btn) return;
-      console.log('[Time Exceptions] Delegated handler fired');
-
-      const id = btn.getAttribute('data-id');
-      const source = btn.getAttribute('data-source');
-      if (!id) return;
-
-      const row = btn.closest('tr');
-      const recFromRow = row && row.__timeException;
-      const recFromList = currentTimeExceptions.find(
-        r => String(r.id) === String(id) && (!source || r.source === source)
-      );
-
-      const rec = recFromRow || recFromList || null;
-      if (!rec) {
-        console.warn('[Time Exceptions] Review click but record not found', {
-          id,
-          source,
-          listCount: currentTimeExceptions.length
-        });
-        return;
-      }
-
-      openTimeExceptionReviewModal(rec);
-    });
-  }
-
-  // Global fallback listener in case tbody listener is removed/replaced
-  document.addEventListener('click', evt => {
-    const btn = evt.target.closest && evt.target.closest('.te-review-btn');
-    if (!btn) return;
-    console.log('[Time Exceptions] Document-level fallback handler fired');
-    handleTimeExceptionReviewClick(evt);
-  });
-
-  if (reviewClose) reviewClose.addEventListener('click', closeTimeExceptionReviewModal);
-  if (reviewCancel) reviewCancel.addEventListener('click', closeTimeExceptionReviewModal);
-  if (reviewBackdrop) {
-    reviewBackdrop.addEventListener('click', closeTimeExceptionReviewModal);
-  }
-  if (reviewSave) {
-    reviewSave.addEventListener('click', submitTimeExceptionReview);
-  }
-  if (reviewAction) {
-    reviewAction.addEventListener('change', handleTimeExceptionActionChange);
-  }
-  bindReviewTimeInputs();
-
-  // Initial load: first load dropdowns, then load the table
-  loadTimeExceptionsFilters().then(() => {
-    loadTimeExceptionsTable();
-  });
-}
-
-
-
-async function loadTimeExceptionsFilters() {
-  try {
-    // Reuse existing APIs for employees & projects
-    const [employeesRes, projectsRes] = await Promise.all([
-      fetchJSON('/api/employees?status=active'),
-      fetchJSON('/api/projects?status=active')
-    ]);
-
-    const employees = employeesRes || [];
-    const projects  = projectsRes || [];
-    timeExceptionProjects = projects;
-
-    const empSelect = document.getElementById('te-ex-filter-employee');
-    const projSelect = document.getElementById('te-ex-filter-project');
-
-    if (empSelect) {
-      empSelect.innerHTML = '<option value="">All employees</option>';
-      employees.forEach(e => {
-        const opt = document.createElement('option');
-        opt.value = e.id;
-        opt.textContent = e.name;
-        empSelect.appendChild(opt);
-      });
-    }
-
-    if (projSelect) {
-      projSelect.innerHTML = '<option value="">All projects</option>';
-      projects.forEach(p => {
-        const opt = document.createElement('option');
-        opt.value = p.id;
-        opt.textContent = p.name || '(Unnamed project)';
-        projSelect.appendChild(opt);
-      });
-    }
-
-    // Default date range: today → today
-    const today = new Date().toISOString().slice(0, 10);
-    const startInput = document.getElementById('te-ex-filter-start');
-    const endInput   = document.getElementById('te-ex-filter-end');
-
-    if (startInput && !startInput.value) startInput.value = today;
-    if (endInput && !endInput.value)     endInput.value   = today;
-  } catch (err) {
-    console.error('Error loading time-exceptions filters:', err);
-  }
-}
-
-function classifyTimeException(row) {
-  const flags = Array.isArray(row.flags) ? row.flags : [];
-  const categories = new Set();
-
-  // Auto-clock-out category
-  if (
-    row.auto_clock_out ||
-    flags.some(f => /^auto clock-out/i.test(String(f)))
-  ) {
-    categories.add('auto');
-  }
-
-  // Geofence category: explicit flag or has_geo_violation from server
-  if (
-    row.has_geo_violation ||
-    flags.some(f => /geofence/i.test(String(f)))
-  ) {
-    categories.add('geo');
-  }
-
-  // Time category: anything that's not auto/geofence
-  const hasTimeishFlag = flags.some(f => {
-    const lower = String(f).toLowerCase();
-    const isGeo = lower.includes('geofence');
-    const isAuto = lower.startsWith('auto clock-out');
-    return !isGeo && !isAuto;
-  });
-  if (hasTimeishFlag) {
-    categories.add('time');
-  }
-
-  // Fallback if somehow nothing matched
-  if (categories.size === 0) {
-    categories.add('time');
-  }
-
-  const keyToLabel = {
-    time: 'Time entry discrepancy',
-    geo: 'Geofence discrepancy',
-    auto: 'Auto clock-out'
-  };
-
-  const keys = Array.from(categories);
-  const label = keys.map(k => keyToLabel[k] || k).join(', ');
-
-  return { keys, label };
-}
-
-function fillReviewNewFieldsFromOriginal(rec = currentTimeExceptionRecord || {}) {
-  const startInput = document.getElementById('te-review-start');
-  const endInput = document.getElementById('te-review-end');
-  const projectSelect = document.getElementById('te-review-project');
-
-  const { startIso, endIso } = getTimeExceptionOriginalRange(rec);
-
-  const startStr = startIso
-    ? formatLocalTimeHHMM(startIso)
-    : rec.start_time || '';
-  const endStr = endIso
-    ? formatLocalTimeHHMM(endIso)
-    : rec.end_time || '';
-
-  if (startInput) startInput.value = startStr;
-  if (endInput) endInput.value = endStr;
-
-  if (projectSelect) {
-    projectSelect.value = rec.project_id ? String(rec.project_id) : '';
-  }
-
-  updateReviewHoursDisplay();
-}
-
-function handleTimeExceptionActionChange() {
-  const reviewAction = document.getElementById('te-review-action');
-  const note = document.getElementById('te-review-note');
-  const noteHelp = document.getElementById('te-review-note-help');
-  const newBlock = document.getElementById('te-review-new-block');
-  const startInput = document.getElementById('te-review-start');
-  const endInput = document.getElementById('te-review-end');
-  const projectSelect = document.getElementById('te-review-project');
-  const hoursInput = document.getElementById('te-review-hours');
-
-  if (!reviewAction) return;
-
-  const needNote =
-    reviewAction.value === 'approve' ||
-    reviewAction.value === 'modify' ||
-    reviewAction.value === 'reject';
-  if (note) note.required = needNote;
-  if (noteHelp) noteHelp.classList.toggle('hidden', !needNote);
-  if (newBlock) newBlock.classList.toggle('hidden', reviewAction.value !== 'modify');
-
-  if (reviewAction.value !== 'modify') {
-    if (startInput) startInput.value = '';
-    if (endInput) endInput.value = '';
-    if (projectSelect) projectSelect.value = '';
-    if (hoursInput) hoursInput.value = '';
-  } else {
-    fillReviewNewFieldsFromOriginal();
-  }
-
-  updateReviewHoursDisplay();
-}
-
-function bindReviewTimeInputs() {
-  const startInput = document.getElementById('te-review-start');
-  const endInput = document.getElementById('te-review-end');
-  [startInput, endInput].forEach(input => {
-    if (input && !input.dataset.boundHours) {
-      input.dataset.boundHours = '1';
-      input.addEventListener('input', updateReviewHoursDisplay);
-      input.addEventListener('change', updateReviewHoursDisplay);
-    }
-  });
-}
-
-async function ensureTimeExceptionProjectsLoaded() {
-  if (timeExceptionProjects && timeExceptionProjects.length) return timeExceptionProjects;
-  try {
-    const projects = await fetchJSON('/api/projects?status=active');
-    timeExceptionProjects = projects || [];
-  } catch (err) {
-    console.error('[Time Exceptions] Failed to load projects for review modal', err);
-    timeExceptionProjects = [];
-  }
-  return timeExceptionProjects;
-}
-
-function populateTimeExceptionProjectSelect(selectedId) {
-  const sel = document.getElementById('te-review-project');
-  if (!sel) return;
-  sel.innerHTML = '<option value="">Select project</option>';
-  (timeExceptionProjects || []).forEach(p => {
-    const opt = document.createElement('option');
-    opt.value = p.id;
-    opt.textContent = p.name || '(Unnamed project)';
-    sel.appendChild(opt);
-  });
-  if (selectedId != null) {
-    sel.value = selectedId;
-  }
-}
-
-function formatDateTimeLocal(isoString) {
-  if (!isoString) return '';
-  const d = new Date(isoString);
-  if (Number.isNaN(d)) return '';
-  const pad = n => String(n).padStart(2, '0');
-  return [
-    d.getFullYear(),
-    '-',
-    pad(d.getMonth() + 1),
-    '-',
-    pad(d.getDate()),
-    'T',
-    pad(d.getHours()),
-    ':',
-    pad(d.getMinutes())
-  ].join('');
-}
-
-function formatLocalTimeHHMM(isoString) {
-  if (!isoString) return '';
-  const d = new Date(isoString);
-  if (Number.isNaN(d)) return '';
-  const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function getTimeExceptionBaseDay(rec = {}) {
-  return (
-    (rec.clock_in_ts && rec.clock_in_ts.slice(0, 10)) ||
-    rec.start_date ||
-    rec.end_date ||
-    null
-  );
-}
-
-function calculateDurationHours(startIso, endIso) {
-  if (!startIso || !endIso) return null;
-  const start = new Date(startIso);
-  const end = new Date(endIso);
-  if (Number.isNaN(start) || Number.isNaN(end)) return null;
-  const diffMs = end - start;
-  if (diffMs < 0) return null;
-  const hours = diffMs / 3600000;
-  return Number.isFinite(hours) ? Number(hours.toFixed(2)) : null;
-}
-
-function getTimeExceptionOriginalRange(rec = {}) {
-  const startIso =
-    rec.clock_in_ts ||
-    (rec.start_date ? `${rec.start_date}T${rec.start_time || '00:00'}` : null);
-  const endIso =
-    rec.clock_out_ts ||
-    (rec.end_date ? `${rec.end_date}T${rec.end_time || '00:00'}` : null);
-
-  const hoursFromRange = calculateDurationHours(startIso, endIso);
-  const fallbackHours =
-    rec.duration_hours != null
-      ? Number(rec.duration_hours)
-      : rec.hours != null
-        ? Number(rec.hours)
-        : null;
-
-  const hours =
-    hoursFromRange != null
-      ? hoursFromRange
-      : !Number.isNaN(fallbackHours)
-        ? fallbackHours
-        : null;
-
-  return { startIso, endIso, hours };
-}
-
-function updateReviewHoursDisplay() {
-  const rec = currentTimeExceptionRecord || {};
-  const { hours: origHours } = getTimeExceptionOriginalRange(rec);
-  const origHoursEl = document.getElementById('te-review-orig-hours');
-  if (origHoursEl) {
-    origHoursEl.textContent =
-      origHours != null && !Number.isNaN(origHours)
-        ? `${origHours.toFixed(2)} hrs`
-        : '—';
-  }
-
-  const actionSelect = document.getElementById('te-review-action');
-  const isModify = actionSelect ? actionSelect.value === 'modify' : false;
-  const startInput = document.getElementById('te-review-start');
-  const endInput = document.getElementById('te-review-end');
-  const hoursInput = document.getElementById('te-review-hours');
-
-  if (!hoursInput) return;
-  if (!isModify) {
-    hoursInput.value = '';
-    return;
-  }
-
-  const baseDay = getTimeExceptionBaseDay(rec);
-  const startVal = startInput?.value;
-  const endVal = endInput?.value;
-  const startIso =
-    baseDay && startVal ? `${baseDay}T${startVal}:00` : null;
-  const endIso = baseDay && endVal ? `${baseDay}T${endVal}:00` : null;
-  const newHours = calculateDurationHours(startIso, endIso);
-
-  hoursInput.value =
-    newHours != null && !Number.isNaN(newHours) ? newHours.toFixed(2) : '';
-}
-
-let currentTimeExceptionRecord = null;
-let currentTimeExceptions = [];
-
-// Global helper for inline handlers (more reliable than late-bound listeners)
-window.handleTimeExceptionReviewClick = function handleTimeExceptionReviewClick(evt) {
-  console.log('[Time Exceptions] Review clicked (inline/global handler)');
-  const btn = evt?.currentTarget || evt?.target;
-  if (!btn) return;
-
-   if (evt && typeof evt.stopPropagation === 'function') {
-    evt.stopPropagation();
-  }
-
-  const idx = btn.getAttribute('data-index');
-  const id = btn.getAttribute('data-id');
-  const source = btn.getAttribute('data-source');
-  if (idx == null && !id) return;
-
-  // Try to resolve record from multiple sources
-  let rec = null;
-
-  // 1) From row property (most reliable if table rebuilt)
-  const row = btn.closest('tr');
-  if (row && row.__timeException) {
-    rec = row.__timeException;
-  }
-
-  // 2) From index in cached array
-  if (!rec && idx != null && currentTimeExceptions[Number(idx)]) {
-    rec = currentTimeExceptions[Number(idx)];
-  }
-
-  // 3) Fallback by id search
-  if (!rec && id) {
-    rec = currentTimeExceptions.find(r => String(r.id) === String(id));
-  }
-
-  if (!rec) return;
-  if (source && rec.source && rec.source !== source) return;
-
-  openTimeExceptionReviewModal(rec);
-};
-
-function closeTimeExceptionReviewModal() {
-  const backdrop = document.getElementById('time-exception-review-backdrop');
-  const modal = document.getElementById('time-exception-review-modal');
-  if (backdrop) {
-    backdrop.classList.add('hidden');
-    backdrop.style.display = 'none';
-  }
-  if (modal) {
-    modal.classList.add('hidden');
-    modal.style.display = 'none';
-  }
-  currentTimeExceptionRecord = null;
-}
-
-async function openTimeExceptionReviewModal(rec) {
-  currentTimeExceptionRecord = rec;
-  const { backdrop, modal } = await ensureTimeExceptionModalReady();
-  await ensureTimeExceptionProjectsLoaded();
-  if (!modal || !backdrop || !rec) {
-    console.warn('[Time Exceptions] Missing modal/backdrop or record for review click.', {
-      hasModal: !!modal,
-      hasBackdrop: !!backdrop,
-      rec
-    });
-    return;
-  }
-
-  // Ensure elements are attached to document and above everything
-  if (!modal.isConnected) document.body.appendChild(modal);
-  if (!backdrop.isConnected) document.body.appendChild(backdrop);
-
-  // Show modal
-  backdrop.classList.remove('hidden');
-  modal.classList.remove('hidden');
-  // Force inline display/z-index/size in case CSS collisions kept it hidden
-  Object.assign(backdrop.style, {
-    display: 'block',
-    position: 'fixed',
-    inset: '0',
-    zIndex: '9998',
-    opacity: '1'
-  });
-  Object.assign(modal.style, {
-    display: 'flex',
-    position: 'fixed',
-    inset: '0',
-    width: '100vw',
-    height: '100vh',
-    zIndex: '9999',
-    opacity: '1',
-    pointerEvents: 'auto',
-    alignItems: 'center',
-    justifyContent: 'center'
-  });
-  console.log('[Time Exceptions] Showing review modal');
-
-  const title = document.getElementById('te-review-title');
-  const meta = document.getElementById('te-review-meta');
-  const flagsEl = document.getElementById('te-review-flags');
-  const startInput = document.getElementById('te-review-start');
-  const endInput = document.getElementById('te-review-end');
-  const projectSelect = document.getElementById('te-review-project');
-  const actorInput = document.getElementById('te-review-actor');
-  const actionSelect = document.getElementById('te-review-action');
-  const noteInput = document.getElementById('te-review-note');
-  const origStart = document.getElementById('te-review-orig-start');
-  const origEnd = document.getElementById('te-review-orig-end');
-  const origProject = document.getElementById('te-review-orig-project');
-
-  if (title) {
-    title.textContent = `Review: ${rec.employee_name || 'Employee'} (${rec.source})`;
-  }
-
-  if (meta) {
-    meta.textContent = `${rec.project_name || '(No project)'} • ${rec.category || ''}`;
-  }
-
-  if (flagsEl) {
-    const flagsStr = Array.isArray(rec.flags) ? rec.flags.join(', ') : '';
-    flagsEl.textContent = flagsStr || 'No flags';
-  }
-
-  // Original values display
-  const { startIso: originalStartIso, endIso: originalEndIso } =
-    getTimeExceptionOriginalRange(rec);
-  if (origStart) origStart.textContent = originalStartIso ? new Date(originalStartIso).toLocaleString() : '—';
-  if (origEnd) origEnd.textContent = originalEndIso ? new Date(originalEndIso).toLocaleString() : '—';
-  if (origProject) origProject.textContent = rec.project_name || '(No project)';
-
-  // New fields start blank; only entered values will be applied
-  if (startInput) {
-    startInput.value = '';
-  }
-
-  if (endInput) {
-    endInput.value = '';
-  }
-
-  // Project dropdown (blank by default)
-  populateTimeExceptionProjectSelect('');
-
-  if (actorInput) {
-    const empCtx =
-      typeof CURRENT_EMPLOYEE !== 'undefined' ? CURRENT_EMPLOYEE : null;
-    const userCtx = typeof CURRENT_USER !== 'undefined' ? CURRENT_USER : null;
-    const defaultName =
-      (empCtx && (empCtx.display_name || empCtx.name)) ||
-      (userCtx && userCtx.email) ||
-      '';
-    actorInput.value = defaultName;
-  }
-
-  if (actionSelect) {
-    actionSelect.value = 'approve';
-    actionSelect.dispatchEvent(new Event('change'));
-  }
-
-  if (noteInput) {
-    noteInput.value = '';
-  }
-
-  const newBlock = document.getElementById('te-review-new-block');
-  if (newBlock) newBlock.classList.add('hidden');
-
-  updateReviewHoursDisplay();
-
-  modal.dataset.source = rec.source || '';
-  modal.dataset.id = rec.id ? String(rec.id) : '';
-
-  // Debug visibility: log bounding box and, if tiny/hidden, force emergency inline style
-  const rect = modal.getBoundingClientRect();
-  const cs = window.getComputedStyle(modal);
-  console.log('[Time Exceptions] Modal rect/visible', {
-    width: rect.width,
-    height: rect.height,
-    display: cs.display,
-    visibility: cs.visibility,
-    opacity: cs.opacity,
-    zIndex: cs.zIndex
-  });
-
-  // Dump first child tag to verify structure
-  if (modal && modal.firstElementChild) {
-    console.log('[Time Exceptions] Modal first child tag', modal.firstElementChild.tagName, 'class', modal.firstElementChild.className);
-  }
-
-  const looksHidden =
-    rect.width < 10 ||
-    rect.height < 10 ||
-    cs.display === 'none' ||
-    cs.visibility === 'hidden' ||
-    Number(cs.opacity) === 0;
-
-  if (looksHidden) {
-    console.warn('[Time Exceptions] Modal looked hidden; applying emergency inline styles');
-    Object.assign(modal.style, {
-      display: 'flex',
-      position: 'fixed',
-      inset: '0',
-      zIndex: '99999',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: 'rgba(15,23,42,0.75)',
-      pointerEvents: 'auto'
-    });
-
-    const card = modal.querySelector('.modal-card');
-    if (card) {
-      card.style.maxWidth = '520px';
-      card.style.width = '90%';
-      card.style.pointerEvents = 'auto';
-    }
-  }
-}
-
-async function submitTimeExceptionReview() {
-  const modal = document.getElementById('time-exception-review-modal');
-  if (!modal) return;
-
-  const source = modal.dataset.source;
-  const id = modal.dataset.id;
-  if (!source || !id) return;
-
-  const startInput = document.getElementById('te-review-start');
-  const endInput = document.getElementById('te-review-end');
-  const projectSelect = document.getElementById('te-review-project');
-  const actorInput = document.getElementById('te-review-actor');
-  const actionSelect = document.getElementById('te-review-action');
-  const noteInput = document.getElementById('te-review-note');
-  const msgEl = document.getElementById('te-review-message');
-
-  if (msgEl) {
-    msgEl.textContent = '';
-    msgEl.style.color = 'black';
-  }
-
-  const action = actionSelect ? actionSelect.value : 'approve';
-  const note = noteInput ? noteInput.value.trim() : '';
-  const actorName = actorInput ? actorInput.value.trim() : '';
-  const rec = currentTimeExceptionRecord || {};
-
-  if (action === 'approve') {
-    const confirmed = window.confirm(
-      'Are you sure you want to approve this exception? It will no longer appear in the Time Exceptions report.'
-    );
-    if (!confirmed) return;
-  }
-
-  if ((action === 'approve' || action === 'modify' || action === 'reject') && !note) {
-    if (msgEl) {
-      msgEl.textContent =
-        'A note is required when approving, rejecting, or modifying an exception.';
-      msgEl.style.color = 'red';
-    }
-    return;
-  }
-
-  const updates = {};
-  if (action === 'modify') {
-    const dayStr = getTimeExceptionBaseDay(rec);
-
-    const startVal =
-      startInput && startInput.value && dayStr
-        ? `${dayStr}T${startInput.value}:00`
-        : null;
-    const endVal =
-      endInput && endInput.value && dayStr
-        ? `${dayStr}T${endInput.value}:00`
-        : null;
-    const projectVal = projectSelect?.value || '';
-    const projectId = projectVal ? Number(projectVal) : null;
-
-    if (source === 'punch') {
-      if (startVal) updates.clock_in_ts = startVal;
-      if (endVal) updates.clock_out_ts = endVal;
-      if (projectVal) {
-        updates.project_id = projectId;
-        updates.clock_out_project_id = projectId;
-      }
-    } else if (source === 'time_entry') {
-      if (startVal) {
-        updates.start_date = startVal.slice(0, 10);
-        updates.start_time = startVal.slice(11, 16);
-      }
-      if (endVal) {
-        updates.end_date = endVal.slice(0, 10);
-        updates.end_time = endVal.slice(11, 16);
-      }
-      if (startVal && endVal) {
-        const durationHours = calculateDurationHours(startVal, endVal);
-        if (durationHours != null) {
-          updates.hours = durationHours;
-        }
-      }
-      if (projectVal) {
-        updates.project_id = projectId;
-      }
-    }
-  }
-
-  try {
-    const resp = await fetchJSON(`/api/time-exceptions/${id}/review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source,
-        action,
-        note,
-        actor_name: actorName,
-        updates
-      })
-    });
-
-    if (resp && resp.ok) {
-      closeTimeExceptionReviewModal();
-      loadTimeExceptionsTable();
-    } else if (msgEl) {
-      msgEl.textContent = resp?.error || 'Failed to save review.';
-      msgEl.style.color = 'red';
-    }
-  } catch (err) {
-    console.error('Error saving review:', err);
-    if (msgEl) {
-      msgEl.textContent = err?.message || 'Failed to save review.';
-      msgEl.style.color = 'red';
-    }
-  }
-}
-
-function applyTimeExceptionCategoryFilter() {
-  const tbody = document.getElementById('time-exceptions-body');
-  if (!tbody) return;
-
-  const select = document.getElementById('te-ex-filter-category');
-  const value = select?.value || '';
-  const rows = tbody.querySelectorAll('tr');
-
-  rows.forEach(tr => {
-    if (!value) {
-      // No filter → show everything
-      tr.style.display = '';
-      return;
-    }
-
-    const cats = (tr.dataset.categories || '')
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean);
-
-    tr.style.display = cats.includes(value) ? '' : 'none';
-  });
-}
-
-
-async function loadTimeExceptionsTable() {
-  const tbody = document.getElementById('time-exceptions-body');
-  if (!tbody) return;
-
-  tbody.innerHTML = `
-    <tr>
-      <td colspan="8" class="text-center text-gray-500">Loading exceptions…</td>
-    </tr>
-  `;
-
-  // Remove any stale cached rows
-  currentTimeExceptions = [];
-  console.log('[Time Exceptions] Loading table…');
-
-  try {
-    // 🔹 Use the new filter IDs
-    const start = document.getElementById('te-ex-filter-start')?.value;
-    const end   = document.getElementById('te-ex-filter-end')?.value;
-    const emp   = document.getElementById('te-ex-filter-employee')?.value;
-    const proj  = document.getElementById('te-ex-filter-project')?.value;
-    const hideResolvedEl = document.getElementById('te-ex-hide-resolved');
-
-    const params = new URLSearchParams();
-    if (start) params.set('start', start);
-    if (end)   params.set('end', end);
-    if (emp)   params.set('employee_id', emp);
-    if (proj)  params.set('project_id', proj);
-
-    // 🔹 send hide_resolved flag to the server
-    if (hideResolvedEl && hideResolvedEl.checked) {
-      params.set('hide_resolved', '1');
-    }
-
-    const data = await fetchJSON(`/api/time-exceptions?${params.toString()}`);
-    console.log('[Time Exceptions] Data loaded', Array.isArray(data) ? data.length : 'non-array');
-    currentTimeExceptions = Array.isArray(data) ? data : [];
-
-    if (!Array.isArray(data) || !data.length) {
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="8" class="text-center text-gray-500">
-            No exceptions found for this range.
-          </td>
-        </tr>
-      `;
-      currentTimeExceptions = [];
-      return;
-    }
-
-    tbody.innerHTML = '';
-
-    data.forEach((r, idx) => {
-      const tr = document.createElement('tr');
-      tr.dataset.idx = idx;
-      tr.__timeException = r; // store record on row for robust click lookup
-
-      const startStr = r.clock_in_ts
-        ? new Date(r.clock_in_ts).toLocaleString()
-        : '';
-      const endStr = r.clock_out_ts
-        ? new Date(r.clock_out_ts).toLocaleString()
-        : '';
-
-      const durationStr =
-        r.duration_hours != null
-          ? r.duration_hours.toFixed(2)
-          : '';
-
-      const flagsStr = Array.isArray(r.flags) ? r.flags.join(', ') : '';
-
-      // 🔹 Classify into categories + label
-      const { keys: categoryKeys, label: categoryLabel } =
-        classifyTimeException(r);
-
-      // Store raw keys for filtering later
-      tr.dataset.categories = categoryKeys.join(',');
-
-      tr.innerHTML = `
-        <td>${r.id != null ? r.id : ''}</td>
-        <td>${r.employee_name || ''}</td>
-        <td>${r.project_name || ''}</td>
-        <td>${startStr}</td>
-        <td>${endStr}</td>
-        <td class="text-right">${durationStr}</td>
-        <td>${categoryLabel}</td>
-        <td>${flagsStr}</td>
-        <td>
-          <button
-            class="btn primary btn-xs te-review-btn"
-            data-id="${r.id}"
-            data-source="${r.source || ''}"
-            data-index="${idx}"
-            onclick="handleTimeExceptionReviewClick(event)"
-          >
-            Review
-          </button>
-          <div class="text-xs text-gray-600">
-            Status: ${r.review_status || (r.resolved ? 'resolved' : 'open')}
-          </div>
-        </td>
-      `;
-
-      tbody.appendChild(tr);
-    });
-
-    // 🔹 Apply category filter (if user picked one)
-    applyTimeExceptionCategoryFilter();
-  } catch (err) {
-    console.error('Error loading time exceptions:', err);
-    tbody.innerHTML = `
-      <tr>
-        <td colspan="8" class="text-center text-red-500">
-          Error loading exceptions.
-        </td>
-      </tr>
-    `;
-  }
-}
 
 
 
@@ -1958,7 +2252,10 @@ function closeAllModals() {
     ['shipment-create-modal', 'shipment-create-backdrop'],
     ['time-entries-modal', 'time-entries-backdrop'],
     ['shipment-detail-modal', 'shipment-detail-backdrop'],
-    ['kiosk-modal', 'kiosk-modal-backdrop']
+    ['kiosk-modal', 'kiosk-modal-backdrop'],
+    ['qbo-onboarding-modal', 'qbo-onboarding-backdrop'],
+    ['qbo-match-sheet', 'qbo-match-sheet-backdrop'],
+    ['qbo-link-confirm-modal', 'qbo-link-confirm-backdrop']
   ];
 
   modalPairs.forEach(([modalId, backdropId]) => {
@@ -1967,6 +2264,12 @@ function closeAllModals() {
     if (modal) modal.classList.add('hidden');
     if (backdrop) backdrop.classList.add('hidden');
   });
+
+  const detailOverlay = document.getElementById('time-entry-detail-overlay');
+  if (detailOverlay) {
+    detailOverlay.classList.add('hidden');
+    detailOverlay.setAttribute('aria-hidden', 'true');
+  }
 }
 
 /* ───────── 6. MODALS LOADER ───────── */
@@ -1975,9 +2278,13 @@ async function loadModalsIntoDom() {
   const container = document.getElementById('modals-root');
 
   try {
-    const response = await fetch('modals.html', { cache: 'no-store' });
+    const cacheBust = '20260202-time-entry-detail';
+    const response = await fetch(`/modals.html?v=${cacheBust}`, { cache: 'no-store' });
     const html = await response.text();
     container.innerHTML = html;
+    if (typeof window.bindQboLinkConfirmModal === 'function') {
+      window.bindQboLinkConfirmModal();
+    }
     console.log('[MODALS] Loaded');
   } catch (err) {
     console.error('[MODALS] Failed to load', err);
@@ -2135,28 +2442,480 @@ function initPayrollTabIfNeeded() {
     loadOpenPunches();
   }
 
-  // 3) Time Exceptions
-  initTimeExceptionsIfNeeded();
-
   // Also initialize the dedicated payroll UI (settings/summary) if present.
   if (typeof window.initPayrollUiTab === 'function') {
     window.initPayrollUiTab();
   }
 }
 
-function initTimeExceptionsIfNeeded() {
-  if (timeExceptionsInitialized) return;
-  timeExceptionsInitialized = true;
+function initTimeEntriesIfNeeded() {
+  if (timeEntriesInitialized) return;
+  timeEntriesInitialized = true;
 
-  if (typeof setupTimeExceptionsSection === 'function') {
-    setupTimeExceptionsSection();
+  if (typeof loadTimeEntriesTable === 'function') {
+    resetTimeEntryPagination();
+    loadTimeEntriesTable(getTimeEntryFiltersFromUi());
   }
 }
 
 
+
 document.addEventListener('DOMContentLoaded', async () => {
+  const url = new URL(window.location.href);
+  if (url.searchParams.has('qbo')) {
+    const qboParam = String(url.searchParams.get('qbo') || '').toLowerCase();
+    if (qboParam === 'connected' || qboParam === '1' || qboParam === 'true') {
+      window.QBO_JUST_CONNECTED = true;
+    }
+    url.searchParams.delete('qbo');
+    window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+  }
+
+  const postBootstrapCard = document.getElementById('post-bootstrap-card');
+  const postBootstrapChecklist = document.getElementById('post-bootstrap-checklist');
+  const postBootstrapOrgStep = document.getElementById('post-bootstrap-org-step');
+  const postBootstrapOrgForm = document.getElementById('post-bootstrap-org-form');
+  const postBootstrapOrgName = document.getElementById('post-bootstrap-org-name');
+  const postBootstrapOrgTimezone = document.getElementById('post-bootstrap-org-timezone');
+  const postBootstrapAdminFirst = document.getElementById('post-bootstrap-admin-first-name');
+  const postBootstrapAdminLast = document.getElementById('post-bootstrap-admin-last-name');
+  const postBootstrapEmail = document.getElementById('post-bootstrap-email');
+  const postBootstrapOrgStatus = document.getElementById('post-bootstrap-org-status');
+  const postBootstrapBadge = document.getElementById('post-bootstrap-badge');
+  const postBootstrapTitle = document.getElementById('post-bootstrap-title');
+  const postBootstrapSubtitle = document.getElementById('post-bootstrap-subtitle');
+  const postBootstrapEmployeesBtn = document.getElementById('post-bootstrap-employees');
+  const postBootstrapQboBtn = document.getElementById('post-bootstrap-qbo');
+  const postBootstrapQboSkipBtn = document.getElementById('post-bootstrap-qbo-skip');
+  const postBootstrapQboStatus = document.getElementById('post-bootstrap-qbo-status');
+  const postBootstrapPermissionsBtn = document.getElementById('post-bootstrap-permissions');
+  const postBootstrapDismissBtn = document.getElementById('post-bootstrap-dismiss');
+  let qboOnboardingModal = null;
+  let qboOnboardingBackdrop = null;
+  let qboOnboardingWizard = null;
+  let qboOnboardingLoading = null;
+  let qboOnboardingClose = null;
+  let qboOnboardingStepIndicators = [];
+  let qboOnboardingPanes = [];
+  let qboOnboardingError = null;
+  let qboSyncProgressList = null;
+  let qboSyncStatus = null;
+  let qboMatchList = null;
+  let qboMatchSheet = null;
+  let qboMatchSheetBackdrop = null;
+  let qboMatchSheetClose = null;
+  let qboMatchSheetDone = null;
+  let qboMatchSheetEmployees = null;
+  let qboMatchSheetBack = null;
+  let qboMatchSheetList = null;
+  let qboMatchSheetStatus = null;
+  let qboOptionEmployees = null;
+  let qboOptionProjects = null;
+  let qboOptionVendors = null;
+  let qboOptionAccounts = null;
+  let qboStep1Continue = null;
+  let qboStep1Cancel = null;
+  let qboStep2Back = null;
+  let qboStep2Connect = null;
+  let qboStep4Employees = null;
+  let qboStep4Done = null;
+
+  let pendingBootstrapFormBound = false;
+  let qboInitialSyncRunning = false;
+
+  function setPostBootstrapOrgStatus(text, color) {
+    if (!postBootstrapOrgStatus) return;
+    postBootstrapOrgStatus.textContent = text || '';
+    postBootstrapOrgStatus.style.color = color || '';
+  }
+
+  function setPostBootstrapQboStatus(text, color) {
+    if (!postBootstrapQboStatus) return;
+    postBootstrapQboStatus.textContent = text || '';
+    postBootstrapQboStatus.style.color = color || '';
+  }
+
+  const ONBOARDING_PENDING_KEY = 'avian_onboarding_pending_v1';
+  const LAST_ORG_ID_KEY = 'avian_last_org_id_v1';
+  const ONBOARDING_FORCE_VISIBLE_KEY = 'avian_onboarding_force_visible_v1';
+  const QBO_ONBOARDING_STORAGE_KEY = 'avian_qbo_onboarding_v2';
+  const QBO_ONBOARDING_SELECTIONS_KEY = 'avian_qbo_onboarding_selections_v1';
+  const QBO_SUGGEST_DISMISS_KEY = 'avian_qbo_suggest_dismiss_v1';
+
+  function getOrgCreatedAt(orgId) {
+    const current = window.CURRENT_ORG;
+    if (!orgId || !current || Number(current.id) !== Number(orgId)) {
+      return null;
+    }
+    return current.created_at || current.createdAt || null;
+  }
+
+  function getOrgFingerprint(orgId, createdAt = null) {
+    if (!orgId) return null;
+    const ts = createdAt || getOrgCreatedAt(orgId);
+    return ts ? `${orgId}:${ts}` : String(orgId);
+  }
+
+  function getOnboardingForceKeys(orgId) {
+    if (!orgId) return [];
+    const keys = [];
+    const fingerprint = getOrgFingerprint(orgId);
+    if (fingerprint) {
+      keys.push(`${ONBOARDING_FORCE_VISIBLE_KEY}:${fingerprint}`);
+    }
+    const fallback = String(orgId);
+    if (fallback && fingerprint !== fallback) {
+      keys.push(`${ONBOARDING_FORCE_VISIBLE_KEY}:${fallback}`);
+    }
+    return keys;
+  }
+
+  function isOnboardingForceVisible(orgId) {
+    const keys = getOnboardingForceKeys(orgId);
+    if (!keys.length) return false;
+    try {
+      return keys.some(key => localStorage.getItem(key) === '1');
+    } catch {
+      return false;
+    }
+  }
+
+  function setOnboardingForceVisible(orgId, enabled) {
+    const keys = getOnboardingForceKeys(orgId);
+    if (!keys.length) return;
+    try {
+      keys.forEach(key => {
+        if (enabled) {
+          localStorage.setItem(key, '1');
+        } else {
+          localStorage.removeItem(key);
+        }
+      });
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function setAppBooting(active) {
+    if (document.documentElement) {
+      document.documentElement.classList.toggle('app-booting', !!active);
+    }
+  }
+
+  function clearAppBooting() {
+    setAppBooting(false);
+  }
+
+  function setOnboardingRootClass(enabled) {
+    if (document.body) {
+      document.body.classList.toggle('onboarding-first', !!enabled);
+    }
+    if (document.documentElement) {
+      document.documentElement.classList.toggle('onboarding-first', !!enabled);
+    }
+  }
+
+  function storeLastOrgId(orgId) {
+    if (!orgId) return;
+    try {
+      localStorage.setItem(LAST_ORG_ID_KEY, String(orgId));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function setOnboardingPending(orgId) {
+    try {
+      const payload = { orgId: orgId || null, pending: true };
+      localStorage.setItem(ONBOARDING_PENDING_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore storage failures
+    }
+    storeLastOrgId(orgId);
+    setOnboardingRootClass(true);
+  }
+
+  function clearOnboardingPending() {
+    try {
+      localStorage.removeItem(ONBOARDING_PENDING_KEY);
+    } catch {
+      // ignore storage failures
+    }
+    setOnboardingRootClass(false);
+  }
+
+  function getQboOnboardingState(orgId) {
+    if (!orgId) return null;
+    try {
+      const raw = localStorage.getItem(QBO_ONBOARDING_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.orgId !== orgId) return null;
+      const expectedCreatedAt = getOrgCreatedAt(orgId);
+      if (expectedCreatedAt && parsed.orgCreatedAt !== expectedCreatedAt) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function setQboOnboardingState(orgId, state) {
+    if (!orgId) return;
+    const payload = {
+      orgId,
+      orgCreatedAt: getOrgCreatedAt(orgId) || null,
+      ...state
+    };
+    try {
+      localStorage.setItem(QBO_ONBOARDING_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function clearQboOnboardingState() {
+    try {
+      localStorage.removeItem(QBO_ONBOARDING_STORAGE_KEY);
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function getQboSuggestDismissKey(orgId, empId) {
+    if (!orgId || !empId) return null;
+    const fingerprint = getOrgFingerprint(orgId);
+    return `${QBO_SUGGEST_DISMISS_KEY}:${fingerprint}:${empId}`;
+  }
+
+  function isQboSuggestDismissed(orgId, empId) {
+    const key = getQboSuggestDismissKey(orgId, empId);
+    if (!key) return false;
+    try {
+      return localStorage.getItem(key) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function setQboSuggestDismissed(orgId, empId, dismissed) {
+    const key = getQboSuggestDismissKey(orgId, empId);
+    if (!key) return;
+    try {
+      if (dismissed) {
+        localStorage.setItem(key, '1');
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function getQboOnboardingSelectionsKey(orgId) {
+    if (!orgId) return null;
+    const fingerprint = getOrgFingerprint(orgId);
+    return `${QBO_ONBOARDING_SELECTIONS_KEY}:${fingerprint}`;
+  }
+
+  function getQboOnboardingSelections(orgId) {
+    const key = getQboOnboardingSelectionsKey(orgId);
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function setQboOnboardingSelections(orgId, selections) {
+    const key = getQboOnboardingSelectionsKey(orgId);
+    if (!key || !selections) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(selections));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function buildTimezoneOptions(selectEl) {
+    if (!selectEl) return;
+    const defaultTz = 'America/Puerto_Rico';
+    let zones = [];
+    if (typeof Intl !== 'undefined' && Intl.supportedValuesOf) {
+      try {
+        zones = Intl.supportedValuesOf('timeZone');
+      } catch (err) {
+        zones = [];
+      }
+    }
+    if (!Array.isArray(zones) || zones.length === 0) {
+      zones = [
+        'America/Puerto_Rico',
+        'America/New_York',
+        'America/Chicago',
+        'America/Denver',
+        'America/Los_Angeles',
+        'America/Phoenix',
+        'America/Anchorage',
+        'Pacific/Honolulu',
+        'Europe/London',
+        'Europe/Paris',
+        'Europe/Berlin',
+        'Asia/Dubai',
+        'Asia/Kolkata',
+        'Asia/Manila',
+        'Asia/Shanghai',
+        'Asia/Tokyo',
+        'Australia/Sydney'
+      ];
+    }
+
+    zones = [...new Set(zones)].sort((a, b) => a.localeCompare(b));
+
+    selectEl.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Select timezone';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    selectEl.appendChild(placeholder);
+
+    zones.forEach(zone => {
+      const option = document.createElement('option');
+      option.value = zone;
+      option.textContent = zone;
+      selectEl.appendChild(option);
+    });
+
+    if (zones.includes(defaultTz)) {
+      selectEl.value = defaultTz;
+    } else if (zones.length > 0) {
+      selectEl.value = zones[0];
+    }
+  }
+
+  function initPendingBootstrapUI(meData) {
+    const navItems = document.querySelectorAll('.nav-item');
+    const sections = document.querySelectorAll('.section');
+
+    sections.forEach(sec => {
+      sec.classList.toggle('active', sec.id === 'section-dashboard');
+    });
+
+    navItems.forEach(item => {
+      const isDashboard = item.dataset.section === 'dashboard';
+      item.classList.toggle('active', isDashboard);
+      if (!isDashboard) {
+        item.dataset.disabled = 'true';
+      }
+    });
+
+    setOnboardingPending(null);
+    clearAppBooting();
+    window.ONBOARDING_SHOW_QB = false;
+
+    if (typeof updateQbCardForSection === 'function') {
+      updateQbCardForSection('dashboard');
+    }
+
+    if (postBootstrapCard) postBootstrapCard.classList.remove('hidden');
+    if (postBootstrapChecklist) postBootstrapChecklist.classList.remove('hidden');
+    if (postBootstrapOrgStep) postBootstrapOrgStep.classList.remove('hidden');
+    bindPostBootstrapStepToggles();
+    bindPostBootstrapActions();
+    setPostBootstrapStepExpanded('org', true);
+    setPostBootstrapStepExpanded('qbo', false);
+    setPostBootstrapStepExpanded('permissions', false);
+    setPostBootstrapStepComplete('org', false);
+    setPostBootstrapStepDisabled('qbo', true);
+    setPostBootstrapStepDisabled('permissions', true);
+    if (postBootstrapBadge) postBootstrapBadge.textContent = 'Signed up';
+    if (postBootstrapTitle) postBootstrapTitle.textContent = 'Finish setup';
+    if (postBootstrapSubtitle) {
+      postBootstrapSubtitle.textContent = 'Create your organization to get started.';
+    }
+    if (postBootstrapDismissBtn) postBootstrapDismissBtn.classList.add('hidden');
+    if (postBootstrapEmail) {
+      postBootstrapEmail.value = meData?.user?.email || '';
+    }
+    buildTimezoneOptions(postBootstrapOrgTimezone);
+
+    if (postBootstrapOrgForm && !pendingBootstrapFormBound) {
+      pendingBootstrapFormBound = true;
+      postBootstrapOrgForm.addEventListener('submit', async evt => {
+        evt.preventDefault();
+
+        const orgName = postBootstrapOrgName?.value || '';
+        const orgTimezone = postBootstrapOrgTimezone?.value || '';
+        const adminFirst = postBootstrapAdminFirst?.value || '';
+        const adminLast = postBootstrapAdminLast?.value || '';
+        const adminName = [adminFirst, adminLast].filter(Boolean).join(' ').trim();
+
+        if (!orgName || !orgTimezone || !adminName) {
+          setPostBootstrapOrgStatus('Organization name, timezone, and admin name are required.', 'crimson');
+          return;
+        }
+
+        const submitBtn = postBootstrapOrgForm.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.disabled = true;
+        setPostBootstrapOrgStatus('Creating organization...', 'black');
+
+        try {
+          await fetchJSON('/api/auth/bootstrap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              org_name: orgName,
+              org_timezone: orgTimezone,
+              admin_name: adminName
+            })
+          });
+          setPostBootstrapOrgStatus('Organization created. Redirecting...', 'green');
+          window.location.href = '/';
+        } catch (err) {
+          console.error('Bootstrap error:', err);
+          setPostBootstrapOrgStatus(err.message || 'Bootstrap failed.', 'crimson');
+          if (submitBtn) submitBtn.disabled = false;
+        }
+      });
+    }
+  }
+
+  let prefetchMeData = null;
+  let prefetchMeStatus = null;
+  try {
+    const meRes = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    prefetchMeStatus = meRes.status;
+    if (meRes.ok) {
+      prefetchMeData = await meRes.json();
+    }
+  } catch (err) {
+    prefetchMeData = null;
+  }
+
+  if (prefetchMeStatus === 401 || prefetchMeStatus === 403) {
+    window.location.href = '/auth';
+    return;
+  }
+
+  if (prefetchMeData && prefetchMeData.pending_bootstrap) {
+    initPendingBootstrapUI(prefetchMeData);
+    return;
+  }
+
+  window.PREFETCHED_ME_DATA = prefetchMeData;
+  const hasSession =
+    !!(prefetchMeData && prefetchMeData.user && prefetchMeData.org);
+
   // 1) Load modals into the DOM
   await loadModalsIntoDom();
+  refreshQboOnboardingDom();
+  bindQboOnboardingModalHandlers();
 
   // 2) Make sure no modals/backdrops start stuck open
   if (typeof closeAllModals === 'function') {
@@ -2168,27 +2927,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupSidebarNavigation();
   }
 
-  // Ensure Time Exceptions wiring is ready even if user opens that tab first
-  initTimeExceptionsIfNeeded();
+  setupDashboardQuickLinks();
+  applyDashboardLinkVisibility();
+
+  // Time Exceptions nav has been replaced by Approve Time Entries.
 
   // 4) Shipments verification report wiring
   if (typeof initShipmentsReportUI === 'function') {
     initShipmentsReportUI();
   }
 
-    // 3b) Make QB card match the initially active tab (Employees on first load)
+    // 3b) Make QB card match the initially active tab (Dashboard on first load)
   const activeNav = document.querySelector('.nav-item.active');
   if (activeNav && typeof updateQbCardForSection === 'function') {
     updateQbCardForSection(activeNav.dataset.section);
   }
 
 // 4) QuickBooks connection status
-  if (typeof checkStatus === 'function') {
+  if (hasSession && typeof checkStatus === 'function') {
     checkStatus();
   }
 
-  // 4a) Fire background payroll account sync so dropdowns are ready when opened
-  backgroundSyncPayrollAccounts().catch(() => {});
+  // 4a) Payroll account sync is manual (Sync Now only).
 
 // 4b) Load core master data from our own DB so tables/dropdowns are ready
 if (typeof loadEmployeesTable === 'function') {
@@ -2210,10 +2970,27 @@ if (typeof loadProjectsForTimeEntries === 'function') {
 }
 
 // 5) QUICKBOOKS CONNECT (FULL PAGE REDIRECT — NO POPUP)
+async function startQboConnect() {
+  try {
+    const res = await fetchJSON('/api/qbo/connect', {
+      method: 'POST',
+      headers: getCsrfHeader()
+    });
+    if (res && res.url) {
+      window.location.href = res.url;
+      return;
+    }
+    throw new Error('QuickBooks auth URL missing.');
+  } catch (err) {
+    console.error('Failed to start QuickBooks auth:', err);
+    alert(err?.message || 'Failed to start QuickBooks auth.');
+  }
+}
+
 const connectBtn = document.getElementById('connect');
 if (connectBtn) {
   connectBtn.addEventListener('click', () => {
-    window.location.href = '/auth/qbo';
+    startQboConnect();
   });
 }
 
@@ -2260,7 +3037,8 @@ if (connectBtn) {
     company_name: document.getElementById('settings-company-name'),
     company_email: document.getElementById('settings-company-email'),
     storage_daily_late_fee_default: document.getElementById('settings-storage-daily-fee'),
-    clock_in_photo_required: document.getElementById('settings-clock-in-photo-required')
+    clock_in_photo_required: document.getElementById('settings-clock-in-photo-required'),
+    audit_log_retention_days: document.getElementById('settings-audit-retention-days')
   };
   const payrollRuleFields = {
     pay_period_length_days: document.getElementById('settings-pay-period-length'),
@@ -2296,8 +3074,14 @@ if (connectBtn) {
   const accountEmailSave = document.getElementById('account-email-save');
   const accountEmailStatus = document.getElementById('account-email-status');
   const backupCard = document.getElementById('settings-backup-card');
+  const auditCard = document.getElementById('settings-audit-card');
   const backupBtn = document.getElementById('settings-backup-now');
   const backupStatus = document.getElementById('settings-backup-status');
+  const deviceSetupCard = document.getElementById('settings-device-setup-card');
+  const kioskCodeEl = document.getElementById('settings-kiosk-enrollment-code');
+  const kioskRotateBtn = document.getElementById('settings-kiosk-rotate');
+  const kioskOpenBtn = document.getElementById('settings-kiosk-open');
+  const kioskStatus = document.getElementById('settings-kiosk-status');
   const adminUsersCard = document.getElementById('settings-admin-users-card');
   const adminUsersBody = document.getElementById('settings-admin-users-body');
   const adminUserEmployee = document.getElementById('settings-admin-user-employee');
@@ -2306,6 +3090,11 @@ if (connectBtn) {
   const adminUserPasswordConfirm = document.getElementById('settings-admin-user-password-confirm');
   const adminUserCreateBtn = document.getElementById('settings-admin-user-create');
   const adminUserStatus = document.getElementById('settings-admin-user-status');
+  const adminUserKioskToggle = document.getElementById('settings-admin-user-kiosk-access');
+  const adminUserPinFields = document.getElementById('settings-admin-user-pin-fields');
+  const adminUserPin = document.getElementById('settings-admin-user-pin');
+  const adminUserPinConfirm = document.getElementById('settings-admin-user-pin-confirm');
+  const adminUserKioskStatus = document.getElementById('settings-admin-user-kiosk-status');
   const roleTemplatesCard = document.getElementById('settings-role-templates-card');
   const roleTemplatesBody = document.getElementById('settings-role-templates-body');
   const templateNameInput = document.getElementById('settings-template-name');
@@ -2317,6 +3106,7 @@ if (connectBtn) {
   const templatePermModifyTime = document.getElementById('settings-template-perm-modify-time');
   const templatePermViewTime = document.getElementById('settings-template-perm-view-time-reports');
   const templatePermViewAllTimesheets = document.getElementById('settings-template-perm-view-all-timesheets');
+  const templatePermAssignTimesheets = document.getElementById('settings-template-perm-assign-timesheets');
   const templatePermViewPayroll = document.getElementById('settings-template-perm-view-payroll');
   const templatePermModifyPayroll = document.getElementById('settings-template-perm-modify-payroll');
   const templatePermModifyRates = document.getElementById('settings-template-perm-modify-pay-rates');
@@ -2324,8 +3114,938 @@ if (connectBtn) {
   const templateClearBtn = document.getElementById('settings-template-clear');
   const templateDeleteBtn = document.getElementById('settings-template-delete');
   const templateStatus = document.getElementById('settings-template-status');
+  const templatePresetsBtn = document.getElementById('settings-template-presets-create');
+  const templatePresetsStatus = document.getElementById('settings-template-presets-status');
   let editingTemplateId = null;
   let permissionTemplates = [];
+  let adminUserEmployeesCache = [];
+  const adminUserEmployeeMap = new Map();
+
+  let postBootstrapPollTimer = null;
+  let postBootstrapCheckInFlight = false;
+
+  function setPostBootstrapStepComplete(stepKey, isComplete) {
+    if (!postBootstrapCard) return;
+    const step = postBootstrapCard.querySelector(`[data-step="${stepKey}"]`);
+    if (!step) return;
+    step.classList.toggle('is-complete', !!isComplete);
+  }
+
+  function setPostBootstrapStepDisabled(stepKey, disabled) {
+    if (!postBootstrapCard) return;
+    const step = postBootstrapCard.querySelector(`[data-step="${stepKey}"]`);
+    if (!step) return;
+    step.classList.toggle('is-disabled', !!disabled);
+  }
+
+  function setPostBootstrapStepSkipped(stepKey, skipped) {
+    if (!postBootstrapCard) return;
+    const step = postBootstrapCard.querySelector(`[data-step="${stepKey}"]`);
+    if (!step) return;
+    step.classList.toggle('is-skipped', !!skipped);
+  }
+
+  function getQboSkipKey(orgId) {
+    if (!orgId) return null;
+    const fingerprint = getOrgFingerprint(orgId);
+    return `avian_onboarding_qbo_skip_v1:${fingerprint}`;
+  }
+
+  function isQboSkipped(orgId) {
+    const key = getQboSkipKey(orgId);
+    if (!key) return false;
+    try {
+      return localStorage.getItem(key) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function setQboSkipped(orgId, skipped) {
+    const key = getQboSkipKey(orgId);
+    if (!key) return;
+    try {
+      if (skipped) {
+        localStorage.setItem(key, '1');
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function setPostBootstrapStepExpanded(stepKey, expanded) {
+    if (!postBootstrapCard) return;
+    const step = postBootstrapCard.querySelector(`[data-step="${stepKey}"]`);
+    if (!step) return;
+    const body = step.querySelector('.onboarding-step-body');
+    const header = step.querySelector('.onboarding-step-header');
+    if (body) body.classList.toggle('hidden', !expanded);
+    if (header) header.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    step.classList.toggle('is-collapsed', !expanded);
+  }
+
+  function bindPostBootstrapStepToggles() {
+    if (!postBootstrapCard) return;
+    const steps = postBootstrapCard.querySelectorAll('.onboarding-step');
+    steps.forEach(step => {
+      const header = step.querySelector('.onboarding-step-header');
+      const body = step.querySelector('.onboarding-step-body');
+      if (!header || !body) return;
+      if (header.dataset.bound) return;
+      header.dataset.bound = '1';
+      header.addEventListener('click', () => {
+        if (step.classList.contains('is-disabled')) return;
+        const isHidden = body.classList.contains('hidden');
+        steps.forEach(other => {
+          if (other !== step) {
+            const otherBody = other.querySelector('.onboarding-step-body');
+            const otherHeader = other.querySelector('.onboarding-step-header');
+            if (otherBody) otherBody.classList.add('hidden');
+            if (otherHeader) otherHeader.setAttribute('aria-expanded', 'false');
+            other.classList.add('is-collapsed');
+          }
+        });
+        body.classList.toggle('hidden', !isHidden);
+        header.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+        step.classList.toggle('is-collapsed', !isHidden);
+      });
+    });
+  }
+
+  function bindPostBootstrapActions() {
+    if (postBootstrapEmployeesBtn && !postBootstrapEmployeesBtn.dataset.bound) {
+      postBootstrapEmployeesBtn.dataset.bound = '1';
+      postBootstrapEmployeesBtn.addEventListener('click', () => {
+        const navItem = document.querySelector('.nav-item[data-section="employees"]');
+        if (navItem) navItem.click();
+        setTimeout(() => {
+          const section = document.getElementById('section-employees');
+          if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 50);
+      });
+    }
+
+    if (postBootstrapQboBtn && !postBootstrapQboBtn.dataset.bound) {
+      postBootstrapQboBtn.dataset.bound = '1';
+      postBootstrapQboBtn.addEventListener('click', () => {
+        const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+        if (orgId) {
+          setQboSkipped(orgId, false);
+          setPostBootstrapStepSkipped('qbo', false);
+        }
+        clearQboOnboardingState();
+        openQboOnboardingModal({ step: 1, resetSelections: true }).catch(err => {
+          console.error('Failed to open QBO onboarding modal:', err);
+        });
+      });
+    }
+
+    if (postBootstrapQboSkipBtn && !postBootstrapQboSkipBtn.dataset.bound) {
+      postBootstrapQboSkipBtn.dataset.bound = '1';
+      postBootstrapQboSkipBtn.addEventListener('click', () => {
+        const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+        if (!orgId) return;
+        setQboSkipped(orgId, true);
+        clearQboOnboardingState();
+        setPostBootstrapStepSkipped('qbo', true);
+        setPostBootstrapStepExpanded('qbo', false);
+        setPostBootstrapStepExpanded('permissions', true);
+        updatePostBootstrapChecklist();
+      });
+    }
+
+    if (postBootstrapPermissionsBtn && !postBootstrapPermissionsBtn.dataset.bound) {
+      postBootstrapPermissionsBtn.dataset.bound = '1';
+      postBootstrapPermissionsBtn.addEventListener('click', () => {
+        const navItem = document.querySelector('.nav-item[data-section="settings"]');
+        if (navItem) navItem.click();
+        setTimeout(() => {
+          const card = document.getElementById('settings-role-templates-card');
+          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 50);
+      });
+    }
+
+    if (postBootstrapDismissBtn && !postBootstrapDismissBtn.dataset.bound) {
+      postBootstrapDismissBtn.dataset.bound = '1';
+      postBootstrapDismissBtn.addEventListener('click', () => {
+        showPostBootstrapCard(false);
+      });
+    }
+  }
+
+  async function ensureQboOnboardingModal() {
+    if (qboOnboardingModal && qboOnboardingBackdrop) return true;
+    await loadModalsIntoDom();
+    if (!document.getElementById('qbo-onboarding-modal')) {
+      const container = document.getElementById('modals-root') || document.body;
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = `
+        <div id="qbo-onboarding-backdrop" class="modal-backdrop hidden"></div>
+        <div id="qbo-onboarding-modal" class="modal hidden" role="dialog" aria-modal="true">
+          <div class="modal-card modal-card-wide qbo-onboarding-card">
+            <div class="modal-header">
+              <div>
+                <h3>Connect QuickBooks</h3>
+                <p class="card-sub">We'll walk you through setup step-by-step.</p>
+              </div>
+              <button
+                id="qbo-onboarding-close"
+                class="icon-button"
+                type="button"
+                aria-label="Close QuickBooks setup"
+              >
+                &times;
+              </button>
+            </div>
+            <div id="qbo-onboarding-wizard" class="qbo-onboarding-wizard">
+              <div class="qbo-onboarding-stepper">
+                <div class="qbo-onboarding-stepper-item" data-qbo-step-indicator="1">
+                  <span class="qbo-stepper-number">1</span>
+                  Choose data
+                </div>
+                <div class="qbo-onboarding-stepper-item" data-qbo-step-indicator="2">
+                  <span class="qbo-stepper-number">2</span>
+                  Connect
+                </div>
+                <div class="qbo-onboarding-stepper-item" data-qbo-step-indicator="3">
+                  <span class="qbo-stepper-number">3</span>
+                  Sync
+                </div>
+                <div class="qbo-onboarding-stepper-item" data-qbo-step-indicator="4">
+                  <span class="qbo-stepper-number">4</span>
+                  Match
+                </div>
+              </div>
+              <div class="qbo-onboarding-pane" data-qbo-step="1">
+                <h4>What should we sync first?</h4>
+                <p class="qbo-step-text">Select what to pull in from QuickBooks during setup.</p>
+                <div class="qbo-onboarding-options">
+                  <label><input type="checkbox" id="qbo-sync-option-employees" checked /> Employees</label>
+                  <label><input type="checkbox" id="qbo-sync-option-projects" checked /> Projects</label>
+                  <label><input type="checkbox" id="qbo-sync-option-vendors" checked /> Vendors</label>
+                  <label><input type="checkbox" id="qbo-sync-option-accounts" checked /> Payroll accounts</label>
+                </div>
+                <p id="qbo-onboarding-error" class="message"></p>
+                <div class="qbo-onboarding-actions">
+                  <button id="qbo-step1-continue" class="btn primary" type="button">Continue</button>
+                  <button id="qbo-step1-cancel" class="btn secondary" type="button">Cancel</button>
+                </div>
+              </div>
+              <div class="qbo-onboarding-pane hidden" data-qbo-step="2">
+                <h4>Connect your QuickBooks account</h4>
+                <p class="qbo-step-text">We'll open QuickBooks in a new tab for secure authorization.</p>
+                <div class="qbo-onboarding-actions">
+                  <button id="qbo-step2-back" class="btn secondary" type="button">Back</button>
+                  <button id="qbo-step2-connect" class="btn primary" type="button">Connect QuickBooks</button>
+                </div>
+              </div>
+              <div class="qbo-onboarding-pane hidden" data-qbo-step="3">
+                <h4>Syncing your data</h4>
+                <p class="qbo-step-text">We'll sync each item in order and let you know when it's ready.</p>
+                <div id="qbo-sync-progress-list" class="qbo-sync-progress-list"></div>
+                <p id="qbo-sync-status" class="message"></p>
+              </div>
+              <div class="qbo-onboarding-pane hidden" data-qbo-step="4">
+                <h4>Match employees (if needed)</h4>
+                <p class="qbo-step-text">Only needed for employees created in Avian before connecting QuickBooks.</p>
+                <p class="qbo-onboarding-note">You can skip for now, but payroll will require QBO links.</p>
+                <div id="qbo-match-list" class="qbo-match-list"></div>
+                <div class="qbo-onboarding-actions">
+                  <button id="qbo-step4-employees" class="btn secondary" type="button">Review matches</button>
+                  <button id="qbo-step4-done" class="btn primary" type="button">Skip and return to setup</button>
+                </div>
+              </div>
+            </div>
+            <div id="qbo-onboarding-loading" class="qbo-onboarding-loading hidden" role="status" aria-live="polite">
+              <div class="sync-indicator">
+                <span class="sync-indicator-dot" aria-hidden="true"></span>
+                <span>Opening QuickBooks...</span>
+              </div>
+              <p class="qbo-onboarding-note">If nothing happens, refresh and try again.</p>
+            </div>
+          </div>
+        </div>
+      `;
+      container.appendChild(wrapper);
+    }
+    refreshQboOnboardingDom();
+    bindQboOnboardingModalHandlers();
+    return !!qboOnboardingModal;
+  }
+
+  function refreshQboOnboardingDom() {
+    qboOnboardingModal = document.getElementById('qbo-onboarding-modal');
+    qboOnboardingBackdrop = document.getElementById('qbo-onboarding-backdrop');
+    qboOnboardingWizard = document.getElementById('qbo-onboarding-wizard');
+    qboOnboardingLoading = document.getElementById('qbo-onboarding-loading');
+    qboOnboardingClose = document.getElementById('qbo-onboarding-close');
+    qboOnboardingStepIndicators = Array.from(
+      document.querySelectorAll('[data-qbo-step-indicator]')
+    );
+    qboOnboardingPanes = Array.from(
+      document.querySelectorAll('.qbo-onboarding-pane')
+    );
+    qboOnboardingError = document.getElementById('qbo-onboarding-error');
+    qboSyncProgressList = document.getElementById('qbo-sync-progress-list');
+    qboSyncStatus = document.getElementById('qbo-sync-status');
+    qboMatchList = document.getElementById('qbo-match-list');
+    qboOptionEmployees = document.getElementById('qbo-sync-option-employees');
+    qboOptionProjects = document.getElementById('qbo-sync-option-projects');
+    qboOptionVendors = document.getElementById('qbo-sync-option-vendors');
+    qboOptionAccounts = document.getElementById('qbo-sync-option-accounts');
+    qboStep1Continue = document.getElementById('qbo-step1-continue');
+    qboStep1Cancel = document.getElementById('qbo-step1-cancel');
+    qboStep2Back = document.getElementById('qbo-step2-back');
+    qboStep2Connect = document.getElementById('qbo-step2-connect');
+    qboStep4Employees = document.getElementById('qbo-step4-employees');
+    qboStep4Done = document.getElementById('qbo-step4-done');
+
+    qboMatchSheet = document.getElementById('qbo-match-sheet');
+    qboMatchSheetBackdrop = document.getElementById('qbo-match-sheet-backdrop');
+    qboMatchSheetClose = document.getElementById('qbo-match-sheet-close');
+    qboMatchSheetDone = document.getElementById('qbo-match-sheet-done');
+    qboMatchSheetEmployees = document.getElementById('qbo-match-sheet-employees');
+    qboMatchSheetBack = document.getElementById('qbo-match-sheet-back');
+    qboMatchSheetList = document.getElementById('qbo-match-sheet-list');
+    qboMatchSheetStatus = document.getElementById('qbo-match-sheet-status');
+  }
+
+  function setQboOnboardingLoading(isLoading) {
+    if (qboOnboardingWizard) {
+      qboOnboardingWizard.classList.toggle('hidden', !!isLoading);
+    }
+    if (qboOnboardingLoading) {
+      qboOnboardingLoading.classList.toggle('hidden', !isLoading);
+    }
+  }
+
+  function setQboOnboardingStep(step) {
+    if (qboOnboardingPanes && qboOnboardingPanes.length) {
+      qboOnboardingPanes.forEach(pane => {
+        const paneStep = Number(pane.dataset.qboStep || 0);
+        pane.classList.toggle('hidden', paneStep !== step);
+      });
+    }
+    if (qboOnboardingStepIndicators && qboOnboardingStepIndicators.length) {
+      qboOnboardingStepIndicators.forEach(item => {
+        const itemStep = Number(item.dataset.qboStepIndicator || 0);
+        item.classList.toggle('is-active', itemStep === step);
+        item.classList.toggle('is-complete', itemStep < step);
+      });
+    }
+  }
+
+  async function openQboOnboardingModal(options = {}) {
+    const ok = await ensureQboOnboardingModal();
+    if (!ok || !qboOnboardingModal || !qboOnboardingBackdrop) {
+      startQboConnect();
+      return;
+    }
+    setQboOnboardingLoading(false);
+    if (qboOnboardingClose) qboOnboardingClose.disabled = false;
+    if (qboStep1Continue) qboStep1Continue.disabled = false;
+    if (qboStep1Cancel) qboStep1Cancel.disabled = false;
+    if (qboStep2Back) qboStep2Back.disabled = false;
+    if (qboStep2Connect) qboStep2Connect.disabled = false;
+    if (qboStep4Employees) qboStep4Employees.disabled = false;
+    if (qboStep4Done) qboStep4Done.disabled = false;
+    if (qboOnboardingError) qboOnboardingError.textContent = '';
+    const step = options.step || 1;
+    if (options.resetSelections) {
+      setQboSelectionsInInputs({
+        employees: true,
+        projects: true,
+        vendors: true,
+        accounts: true
+      });
+    }
+    setQboOnboardingStep(step);
+    qboOnboardingModal.classList.remove('hidden');
+    qboOnboardingBackdrop.classList.remove('hidden');
+  }
+
+  function closeQboOnboardingModal() {
+    if (qboOnboardingModal) qboOnboardingModal.classList.add('hidden');
+    if (qboOnboardingBackdrop) qboOnboardingBackdrop.classList.add('hidden');
+    setQboOnboardingLoading(false);
+    if (qboOnboardingClose) qboOnboardingClose.disabled = false;
+  }
+
+  function openQboMatchSheet() {
+    if (qboMatchSheet) qboMatchSheet.classList.remove('hidden');
+    if (qboMatchSheetBackdrop) qboMatchSheetBackdrop.classList.remove('hidden');
+  }
+
+  function closeQboMatchSheet() {
+    if (qboMatchSheet) qboMatchSheet.classList.add('hidden');
+    if (qboMatchSheetBackdrop) qboMatchSheetBackdrop.classList.add('hidden');
+  }
+
+  async function loadQboMatchSheetList() {
+    if (!qboMatchSheetList) return;
+    if (qboMatchSheetStatus) qboMatchSheetStatus.textContent = '';
+    qboMatchSheetList.textContent = 'Loading employees that need linking...';
+    let matches = [];
+    try {
+      matches = await fetchJSON('/api/employees?status=pending');
+    } catch (err) {
+      if (qboMatchSheetStatus) {
+        qboMatchSheetStatus.textContent = err?.message || 'Failed to load matches.';
+        qboMatchSheetStatus.style.color = 'crimson';
+      }
+      matches = [];
+    }
+    renderQboMatchList({
+      container: qboMatchSheetList,
+      statusEl: qboMatchSheetStatus,
+      matches,
+      limit: 12
+    });
+  }
+
+  function getQboSelectionsFromInputs() {
+    return {
+      employees: qboOptionEmployees ? qboOptionEmployees.checked : true,
+      projects: qboOptionProjects ? qboOptionProjects.checked : true,
+      vendors: qboOptionVendors ? qboOptionVendors.checked : true,
+      accounts: qboOptionAccounts ? qboOptionAccounts.checked : true
+    };
+  }
+
+  function setQboSelectionsInInputs(selections) {
+    if (!selections) return;
+    if (qboOptionEmployees) qboOptionEmployees.checked = !!selections.employees;
+    if (qboOptionProjects) qboOptionProjects.checked = !!selections.projects;
+    if (qboOptionVendors) qboOptionVendors.checked = !!selections.vendors;
+    if (qboOptionAccounts) qboOptionAccounts.checked = !!selections.accounts;
+  }
+
+  function renderQboSyncProgress(selections) {
+    if (!qboSyncProgressList) return;
+    const rows = [
+      { key: 'employees', label: 'Employees', selected: selections.employees },
+      { key: 'projects', label: 'Projects', selected: selections.projects },
+      { key: 'vendors', label: 'Vendors', selected: selections.vendors },
+      { key: 'accounts', label: 'Payroll accounts', selected: selections.accounts }
+    ];
+    qboSyncProgressList.innerHTML = '';
+    rows.forEach(row => {
+      const item = document.createElement('div');
+      item.className = 'qbo-sync-progress-item';
+      item.dataset.qboSyncKey = row.key;
+      const statusText = row.selected ? 'Pending' : 'Skipped';
+      item.innerHTML = `
+        <span>${row.label}</span>
+        <span class="qbo-sync-status ${row.selected ? '' : 'is-done'}">${statusText}</span>
+      `;
+      qboSyncProgressList.appendChild(item);
+    });
+  }
+
+  function updateQboSyncStatus(key, state, text) {
+    if (!qboSyncProgressList) return;
+    const item = qboSyncProgressList.querySelector(`[data-qbo-sync-key="${key}"]`);
+    if (!item) return;
+    const statusEl = item.querySelector('.qbo-sync-status');
+    if (!statusEl) return;
+    statusEl.classList.remove('is-running', 'is-done', 'is-error');
+    if (state) statusEl.classList.add(state);
+    statusEl.textContent = text || statusEl.textContent;
+  }
+
+  async function loadQboMatchList() {
+    if (!qboMatchList) return;
+    qboMatchList.textContent = 'Checking for employees that need linking...';
+    let matches = [];
+    try {
+      matches = await fetchJSON('/api/employees?status=pending');
+    } catch {
+      matches = [];
+    }
+    renderQboMatchList({
+      container: qboMatchList,
+      statusEl: qboMatchSheetStatus,
+      matches,
+      limit: 6
+    });
+  }
+
+  async function linkQboFromOnboarding({ empId, qboId, qboName } = {}) {
+    if (!empId || !qboId) return;
+    if (qboMatchSheetStatus) {
+      qboMatchSheetStatus.textContent = 'Linking to QuickBooks...';
+      qboMatchSheetStatus.style.color = '#111827';
+    }
+    try {
+      await fetchJSON(`/api/employees/${empId}/link-qbo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+        body: JSON.stringify({
+          employee_qbo_id: qboId,
+          allow_merge: true
+        })
+      });
+      if (qboMatchSheetStatus) {
+        qboMatchSheetStatus.textContent = `Linked ${qboName ? `${qboName}` : 'employee'} to QuickBooks.`;
+        qboMatchSheetStatus.style.color = 'green';
+      }
+      await loadQboMatchList();
+      await loadQboMatchSheetList();
+      await updatePostBootstrapChecklist();
+    } catch (err) {
+      if (qboMatchSheetStatus) {
+        qboMatchSheetStatus.textContent = err?.message || 'Failed to link to QuickBooks.';
+        qboMatchSheetStatus.style.color = 'crimson';
+      }
+    }
+  }
+
+  function renderQboMatchList({ container, statusEl, matches, limit = 6 } = {}) {
+    if (!container) return;
+    const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+    const pending = Array.isArray(matches) ? matches.filter(emp => !emp.employee_qbo_id && !emp.vendor_qbo_id) : [];
+    if (!pending.length) {
+      container.textContent = 'No Avian-created employees need linking. You can continue setup.';
+      return;
+    }
+
+    const show = limit ? pending.slice(0, limit) : pending;
+    container.innerHTML = '';
+    show.forEach(emp => {
+      const name =
+        emp.name ||
+        `${emp.given_name || ''} ${emp.family_name || ''}`.trim() ||
+        'Employee';
+      const suggestions = Array.isArray(emp.qbo_suggestions) ? emp.qbo_suggestions : [];
+      const dismissed = orgId ? isQboSuggestDismissed(orgId, emp.id) : false;
+      const suggestion = !dismissed && suggestions.length ? suggestions[0] : null;
+      const badgeLabel = suggestion
+        ? (suggestion.confidence === 'strong' ? 'Strong match' : 'Possible match')
+        : '';
+      const badgeClass = suggestion
+        ? (suggestion.confidence === 'strong' ? 'pill pill-good' : 'pill pill-warn')
+        : '';
+
+      const row = document.createElement('div');
+      row.className = 'pending-suggestion';
+      row.innerHTML = `
+        <div class="pending-sub">${escapeHTML(name)}</div>
+        ${
+          suggestion
+            ? `
+              <div class="pending-suggestion-row">
+                <span>${escapeHTML(suggestion.name || 'QuickBooks employee')}${suggestion.employee_qbo_id ? ` (${escapeHTML(suggestion.employee_qbo_id)})` : ''}</span>
+                <span class="${badgeClass}">${badgeLabel}</span>
+              </div>
+              <div class="pending-suggestion-actions">
+                <button class="btn primary btn-sm qbo-onboard-confirm" data-emp-id="${emp.id}" data-qbo-id="${escapeHTML(suggestion.employee_qbo_id || '')}" data-qbo-name="${encodeURIComponent(suggestion.name || '')}">Confirm link</button>
+                <button class="btn tertiary btn-sm qbo-onboard-dismiss" data-emp-id="${emp.id}">Not a match</button>
+              </div>
+            `
+            : `
+              <div class="pending-suggestion-row">
+                <span>No suggested match yet.</span>
+                <span class="pill pill-warn">Needs review</span>
+              </div>
+            `
+        }
+      `;
+
+      row.addEventListener('click', async evt => {
+        const confirmBtn = evt.target.closest('.qbo-onboard-confirm');
+        if (confirmBtn) {
+          const empId = confirmBtn.dataset.empId;
+          const qboId = confirmBtn.dataset.qboId;
+          const qboName = confirmBtn.dataset.qboName ? decodeURIComponent(confirmBtn.dataset.qboName) : '';
+          if (statusEl) statusEl.textContent = '';
+          if (typeof window.openQboLinkConfirmModal === 'function') {
+            window.openQboLinkConfirmModal({
+              empId,
+              empName: name,
+              qboId,
+              qboName,
+              onConfirm: linkQboFromOnboarding
+            });
+          } else {
+            const ok = window.confirm(`Link ${name} to ${qboName || 'QuickBooks'} (${qboId})?`);
+            if (ok) {
+              await linkQboFromOnboarding({ empId, qboId, qboName });
+            }
+          }
+          return;
+        }
+
+        const dismissBtn = evt.target.closest('.qbo-onboard-dismiss');
+        if (dismissBtn) {
+          if (orgId) {
+            setQboSuggestDismissed(orgId, emp.id, true);
+            renderQboMatchList({ container, statusEl, matches, limit });
+          }
+          return;
+        }
+
+      });
+
+      container.appendChild(row);
+    });
+
+    if (pending.length > show.length) {
+      const more = document.createElement('div');
+      more.className = 'pending-sub';
+      more.textContent = `+${pending.length - show.length} more employees need linking`;
+      container.appendChild(more);
+    }
+  }
+
+  async function runQboOnboardingSync(selections) {
+    if (qboInitialSyncRunning) return;
+    qboInitialSyncRunning = true;
+    if (qboSyncStatus) qboSyncStatus.textContent = '';
+    renderQboSyncProgress(selections);
+    setQboOnboardingStep(3);
+    const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+    if (orgId) {
+      setQboOnboardingSelections(orgId, selections);
+    }
+
+    const tasks = [
+      { key: 'employees', route: '/api/sync/employees' },
+      { key: 'projects', route: '/api/sync/projects' },
+      { key: 'vendors', route: '/api/sync/vendors' },
+      { key: 'accounts', route: '/api/sync/payroll-accounts' }
+    ];
+
+    try {
+      for (const task of tasks) {
+        if (!selections[task.key]) {
+          updateQboSyncStatus(task.key, 'is-done', 'Skipped');
+          continue;
+        }
+        updateQboSyncStatus(task.key, 'is-running', 'Syncing...');
+        await syncRoute(task.route, {
+          silent: true,
+          statusEl: qboSyncStatus,
+          throwOnError: true
+        });
+        if (task.key === 'accounts' && typeof loadPayrollSettings === 'function') {
+          await loadPayrollSettings();
+        }
+        updateQboSyncStatus(task.key, 'is-done', 'Done');
+      }
+      if (qboSyncStatus) {
+        qboSyncStatus.textContent = 'Sync complete.';
+        qboSyncStatus.style.color = 'green';
+      }
+      clearQboOnboardingState();
+      await updatePostBootstrapChecklist();
+      await loadQboMatchList();
+      setQboOnboardingStep(4);
+    } catch (err) {
+      updateQboSyncStatus(
+        tasks.find(t => selections[t.key])?.key || 'employees',
+        'is-error',
+        'Failed'
+      );
+      if (qboSyncStatus) {
+        qboSyncStatus.textContent = err?.message || 'Sync failed.';
+        qboSyncStatus.style.color = 'crimson';
+      }
+    } finally {
+      qboInitialSyncRunning = false;
+    }
+  }
+
+  function bindQboOnboardingModalHandlers() {
+    if (qboOnboardingClose && !qboOnboardingClose.dataset.bound) {
+      qboOnboardingClose.dataset.bound = '1';
+      qboOnboardingClose.addEventListener('click', closeQboOnboardingModal);
+    }
+
+    if (qboOnboardingBackdrop && !qboOnboardingBackdrop.dataset.bound) {
+      qboOnboardingBackdrop.dataset.bound = '1';
+      qboOnboardingBackdrop.addEventListener('click', closeQboOnboardingModal);
+    }
+
+    if (qboStep1Continue && !qboStep1Continue.dataset.bound) {
+      qboStep1Continue.dataset.bound = '1';
+      qboStep1Continue.addEventListener('click', () => {
+        const selections = getQboSelectionsFromInputs();
+        const hasSelection = Object.values(selections).some(Boolean);
+        if (!hasSelection) {
+          if (qboOnboardingError) {
+            qboOnboardingError.textContent = 'Select at least one item to sync.';
+            qboOnboardingError.style.color = 'crimson';
+          }
+          return;
+        }
+        if (qboOnboardingError) qboOnboardingError.textContent = '';
+        setQboOnboardingStep(2);
+      });
+    }
+
+    if (qboStep1Cancel && !qboStep1Cancel.dataset.bound) {
+      qboStep1Cancel.dataset.bound = '1';
+      qboStep1Cancel.addEventListener('click', closeQboOnboardingModal);
+    }
+
+    if (qboStep2Back && !qboStep2Back.dataset.bound) {
+      qboStep2Back.dataset.bound = '1';
+      qboStep2Back.addEventListener('click', () => {
+        setQboOnboardingStep(1);
+      });
+    }
+
+    if (qboStep2Connect && !qboStep2Connect.dataset.bound) {
+      qboStep2Connect.dataset.bound = '1';
+      qboStep2Connect.addEventListener('click', () => {
+        const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+        const selections = getQboSelectionsFromInputs();
+        setQboOnboardingState(orgId, { selections, stage: 'auth', startedAt: Date.now() });
+        setQboOnboardingLoading(true);
+        if (qboStep2Connect) qboStep2Connect.disabled = true;
+        if (qboStep2Back) qboStep2Back.disabled = true;
+        if (qboOnboardingClose) qboOnboardingClose.disabled = true;
+        setTimeout(() => {
+          startQboConnect();
+        }, 60);
+      });
+    }
+
+    if (qboStep4Employees && !qboStep4Employees.dataset.bound) {
+      qboStep4Employees.dataset.bound = '1';
+      qboStep4Employees.addEventListener('click', () => {
+        closeQboOnboardingModal();
+        openQboMatchSheet();
+        loadQboMatchSheetList();
+      });
+    }
+
+    if (qboStep4Done && !qboStep4Done.dataset.bound) {
+      qboStep4Done.dataset.bound = '1';
+      qboStep4Done.addEventListener('click', () => {
+        const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+        if (orgId) {
+          setQboSkipped(orgId, true);
+          setPostBootstrapStepSkipped('qbo', true);
+          setOnboardingForceVisible(orgId, true);
+        }
+        closeQboOnboardingModal();
+        showPostBootstrapCard(true);
+        setPostBootstrapStepExpanded('qbo', false);
+        setPostBootstrapStepExpanded('permissions', true);
+        updatePostBootstrapChecklist();
+      });
+    }
+
+    if (qboMatchSheetClose && !qboMatchSheetClose.dataset.bound) {
+      qboMatchSheetClose.dataset.bound = '1';
+      qboMatchSheetClose.addEventListener('click', closeQboMatchSheet);
+    }
+
+    if (qboMatchSheetBackdrop && !qboMatchSheetBackdrop.dataset.bound) {
+      qboMatchSheetBackdrop.dataset.bound = '1';
+      qboMatchSheetBackdrop.addEventListener('click', closeQboMatchSheet);
+    }
+
+    if (qboMatchSheetBack && !qboMatchSheetBack.dataset.bound) {
+      qboMatchSheetBack.dataset.bound = '1';
+      qboMatchSheetBack.addEventListener('click', closeQboMatchSheet);
+    }
+
+    if (qboMatchSheetDone && !qboMatchSheetDone.dataset.bound) {
+      qboMatchSheetDone.dataset.bound = '1';
+      qboMatchSheetDone.addEventListener('click', () => {
+        closeQboMatchSheet();
+        setPostBootstrapStepExpanded('qbo', false);
+        setPostBootstrapStepExpanded('permissions', true);
+      });
+    }
+
+    if (qboMatchSheetEmployees && !qboMatchSheetEmployees.dataset.bound) {
+      qboMatchSheetEmployees.dataset.bound = '1';
+      qboMatchSheetEmployees.addEventListener('click', () => {
+        closeQboMatchSheet();
+        const navItem = document.querySelector('.nav-item[data-section="employees"]');
+        if (navItem) navItem.click();
+      });
+    }
+  }
+
+  async function resumeQboOnboardingIfNeeded() {
+    if (!window.QBO_JUST_CONNECTED) return;
+    const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+    const state = getQboOnboardingState(orgId);
+    if (!state || !state.selections) return;
+    const status = await fetchJSON('/api/status').catch(() => null);
+    if (!status?.qbConnected) {
+      await openQboOnboardingModal({ step: 1 });
+      if (qboOnboardingError) {
+        qboOnboardingError.textContent = 'QuickBooks connection did not complete. Please try again.';
+        qboOnboardingError.style.color = 'crimson';
+      }
+      return;
+    }
+    await openQboOnboardingModal({ step: 3 });
+    setQboOnboardingLoading(false);
+    setQboSelectionsInInputs(state.selections);
+    await runQboOnboardingSync(state.selections);
+    window.QBO_JUST_CONNECTED = false;
+  }
+
+  async function updatePostBootstrapChecklist() {
+    if (!postBootstrapCard || postBootstrapCard.classList.contains('hidden')) return;
+    if (postBootstrapCheckInFlight) return;
+    postBootstrapCheckInFlight = true;
+
+    try {
+      const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+      const orgComplete = !!orgId;
+      setPostBootstrapStepComplete('org', orgComplete);
+      setPostBootstrapStepDisabled('qbo', !orgComplete);
+      setPostBootstrapStepDisabled('permissions', !orgComplete);
+      if (!orgComplete) {
+        return;
+      }
+
+      const [employeesResult, statusResult, templatesResult] = await Promise.allSettled([
+        fetchJSON('/api/employees?status=active'),
+        fetchJSON('/api/status'),
+        fetchJSON('/api/permission-templates')
+      ]);
+
+      const employees =
+        employeesResult.status === 'fulfilled' ? employeesResult.value : [];
+      const status =
+        statusResult.status === 'fulfilled' ? statusResult.value : null;
+      const templates =
+        templatesResult.status === 'fulfilled' ? templatesResult.value?.templates || [] : [];
+
+      const currentEmpId = window.CURRENT_EMPLOYEE?.id ? Number(window.CURRENT_EMPLOYEE.id) : null;
+      const nonAdminCount = Array.isArray(employees)
+        ? employees.filter(emp => {
+          if (!emp || emp.id == null) return false;
+          if (!currentEmpId) return true;
+          return Number(emp.id) !== currentEmpId;
+        }).length
+        : 0;
+      const employeesComplete = nonAdminCount > 0;
+      const qboSkipped = isQboSkipped(orgId);
+      const qbConnected = !!status?.qbConnected;
+      const lastSync = status?.lastSync || {};
+      const storedSelections = getQboOnboardingSelections(orgId);
+      const selectionMap = storedSelections && typeof storedSelections === 'object'
+        ? storedSelections
+        : null;
+      const requiredKeys = selectionMap
+        ? Object.entries(selectionMap)
+          .filter(([, value]) => !!value)
+          .map(([key]) => (key === 'accounts' ? 'payroll_accounts' : key))
+        : ['employees', 'vendors', 'projects', 'payroll_accounts'];
+      const effectiveRequired = requiredKeys.length ? requiredKeys : ['employees'];
+      const qboSyncReady =
+        qbConnected &&
+        effectiveRequired.every(key => !!lastSync?.[key]);
+      const templatesComplete = Array.isArray(templates) && templates.length > 0;
+      const orgIdForForce = orgId;
+      const forceVisible = isOnboardingForceVisible(orgIdForForce);
+      const permissionsComplete = forceVisible ? false : (employeesComplete || templatesComplete);
+
+      const showConnectActions = !qboSkipped && !qbConnected;
+      if (postBootstrapQboBtn) {
+        postBootstrapQboBtn.textContent = 'Connect QuickBooks';
+        postBootstrapQboBtn.style.display = showConnectActions ? '' : 'none';
+      }
+      if (postBootstrapQboSkipBtn) {
+        postBootstrapQboSkipBtn.style.display = showConnectActions ? '' : 'none';
+      }
+      if (postBootstrapQboStatus) {
+        if (qboSkipped) {
+          setPostBootstrapQboStatus('Skipped for now. You can connect QuickBooks anytime.', '#b45309');
+        } else if (!qbConnected) {
+          setPostBootstrapQboStatus('', '');
+        } else if (qboSyncReady) {
+          setPostBootstrapQboStatus('Connected and synced.', 'green');
+        } else {
+          const pieces = [];
+          if (lastSync.employees) pieces.push(`Employees: ${formatDateTimeLocal(lastSync.employees)}`);
+          if (lastSync.vendors) pieces.push(`Vendors: ${formatDateTimeLocal(lastSync.vendors)}`);
+          if (lastSync.projects) pieces.push(`Projects: ${formatDateTimeLocal(lastSync.projects)}`);
+          if (lastSync.payroll_accounts) pieces.push(`Accounts: ${formatDateTimeLocal(lastSync.payroll_accounts)}`);
+          const summary = qboInitialSyncRunning
+            ? 'Connected. Syncing your data now.'
+            : pieces.length
+              ? `Last sync — ${pieces.join(' · ')}`
+              : 'Connected. Finish the sync in QuickBooks setup.';
+          setPostBootstrapQboStatus(summary, '#0f766e');
+        }
+      }
+
+      setPostBootstrapStepSkipped('qbo', qboSkipped);
+      setPostBootstrapStepComplete('qbo', qboSyncReady && !qboSkipped);
+      setPostBootstrapStepComplete('permissions', permissionsComplete);
+
+      if (!forceVisible && orgComplete && (qboSyncReady || qboSkipped) && permissionsComplete) {
+        showPostBootstrapCard(false);
+      }
+    } catch (err) {
+      console.warn('Failed to refresh setup checklist', err);
+    } finally {
+      postBootstrapCheckInFlight = false;
+    }
+  }
+
+  function startPostBootstrapPolling() {
+    if (postBootstrapPollTimer) return;
+    updatePostBootstrapChecklist();
+    postBootstrapPollTimer = setInterval(updatePostBootstrapChecklist, 20000);
+  }
+
+  function stopPostBootstrapPolling() {
+    if (!postBootstrapPollTimer) return;
+    clearInterval(postBootstrapPollTimer);
+    postBootstrapPollTimer = null;
+  }
+
+  function showPostBootstrapCard(show) {
+    if (!postBootstrapCard) return;
+    postBootstrapCard.classList.toggle('hidden', !show);
+    if (show) {
+      if (postBootstrapChecklist) postBootstrapChecklist.classList.remove('hidden');
+      if (postBootstrapOrgStep) postBootstrapOrgStep.classList.remove('hidden');
+      bindPostBootstrapStepToggles();
+      const showQboStep = !!window.QBO_JUST_CONNECTED;
+      setPostBootstrapStepExpanded('org', !showQboStep);
+      setPostBootstrapStepExpanded('qbo', showQboStep);
+      setPostBootstrapStepExpanded('permissions', false);
+      setPostBootstrapStepComplete('org', true);
+      setPostBootstrapStepDisabled('qbo', false);
+      setPostBootstrapStepDisabled('permissions', false);
+      const currentOrgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+      setOnboardingPending(currentOrgId);
+      window.ONBOARDING_SHOW_QB = false;
+      if (typeof updateQbCardForSection === 'function') {
+        updateQbCardForSection('dashboard');
+      }
+      if (showQboStep) {
+        setPostBootstrapQboStatus('QuickBooks connected. Finishing setup...', '#0f766e');
+      }
+      startPostBootstrapPolling();
+    } else {
+      const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+      if (orgId) setOnboardingForceVisible(orgId, false);
+      clearOnboardingPending();
+      window.ONBOARDING_SHOW_QB = false;
+      const activeNav = document.querySelector('.nav-item.active');
+      if (activeNav && typeof updateQbCardForSection === 'function') {
+        updateQbCardForSection(activeNav.dataset.section);
+      }
+      stopPostBootstrapPolling();
+    }
+    clearAppBooting();
+  }
 
   function setPasswordStatus(text, color) {
     if (!passwordStatus) return;
@@ -2351,12 +4071,141 @@ if (connectBtn) {
     adminUserStatus.style.color = color || '';
   }
 
+  function setAdminUserKioskStatus(text, color) {
+    if (!adminUserKioskStatus) return;
+    adminUserKioskStatus.textContent = text || '';
+    adminUserKioskStatus.style.color = color || '';
+  }
+
+  function setKioskStatus(text, color) {
+    if (!kioskStatus) return;
+    kioskStatus.textContent = text || '';
+    kioskStatus.style.color = color || '';
+  }
+
+  function setKioskCode(code) {
+    if (!kioskCodeEl) return;
+    kioskCodeEl.textContent = code || '—';
+  }
+
+  async function loadEnrollmentCode() {
+    if (!window.CURRENT_IS_SUPER_ADMIN || !kioskCodeEl) return;
+    setKioskStatus('Loading enrollment code…', '#6b7280');
+    try {
+      const res = await fetchJSON('/api/kiosks/enrollment-code');
+      setKioskCode(res?.code || '—');
+      setKioskStatus('', '');
+    } catch (err) {
+      console.error('Error loading enrollment code', err);
+      setKioskCode('—');
+      setKioskStatus(err?.message || 'Failed to load enrollment code.', 'crimson');
+    }
+  }
+
+  async function rotateEnrollmentCode() {
+    if (!window.CURRENT_IS_SUPER_ADMIN) return;
+    const ok = window.confirm(
+      'Rotate the enrollment code? Existing kiosks stay enrolled, but new kiosks will need the new code.'
+    );
+    if (!ok) return;
+    setKioskStatus('Rotating code…', '#6b7280');
+    try {
+      const res = await fetchJSON('/api/kiosks/enrollment-code/rotate', {
+        method: 'POST'
+      });
+      setKioskCode(res?.code || '—');
+      setKioskStatus('Enrollment code rotated.', 'green');
+    } catch (err) {
+      console.error('Error rotating enrollment code', err);
+      setKioskStatus(err?.message || 'Failed to rotate enrollment code.', 'crimson');
+    }
+  }
+
+
+  function setAdminUserEmployeeCache(list = []) {
+    adminUserEmployeesCache = Array.isArray(list) ? list : [];
+    adminUserEmployeeMap.clear();
+    adminUserEmployeesCache.forEach(emp => {
+      if (!emp || emp.id == null) return;
+      adminUserEmployeeMap.set(Number(emp.id), emp);
+    });
+  }
+
+  function getAdminUserEmployeeById(id) {
+    if (!id) return null;
+    return adminUserEmployeeMap.get(Number(id)) || null;
+  }
+
+  function getSelectedAdminUserEmployee() {
+    const id = adminUserEmployee ? Number(adminUserEmployee.value) : 0;
+    if (!id) return null;
+    return getAdminUserEmployeeById(id);
+  }
+
+  function clearAdminUserPinInputs() {
+    if (adminUserPin) adminUserPin.value = '';
+    if (adminUserPinConfirm) adminUserPinConfirm.value = '';
+  }
+
+  function syncAdminUserKioskUI({ applyDefaults = false, resetPins = true } = {}) {
+    if (!adminUserKioskToggle) return;
+    const employee = getSelectedAdminUserEmployee();
+
+    if (!employee) {
+      adminUserKioskToggle.checked = false;
+      adminUserKioskToggle.disabled = true;
+      if (adminUserPinFields) adminUserPinFields.classList.add('hidden');
+      if (resetPins) clearAdminUserPinInputs();
+      setAdminUserKioskStatus('Select an employee to enable kiosk admin access.', '#6b7280');
+      return;
+    }
+
+    adminUserKioskToggle.disabled = false;
+    if (applyDefaults) {
+      adminUserKioskToggle.checked = !!employee.kiosk_admin_access;
+    }
+
+    const kioskOn = !!employee.kiosk_admin_access;
+    const pinSet = !!employee.has_pin;
+    setAdminUserKioskStatus(
+      `Current: Kiosk access ${kioskOn ? 'On' : 'Off'} | PIN ${pinSet ? 'Set' : 'Not set'}`,
+      '#6b7280'
+    );
+
+    const wantsKiosk = !!adminUserKioskToggle.checked;
+    const showPinFields = wantsKiosk && !pinSet;
+    if (adminUserPinFields) {
+      adminUserPinFields.classList.toggle('hidden', !showPinFields);
+    }
+    if (!showPinFields && resetPins) {
+      clearAdminUserPinInputs();
+    }
+  }
+
   function applyBackupCardVisibility() {
     if (!backupCard) return;
     if (window.CURRENT_IS_SUPER_ADMIN) {
       backupCard.classList.remove('hidden');
     } else {
       backupCard.classList.add('hidden');
+    }
+  }
+
+  function applyAuditCardVisibility() {
+    if (!auditCard) return;
+    if (window.CURRENT_IS_SUPER_ADMIN) {
+      auditCard.classList.remove('hidden');
+    } else {
+      auditCard.classList.add('hidden');
+    }
+  }
+
+  function applyDeviceSetupVisibility() {
+    if (!deviceSetupCard) return;
+    if (window.CURRENT_IS_SUPER_ADMIN) {
+      deviceSetupCard.classList.remove('hidden');
+    } else {
+      deviceSetupCard.classList.add('hidden');
     }
   }
 
@@ -2384,6 +4233,12 @@ if (connectBtn) {
     templateStatus.style.color = color || '';
   }
 
+  function setTemplatePresetsStatus(text, color) {
+    if (!templatePresetsStatus) return;
+    templatePresetsStatus.textContent = text || '';
+    templatePresetsStatus.style.color = color || '';
+  }
+
   function clearTemplateForm() {
     editingTemplateId = null;
     if (templateNameInput) templateNameInput.value = '';
@@ -2395,6 +4250,7 @@ if (connectBtn) {
     if (templatePermModifyTime) templatePermModifyTime.checked = false;
     if (templatePermViewTime) templatePermViewTime.checked = false;
     if (templatePermViewAllTimesheets) templatePermViewAllTimesheets.checked = false;
+    if (templatePermAssignTimesheets) templatePermAssignTimesheets.checked = false;
     if (templatePermViewPayroll) templatePermViewPayroll.checked = false;
     if (templatePermModifyPayroll) templatePermModifyPayroll.checked = false;
     if (templatePermModifyRates) templatePermModifyRates.checked = false;
@@ -2420,11 +4276,145 @@ if (connectBtn) {
         modify_time: !!templatePermModifyTime?.checked,
         view_time_reports: !!templatePermViewTime?.checked,
         view_all_timesheets: !!templatePermViewAllTimesheets?.checked,
+        assign_timesheets: !!templatePermAssignTimesheets?.checked,
         view_payroll: !!templatePermViewPayroll?.checked,
         modify_payroll: !!templatePermModifyPayroll?.checked,
         modify_pay_rates: !!templatePermModifyRates?.checked
       }
     };
+  }
+
+  const RECOMMENDED_TEMPLATES = [
+    {
+      name: 'Overlord',
+      role_title: 'Overlord',
+      access: { worker_timekeeping: true, desktop_access: true, kiosk_admin_access: true },
+      permissions: {
+        see_shipments: true,
+        modify_time: true,
+        approve_time: true,
+        view_time_reports: true,
+        view_all_timesheets: true,
+        assign_timesheets: true,
+        view_payroll: true,
+        modify_payroll: true,
+        modify_pay_rates: true
+      }
+    },
+    {
+      name: 'Payroll Manager',
+      role_title: 'Payroll Manager',
+      access: { worker_timekeeping: false, desktop_access: true, kiosk_admin_access: false },
+      permissions: {
+        see_shipments: true,
+        modify_time: true,
+        view_time_reports: true,
+        view_all_timesheets: true,
+        assign_timesheets: true,
+        view_payroll: true,
+        modify_payroll: true,
+        modify_pay_rates: true
+      }
+    },
+    {
+      name: 'Payroll Approver',
+      role_title: 'Payroll Approver',
+      access: { worker_timekeeping: false, desktop_access: true, kiosk_admin_access: false },
+      permissions: {
+        see_shipments: false,
+        modify_time: false,
+        view_time_reports: false,
+        view_all_timesheets: false,
+        assign_timesheets: false,
+        view_payroll: true,
+        modify_payroll: false,
+        modify_pay_rates: false
+      }
+    },
+    {
+      name: 'Time Reviewer',
+      role_title: 'Time Reviewer',
+      access: { worker_timekeeping: false, desktop_access: true, kiosk_admin_access: false },
+      permissions: {
+        see_shipments: false,
+        modify_time: true,
+        view_time_reports: true,
+        view_all_timesheets: false,
+        assign_timesheets: false,
+        view_payroll: false,
+        modify_payroll: false,
+        modify_pay_rates: false
+      }
+    },
+    {
+      name: 'Shipments Admin',
+      role_title: 'Shipments Admin',
+      access: { worker_timekeeping: false, desktop_access: true, kiosk_admin_access: false },
+      permissions: {
+        see_shipments: true,
+        modify_time: false,
+        view_time_reports: false,
+        view_all_timesheets: false,
+        assign_timesheets: false,
+        view_payroll: false,
+        modify_payroll: false,
+        modify_pay_rates: false
+      }
+    },
+    {
+      name: 'Kiosk Admin',
+      role_title: 'Kiosk Admin',
+      access: { worker_timekeeping: true, desktop_access: false, kiosk_admin_access: true },
+      permissions: {
+        see_shipments: true,
+        modify_time: true,
+        view_time_reports: true,
+        view_all_timesheets: false,
+        assign_timesheets: false,
+        view_payroll: false,
+        modify_payroll: false,
+        modify_pay_rates: false
+      }
+    }
+  ];
+
+  async function createRecommendedTemplates() {
+    if (!window.CURRENT_IS_SUPER_ADMIN) return;
+    setTemplatePresetsStatus('Creating templates...', '#111827');
+    try {
+      if (!permissionTemplates.length) {
+        const res = await fetchJSON('/api/permission-templates');
+        permissionTemplates = (res && res.templates) || [];
+      }
+
+      const existing = new Set(
+        (permissionTemplates || []).map(t => (t.name || '').trim().toLowerCase())
+      );
+      const toCreate = RECOMMENDED_TEMPLATES.filter(
+        tpl => !existing.has(tpl.name.trim().toLowerCase())
+      );
+      if (!toCreate.length) {
+        setTemplatePresetsStatus('All recommended templates already exist.', '#059669');
+        return;
+      }
+
+      for (const tpl of toCreate) {
+        await fetchJSON('/api/permission-templates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+          body: JSON.stringify(tpl)
+        });
+      }
+
+      setTemplatePresetsStatus(`Created ${toCreate.length} template${toCreate.length === 1 ? '' : 's'}.`, '#059669');
+      await loadRoleTemplates({ force: true });
+      if (typeof window.reloadPermissionTemplates === 'function') {
+        await window.reloadPermissionTemplates({ force: true });
+      }
+    } catch (err) {
+      console.error('Create recommended templates error', err);
+      setTemplatePresetsStatus(err?.message || 'Failed to create templates.', 'crimson');
+    }
   }
 
   function renderRoleTemplates(templates = []) {
@@ -2478,6 +4468,7 @@ if (connectBtn) {
     if (templatePermModifyTime) templatePermModifyTime.checked = !!template.permissions?.modify_time;
     if (templatePermViewTime) templatePermViewTime.checked = !!template.permissions?.view_time_reports;
     if (templatePermViewAllTimesheets) templatePermViewAllTimesheets.checked = !!template.permissions?.view_all_timesheets;
+    if (templatePermAssignTimesheets) templatePermAssignTimesheets.checked = !!template.permissions?.assign_timesheets;
     if (templatePermViewPayroll) templatePermViewPayroll.checked = !!template.permissions?.view_payroll;
     if (templatePermModifyPayroll) templatePermModifyPayroll.checked = !!template.permissions?.modify_payroll;
     if (templatePermModifyRates) templatePermModifyRates.checked = !!template.permissions?.modify_pay_rates;
@@ -2502,7 +4493,7 @@ if (connectBtn) {
   function renderAdminUsers(users = []) {
     if (!adminUsersBody) return;
     if (!users.length) {
-      adminUsersBody.innerHTML = '<tr><td colspan="4">(no admin accounts yet)</td></tr>';
+      adminUsersBody.innerHTML = '<tr><td colspan="6">(no admin accounts yet)</td></tr>';
       return;
     }
     adminUsersBody.innerHTML = '';
@@ -2513,6 +4504,9 @@ if (connectBtn) {
         user.login_enabled === 1 ||
         user.login_enabled === '1';
       const canEnable = !!user.employee_active && !!user.desktop_access;
+      const linkedEmployee = getAdminUserEmployeeById(user.employee_id);
+      const kioskAccess = linkedEmployee ? !!linkedEmployee.kiosk_admin_access : false;
+      const hasPin = linkedEmployee ? !!linkedEmployee.has_pin : false;
       const tr = document.createElement('tr');
 
       const emailCell = document.createElement('td');
@@ -2524,6 +4518,12 @@ if (connectBtn) {
 
       const statusCell = document.createElement('td');
       statusCell.textContent = getAdminUserStatus(user);
+
+      const kioskCell = document.createElement('td');
+      kioskCell.textContent = linkedEmployee ? (kioskAccess ? 'Enabled' : 'Off') : '—';
+
+      const pinCell = document.createElement('td');
+      pinCell.textContent = linkedEmployee ? (hasPin ? 'Set' : 'Not set') : '—';
 
       const actionsCell = document.createElement('td');
       const resetBtn = document.createElement('button');
@@ -2553,6 +4553,8 @@ if (connectBtn) {
       tr.appendChild(emailCell);
       tr.appendChild(employeeCell);
       tr.appendChild(statusCell);
+      tr.appendChild(kioskCell);
+      tr.appendChild(pinCell);
       tr.appendChild(actionsCell);
       adminUsersBody.appendChild(tr);
     });
@@ -2565,7 +4567,7 @@ if (connectBtn) {
       renderAdminUsers((data && data.users) || []);
     } catch (err) {
       console.error('Error loading admin accounts', err);
-      adminUsersBody.innerHTML = '<tr><td colspan="4">(error loading accounts)</td></tr>';
+      adminUsersBody.innerHTML = '<tr><td colspan="6">(error loading accounts)</td></tr>';
     }
   }
 
@@ -2635,6 +4637,87 @@ if (connectBtn) {
 
   if (adminUsersBody) {
     adminUsersBody.addEventListener('click', handleAdminUserAction);
+  }
+
+  if (adminUserEmployee) {
+    adminUserEmployee.addEventListener('change', () => {
+      syncAdminUserKioskUI({ applyDefaults: true, resetPins: true });
+    });
+  }
+
+  if (adminUserKioskToggle) {
+    adminUserKioskToggle.addEventListener('change', () => {
+      syncAdminUserKioskUI({ applyDefaults: false, resetPins: true });
+    });
+  }
+
+  if (postBootstrapEmployeesBtn && !postBootstrapEmployeesBtn.dataset.bound) {
+    postBootstrapEmployeesBtn.dataset.bound = '1';
+    postBootstrapEmployeesBtn.addEventListener('click', () => {
+      const navItem = document.querySelector('.nav-item[data-section="employees"]');
+      if (navItem) navItem.click();
+      setTimeout(() => {
+        const section = document.getElementById('section-employees');
+        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 50);
+    });
+  }
+
+  if (postBootstrapQboBtn && !postBootstrapQboBtn.dataset.bound) {
+    postBootstrapQboBtn.dataset.bound = '1';
+    postBootstrapQboBtn.addEventListener('click', () => {
+      const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+      if (orgId) {
+        setQboSkipped(orgId, false);
+        setPostBootstrapStepSkipped('qbo', false);
+      }
+      openQboOnboardingModal().catch(err => {
+        console.error('Failed to open QBO onboarding modal:', err);
+      });
+    });
+  }
+
+  if (postBootstrapQboSkipBtn && !postBootstrapQboSkipBtn.dataset.bound) {
+    postBootstrapQboSkipBtn.dataset.bound = '1';
+    postBootstrapQboSkipBtn.addEventListener('click', () => {
+      const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+      if (!orgId) return;
+      setQboSkipped(orgId, true);
+      setPostBootstrapStepSkipped('qbo', true);
+      setPostBootstrapStepExpanded('qbo', false);
+      updatePostBootstrapChecklist();
+    });
+  }
+
+  if (postBootstrapPermissionsBtn && !postBootstrapPermissionsBtn.dataset.bound) {
+    postBootstrapPermissionsBtn.dataset.bound = '1';
+    postBootstrapPermissionsBtn.addEventListener('click', () => {
+      const navItem = document.querySelector('.nav-item[data-section="settings"]');
+      if (navItem) navItem.click();
+      setTimeout(() => {
+        const card = document.getElementById('settings-role-templates-card');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 50);
+    });
+  }
+
+  if (postBootstrapDismissBtn) {
+    postBootstrapDismissBtn.addEventListener('click', () => {
+      showPostBootstrapCard(false);
+    });
+  }
+
+
+  if (kioskRotateBtn) {
+    kioskRotateBtn.addEventListener('click', () => {
+      rotateEnrollmentCode();
+    });
+  }
+
+  if (kioskOpenBtn) {
+    kioskOpenBtn.addEventListener('click', () => {
+      window.location.href = '/kiosk';
+    });
   }
 
   if (roleTemplatesBody) {
@@ -2736,18 +4819,30 @@ if (connectBtn) {
     });
   }
 
+  if (templatePresetsBtn) {
+    templatePresetsBtn.addEventListener('click', () => {
+      createRecommendedTemplates();
+    });
+  }
+
   async function loadAdminUserEmployees() {
     if (!adminUserEmployee || !window.CURRENT_IS_SUPER_ADMIN) return;
     adminUserEmployee.innerHTML = '<option value="">Select employee</option>';
     try {
-      const list = await fetchJSON('/api/employees?status=active');
-      const eligible = (list || []).filter(emp => emp && emp.desktop_access);
+      const list = await fetchJSON('/api/employees?status=all');
+      setAdminUserEmployeeCache(list || []);
+      const eligible = (list || []).filter(emp => {
+        if (!emp || !emp.desktop_access) return false;
+        return emp.active !== 0 && emp.active !== false;
+      });
       eligible.forEach(emp => {
         const option = document.createElement('option');
         option.value = emp.id;
         option.textContent = `${emp.name || '(Unnamed)'}${emp.email ? ` — ${emp.email}` : ''}`;
         adminUserEmployee.appendChild(option);
       });
+      syncAdminUserKioskUI({ applyDefaults: true, resetPins: true });
+      await loadAdminUsers();
     } catch (err) {
       console.error('Error loading employee list for admin accounts', err);
     }
@@ -2770,8 +4865,14 @@ if (connectBtn) {
       typeof perms.modify_payroll === 'undefined'
         ? (perms.view_payroll === true || perms.view_payroll === 'true')
         : (perms.modify_payroll === true || perms.modify_payroll === 'true');
+    const approveTime = coerceAccessFlag(perms.approve_time) || coerceAccessFlag(perms.view_payroll) || fallbackModifyPayroll;
+    const modifyTime = coerceAccessFlag(perms.modify_time) || approveTime;
     return {
+      see_shipments: coerceAccessFlag(perms.see_shipments),
+      modify_time: modifyTime,
+      approve_time: approveTime,
       view_all_timesheets: perms.view_all_timesheets === true || perms.view_all_timesheets === 'true',
+      assign_timesheets: perms.assign_timesheets === true || perms.assign_timesheets === 'true',
       modify_pay_rates: perms.modify_pay_rates === true || perms.modify_pay_rates === 'true',
       modify_payroll: fallbackModifyPayroll,
       view_payroll: perms.view_payroll === true || perms.view_payroll === 'true'
@@ -3007,14 +5108,14 @@ if (connectBtn) {
     const tbody = document.getElementById('settings-access-body');
     if (!tbody) return;
 
-    tbody.innerHTML = '<tr><td colspan="8">(loading admins…)</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9">(loading admins…)</td></tr>';
     try {
       const employees = await fetchJSON('/api/employees?status=active');
       const admins = (employees || []).filter(
         e => e.desktop_access || e.kiosk_admin_access
       );
       if (!admins.length) {
-        tbody.innerHTML = '<tr><td colspan="8">(no admins found)</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9">(no admins found)</td></tr>';
         return;
       }
 
@@ -3025,6 +5126,7 @@ if (connectBtn) {
           modify_time: !!admin.modify_time,
           view_time_reports: !!admin.view_time_reports,
           view_all_timesheets: !!admin.view_all_timesheets,
+          assign_timesheets: !!admin.assign_timesheets,
           view_payroll: !!admin.view_payroll,
           modify_payroll: !!admin.modify_payroll,
           modify_pay_rates: !!admin.modify_pay_rates
@@ -3038,6 +5140,7 @@ if (connectBtn) {
           <td class="center"><input type="checkbox" data-perm="modify_time" ${perms.modify_time ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="view_time_reports" ${perms.view_time_reports ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="view_all_timesheets" ${perms.view_all_timesheets ? 'checked' : ''}></td>
+          <td class="center"><input type="checkbox" data-perm="assign_timesheets" ${perms.assign_timesheets ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="view_payroll" ${perms.view_payroll ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="modify_payroll" ${canModifyPayroll ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="modify_pay_rates" ${perms.modify_pay_rates ? 'checked' : ''}></td>
@@ -3046,16 +5149,22 @@ if (connectBtn) {
       });
     } catch (err) {
       console.error('Error loading admins for access control', err);
-      tbody.innerHTML = '<tr><td colspan="8">(error loading admins)</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9">(error loading admins)</td></tr>';
     }
   }
 
   async function loadSettings() {
     try {
       try {
-        const meRes = await fetch('/api/auth/me');
-        if (meRes.ok) {
-          const meData = await meRes.json();
+        let meData = window.PREFETCHED_ME_DATA || null;
+        window.PREFETCHED_ME_DATA = null;
+        if (!meData) {
+          const meRes = await fetch('/api/auth/me');
+          if (meRes.ok) {
+            meData = await meRes.json();
+          }
+        }
+        if (meData) {
           window.CURRENT_EMPLOYEE = meData.employee || null;
           window.CURRENT_USER = meData.user || null;
           if (accountEmailCurrent) {
@@ -3063,12 +5172,27 @@ if (connectBtn) {
           }
           window.CURRENT_IS_SUPER_ADMIN = !!meData?.membership?.is_super_admin;
           window.CURRENT_ORG = meData.org || null;
+          storeLastOrgId(meData?.org?.id);
           window.CURRENT_ORG_TIMEZONE = meData?.org?.timezone || null;
+          if (window.CURRENT_IS_SUPER_ADMIN) {
+            showPostBootstrapCard(true);
+          } else {
+            showPostBootstrapCard(false);
+          }
           const currentAccess = deriveCurrentAdminAccess(meData.permissions || {});
           window.CURRENT_ACCESS_PERMS = {
             ...(window.CURRENT_ACCESS_PERMS || {}),
             ...currentAccess
           };
+          applyShipmentsNavForAccess(window.CURRENT_ACCESS_PERMS);
+          if (typeof loadAssignableAdmins === 'function' &&
+              typeof canAssignTimesheets === 'function' &&
+              canAssignTimesheets()) {
+            await loadAssignableAdmins();
+          }
+          if (window.CURRENT_IS_SUPER_ADMIN && typeof loadShareableAdmins === 'function') {
+            await loadShareableAdmins();
+          }
           if (typeof renderSessionsTable === 'function') {
             renderSessionsTable();
           }
@@ -3082,12 +5206,18 @@ if (connectBtn) {
             applySuperAdminAccessToEmployees(window.CURRENT_IS_SUPER_ADMIN);
           }
           applyBackupCardVisibility();
+          applyAuditCardVisibility();
+          applyDeviceSetupVisibility();
           applyAdminUsersVisibility();
           applyRoleTemplatesVisibility();
+          applyDashboardLinkVisibility();
+          updateDashboardHero();
+          updateDashboardQboBadge();
+          refreshDashboardSnapshot();
           if (window.CURRENT_IS_SUPER_ADMIN) {
-            loadAdminUsers();
-            loadAdminUserEmployees();
-            loadRoleTemplates({ force: true });
+            await loadAdminUserEmployees();
+            await loadRoleTemplates({ force: true });
+            await loadEnrollmentCode();
           }
         }
       } catch (err) {
@@ -3109,6 +5239,11 @@ if (connectBtn) {
       }
       if (settingsFields.clock_in_photo_required) {
         settingsFields.clock_in_photo_required.checked = asBool(data.clock_in_photo_required);
+      }
+      if (settingsFields.audit_log_retention_days) {
+        const rawRetention = data.audit_log_retention_days;
+        settingsFields.audit_log_retention_days.value =
+          rawRetention === null || typeof rawRetention === 'undefined' ? '' : rawRetention;
       }
       applyExceptionRulesToUI(data.time_exception_rules);
       applyPayrollRulesToUI(data.payroll_rules);
@@ -3143,6 +5278,7 @@ if (connectBtn) {
         modify_time: row.querySelector('input[data-perm="modify_time"]')?.checked || false,
         view_time_reports: row.querySelector('input[data-perm="view_time_reports"]')?.checked || false,
         view_all_timesheets: row.querySelector('input[data-perm="view_all_timesheets"]')?.checked || false,
+        assign_timesheets: row.querySelector('input[data-perm="assign_timesheets"]')?.checked || false,
         view_payroll: row.querySelector('input[data-perm="view_payroll"]')?.checked || false,
         modify_payroll: row.querySelector('input[data-perm="modify_payroll"]')?.checked || false,
         modify_pay_rates: row.querySelector('input[data-perm="modify_pay_rates"]')?.checked || false
@@ -3155,6 +5291,20 @@ if (connectBtn) {
     const rawStorageFee = settingsFields.storage_daily_late_fee_default?.value || '';
     const storageFee =
       rawStorageFee.trim() === '' ? null : Number(rawStorageFee);
+    const rawAuditRetention = settingsFields.audit_log_retention_days?.value || '';
+    const trimmedAuditRetention = rawAuditRetention.trim();
+    let auditRetention = null;
+    if (trimmedAuditRetention !== '') {
+      const parsedRetention = Number(trimmedAuditRetention);
+      if (!Number.isFinite(parsedRetention) || parsedRetention < 0 || !Number.isInteger(parsedRetention)) {
+        if (settingsStatus) {
+          settingsStatus.textContent = 'Audit log retention must be a whole number (0 or greater).';
+          settingsStatus.style.color = '#b91c1c';
+        }
+        return;
+      }
+      auditRetention = parsedRetention;
+    }
     const payload = {
       company_name: settingsFields.company_name?.value || '',
       company_email: settingsFields.company_email?.value || '',
@@ -3163,6 +5313,7 @@ if (connectBtn) {
       time_exception_rules: collectExceptionRuleSettings()
     };
     if (window.CURRENT_IS_SUPER_ADMIN) {
+      payload.audit_log_retention_days = auditRetention;
       const payrollRulesPayload = collectPayrollRulesSettings();
       if (payrollRulesPayload) {
         if (payrollRulesPayload.pay_period_length_days > 7 && !payrollRulesPayload.pay_period_anchor_date) {
@@ -3226,7 +5377,8 @@ if (connectBtn) {
     payrollRuleFields.double_time_enabled.addEventListener('change', updatePayrollRulesUIState);
   }
 
-  loadSettings();
+  await loadSettings();
+  await resumeQboOnboardingIfNeeded();
 
   if (settingsSaveBtn) {
     settingsSaveBtn.addEventListener('click', saveSettings);
@@ -3363,6 +5515,12 @@ if (connectBtn) {
     const email = adminUserEmail ? String(adminUserEmail.value || '').trim() : '';
     const password = adminUserPassword ? String(adminUserPassword.value || '') : '';
     const confirm = adminUserPasswordConfirm ? String(adminUserPasswordConfirm.value || '') : '';
+    const wantsKioskAccess = adminUserKioskToggle ? adminUserKioskToggle.checked : false;
+    const pin = adminUserPin ? adminUserPin.value.trim() : '';
+    const pinConfirm = adminUserPinConfirm ? adminUserPinConfirm.value.trim() : '';
+    const selectedEmployee = getSelectedAdminUserEmployee();
+    const hasExistingPin = selectedEmployee ? !!selectedEmployee.has_pin : false;
+    const hasExistingKioskAccess = selectedEmployee ? !!selectedEmployee.kiosk_admin_access : false;
 
     if (!employeeId) {
       setAdminUserStatus('Select an employee to link.', '#b45309');
@@ -3383,6 +5541,30 @@ if (connectBtn) {
       }
     }
 
+    if (wantsKioskAccess) {
+      if (!selectedEmployee) {
+        setAdminUserStatus('Select an employee to enable kiosk admin access.', '#b45309');
+        return;
+      }
+      if (!hasExistingPin) {
+        if (!pin || !pinConfirm) {
+          setAdminUserStatus('Enter a 4-digit PIN to enable kiosk access.', '#b45309');
+          return;
+        }
+        if (pin !== pinConfirm) {
+          setAdminUserStatus('PIN entries do not match.', 'crimson');
+          return;
+        }
+        if (!/^\d{4}$/.test(pin)) {
+          setAdminUserStatus('PIN must be exactly 4 digits.', '#b45309');
+          return;
+        }
+      } else if (pin || pinConfirm) {
+        setAdminUserStatus('PIN already set for this employee. Update it in Employee Details.', '#b45309');
+        return;
+      }
+    }
+
     adminUserCreateBtn.disabled = true;
     setAdminUserStatus('Saving account…', '');
 
@@ -3398,10 +5580,28 @@ if (connectBtn) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      if (wantsKioskAccess) {
+        if (!hasExistingKioskAccess) {
+          await fetchJSON('/api/employees', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: employeeId, kiosk_admin_access: 1 })
+          });
+        }
+        if (!hasExistingPin) {
+          await fetchJSON(`/api/employees/${employeeId}/pin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pin })
+          });
+        }
+      }
       setAdminUserStatus('Admin login saved.', 'green');
       if (adminUserPassword) adminUserPassword.value = '';
       if (adminUserPasswordConfirm) adminUserPasswordConfirm.value = '';
-      await loadAdminUsers();
+      if (adminUserKioskToggle) adminUserKioskToggle.checked = false;
+      clearAdminUserPinInputs();
+      await loadAdminUserEmployees();
     } catch (err) {
       console.error('Error saving admin login', err);
       setAdminUserStatus(err.message || 'Failed to save admin login.', 'crimson');
@@ -3495,6 +5695,13 @@ if (connectBtn) {
 
   if (teCancelBtn) {
     teCancelBtn.addEventListener('click', () => {
+      if (timeEntryEditInModal) {
+        resetTimeEntryFormToNewMode();
+        restoreTimeEntryFormToCard();
+        closeTimeEntryDetails();
+        return;
+      }
+
       // Reset the form to "new" mode
       resetTimeEntryFormToNewMode();
 
@@ -3548,14 +5755,17 @@ if (connectBtn) {
   const timeFilterProject   = document.getElementById('te-filter-project');
   const timeFilterStart     = document.getElementById('te-filter-start');
   const timeFilterEnd       = document.getElementById('te-filter-end');
-  const approveAllBtn       = document.getElementById('te-approve-all');
+  const timeFilterHideApproved = document.getElementById('te-filter-hide-approved');
+  const approveSelectedBtn  = document.getElementById('te-approve-selected');
 
   if (timeFilterApplyBtn) {
     timeFilterApplyBtn.addEventListener('click', () => {
       const filters = getTimeEntryFiltersFromUi();
       if (hasActiveTimeEntryFilters(filters)) {
+        resetTimeEntryPagination();
         loadTimeEntriesTable(filters);
       } else {
+        resetTimeEntryPagination();
         loadTimeEntriesTable({});
       }
     });
@@ -3567,14 +5777,111 @@ if (connectBtn) {
       if (timeFilterProject)  timeFilterProject.value  = '';
       if (timeFilterStart)    timeFilterStart.value    = '';
       if (timeFilterEnd)      timeFilterEnd.value      = '';
+      if (timeFilterHideApproved) timeFilterHideApproved.checked = false;
 
-      loadTimeEntriesTable({});
+      resetTimeEntryPagination();
+      loadTimeEntriesTable(getTimeEntryFiltersFromUi());
     });
   }
 
-  if (approveAllBtn) {
-    approveAllBtn.addEventListener('click', approveAllTimeEntries);
-    applyTimeEntryApprovalAccess();
+  const pagePrevBtn = document.getElementById('te-page-prev');
+  const pageNextBtn = document.getElementById('te-page-next');
+  if (pagePrevBtn) {
+    pagePrevBtn.addEventListener('click', () => {
+      if (timeEntryCurrentPage <= 1) return;
+      timeEntryCurrentPage -= 1;
+      loadTimeEntriesTable(timeEntryLastFilters);
+    });
+  }
+  if (pageNextBtn) {
+    pageNextBtn.addEventListener('click', () => {
+      timeEntryCurrentPage += 1;
+      loadTimeEntriesTable(timeEntryLastFilters);
+    });
+  }
+
+  if (timeFilterHideApproved) {
+    timeFilterHideApproved.addEventListener('change', () => {
+      const filters = getTimeEntryFiltersFromUi();
+      loadTimeEntriesTable(filters);
+    });
+  }
+
+  if (approveSelectedBtn) {
+    approveSelectedBtn.addEventListener('click', approveSelectedTimeEntries);
+    const canApprove = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
+    approveSelectedBtn.style.display = canApprove ? 'inline-flex' : 'none';
+  }
+
+  const detailCloseBtn = document.getElementById('time-entry-detail-close');
+  const detailEditBtn = document.getElementById('time-entry-detail-edit');
+  const detailOverlay = document.getElementById('time-entry-detail-overlay');
+  const noteBackdrop = document.getElementById('time-entry-note-backdrop');
+  const noteCloseBtn = document.getElementById('time-entry-note-close');
+  const noteOkBtn = document.getElementById('time-entry-note-ok');
+  const approveNoteBackdrop = document.getElementById('time-entry-approve-note-backdrop');
+  const approveNoteCloseBtn = document.getElementById('time-entry-approve-note-close');
+  const approveNoteCancelBtn = document.getElementById('time-entry-approve-note-cancel');
+  const approveNoteSubmitBtn = document.getElementById('time-entry-approve-note-submit');
+  const approveNoteInput = document.getElementById('time-entry-approve-note-input');
+  const reviewWarningBackdrop = document.getElementById('time-entry-review-warning-backdrop');
+  const reviewWarningCloseBtn = document.getElementById('time-entry-review-warning-close');
+  const reviewWarningCancelBtn = document.getElementById('time-entry-review-warning-cancel');
+  const reviewWarningOkBtn = document.getElementById('time-entry-review-warning-ok');
+  if (detailCloseBtn) {
+    detailCloseBtn.addEventListener('click', closeTimeEntryDetails);
+  }
+  if (detailOverlay) {
+    detailOverlay.addEventListener('click', evt => {
+      if (evt.target === detailOverlay) {
+        closeTimeEntryDetails();
+      }
+    });
+  }
+  if (detailEditBtn) {
+    detailEditBtn.addEventListener('click', async () => {
+      const detail = currentTimeEntryDetail;
+      if (detail && detail.rowElement) {
+        enterTimeEntryEditModal();
+        await loadTimeEntryIntoFormFromRow(detail.rowElement, { showFormCard: false });
+      }
+    });
+  }
+  if (noteBackdrop) {
+    noteBackdrop.addEventListener('click', closeTimeEntryNoteModal);
+  }
+  if (noteCloseBtn) {
+    noteCloseBtn.addEventListener('click', closeTimeEntryNoteModal);
+  }
+  if (noteOkBtn) {
+    noteOkBtn.addEventListener('click', closeTimeEntryNoteModal);
+  }
+  if (approveNoteBackdrop) {
+    approveNoteBackdrop.addEventListener('click', () => closeTimeEntryApproveNoteModal(null));
+  }
+  if (approveNoteCloseBtn) {
+    approveNoteCloseBtn.addEventListener('click', () => closeTimeEntryApproveNoteModal(null));
+  }
+  if (approveNoteCancelBtn) {
+    approveNoteCancelBtn.addEventListener('click', () => closeTimeEntryApproveNoteModal(null));
+  }
+  if (approveNoteSubmitBtn) {
+    approveNoteSubmitBtn.addEventListener('click', () => {
+      const val = approveNoteInput ? approveNoteInput.value : '';
+      closeTimeEntryApproveNoteModal(val);
+    });
+  }
+  if (reviewWarningBackdrop) {
+    reviewWarningBackdrop.addEventListener('click', () => closeTimeEntryReviewWarningModal(false));
+  }
+  if (reviewWarningCloseBtn) {
+    reviewWarningCloseBtn.addEventListener('click', () => closeTimeEntryReviewWarningModal(false));
+  }
+  if (reviewWarningCancelBtn) {
+    reviewWarningCancelBtn.addEventListener('click', () => closeTimeEntryReviewWarningModal(false));
+  }
+  if (reviewWarningOkBtn) {
+    reviewWarningOkBtn.addEventListener('click', () => closeTimeEntryReviewWarningModal(true));
   }
 
   // ───────── Live open punches ─────────
@@ -3589,75 +5896,227 @@ if (connectBtn) {
   }
 
   // ───────── Shipments ─────────
-  if (typeof loadShipmentsSection === 'function') {
-    loadShipmentsSection();
-  }
+  if (window.CURRENT_ACCESS_PERMS?.see_shipments) {
+    if (typeof loadShipmentsSection === 'function') {
+      loadShipmentsSection();
+    }
 
-  if (typeof setupShipmentsUI === 'function') {
-    setupShipmentsUI();
-  }
+    if (typeof setupShipmentsUI === 'function') {
+      setupShipmentsUI();
+    }
 
-  const addShipmentBtn = document.getElementById('shipment-add-btn');
-  if (addShipmentBtn && typeof openShipmentCreateModal === 'function') {
-    addShipmentBtn.addEventListener('click', openShipmentCreateModal);
-  }
+    const addShipmentBtn = document.getElementById('shipment-add-btn');
+    if (addShipmentBtn && typeof openShipmentCreateModal === 'function') {
+      addShipmentBtn.addEventListener('click', openShipmentCreateModal);
+    }
 
-  const shipmentCloseBottom = document.getElementById('shipment-close-bottom');
-  if (shipmentCloseBottom && typeof closeShipmentCreateModal === 'function') {
-    shipmentCloseBottom.addEventListener('click', closeShipmentCreateModal);
-  }
+    const shipmentCloseBottom = document.getElementById('shipment-close-bottom');
+    if (shipmentCloseBottom && typeof closeShipmentCreateModal === 'function') {
+      shipmentCloseBottom.addEventListener('click', closeShipmentCreateModal);
+    }
 
-  const shipmentCloseTop = document.getElementById('shipment-close-top');
-  if (shipmentCloseTop && typeof closeShipmentCreateModal === 'function') {
-    shipmentCloseTop.addEventListener('click', closeShipmentCreateModal);
-  }
+    const shipmentCloseTop = document.getElementById('shipment-close-top');
+    if (shipmentCloseTop && typeof attemptCloseShipmentCreateModal === 'function') {
+      shipmentCloseTop.addEventListener('click', attemptCloseShipmentCreateModal);
+    }
 
-  const shipmentAddItemBtn = document.getElementById('shipment-add-item-row');
-  if (shipmentAddItemBtn && typeof addShipmentItemRow === 'function') {
-    shipmentAddItemBtn.addEventListener('click', () => {
-      addShipmentItemRow();
-    });
-  }
+    const shipmentSaveClose = document.getElementById('shipment-save-close');
+    if (shipmentSaveClose && typeof saveShipmentFromModal === 'function') {
+      shipmentSaveClose.addEventListener('click', async () => {
+        shipmentSaveClose.disabled = true;
+        const step =
+          shipmentCreateForm?.dataset.step ||
+          document.getElementById('shipment-create-form')?.dataset.step ||
+          '1';
+        if (step === '1') {
+          await saveShipmentFromModal({
+            stayOpen: false,
+            skipItems: true,
+            successMessage: 'Draft saved.'
+          });
+        } else {
+          await saveShipmentFromModal({
+            stayOpen: false,
+            successMessage: 'Draft saved.'
+          });
+        }
+        shipmentSaveClose.disabled = false;
+      });
+    }
 
-  // Shipment create modal wiring
-  const shipmentCreateBackdrop = document.getElementById('shipment-create-backdrop');
-  if (shipmentCreateBackdrop && typeof closeShipmentCreateModal === 'function') {
-    shipmentCreateBackdrop.addEventListener('click', (e) => {
-      if (e.target === shipmentCreateBackdrop) {
-        closeShipmentCreateModal();
+    const shipmentAddItemBtn = document.getElementById('shipment-add-item-row');
+    if (shipmentAddItemBtn && typeof addShipmentItemRow === 'function') {
+      shipmentAddItemBtn.addEventListener('click', () => {
+        addShipmentItemRow();
+      });
+    }
+
+    // Shipment create modal wiring
+    const shipmentCreateBackdrop = document.getElementById('shipment-create-backdrop');
+    if (shipmentCreateBackdrop && typeof attemptCloseShipmentCreateModal === 'function') {
+      shipmentCreateBackdrop.addEventListener('click', (e) => {
+        if (e.target === shipmentCreateBackdrop) {
+          attemptCloseShipmentCreateModal();
+        }
+      });
+    }
+
+    const shipmentCreateClose = document.getElementById('shipment-create-close');
+    if (shipmentCreateClose && typeof attemptCloseShipmentCreateModal === 'function') {
+      shipmentCreateClose.addEventListener('click', attemptCloseShipmentCreateModal);
+    }
+
+    const shipmentCreateBack = document.getElementById('shipment-create-back');
+    if (shipmentCreateBack && typeof setShipmentCreateStep === 'function') {
+      shipmentCreateBack.addEventListener('click', () => {
+        const step =
+          shipmentCreateForm?.dataset.step ||
+          document.getElementById('shipment-create-form')?.dataset.step ||
+          '1';
+        if (step === '5') {
+          setShipmentCreateStep(4);
+        } else if (step === '4') {
+          setShipmentCreateStep(3);
+        } else if (step === '3') {
+          setShipmentCreateStep(2);
+        } else if (step === '2') {
+          setShipmentCreateStep(1);
+        }
+      });
+    }
+
+    const shipmentStepNext = document.getElementById('shipment-step-next');
+    if (shipmentStepNext && typeof saveShipmentFromModal === 'function') {
+      shipmentStepNext.addEventListener('click', async () => {
+        shipmentStepNext.disabled = true;
+        const step =
+          shipmentCreateForm?.dataset.step ||
+          document.getElementById('shipment-create-form')?.dataset.step ||
+          '1';
+        if (step === '1') {
+          const result = await saveShipmentFromModal({
+            stayOpen: true,
+            skipItems: true,
+            successMessage: 'Draft saved. Continue to items.'
+          });
+          shipmentStepNext.disabled = false;
+          if (result && result.ok && typeof setShipmentCreateStep === 'function') {
+            setShipmentCreateStep(2);
+          }
+          return;
+        }
+
+        if (step === '2') {
+          const result = await saveShipmentFromModal({
+            stayOpen: true,
+            successMessage: 'Draft saved. Continue to payments.'
+          });
+          shipmentStepNext.disabled = false;
+          if (result && result.ok && typeof setShipmentCreateStep === 'function') {
+            setShipmentCreateStep(3);
+          }
+          return;
+        }
+
+        if (step === '3') {
+          const result = await saveShipmentFromModal({
+            stayOpen: true,
+            successMessage: 'Draft saved. Continue to documents.'
+          });
+          shipmentStepNext.disabled = false;
+          if (result && result.ok && typeof setShipmentCreateStep === 'function') {
+            setShipmentCreateStep(4);
+          }
+          return;
+        }
+
+        if (step === '4') {
+          const result = await saveShipmentFromModal({
+            stayOpen: true,
+            successMessage: 'Draft saved. Continue to pickup.'
+          });
+          shipmentStepNext.disabled = false;
+          if (result && result.ok && typeof setShipmentCreateStep === 'function') {
+            setShipmentCreateStep(5);
+          }
+          return;
+        }
+
+        shipmentStepNext.disabled = false;
+      });
+    }
+
+    const shipmentCreateForm = document.getElementById('shipment-create-form');
+    if (shipmentCreateForm && typeof saveShipmentFromModal === 'function') {
+      shipmentCreateForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const step = shipmentCreateForm.dataset.step || '1';
+        if (step === '1') {
+          const result = await saveShipmentFromModal({
+            stayOpen: true,
+            skipItems: true,
+            successMessage: 'Draft saved. Continue to items.'
+          });
+          if (result && result.ok && typeof setShipmentCreateStep === 'function') {
+            setShipmentCreateStep(2);
+          }
+          return;
+        }
+
+        if (step === '2') {
+          const result = await saveShipmentFromModal({
+            stayOpen: true,
+            successMessage: 'Draft saved. Continue to payments.'
+          });
+          if (result && result.ok && typeof setShipmentCreateStep === 'function') {
+            setShipmentCreateStep(3);
+          }
+          return;
+        }
+
+        if (step === '3') {
+          const result = await saveShipmentFromModal({
+            stayOpen: true,
+            successMessage: 'Draft saved. Continue to documents.'
+          });
+          if (result && result.ok && typeof setShipmentCreateStep === 'function') {
+            setShipmentCreateStep(4);
+          }
+          return;
+        }
+
+        if (step === '4') {
+          const result = await saveShipmentFromModal({
+            stayOpen: true,
+            successMessage: 'Draft saved. Continue to pickup.'
+          });
+          if (result && result.ok && typeof setShipmentCreateStep === 'function') {
+            setShipmentCreateStep(5);
+          }
+          return;
+        }
+
+        await saveShipmentFromModal();
+      });
+    }
+
+    // Tracking helper wiring
+    const trackingInputEl   = document.getElementById('shipment-tracking-number');
+    const forwarderSelectEl = document.getElementById('shipment-forwarder');
+    const websiteInputEl    = document.getElementById('shipment-website-url');
+
+    if (typeof updateShipmentTrackingHelper === 'function') {
+      if (trackingInputEl) {
+        trackingInputEl.addEventListener('input', updateShipmentTrackingHelper);
+        trackingInputEl.addEventListener('change', updateShipmentTrackingHelper);
       }
-    });
-  }
-
-  const shipmentCreateClose = document.getElementById('shipment-create-close');
-  if (shipmentCreateClose && typeof closeShipmentCreateModal === 'function') {
-    shipmentCreateClose.addEventListener('click', closeShipmentCreateModal);
-  }
-
-  const shipmentCreateForm = document.getElementById('shipment-create-form');
-  if (shipmentCreateForm && typeof saveShipmentFromModal === 'function') {
-    shipmentCreateForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      await saveShipmentFromModal();
-    });
-  }
-
-  // Tracking helper wiring
-  const trackingInputEl   = document.getElementById('shipment-tracking-number');
-  const forwarderSelectEl = document.getElementById('shipment-forwarder');
-  const websiteInputEl    = document.getElementById('shipment-website-url');
-
-  if (typeof updateShipmentTrackingHelper === 'function') {
-    if (trackingInputEl) {
-      trackingInputEl.addEventListener('input', updateShipmentTrackingHelper);
-      trackingInputEl.addEventListener('change', updateShipmentTrackingHelper);
-    }
-    if (forwarderSelectEl) {
-      forwarderSelectEl.addEventListener('change', updateShipmentTrackingHelper);
-    }
-    if (websiteInputEl) {
-      websiteInputEl.addEventListener('input', updateShipmentTrackingHelper);
-      websiteInputEl.addEventListener('change', updateShipmentTrackingHelper);
+      if (forwarderSelectEl) {
+        forwarderSelectEl.addEventListener('change', updateShipmentTrackingHelper);
+      }
+      if (websiteInputEl) {
+        websiteInputEl.addEventListener('input', updateShipmentTrackingHelper);
+        websiteInputEl.addEventListener('change', updateShipmentTrackingHelper);
+      }
     }
   }
 
@@ -3673,6 +6132,9 @@ if (connectBtn) {
   }
   if (typeof loadPayrollAuditLog === 'function') {
     loadPayrollAuditLog();
+  }
+  if (typeof initAuditReport === 'function') {
+    initAuditReport();
   }
   if (typeof setupReportsDownload === 'function') {
     setupReportsDownload();

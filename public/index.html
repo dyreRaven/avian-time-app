@@ -29,10 +29,17 @@
 
       <!-- Navigation -->
       <nav class="nav-list">
+        <div class="nav-section-label">Dashboard</div>
+
+        <button class="nav-item active" data-section="dashboard">
+          <img src="/icons/reports.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Overview</span>
+        </button>
+
         <!-- OPERATIONS -->
         <div class="nav-section-label">Operations</div>
 
-        <button class="nav-item active" data-section="employees">
+        <button class="nav-item" data-section="employees">
           <img src="/icons/employee.svg" class="nav-icon" alt="" aria-hidden="true" />
           <span>Employees</span>
         </button>
@@ -69,7 +76,7 @@
           <span>Payroll</span>
         </button>
 
- <!-- REPORTS -->
+<!-- REPORTS -->
 <div class="nav-section-label">Reports</div>
 
 <button class="nav-item" data-section="time-entries">
@@ -82,19 +89,20 @@
   <span>Shipment Verification Report</span>
 </button>
 
+<button class="nav-item" data-section="reports">
+  <img src="/icons/reports.svg" class="nav-icon" alt="" aria-hidden="true" />
+  <span>Audit Trails</span>
+</button>
+
 <!-- SETTINGS -->
 <div class="nav-section-label">Settings</div>
-<button class="nav-item" data-section="notifications">
-  <img src="/icons/notifications.svg" class="nav-icon" alt="" aria-hidden="true" />
-  <span>Notifications</span>
-</button>
 <button class="nav-item" data-section="my-account">
   <img src="/icons/employee.svg" class="nav-icon" alt="" aria-hidden="true" />
   <span>My Account</span>
 </button>
 <button class="nav-item" data-section="settings">
   <img src="/icons/settings.svg" class="nav-icon" alt="" aria-hidden="true" />
-  <span>Settings</span>
+  <span>Organization Settings</span>
 </button>
 
 
@@ -109,16 +117,6 @@
 
     <!-- RIGHT CONTENT -->
    <main class="main">
-  <header class="topbar">
-    <div class="topbar-left">
-      <h1>Time &amp; Payroll</h1>
-      <p class="topbar-sub">
-        QuickBooks-integrated time &amp; payroll for Avian Group field and admin teams.
-
-      </p>
-    </div>
-  </header>
-
  <div class="main-inner">
   <!-- QUICKBOOKS CARD (top of the main content) -->
   <section class="card qb-card">
@@ -184,8 +182,336 @@
     </div>
   </section>
 
+  <!-- DASHBOARD SECTION -->
+  <section id="section-dashboard" class="section active">
+    <div id="post-bootstrap-card" class="card onboarding-card hidden">
+      <div class="onboarding-hero">
+        <div>
+          <div id="post-bootstrap-badge" class="onboarding-badge">Setup</div>
+          <h2 id="post-bootstrap-title">Finish setup</h2>
+          <p id="post-bootstrap-subtitle" class="card-sub">
+            Complete these steps to start tracking time and running payroll.
+          </p>
+        </div>
+        <div class="onboarding-actions">
+          <button id="post-bootstrap-dismiss" class="btn secondary btn-sm" type="button">Dismiss</button>
+        </div>
+      </div>
+
+      <div id="post-bootstrap-checklist" class="onboarding-checklist">
+        <div
+          id="post-bootstrap-org-step"
+          class="onboarding-step onboarding-step--form"
+          data-step="org"
+        >
+          <button class="onboarding-step-header" type="button" aria-expanded="true">
+            <span class="onboarding-step-number">1</span>
+            <div>
+              <div class="onboarding-step-title">Create your organization</div>
+              <div class="onboarding-step-text">
+                Set your organization name, timezone, and admin display name.
+              </div>
+            </div>
+          </button>
+          <div class="onboarding-step-body">
+            <form id="post-bootstrap-org-form">
+              <div class="form-grid">
+                <div class="form-field">
+                  <label for="post-bootstrap-org-name">Organization name</label>
+                  <input id="post-bootstrap-org-name" type="text" autocomplete="organization" />
+                </div>
+                <div class="form-field">
+                  <label for="post-bootstrap-org-timezone">Timezone</label>
+                  <select id="post-bootstrap-org-timezone"></select>
+                </div>
+                <div class="form-field">
+                  <label for="post-bootstrap-admin-first-name">Admin first name</label>
+                  <input id="post-bootstrap-admin-first-name" type="text" autocomplete="given-name" />
+                </div>
+                <div class="form-field">
+                  <label for="post-bootstrap-admin-last-name">Admin last name</label>
+                  <input id="post-bootstrap-admin-last-name" type="text" autocomplete="family-name" />
+                </div>
+                <div class="form-field">
+                  <label for="post-bootstrap-email">Admin email</label>
+                  <input id="post-bootstrap-email" type="email" autocomplete="email" readonly />
+                </div>
+              </div>
+              <div class="onboarding-step-actions">
+                <button type="submit" class="btn primary">Create organization</button>
+                <span id="post-bootstrap-org-status" class="message"></span>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div class="onboarding-step is-collapsed" data-step="qbo">
+          <button class="onboarding-step-header" type="button" aria-expanded="false">
+            <span class="onboarding-step-number">2</span>
+            <div>
+              <div class="onboarding-step-title">Connect QuickBooks</div>
+              <div class="onboarding-step-text">
+                Sync employees, projects, vendors, and payroll accounts.
+              </div>
+            </div>
+          </button>
+          <div class="onboarding-step-body hidden">
+            <p id="post-bootstrap-qbo-status" class="message"></p>
+            <div class="onboarding-step-actions">
+              <button id="post-bootstrap-qbo" class="btn primary" type="button">Connect QuickBooks</button>
+              <button id="post-bootstrap-qbo-skip" class="btn secondary" type="button">Finish later</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="onboarding-step is-collapsed" data-step="permissions">
+          <button class="onboarding-step-header" type="button" aria-expanded="false">
+            <span class="onboarding-step-number">3</span>
+            <div>
+              <div class="onboarding-step-title">Set permissions</div>
+              <div class="onboarding-step-text">
+                Add another employee or create a permission template for admins.
+              </div>
+            </div>
+          </button>
+          <div class="onboarding-step-body hidden">
+            <div class="onboarding-step-actions">
+              <button id="post-bootstrap-employees" class="btn primary" type="button">Add employees</button>
+              <button id="post-bootstrap-permissions" class="btn secondary" type="button">
+                Create permission template
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dashboard-shell">
+      <div class="dashboard-top">
+        <div class="card dashboard-hero">
+          <div class="dashboard-hero-header">
+            <div class="dashboard-badge-row">
+              <div class="dashboard-badge">Overview</div>
+              <span id="dashboard-qbo-pill" class="dashboard-pill is-muted">QuickBooks: Checking...</span>
+            </div>
+            <div class="dashboard-hero-controls">
+              <div id="dashboard-today" class="dashboard-hero-date">Today</div>
+              <button
+                class="dashboard-notification-button"
+                type="button"
+                data-dashboard-link="notifications"
+                aria-label="Notifications"
+              >
+                <img src="/icons/notifications.svg" alt="" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+
+          <h2 class="dashboard-hero-title">Welcome back, <span id="dashboard-admin-name">Admin</span></h2>
+
+          <div class="dashboard-hero-meta">
+            <span id="dashboard-org-name">Your organization</span>
+            <span class="dashboard-meta-dot">•</span>
+            <span id="dashboard-org-timezone">Local timezone</span>
+          </div>
+
+          <div class="dashboard-spotlight-header">
+            <h3>Today's focus</h3>
+          </div>
+          <ul class="dashboard-checklist">
+            <li class="dashboard-checklist-item">
+              <div>
+                <div class="dashboard-item-title">Time entries needing review</div>
+                <div id="dashboard-task-time-entries-note" class="dashboard-item-sub">
+                  Pending approvals before payroll.
+                </div>
+              </div>
+              <div class="dashboard-item-meta">
+                <span id="dashboard-task-time-entries-count" class="dashboard-item-count">--</span>
+                <button class="btn secondary btn-sm" type="button" data-dashboard-link="time-entries">
+                  Review
+                </button>
+              </div>
+            </li>
+            <li class="dashboard-checklist-item">
+              <div>
+                <div class="dashboard-item-title">Missing shipment docs</div>
+                <div id="dashboard-task-missing-docs-note" class="dashboard-item-sub">
+                  BOL or shipper invoice still required.
+                </div>
+              </div>
+              <div class="dashboard-item-meta">
+                <span id="dashboard-task-missing-docs-count" class="dashboard-item-count">--</span>
+                <button class="btn secondary btn-sm" type="button" data-dashboard-link="shipments">
+                  Review
+                </button>
+              </div>
+            </li>
+            <li class="dashboard-checklist-item">
+              <div>
+                <div class="dashboard-item-title">Unread shipment comments</div>
+                <div id="dashboard-task-unread-comments-note" class="dashboard-item-sub">
+                  New shipment messages waiting on a response.
+                </div>
+              </div>
+              <div class="dashboard-item-meta">
+                <span id="dashboard-task-unread-comments-count" class="dashboard-item-count">--</span>
+                <button class="btn secondary btn-sm" type="button" data-dashboard-link="notifications">
+                  Open inbox
+                </button>
+              </div>
+            </li>
+            <li class="dashboard-checklist-item">
+              <div>
+                <div class="dashboard-item-title">Pickup or storage due</div>
+                <div id="dashboard-task-pickup-storage-note" class="dashboard-item-sub">
+                  Ready for pickup or storage fees now due.
+                </div>
+              </div>
+              <div class="dashboard-item-meta">
+                <span id="dashboard-task-pickup-storage-count" class="dashboard-item-count">--</span>
+                <button class="btn secondary btn-sm" type="button" data-dashboard-link="shipments">
+                  View shipments
+                </button>
+              </div>
+            </li>
+            <li class="dashboard-checklist-item">
+              <div>
+                <div class="dashboard-item-title">QuickBooks sync needed</div>
+                <div id="dashboard-task-qbo-sync-note" class="dashboard-item-sub">
+                  Employees missing QBO links or needing sync.
+                </div>
+              </div>
+              <div class="dashboard-item-meta">
+                <span id="dashboard-task-qbo-sync-count" class="dashboard-item-count">--</span>
+                <button class="btn secondary btn-sm" type="button" data-dashboard-link="employees">
+                  View employees
+                </button>
+              </div>
+            </li>
+            <li class="dashboard-checklist-item">
+              <div>
+                <div class="dashboard-item-title">Payroll issues to fix</div>
+                <div id="dashboard-task-payroll-issues-note" class="dashboard-item-sub">
+                  Failed or partial runs need attention.
+                </div>
+              </div>
+              <div class="dashboard-item-meta">
+                <span id="dashboard-task-payroll-issues-count" class="dashboard-item-count">--</span>
+                <button class="btn secondary btn-sm" type="button" data-dashboard-link="payroll">
+                  Open payroll
+                </button>
+              </div>
+            </li>
+          </ul>
+
+        </div>
+
+        <div class="card">
+          <div class="dashboard-spotlight-header">
+            <h3>Operations</h3>
+          </div>
+          <div class="dashboard-stats">
+            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="employees">
+              <div class="dashboard-stat-label">Employees</div>
+              <div id="dashboard-stat-employees" class="dashboard-stat-value">--</div>
+              <div id="dashboard-stat-employees-note" class="dashboard-stat-note"></div>
+            </button>
+            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="projects">
+              <div class="dashboard-stat-label">Projects</div>
+              <div id="dashboard-stat-projects" class="dashboard-stat-value">--</div>
+              <div id="dashboard-stat-projects-note" class="dashboard-stat-note"></div>
+            </button>
+            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="vendors">
+              <div class="dashboard-stat-label">Vendors</div>
+              <div id="dashboard-stat-vendors" class="dashboard-stat-value">--</div>
+              <div id="dashboard-stat-vendors-note" class="dashboard-stat-note"></div>
+            </button>
+            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="shipments">
+              <div class="dashboard-stat-label">Shipments</div>
+              <div id="dashboard-stat-shipments" class="dashboard-stat-value">--</div>
+              <div id="dashboard-stat-shipments-note" class="dashboard-stat-note"></div>
+            </button>
+            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="kiosks">
+              <div class="dashboard-stat-label">Open timesheets</div>
+              <div id="dashboard-stat-open-timesheets" class="dashboard-stat-value">--</div>
+              <div id="dashboard-stat-open-timesheets-note" class="dashboard-stat-note"></div>
+            </button>
+            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="kiosks">
+              <div class="dashboard-stat-label">Current workers</div>
+              <div id="dashboard-stat-current-workers" class="dashboard-stat-value">--</div>
+              <div id="dashboard-stat-current-workers-note" class="dashboard-stat-note"></div>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="dashboard-grid">
+        <div class="card dashboard-link-card">
+          <div class="dashboard-link-header">
+            <div class="dashboard-link-icon">
+              <img src="/icons/employee.svg" alt="" aria-hidden="true" />
+            </div>
+            <div>
+              <div class="dashboard-item-title">People &amp; Access</div>
+              <div class="dashboard-item-sub">Employees, permissions, and admin roles.</div>
+            </div>
+          </div>
+          <div class="dashboard-link-actions">
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="employees">Employees</button>
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="settings">
+              Permission templates
+            </button>
+          </div>
+        </div>
+
+        <div class="card dashboard-link-card">
+          <div class="dashboard-link-header">
+            <div class="dashboard-link-icon">
+              <img src="/icons/payroll.svg" alt="" aria-hidden="true" />
+            </div>
+            <div>
+              <div class="dashboard-item-title">Time &amp; Pay</div>
+              <div class="dashboard-item-sub">Timesheets, approvals, and payroll runs.</div>
+            </div>
+          </div>
+          <div class="dashboard-link-actions">
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="kiosks">Timesheets</button>
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="time-entries">
+              Approve time
+            </button>
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="payroll">Payroll</button>
+          </div>
+        </div>
+
+        <div class="card dashboard-link-card">
+          <div class="dashboard-link-header">
+            <div class="dashboard-link-icon">
+              <img src="/icons/reports.svg" alt="" aria-hidden="true" />
+            </div>
+            <div>
+              <div class="dashboard-item-title">Reports</div>
+              <div class="dashboard-item-sub">Exports and verification summaries.</div>
+            </div>
+          </div>
+          <div class="dashboard-link-actions">
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="time-entries">
+              Time entry report
+            </button>
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="shipments-report">
+              Shipment verification
+            </button>
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="reports">
+              Audit trails
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- EMPLOYEES SECTION -->
-  <section id="section-employees" class="section active">
+  <section id="section-employees" class="section">
     <!-- New Employee card (hidden by default, now ABOVE the list) -->
     <div id="employee-create-card" class="card hidden" style="margin-bottom: 1.5rem;">
       <div class="card-header">
@@ -688,120 +1014,6 @@
           </div>
         </section>
 
-        <!-- NOTIFICATIONS -->
-        <section id="section-notifications" class="section">
-          <div class="card">
-            <div class="card-header">
-              <div>
-                <h1 class="report-title">Notifications</h1>
-                <p class="card-sub">Review recent alerts and manage what gets delivered.</p>
-              </div>
-              <div class="card-header-actions">
-                <label class="checkbox-inline">
-                  <input type="checkbox" id="notifications-unread-only" />
-                  Unread only
-                </label>
-                <button id="notifications-refresh" class="btn secondary btn-sm">Refresh</button>
-                <button id="notifications-mark-all" class="btn secondary btn-sm">Mark all read</button>
-              </div>
-            </div>
-            <div class="card-body">
-              <div id="notifications-list" class="notifications-list"></div>
-              <div class="notifications-footer">
-                <button id="notifications-load-more" class="btn secondary btn-sm">Load more</button>
-                <span id="notifications-message" class="message"></span>
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-header">
-              <div>
-                <h2>Preferences</h2>
-                <p class="card-sub">Choose channels, filters, and reminder schedules.</p>
-              </div>
-              <div class="card-header-actions">
-                <button id="notifications-test" class="btn secondary btn-sm" type="button">Send test</button>
-                <button id="notifications-save" class="btn primary btn-sm" type="button">Save preferences</button>
-                <span id="notifications-pref-message" class="message"></span>
-              </div>
-            </div>
-            <div class="card-body">
-              <div class="form-grid">
-                <div class="form-field checkbox-field">
-                  <label class="checkbox-inline">
-                    <input type="checkbox" id="notifications-email-enabled" />
-                    Email alerts
-                  </label>
-                  <p class="card-sub">Uses your login email; you can opt out any time.</p>
-                </div>
-                <div class="form-field checkbox-field">
-                  <label class="checkbox-inline">
-                    <input type="checkbox" id="notifications-push-enabled" />
-                    Push alerts
-                  </label>
-                  <p class="card-sub">Enable browser notifications for phone alerts.</p>
-                  <div class="notification-push-actions">
-                    <button id="notifications-push-subscribe" class="btn secondary btn-sm" type="button">Enable push</button>
-                    <button id="notifications-push-unsubscribe" class="btn secondary btn-sm" type="button">Disable push</button>
-                  </div>
-                  <span id="notifications-push-status" class="message"></span>
-                </div>
-              </div>
-
-              <div class="form-grid">
-                <div class="form-field">
-                  <label class="checkbox-inline">
-                    <input type="checkbox" id="notifications-shipments-enabled" />
-                    Shipment notifications
-                  </label>
-                  <div id="notifications-shipment-statuses" class="notify-statuses"></div>
-                </div>
-                <div class="form-field">
-                  <label for="notifications-shipment-projects">Shipment projects (optional)</label>
-                  <select id="notifications-shipment-projects" multiple size="6"></select>
-                  <p class="card-sub">Leave empty to include all projects.</p>
-                </div>
-              </div>
-
-              <div class="form-grid">
-                <div class="form-field">
-                  <label class="checkbox-inline">
-                    <input type="checkbox" id="notifications-time-enabled" />
-                    Timekeeping notifications
-                  </label>
-                  <div id="notifications-time-events" class="notify-statuses"></div>
-                </div>
-                <div class="form-field">
-                  <label class="checkbox-inline">
-                    <input type="checkbox" id="notifications-payroll-enabled" />
-                    Payroll notifications
-                  </label>
-                  <div id="notifications-payroll-events" class="notify-statuses"></div>
-                </div>
-              </div>
-
-              <div class="form-grid">
-                <div class="form-field">
-                  <label for="notifications-remind-time">Daily summary time</label>
-                  <input type="time" id="notifications-remind-time" />
-                </div>
-                <div class="form-field">
-                  <label for="notifications-remind-every">Remind every (days)</label>
-                  <input type="number" id="notifications-remind-every" min="1" step="1" value="1" />
-                </div>
-                <div class="form-field">
-                  <label class="checkbox-inline">
-                    <input type="checkbox" id="notifications-clockout-enabled" />
-                    Clock-out reminders
-                  </label>
-                  <input type="time" id="notifications-clockout-time" />
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <!-- MY ACCOUNT -->
         <section id="section-my-account" class="section">
           <div class="card">
@@ -868,15 +1080,126 @@
                 </div>
               </div>
 
+              <div class="card settings-card settings-card--wide">
+                <div class="card-header">
+                  <h2>Notification Preferences</h2>
+                </div>
+                <div class="card-body notification-prefs-stack">
+                  <div class="settings-actions settings-actions--spaced">
+                    <button id="notifications-test" class="btn secondary btn-sm" type="button">Send test</button>
+                    <button id="notifications-save" class="btn primary btn-sm" type="button">Save preferences</button>
+                    <span id="notifications-pref-message" class="message"></span>
+                  </div>
+
+                  <div class="prefs-section">
+                    <div class="prefs-section-head">
+                      <h3>Channels</h3>
+                      <p class="card-sub">Choose how you want to receive alerts.</p>
+                    </div>
+                    <div class="prefs-section-body prefs-stack">
+                      <div class="prefs-item">
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="notifications-email-enabled" />
+                          Email alerts
+                        </label>
+                        <p class="card-sub">Uses your login email; you can opt out any time.</p>
+                      </div>
+                      <div class="prefs-item">
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="notifications-push-enabled" />
+                          Push alerts
+                        </label>
+                        <p class="card-sub">Enable browser notifications for phone alerts.</p>
+                        <span id="notifications-push-status" class="message"></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="prefs-section">
+                    <div class="prefs-section-head">
+                      <h3>Shipments</h3>
+                      <p class="card-sub">Pick the shipment statuses you want alerts for.</p>
+                    </div>
+                    <div class="prefs-section-body prefs-two-col">
+                      <div class="prefs-card">
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="notifications-shipments-enabled" />
+                          Shipment Status Notifications
+                        </label>
+                        <div id="notifications-shipment-statuses" class="notify-statuses notify-statuses--compact"></div>
+                      </div>
+                      <div class="prefs-card">
+                        <div class="form-field">
+                          <label>Shipment projects (optional)</label>
+                          <div id="notifications-shipment-projects" class="notify-statuses notify-statuses--compact"></div>
+                          <p class="card-sub">Leave all checked to include all projects.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="prefs-section">
+                    <div class="prefs-section-head">
+                      <h3>Time &amp; Payroll</h3>
+                      <p class="card-sub">Choose the event types you want to be notified about.</p>
+                    </div>
+                    <div class="prefs-section-body prefs-two-col">
+                      <div class="prefs-card">
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="notifications-time-enabled" />
+                          Timekeeping notifications
+                        </label>
+                        <div id="notifications-time-events" class="notify-statuses notify-statuses--compact"></div>
+                      </div>
+                      <div class="prefs-card">
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="notifications-payroll-enabled" />
+                          Payroll notifications
+                        </label>
+                        <div id="notifications-payroll-events" class="notify-statuses notify-statuses--compact"></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="prefs-section">
+                    <div class="prefs-section-head">
+                      <h3>Reminders</h3>
+                      <p class="card-sub">Schedule daily summaries and clock-out nudges.</p>
+                    </div>
+                    <div class="prefs-section-body prefs-two-col">
+                      <div class="prefs-card">
+                        <div class="form-field">
+                          <label for="notifications-remind-time">Daily summary time</label>
+                          <input type="time" id="notifications-remind-time" />
+                        </div>
+                        <div class="form-field">
+                          <label for="notifications-remind-every">Remind every (days)</label>
+                          <input type="number" id="notifications-remind-every" min="1" step="1" value="1" />
+                        </div>
+                      </div>
+                      <div class="prefs-card">
+                        <div class="form-field">
+                          <label class="checkbox-inline">
+                            <input type="checkbox" id="notifications-clockout-enabled" />
+                            Clock-out reminders
+                          </label>
+                          <input type="time" id="notifications-clockout-time" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
             </div>
           </div>
         </section>
 
         <!-- SETTINGS -->
         <section id="section-settings" class="section">
-          <div class="card">
+          <div class="card settings-page-card">
             <div class="card-header">
-              <h1 class="report-title">Settings</h1>
+              <h1 class="report-title">Organization Settings</h1>
               <div class="card-header-actions settings-actions">
                 <button id="settings-save" class="btn primary">Save Settings</button>
                 <button type="button" class="btn secondary logout-btn">Logout</button>
@@ -884,407 +1207,647 @@
               </div>
             </div>
 
-            <div class="card-body settings-grid">
-              <div class="card settings-card">
-                <div class="card-header">
-                  <h2>Company Info</h2>
-                </div>
-                <div class="card-body">
-                  <label>
-                    Company Name
-                    <input type="text" id="settings-company-name" />
-                  </label>
-                  <label>
-                    Contact Email
-                    <input type="email" id="settings-company-email" />
-                  </label>
-                </div>
+            <div class="settings-intro">
+              <div class="settings-intro-copy">
+                <h2>Organization settings</h2>
+                <p class="card-sub">Open a section to edit. Click Save Settings to apply updates for the entire org.</p>
               </div>
-
-              <div class="card settings-card">
-                <div class="card-header">
-                  <h2>Shipment Settings</h2>
-                </div>
-                <div class="card-body">
-                  <label>
-                    Default daily storage fee (past pickup due date)
-                    <input type="number" id="settings-storage-daily-fee" min="0" step="0.01" placeholder="0.00" />
-                  </label>
-                  <p class="card-sub">This value will be used to auto-calc estimated fees past the due date.</p>
-                </div>
+              <div class="settings-intro-meta">
+                <span class="settings-pill">Org-wide</span>
+                <span class="settings-pill settings-pill--admin">Super admin sections are labeled</span>
               </div>
+            </div>
 
-              <div class="card settings-card">
-                <div class="card-header">
-                  <h2>Timekeeping Settings</h2>
-                </div>
-                <div class="card-body">
-                  <label class="checkbox-inline">
-                    <input type="checkbox" id="settings-clock-in-photo-required" />
-                    Require clock-in photo (org-wide)
-                  </label>
-                </div>
-              </div>
-
-              <div id="settings-admin-users-card" class="card settings-card hidden">
-                <div class="card-header">
-                  <h2>Admin Accounts</h2>
-                </div>
-                <div class="card-body">
-                  <p class="card-sub">Create logins for super admins only.</p>
-                  <div class="table-wrapper">
-                    <table class="access-table">
-                      <thead>
-                        <tr>
-                          <th>Login email</th>
-                          <th>Employee</th>
-                          <th>Status</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody id="settings-admin-users-body">
-                        <tr><td colspan="4">(loading…)</td></tr>
-                      </tbody>
-                    </table>
+            <div class="settings-accordion-stack">
+              <details class="settings-accordion settings-card card settings-accordion--org">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Company Info</h2>
+                    <p class="card-sub">Legal name and contact email for notices.</p>
                   </div>
-                  <div class="form-grid">
-                    <label>
-                      Link employee
-                      <select id="settings-admin-user-employee"></select>
-                    </label>
-                    <label>
-                      Login email
-                      <input type="email" id="settings-admin-user-email" />
-                    </label>
-                    <label>
-                      Password (optional)
-                      <input type="password" id="settings-admin-user-password" />
-                    </label>
-                    <label>
-                      Confirm password
-                      <input type="password" id="settings-admin-user-password-confirm" />
-                    </label>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill">Core</span>
+                      <span class="settings-pill">2 fields</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
                   </div>
-                  <p class="card-sub">
-                    Password is required for a new email. If the email already exists, providing a password will reset it.
-                  </p>
-                  <div class="settings-actions">
-                    <button type="button" id="settings-admin-user-create" class="btn secondary">Create login</button>
-                    <span id="settings-admin-user-status" class="message"></span>
-                  </div>
-                </div>
-              </div>
-
-              <div id="settings-role-templates-card" class="card settings-card hidden">
-                <div class="card-header">
-                  <h2>Role Templates</h2>
-                </div>
-                <div class="card-body">
-                  <p class="card-sub">Create reusable access + permission presets for admins.</p>
-                  <div class="table-wrapper">
-                    <table class="access-table">
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Role title</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody id="settings-role-templates-body">
-                        <tr><td colspan="3">(loading…)</td></tr>
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div class="form-grid">
-                    <label>
-                      Template name
-                      <input type="text" id="settings-template-name" />
-                    </label>
-                    <label>
-                      Role title (optional)
-                      <input type="text" id="settings-template-role-title" />
-                    </label>
-                  </div>
-
-                  <div class="modal-section">
-                    <h2>Access</h2>
-                    <div class="two-col">
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-worker-timekeeping" />
-                        Worker timekeeping
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <div class="form-grid">
+                      <label>
+                        Company Name
+                        <input type="text" id="settings-company-name" />
                       </label>
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-desktop-access" />
-                        Desktop admin access
-                      </label>
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-kiosk-admin-access" />
-                        Kiosk admin access
+                      <label>
+                        Contact Email
+                        <input type="email" id="settings-company-email" />
                       </label>
                     </div>
                   </div>
+                </div>
+              </details>
 
-                  <div class="modal-section">
-                    <h2>Permissions</h2>
-                    <div class="two-col">
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-perm-see-shipments" />
-                        See shipments
+              <details class="settings-accordion settings-card card settings-accordion--shipments">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Shipment Defaults</h2>
+                    <p class="card-sub">Used to estimate storage fees after pickup due dates.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill">Operations</span>
+                      <span class="settings-pill">1 field</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <label>
+                      Default daily storage fee (past pickup due date)
+                      <input type="number" id="settings-storage-daily-fee" min="0" step="0.01" placeholder="0.00" />
+                    </label>
+                    <p class="card-sub">This value will be used to auto-calc estimated fees past the due date.</p>
+                  </div>
+                </div>
+              </details>
+
+              <details class="settings-accordion settings-card card settings-accordion--time">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Timekeeping</h2>
+                    <p class="card-sub">Org-wide kiosk clock-in requirements.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill">Timekeeping</span>
+                      <span class="settings-pill">Org-wide</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <label class="checkbox-inline">
+                      <input type="checkbox" id="settings-clock-in-photo-required" />
+                      Require clock-in photo (org-wide)
+                    </label>
+                  </div>
+                </div>
+              </details>
+
+              <details id="settings-device-setup-card" class="settings-accordion settings-card card settings-accordion--devices hidden">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Kiosk Device Setup</h2>
+                    <p class="card-sub">Generate and share a kiosk enrollment code.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill settings-pill--admin">Super admin</span>
+                      <span class="settings-pill">Devices</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <p class="card-sub">Use this code on the kiosk device to enroll it. Rotate the code if it was shared by mistake.</p>
+                    <div class="device-setup-code-row">
+                      <div id="settings-kiosk-enrollment-code" class="device-setup-code">••••••</div>
+                    </div>
+                    <div class="device-setup-actions">
+                      <button type="button" id="settings-kiosk-rotate" class="btn secondary">Rotate code</button>
+                    </div>
+                    <p id="settings-kiosk-status" class="message"></p>
+                  </div>
+                </div>
+              </details>
+
+              <details id="settings-admin-users-card" class="settings-accordion settings-card card settings-accordion--admin hidden">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Admin Accounts</h2>
+                    <p class="card-sub">Create logins for super admins only.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill settings-pill--admin">Super admin</span>
+                      <span class="settings-pill">Admins</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <p class="card-sub">Super admins can use both: email on desktop, PIN on kiosks.</p>
+                    <div class="table-wrapper">
+                      <table class="access-table">
+                        <thead>
+                          <tr>
+                            <th>Login email</th>
+                            <th>Employee</th>
+                            <th>Status</th>
+                            <th>Kiosk</th>
+                            <th>PIN</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody id="settings-admin-users-body">
+                          <tr><td colspan="6">(loading...)</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="form-grid">
+                      <label>
+                        Link employee
+                        <select id="settings-admin-user-employee"></select>
                       </label>
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-perm-modify-time" />
-                        Modify/approve/reject time
+                      <label>
+                        Login email
+                        <input type="email" id="settings-admin-user-email" />
                       </label>
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-perm-view-time-reports" />
-                        View time reports
+                      <label>
+                        Password (optional)
+                        <input type="password" id="settings-admin-user-password" />
                       </label>
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-perm-view-all-timesheets" />
-                        View all timesheets
-                      </label>
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-perm-view-payroll" />
-                        View payroll info
-                      </label>
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-perm-modify-payroll" />
-                        Modify payroll
-                      </label>
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-template-perm-modify-pay-rates" />
-                        Modify pay rates
+                      <label>
+                        Confirm password
+                        <input type="password" id="settings-admin-user-password-confirm" />
                       </label>
                     </div>
-                  </div>
-
-                  <div class="settings-actions">
-                    <button type="button" id="settings-template-save" class="btn secondary">Save template</button>
-                    <button type="button" id="settings-template-clear" class="btn tertiary">New template</button>
-                    <button type="button" id="settings-template-delete" class="btn danger" disabled>Delete</button>
-                    <span id="settings-template-status" class="message"></span>
-                  </div>
-                </div>
-              </div>
-
-              <div id="settings-backup-card" class="card settings-card hidden">
-                <div class="card-header">
-                  <h2>Backups</h2>
-                </div>
-                <div class="card-body">
-                  <p class="card-sub">Run a manual backup snapshot (DB + uploads).</p>
-                  <div class="settings-actions">
-                    <button type="button" id="settings-backup-now" class="btn secondary">Backup Now</button>
-                    <span id="settings-backup-status" class="message"></span>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-
-            <!-- Access control -->
-            <div id="settings-access-card" class="card settings-card access-card">
-              <div class="card-header">
-                <h2>Access Control</h2>
-              </div>
-              <div class="card-body">
-                <p class="card-sub">Toggle what each admin can see/do.</p>
-                <div class="table-wrapper">
-                  <table class="access-table">
-                    <thead>
-                      <tr>
-                        <th>Admin</th>
-                        <th>See shipments</th>
-                        <th>Modify/approve/reject time</th>
-                        <th>View time reports</th>
-                        <th>View all timesheets</th>
-                        <th>View payroll info</th>
-                        <th>Modify payroll</th>
-                        <th>Modify pay rates</th>
-                      </tr>
-                    </thead>
-                    <tbody id="settings-access-body">
-                      <tr><td colspan="8">(loading admins…)</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-
-            <div class="card settings-card access-card hidden">
-              <div class="card-header">
-                <h2>Kiosk Rules</h2>
-              </div>
-              <div class="card-body">
-                <p class="card-sub">Temporarily hidden.</p>
-              </div>
-            </div>
-
-            <div class="card settings-card access-card">
-              <div class="card-header">
-                <h2>Time Exception Rules</h2>
-              </div>
-              <div class="card-body">
-                <p class="card-sub">Uncheck a rule to stop flagging it in Time Exceptions.</p>
-                <div class="table-wrapper">
-                  <table class="access-table exception-rules-table">
-                    <thead>
-                      <tr>
-                        <th>Rule</th>
-                        <th>Description</th>
-                        <th>Flag?</th>
-                      </tr>
-                    </thead>
-                    <tbody id="settings-exception-rules">
-                      <tr>
-                        <td>Missing clock-out</td>
-                        <td>Flag entries that never clocked out.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="missing_clock_out" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Long shift (&gt;12h)</td>
-                        <td>Highlight very long shifts.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="long_shift" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Multi-day shift</td>
-                        <td>Flag punches that span 24 hours or more.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="multi_day" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Crosses midnight</td>
-                        <td>Mark shifts that start and end on different dates.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="crosses_midnight" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>No project selected</td>
-                        <td>Require a project on every punch.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="no_project" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Clock-out project differs</td>
-                        <td>Detect when clock-out project does not match clock-in.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="project_mismatch" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Tiny punch (&lt;5 min)</td>
-                        <td>Catch accidental super-short punches.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="tiny_punch" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Weekly overtime threshold</td>
-                        <td>Flag weeks that exceed 50 hours.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="weekly_hours" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Clock-in outside geofence</td>
-                        <td>Flag kiosk clock-ins outside the project fence.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="geofence_clock_in" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Auto clock-out</td>
-                        <td>Highlight any automatically closed punches.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="auto_clock_out" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Manual time entry with no punches</td>
-                        <td>Flag timesheet rows that lack kiosk punches.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="manual_no_punches" checked /></td>
-                      </tr>
-                      <tr>
-                        <td>Manual vs punches mismatch</td>
-                        <td>Compare manual hours to recorded punches.</td>
-                        <td class="center"><input type="checkbox" data-exception-rule="manual_hours_mismatch" checked /></td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-                <div class="form-grid" style="margin-top: 16px;">
-                  <div class="form-field">
-                    <label for="settings-weekly-hours-threshold">Weekly hours threshold (hours)</label>
-                    <input id="settings-weekly-hours-threshold" type="number" min="0" step="0.25" placeholder="50" />
-                    <p class="card-sub">Set blank or 0 to disable weekly hour flags.</p>
-                  </div>
-                  <div class="form-field">
-                    <label for="settings-auto-clockout-daily-max">Auto clock-out daily max (hours)</label>
-                    <input id="settings-auto-clockout-daily-max" type="number" min="0" step="0.25" placeholder="Disabled" />
-                    <p class="card-sub">Set blank or 0 to disable daily auto clock-out.</p>
-                  </div>
-                  <div class="form-field">
-                    <label for="settings-auto-clockout-weekly-max">Auto clock-out weekly max (hours)</label>
-                    <input id="settings-auto-clockout-weekly-max" type="number" min="0" step="0.25" placeholder="Disabled" />
-                    <p class="card-sub">Set blank or 0 to disable weekly auto clock-out.</p>
+                    <p class="card-sub">
+                      Password is required for a new email. If the email already exists, providing a password will reset it.
+                    </p>
+                    <div class="admin-login-kiosk">
+                      <label class="checkbox-inline">
+                        <input type="checkbox" id="settings-admin-user-kiosk-access" />
+                        Also allow kiosk admin PIN access
+                      </label>
+                      <div id="settings-admin-user-pin-fields" class="form-grid admin-login-pin-grid hidden">
+                        <label>
+                          PIN (4 digits)
+                          <input
+                            type="password"
+                            id="settings-admin-user-pin"
+                            inputmode="numeric"
+                            pattern="[0-9]*"
+                            maxlength="4"
+                            autocomplete="off"
+                          />
+                        </label>
+                        <label>
+                          Confirm PIN
+                          <input
+                            type="password"
+                            id="settings-admin-user-pin-confirm"
+                            inputmode="numeric"
+                            pattern="[0-9]*"
+                            maxlength="4"
+                            autocomplete="off"
+                          />
+                        </label>
+                      </div>
+                      <p id="settings-admin-user-kiosk-status" class="message"></p>
+                    </div>
+                    <div class="settings-actions">
+                      <button type="button" id="settings-admin-user-create" class="btn secondary">Create login</button>
+                      <span id="settings-admin-user-status" class="message"></span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
+              </details>
 
-            <div id="settings-payroll-rules-card" class="card settings-card access-card">
-              <div class="card-header">
-                <h2>Payroll Rules</h2>
-              </div>
-              <div class="card-body">
-                <div class="form-grid">
-                  <div class="form-field">
-                    <label for="settings-pay-period-length">Pay period length (days)</label>
-                    <input id="settings-pay-period-length" type="number" min="1" max="31" step="1" />
+              <details id="settings-role-templates-card" class="settings-accordion settings-card card settings-accordion--admin hidden">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Role Templates</h2>
+                    <p class="card-sub">Reusable access and permission presets.</p>
                   </div>
-                  <div class="form-field">
-                    <label for="settings-pay-period-weekday">Pay period week starts on</label>
-                    <select id="settings-pay-period-weekday">
-                      <option value="0">Sunday</option>
-                      <option value="1">Monday</option>
-                      <option value="2">Tuesday</option>
-                      <option value="3">Wednesday</option>
-                      <option value="4">Thursday</option>
-                      <option value="5">Friday</option>
-                      <option value="6">Saturday</option>
-                    </select>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill settings-pill--admin">Super admin</span>
+                      <span class="settings-pill">Permissions</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
                   </div>
-                  <div class="form-field">
-                    <label for="settings-pay-period-anchor">Pay period anchor date</label>
-                    <input id="settings-pay-period-anchor" type="date" />
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <p class="card-sub">Create reusable access and permission presets for admins.</p>
+                    <div class="table-wrapper">
+                      <table class="access-table">
+                        <thead>
+                          <tr>
+                            <th>Name</th>
+                            <th>Role title</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody id="settings-role-templates-body">
+                          <tr><td colspan="3">(loading...)</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div class="form-grid">
+                      <label>
+                        Template name
+                        <input type="text" id="settings-template-name" />
+                      </label>
+                      <label>
+                        Role title (optional)
+                        <input type="text" id="settings-template-role-title" />
+                      </label>
+                    </div>
+
+                    <div class="modal-section">
+                      <h2>Access</h2>
+                      <div class="two-col">
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-worker-timekeeping" />
+                          Worker timekeeping
+                        </label>
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-desktop-access" />
+                          Desktop admin access
+                        </label>
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-kiosk-admin-access" />
+                          Kiosk admin access
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="modal-section">
+                      <h2>Permissions</h2>
+                      <div class="two-col">
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-perm-see-shipments" />
+                          See shipments
+                        </label>
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-perm-modify-time" />
+                          Modify/approve/reject time
+                        </label>
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-perm-view-time-reports" />
+                          View time reports
+                        </label>
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-perm-view-all-timesheets" />
+                          View all timesheets
+                        </label>
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-perm-assign-timesheets" />
+                          Assign timesheets
+                        </label>
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-perm-view-payroll" />
+                          View payroll info
+                        </label>
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-perm-modify-payroll" />
+                          Modify payroll
+                        </label>
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-template-perm-modify-pay-rates" />
+                          Modify pay rates
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="settings-actions">
+                      <button type="button" id="settings-template-save" class="btn secondary">Save template</button>
+                      <button type="button" id="settings-template-clear" class="btn tertiary">New template</button>
+                      <button type="button" id="settings-template-delete" class="btn danger" disabled>Delete</button>
+                      <span id="settings-template-status" class="message"></span>
+                    </div>
+
+                    <div class="template-presets">
+                      <h3>Recommended templates</h3>
+                      <p class="card-sub">Create common roles for faster setup. You can edit them afterward.</p>
+                      <ul class="template-preset-list">
+                        <li>Overlord (all access + all permissions)</li>
+                        <li>Payroll Manager (full payroll + time visibility)</li>
+                        <li>Payroll Approver (view payroll, approve time, no payroll edits)</li>
+                        <li>Time Reviewer (time entry review + edits, no payroll)</li>
+                        <li>Shipments Admin (shipments only)</li>
+                        <li>Kiosk Admin (time review + shipments)</li>
+                      </ul>
+                      <div class="settings-actions">
+                        <button type="button" id="settings-template-presets-create" class="btn secondary">
+                          Create recommended templates
+                        </button>
+                        <span id="settings-template-presets-status" class="message"></span>
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <p class="card-sub">If the pay period length is greater than 7 days, set an anchor date to define the cycle start.</p>
-                <div class="form-grid">
-                  <div class="form-field">
-                    <label class="checkbox-inline">
-                      <input type="checkbox" id="settings-overtime-enabled" />
-                      Overtime enabled
+              </details>
+
+              <details id="settings-access-card" class="settings-accordion settings-card card settings-accordion--access">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Access Control</h2>
+                    <p class="card-sub">Toggle what each admin can see and do.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill settings-pill--admin">Super admin</span>
+                      <span class="settings-pill">Permissions</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <p class="card-sub">Toggle what each admin can see and do.</p>
+                    <div class="table-wrapper">
+                      <table class="access-table">
+                        <thead>
+                          <tr>
+                            <th>Admin</th>
+                            <th>See shipments</th>
+                            <th>Modify/approve/reject time</th>
+                            <th>View time reports</th>
+                            <th>View all timesheets</th>
+                            <th>Assign timesheets</th>
+                            <th>View payroll info</th>
+                            <th>Modify payroll</th>
+                            <th>Modify pay rates</th>
+                          </tr>
+                        </thead>
+                        <tbody id="settings-access-body">
+                          <tr><td colspan="9">(loading admins...)</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </details>
+
+              <details class="settings-accordion settings-card card settings-accordion--access hidden">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Kiosk Rules</h2>
+                    <p class="card-sub">Temporarily hidden.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill">Coming soon</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <p class="card-sub">Temporarily hidden.</p>
+                  </div>
+                </div>
+              </details>
+
+              <details class="settings-accordion settings-card card settings-accordion--time">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Time Exception Rules</h2>
+                    <p class="card-sub">Choose which exceptions to flag and set thresholds.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill">Timekeeping</span>
+                      <span class="settings-pill">Flags</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <p class="card-sub">Uncheck a rule to stop flagging it in Approve Time Entries.</p>
+                    <div class="table-wrapper">
+                      <table class="access-table exception-rules-table">
+                        <thead>
+                          <tr>
+                            <th>Rule</th>
+                            <th>Description</th>
+                            <th>Flag?</th>
+                          </tr>
+                        </thead>
+                        <tbody id="settings-exception-rules">
+                          <tr>
+                            <td>Missing clock-out</td>
+                            <td>Flag entries that never clocked out.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="missing_clock_out" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Long shift (&gt;12h)</td>
+                            <td>Highlight very long shifts.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="long_shift" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Multi-day shift</td>
+                            <td>Flag punches that span 24 hours or more.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="multi_day" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Crosses midnight</td>
+                            <td>Mark shifts that start and end on different dates.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="crosses_midnight" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>No project selected</td>
+                            <td>Require a project on every punch.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="no_project" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Clock-out project differs</td>
+                            <td>Detect when clock-out project does not match clock-in.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="project_mismatch" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Tiny punch (&lt;5 min)</td>
+                            <td>Catch accidental super-short punches.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="tiny_punch" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Weekly overtime threshold</td>
+                            <td>Flag weeks that exceed 50 hours.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="weekly_hours" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Clock-in outside geofence</td>
+                            <td>Flag kiosk clock-ins outside the project fence.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="geofence_clock_in" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Auto clock-out</td>
+                            <td>Highlight any automatically closed punches.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="auto_clock_out" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Manual time entry with no punches</td>
+                            <td>Flag timesheet rows that lack kiosk punches.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="manual_no_punches" checked /></td>
+                          </tr>
+                          <tr>
+                            <td>Manual vs punches mismatch</td>
+                            <td>Compare manual hours to recorded punches.</td>
+                            <td class="center"><input type="checkbox" data-exception-rule="manual_hours_mismatch" checked /></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="form-grid" style="margin-top: 16px;">
+                      <div class="form-field">
+                        <label for="settings-weekly-hours-threshold">Weekly hours threshold (hours)</label>
+                        <input id="settings-weekly-hours-threshold" type="number" min="0" step="0.25" placeholder="50" />
+                        <p class="card-sub">Set blank or 0 to disable weekly hour flags.</p>
+                      </div>
+                      <div class="form-field">
+                        <label for="settings-auto-clockout-daily-max">Auto clock-out daily max (hours)</label>
+                        <input id="settings-auto-clockout-daily-max" type="number" min="0" step="0.25" placeholder="Disabled" />
+                        <p class="card-sub">Set blank or 0 to disable daily auto clock-out.</p>
+                      </div>
+                      <div class="form-field">
+                        <label for="settings-auto-clockout-weekly-max">Auto clock-out weekly max (hours)</label>
+                        <input id="settings-auto-clockout-weekly-max" type="number" min="0" step="0.25" placeholder="Disabled" />
+                        <p class="card-sub">Set blank or 0 to disable weekly auto clock-out.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </details>
+
+              <details id="settings-payroll-rules-card" class="settings-accordion settings-card card settings-accordion--payroll">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Payroll Rules</h2>
+                    <p class="card-sub">Pay period, overtime, and double-time settings.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill settings-pill--admin">Super admin</span>
+                      <span class="settings-pill">Payroll</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <div class="form-grid">
+                      <div class="form-field">
+                        <label for="settings-pay-period-length">Pay period length (days)</label>
+                        <input id="settings-pay-period-length" type="number" min="1" max="31" step="1" />
+                      </div>
+                      <div class="form-field">
+                        <label for="settings-pay-period-weekday">Pay period week starts on</label>
+                        <select id="settings-pay-period-weekday">
+                          <option value="0">Sunday</option>
+                          <option value="1">Monday</option>
+                          <option value="2">Tuesday</option>
+                          <option value="3">Wednesday</option>
+                          <option value="4">Thursday</option>
+                          <option value="5">Friday</option>
+                          <option value="6">Saturday</option>
+                        </select>
+                      </div>
+                      <div class="form-field">
+                        <label for="settings-pay-period-anchor">Pay period anchor date</label>
+                        <input id="settings-pay-period-anchor" type="date" />
+                      </div>
+                    </div>
+                    <p class="card-sub">If the pay period length is greater than 7 days, set an anchor date to define the cycle start.</p>
+                    <div class="form-grid">
+                      <div class="form-field">
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-overtime-enabled" />
+                          Overtime enabled
+                        </label>
+                      </div>
+                      <div class="form-field">
+                        <label for="settings-overtime-daily-threshold">Daily overtime threshold (hours)</label>
+                        <input id="settings-overtime-daily-threshold" type="number" min="0" step="0.01" />
+                      </div>
+                      <div class="form-field">
+                        <label for="settings-overtime-weekly-threshold">Weekly overtime threshold (hours)</label>
+                        <input id="settings-overtime-weekly-threshold" type="number" min="0" step="0.01" />
+                      </div>
+                      <div class="form-field">
+                        <label for="settings-overtime-multiplier">Overtime multiplier</label>
+                        <input id="settings-overtime-multiplier" type="number" min="1" step="0.01" />
+                      </div>
+                    </div>
+                    <div class="form-grid">
+                      <div class="form-field">
+                        <label class="checkbox-inline">
+                          <input type="checkbox" id="settings-doubletime-enabled" />
+                          Double time enabled
+                        </label>
+                      </div>
+                      <div class="form-field">
+                        <label for="settings-doubletime-daily-threshold">Double-time daily threshold (hours)</label>
+                        <input id="settings-doubletime-daily-threshold" type="number" min="0" step="0.01" />
+                      </div>
+                      <div class="form-field">
+                        <label for="settings-doubletime-multiplier">Double-time multiplier</label>
+                        <input id="settings-doubletime-multiplier" type="number" min="1" step="0.01" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </details>
+
+              <details id="settings-backup-card" class="settings-accordion settings-card card settings-accordion--system hidden">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Backups</h2>
+                    <p class="card-sub">Manual backup snapshot (DB and uploads).</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill settings-pill--admin">Super admin</span>
+                      <span class="settings-pill">System</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <p class="card-sub">Run a manual backup snapshot (DB + uploads).</p>
+                    <div class="settings-actions">
+                      <button type="button" id="settings-backup-now" class="btn secondary">Backup Now</button>
+                      <span id="settings-backup-status" class="message"></span>
+                    </div>
+                  </div>
+                </div>
+              </details>
+
+              <details id="settings-audit-card" class="settings-accordion settings-card card settings-accordion--system hidden">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>Audit Logs</h2>
+                    <p class="card-sub">Control how long audit history is retained.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill settings-pill--admin">Super admin</span>
+                      <span class="settings-pill">System</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <label>
+                      Audit log retention (days)
+                      <input type="number" id="settings-audit-retention-days" min="0" step="1" placeholder="Forever" />
                     </label>
-                  </div>
-                  <div class="form-field">
-                    <label for="settings-overtime-daily-threshold">Daily overtime threshold (hours)</label>
-                    <input id="settings-overtime-daily-threshold" type="number" min="0" step="0.01" />
-                  </div>
-                  <div class="form-field">
-                    <label for="settings-overtime-weekly-threshold">Weekly overtime threshold (hours)</label>
-                    <input id="settings-overtime-weekly-threshold" type="number" min="0" step="0.01" />
-                  </div>
-                  <div class="form-field">
-                    <label for="settings-overtime-multiplier">Overtime multiplier</label>
-                    <input id="settings-overtime-multiplier" type="number" min="1" step="0.01" />
+                    <p class="card-sub">Leave blank or set to 0 to keep audit logs forever.</p>
                   </div>
                 </div>
-                <div class="form-grid">
-                  <div class="form-field">
-                    <label class="checkbox-inline">
-                      <input type="checkbox" id="settings-doubletime-enabled" />
-                      Double time enabled
-                    </label>
-                  </div>
-                  <div class="form-field">
-                    <label for="settings-doubletime-daily-threshold">Double-time daily threshold (hours)</label>
-                    <input id="settings-doubletime-daily-threshold" type="number" min="0" step="0.01" />
-                  </div>
-                  <div class="form-field">
-                    <label for="settings-doubletime-multiplier">Double-time multiplier</label>
-                    <input id="settings-doubletime-multiplier" type="number" min="1" step="0.01" />
-                  </div>
-                </div>
-              </div>
+              </details>
             </div>
           </div>
         </section>
@@ -1483,7 +2046,9 @@
                 <thead>
                   <tr>
                     <th>Project</th>
+                    <th>Device ID</th>
                     <th>Admin</th>
+                    <th>Assigned</th>
                     <th class="right">Workers clocked in</th>
                     <th>Started</th>
                     <th>Ended</th>
@@ -1492,7 +2057,7 @@
                 </thead>
                 <tbody id="session-table-body">
                   <tr>
-                    <td colspan="6">(loading timesheets…)</td>
+                    <td colspan="8">(loading timesheets…)</td>
                   </tr>
                 </tbody>
               </table>
@@ -1504,6 +2069,7 @@
             <div class="card-header">
               <div>
                 <h2 id="session-detail-title">Current Workers</h2>
+                <p id="session-detail-sub" class="card-sub"></p>
               </div>
             </div>
 
@@ -1674,7 +2240,7 @@
           </div>
         </section>
 
-<!-- REPORTS SECTION (PAYROLL) -->
+<!-- REPORTS SECTION (PAYROLL + AUDITS) -->
 <section id="section-reports" class="section">
   <div class="card">
     <div class="card-header">
@@ -1758,6 +2324,89 @@
           </tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <div class="card" id="audit-report-card">
+    <div class="card-header">
+      <div>
+        <h2>Audit Trails</h2>
+        <p class="card-sub">
+          Review audit history by domain (time, payroll, shipments, access, and more).
+        </p>
+      </div>
+    </div>
+
+    <div class="card-body">
+      <form id="audit-report-form" class="time-report-form audit-report-form">
+        <div class="form-row time-report-row">
+          <label>
+            Domain
+            <select id="audit-report-domain">
+              <option value="time_entries" data-requires="view_time_reports">Time entry changes</option>
+              <option value="payroll_runs" data-requires="view_payroll">Payroll run audit</option>
+              <option value="payroll" data-requires="view_payroll">Payroll actions</option>
+              <option value="shipments" data-requires="see_shipments">Shipments</option>
+              <option value="kiosks" data-requires="view_payroll">Kiosks &amp; timesheets</option>
+              <option value="employees" data-requires="view_payroll">Employees</option>
+              <option value="access" data-requires="super_admin">Access &amp; security</option>
+              <option value="settings" data-requires="view_payroll">Settings &amp; rules</option>
+              <option value="notifications" data-requires="view_payroll">Notifications</option>
+              <option value="quickbooks" data-requires="super_admin">QuickBooks</option>
+              <option value="projects" data-requires="view_payroll">Projects &amp; vendors</option>
+              <option value="reports" data-requires="view_payroll">Reports &amp; exports</option>
+              <option value="all" data-requires="super_admin">All audits</option>
+            </select>
+          </label>
+
+          <label>
+            Start date
+            <input type="date" id="audit-report-start" />
+          </label>
+
+          <label>
+            End date
+            <input type="date" id="audit-report-end" />
+          </label>
+
+          <label>
+            Actor (name or ID)
+            <input type="text" id="audit-report-actor" placeholder="Jane or 12" />
+          </label>
+
+          <label>
+            Entity ID
+            <input type="text" id="audit-report-entity-id" placeholder="Optional" />
+          </label>
+        </div>
+
+        <div class="form-actions time-report-actions">
+          <button type="button" id="audit-report-run" class="btn">Run report</button>
+          <button type="button" id="audit-report-reset" class="btn secondary">Reset</button>
+        </div>
+      </form>
+
+      <p class="message" id="audit-report-message"></p>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Target</th>
+              <th>Note</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="audit-report-body">
+            <tr>
+              <td colspan="6">(run the report to view audit trails)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 </section>

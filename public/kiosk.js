@@ -7,6 +7,7 @@ const CURRENT_PROJECT_KEY = 'avian_kiosk_current_project_v1';
 const OPEN_PUNCH_CACHE_KEY = 'avian_kiosk_open_punch_cache_v1';
 const DEVICE_ID_KEY = 'avian_kiosk_device_id_v1';
 const DEVICE_SECRET_KEY = 'avian_kiosk_device_secret_v1';
+const DEBUG_STORAGE_KEY = 'avian_kiosk_debug';
 const ORG_TIMEZONE_KEY = 'avian_kiosk_org_timezone_v1';
 const PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
 const CLOCK_IN_PHOTO_REQUIRED_KEY = 'avian_kiosk_clock_in_photo_required_v1';
@@ -20,6 +21,18 @@ const PIN_THROTTLE_MAX_MS = 8000;
 const PIN_CRYPTO_VERSION = 'v1';
 const PIN_CRYPTO_SALT = 'avian-kiosk-pin-v1';
 const PIN_CRYPTO_ITERATIONS = 50000;
+const KIOSK_DEBUG = (() => {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('debug')) return true;
+    return localStorage.getItem(DEBUG_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+})();
+const DEBUG_MAX_LINES = 6;
+const debugLines = [];
+let debugEl = null;
 
 const LANG_COPY = {
   en: {
@@ -51,6 +64,7 @@ const LANG_COPY = {
     pinStatusEnter: 'Enter PIN.',
     pinStatusEnterPin: 'Enter your PIN.',
     pinStatusPinOkPhoto: 'PIN OK. Take required photo.',
+    pinStatusSubmitting: 'PIN OK. Submitting...',
     pinStatusCreateBoth: 'Enter and confirm a 4-digit PIN.',
     pinStatusDigitsOnly: 'PIN must be exactly 4 digits.',
     pinStatusMismatch: 'PINs do not match. Please try again.',
@@ -87,6 +101,11 @@ const LANG_COPY = {
     statusClockedInHours: 'Currently CLOCKED IN — {{hours}} hours so far.',
     statusCheckCurrentStatusError: 'Could not check current status. You can still punch.',
     statusSyncError: 'Could not sync punch.',
+    tinyPunchConfirm: 'This shift is only {{minutes}} minutes. Clock out anyway?',
+    longShiftConfirm: 'You have been clocked in for {{hours}} hours. Clock out now?',
+    longShiftWarning: 'You have been clocked in for {{hours}} hours. Please clock out if your shift ended.',
+    geofenceClockInWarning: 'Clock-in recorded, but you are outside the geofence.',
+    geofenceBanner: 'Timesheet started outside the project geofence.',
     statusOnline: 'Online',
     statusOffline: 'Offline',
     statusSynced: 'Synced',
@@ -131,6 +150,7 @@ const LANG_COPY = {
     pinStatusEnter: 'Ingresa el PIN.',
     pinStatusEnterPin: 'Ingresa tu PIN.',
     pinStatusPinOkPhoto: 'PIN OK. Toma la foto requerida.',
+    pinStatusSubmitting: 'PIN correcto. Enviando...',
     pinStatusCreateBoth: 'Ingresa y confirma un PIN de 4 dígitos.',
     pinStatusDigitsOnly: 'El PIN debe tener exactamente 4 dígitos.',
     pinStatusMismatch: 'Los PIN no coinciden. Inténtalo de nuevo.',
@@ -167,6 +187,11 @@ const LANG_COPY = {
     statusClockedInHours: 'Actualmente REGISTRADO — {{hours}} horas hasta ahora.',
     statusCheckCurrentStatusError: 'No se pudo verificar el estado actual. Aún puedes marcar.',
     statusSyncError: 'No se pudo sincronizar la marcación.',
+    tinyPunchConfirm: 'Este turno dura solo {{minutes}} minutos. ¿Registrar salida?',
+    longShiftConfirm: 'Has estado registrado por {{hours}} horas. ¿Registrar salida ahora?',
+    longShiftWarning: 'Has estado registrado por {{hours}} horas. Registra salida si terminó tu turno.',
+    geofenceClockInWarning: 'Entrada registrada, pero estás fuera del geofence.',
+    geofenceBanner: 'El parte de trabajo se inició fuera del geofence del proyecto.',
     statusOnline: 'En línea',
     statusOffline: 'Sin conexión',
     statusSynced: 'Sincronizado',
@@ -212,6 +237,7 @@ const LANG_COPY = {
     pinStatusEnter: 'Antre PIN la.',
     pinStatusEnterPin: 'Antre PIN ou.',
     pinStatusPinOkPhoto: 'PIN bon. Pran foto obligatwa a.',
+    pinStatusSubmitting: 'PIN bon. Ap voye...',
     pinStatusCreateBoth: 'Antre epi konfime yon PIN 4 chif.',
     pinStatusDigitsOnly: 'PIN la dwe gen egzakteman 4 chif.',
     pinStatusMismatch: 'PIN yo pa menm. Eseye ankò.',
@@ -248,6 +274,11 @@ const LANG_COPY = {
     statusClockedInHours: 'Kounye a ANTRE — {{hours}} èdtan jiska kounye a.',
     statusCheckCurrentStatusError: 'Nou pa ka verifye estati a. Ou ka toujou make.',
     statusSyncError: 'Pa t ka senkronize makaj la.',
+    tinyPunchConfirm: 'Chèf sa dire sèlman {{minutes}} minit. Fè sòti kanmenm?',
+    longShiftConfirm: 'Ou sou lè depi {{hours}} è. Fè sòti kounye a?',
+    longShiftWarning: 'Ou sou lè depi {{hours}} è. Fè sòti si jounen travay la fini.',
+    geofenceClockInWarning: 'Antre anrejistre, men ou deyò geofence la.',
+    geofenceBanner: 'Fich travay la te kòmanse deyò geofence pwojè a.',
     statusOnline: 'Sou entènèt',
     statusOffline: 'San koneksyon',
     statusSynced: 'Senkronize',
@@ -267,6 +298,8 @@ const LANG_COPY = {
 const DEFAULT_LANGUAGE = 'en';
 const PUNCH_DEDUP_WINDOW_MS = 2500;
 const CLOCK_OUT_SUMMARY_DURATION_MS = 12000;
+const TINY_PUNCH_MINUTES = 5;
+const LONG_SHIFT_WARNING_HOURS = 12;
 
 const CSRF_TOKEN_KEY = 'avian_csrf_token_v1';
 let csrfToken = null;
@@ -360,6 +393,46 @@ function setPinToggleState(button, isVisible) {
 }
 
 // ====== BASIC HELPERS ======
+
+function kioskDebug(...args) {
+  if (!KIOSK_DEBUG) return;
+  const line = args
+    .map(val => {
+      if (val === null || val === undefined) return String(val);
+      if (typeof val === 'string') return val;
+      try {
+        return JSON.stringify(val);
+      } catch {
+        return String(val);
+      }
+    })
+    .join(' ');
+  console.log('[kiosk]', ...args);
+  debugLines.push(line);
+  while (debugLines.length > DEBUG_MAX_LINES) debugLines.shift();
+  if (!debugEl && document && document.body) {
+    debugEl = document.createElement('div');
+    debugEl.id = 'kiosk-debug';
+    debugEl.style.cssText = [
+      'position:fixed',
+      'bottom:12px',
+      'left:12px',
+      'z-index:99999',
+      'max-width:60vw',
+      'padding:8px 10px',
+      'background:rgba(15,23,42,0.85)',
+      'color:#e2e8f0',
+      'font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+      'border-radius:8px',
+      'box-shadow:0 4px 14px rgba(0,0,0,0.35)',
+      'white-space:pre-wrap'
+    ].join(';');
+    document.body.appendChild(debugEl);
+  }
+  if (debugEl) {
+    debugEl.textContent = debugLines.join('\n');
+  }
+}
 
 let successTimeout = null;
 let successDefaultCloseLabel = null;
@@ -671,6 +744,23 @@ async function decryptPinFromStore(token, secret) {
 
 async function fetchJSON(url, options = {}) {
   const opts = Object.assign({ credentials: 'include' }, options);
+  kioskDebug('fetchJSON', { url, method: opts.method || 'GET' });
+  const timeoutMsRaw = opts.timeoutMs;
+  delete opts.timeoutMs;
+  const timeoutMs = Number(timeoutMsRaw);
+  let timeoutId = null;
+  let controller = null;
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0 && typeof AbortController !== 'undefined') {
+    controller = new AbortController();
+    if (!opts.signal) opts.signal = controller.signal;
+    timeoutId = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {
+        // ignore abort errors
+      }
+    }, timeoutMs);
+  }
   const method = (opts.method || 'GET').toUpperCase();
   const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(method);
   const headers = new Headers(opts.headers || {});
@@ -705,17 +795,28 @@ async function fetchJSON(url, options = {}) {
     }
   }
 
-  const res = await fetch(url, opts);
-  const nextToken = res.headers.get('X-CSRF-Token');
-  if (nextToken) kioskStoreCsrfToken(nextToken);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(data.error || data.message || 'Request failed');
-    err.status = res.status;
-    err.statusText = res.statusText;
+  try {
+    const res = await fetch(url, opts);
+    const nextToken = res.headers.get('X-CSRF-Token');
+    if (nextToken) kioskStoreCsrfToken(nextToken);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.error || data.message || 'Request failed');
+      err.status = res.status;
+      err.statusText = res.statusText;
+      throw err;
+    }
+    return data;
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      const timeoutErr = new Error('Request timed out');
+      timeoutErr.code = 'ETIMEDOUT';
+      throw timeoutErr;
+    }
     throw err;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
-  return data;
 }
 
 function makeClientId() {
@@ -1206,14 +1307,6 @@ function getZonedDateParts(value) {
 function formatTimeForLocale(value, lang) {
   const safeTime = value instanceof Date ? value : new Date(value);
   const tz = kioskTimezone || DEFAULT_TIMEZONE;
-  if (lang === 'ht') {
-    return new Intl.DateTimeFormat('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: false,
-      timeZone: tz
-    }).format(safeTime);
-  }
   const parts = new Intl.DateTimeFormat('en-US', {
     hour: 'numeric',
     minute: '2-digit',
@@ -1250,7 +1343,7 @@ function formatKioskDateTime(now) {
     }
     return `${EN_WEEKDAYS[weekdayIndex]}, ${EN_MONTHS[monthIndex]} ${day} – ${timePart}`;
   } catch {
-    return safeTime.toLocaleString(locale);
+    return safeTime.toLocaleString(locale, { hour12: true });
   }
 }
 
@@ -1283,10 +1376,11 @@ function formatKioskTime(value) {
     return new Intl.DateTimeFormat(locale, {
       hour: 'numeric',
       minute: '2-digit',
+      hour12: true,
       timeZone: tz
     }).format(safeTime);
   } catch {
-    return safeTime.toLocaleTimeString();
+    return safeTime.toLocaleTimeString([], { hour12: true });
   }
 }
 
@@ -1297,6 +1391,14 @@ function computeHoursFromRange(start, end) {
   if (!Number.isFinite(diffMs) || diffMs < 0) return null;
   const minutes = Math.ceil(diffMs / 60000);
   return minutes / 60;
+}
+
+function computeMinutesFromRange(start, end) {
+  if (!(start instanceof Date) || !(end instanceof Date)) return null;
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  const diffMs = end - start;
+  if (!Number.isFinite(diffMs) || diffMs < 0) return null;
+  return Math.ceil(diffMs / 60000);
 }
 
 function buildClockOutSummary({ startIso, endIso, hours, offline }) {
@@ -1460,6 +1562,26 @@ function updateProjectChip() {
   if (projectNameEl) projectNameEl.textContent = label;
 }
 
+function updateGeofenceBanner() {
+  const banner = document.getElementById('kiosk-geo-banner');
+  if (!banner) return;
+  const active = getActiveSession();
+  const violation = !!(active && active.geo_violation);
+  if (!violation) {
+    banner.textContent = '';
+    banner.classList.add('hidden');
+    return;
+  }
+  let text = getCopy('geofenceBanner');
+  const distance = Number(active.geo_distance_m);
+  const radius = Number(active.geo_radius);
+  if (Number.isFinite(distance) && Number.isFinite(radius)) {
+    text += ` (distance ~${Math.round(distance)}m, radius ${Math.round(radius)}m)`;
+  }
+  banner.textContent = text;
+  banner.classList.remove('hidden');
+}
+
 function applyGreeting() {
   const primary = getGreetingForTime();
   const subline = getCopy('instructions');
@@ -1558,6 +1680,7 @@ function setLanguage(lang) {
   if (pinConfirmInput) pinConfirmInput.setAttribute('placeholder', getCopy('pinConfirmPlaceholder'));
   const cameraLabel = document.getElementById('camera-required-label');
   if (cameraLabel) cameraLabel.textContent = getCopy('photoRequired');
+  updateGeofenceBanner();
   const startCameraBtn = document.getElementById('start-camera');
   if (startCameraBtn) startCameraBtn.textContent = getCopy('cameraStart');
   const takePhotoBtn = document.getElementById('take-photo');
@@ -1656,6 +1779,7 @@ function applyKioskRegistration(data, { keepSessions = false } = {}) {
     setDeviceSecret(data.kiosk.device_secret);
   }
   applyKioskProjectDefault();
+  updateGeofenceBanner();
   saveKioskCache({
     kiosk: kioskConfig,
     sessions: kioskSessions,
@@ -2144,7 +2268,7 @@ function setupAdminLongPress() {
     adminLongPressTimer = setTimeout(() => {
       adminLongPressTimer = null;
       showAdminLoginModal();
-    }, 1500); // 1.5s hold
+    }, 1000); // 1.0s hold
   };
 
   const cancel = () => {
@@ -2290,6 +2414,15 @@ if (modeLabelEl) {
     status.style.color = '#bbf7d0';
   }
 
+  const cachedOpen = getCachedOpenPunch(employee.id);
+  if (cachedOpen && cachedOpen.open && cachedOpen.clock_in_ts) {
+    const start = new Date(cachedOpen.clock_in_ts);
+    const hours = computeHoursFromRange(start, new Date());
+    if (hours != null && hours >= LONG_SHIFT_WARNING_HOURS) {
+      setPinWarning(formatCopy('longShiftWarning', { hours: hours.toFixed(1) }));
+    }
+  }
+
   camSec.classList.add('hidden');
   stopCamera();
 
@@ -2306,18 +2439,48 @@ function hidePinModal() {
   document.getElementById('pin-backdrop').classList.add('hidden');
   stopCamera();
   currentEmployee = null;
+  resetLanguageOverride();
+}
+
+function resetEmployeeSelection() {
+  const empSel = document.getElementById('kiosk-employee');
+  if (!empSel) return;
+  empSel.value = '';
+  if (empSel.selectedIndex !== 0) {
+    empSel.selectedIndex = 0;
+  }
+  const status = document.getElementById('kiosk-status');
+  if (status) {
+    status.textContent = '';
+    status.className = 'glass-status kiosk-status';
+  }
+  void onEmployeeChange();
+}
+
+function cancelPinModal() {
+  hidePinModal();
+  resetEmployeeSelection();
 }
 
 function setPinError(msg) {
   const el = document.getElementById('pin-modal-status');
+  if (!el) return;
   el.textContent = msg;
   el.style.color = '#fecaca';
 }
 
 function setPinOk(msg) {
   const el = document.getElementById('pin-modal-status');
+  if (!el) return;
   el.textContent = msg;
   el.style.color = '#bbf7d0';
+}
+
+function setPinWarning(msg) {
+  const el = document.getElementById('pin-modal-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = '#fbbf24';
 }
 
 // ====== CAMERA ======
@@ -2392,6 +2555,13 @@ async function submitPin() {
   const storedHash = employee.pin_hash || '';
   const storedPin = (employee.pin || '').trim();
   const hasPin = !!storedHash || !!storedPin;
+  kioskDebug('submitPin start', {
+    employee_id: employee.id,
+    has_pin: hasPin,
+    pin_validated: pinValidated,
+    mode: isClockInMode() ? 'clock_in' : 'clock_out',
+    online: navigator.onLine
+  });
 
   // ===== EXISTING PIN =====
   if (hasPin) {
@@ -2410,6 +2580,7 @@ async function submitPin() {
         : entered === storedPin;
 
       if (!pinOk) {
+        kioskDebug('pin invalid', { employee_id: employee.id });
         registerPinFailure('worker', pinControls);
         setPinError(getCopy('pinStatusIncorrect'));
         pinInput.value = '';
@@ -2425,8 +2596,10 @@ async function submitPin() {
       resetPinFailures('worker');
       pinValidated = true;
       pinInput.value = '';
+      kioskDebug('pin ok', { employee_id: employee.id });
 
       if (clockInPhotoRequired && isClockInMode() && !currentPhotoBase64) {
+        kioskDebug('awaiting photo');
         setPinOk(getCopy('pinStatusPinOkPhoto'));
         return;
       }
@@ -2447,13 +2620,24 @@ async function submitPin() {
     const needsTimesheet = employee.is_admin && !hasTimesheetToday;
 
     if (needsTimesheet) {
+      kioskDebug('admin needs timesheet, routing to kiosk admin');
       hidePinModal();
       openAdminDashboard(employee.id, { skipPin: true, forceStart: true });
       return;
     }
 
     // 2. NORMAL PUNCH
-    await performPunch(employee.id);
+    setPinOk(getCopy('pinStatusSubmitting'));
+    if (pinContinueBtn) pinContinueBtn.disabled = true;
+    const watchdog = KIOSK_DEBUG
+      ? setTimeout(() => kioskDebug('submitPin waiting on punch...'), 8000)
+      : null;
+    try {
+      await performPunch(employee.id);
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+      if (pinContinueBtn) pinContinueBtn.disabled = false;
+    }
     hidePinModal();
     return;
   }
@@ -2503,6 +2687,7 @@ async function submitPin() {
 
   } catch (err) {
     console.error('Error setting PIN', err);
+    kioskDebug('pin save error', { employee_id: employee.id, message: err && err.message });
 
     const msg = (err && err.message) ? String(err.message) : '';
     const offlineIssue = isConnectionIssue(err, msg);
@@ -2547,6 +2732,7 @@ async function submitPin() {
   const needsTimesheet =
     employee.is_admin && !hasTodayTimesheet();
   if (needsTimesheet) {
+    kioskDebug('admin needs timesheet after pin creation');
     hidePinModal();
     openAdminDashboard(employee.id, { skipPin: true, forceStart: true });
     return;
@@ -2555,13 +2741,24 @@ async function submitPin() {
   const isAdminStartOfDay = employee.is_admin && !isKioskDayStarted();
 
   if (isAdminStartOfDay) {
+    kioskDebug('admin start of day, routing to kiosk admin');
     hidePinModal();
     openAdminDashboard(employee.id, { skipPin: true });
     return;
   }
 
   // Clock them in immediately
-  await performPunch(employee.id);
+  setPinOk(getCopy('pinStatusSubmitting'));
+  if (pinContinueBtn) pinContinueBtn.disabled = true;
+  const watchdog = KIOSK_DEBUG
+    ? setTimeout(() => kioskDebug('submitPin waiting on punch (new pin)...'), 8000)
+    : null;
+  try {
+    await performPunch(employee.id);
+  } finally {
+    if (watchdog) clearTimeout(watchdog);
+    if (pinContinueBtn) pinContinueBtn.disabled = false;
+  }
   hidePinModal();
 }
 
@@ -2569,6 +2766,7 @@ async function submitPin() {
 
 async function performPunch(employee_id) {
   const status = document.getElementById('kiosk-status');
+  const punchBtn = document.getElementById('kiosk-punch');
   const employee = (employeesCache || []).find(
     e => String(e.id) === String(employee_id)
   );
@@ -2577,11 +2775,18 @@ async function performPunch(employee_id) {
   const cachedOpenPunch = getCachedOpenPunch(employee_id);
   const cachedClockInTs =
     cachedOpenPunch && cachedOpenPunch.open ? cachedOpenPunch.clock_in_ts : null;
+  kioskDebug('performPunch start', {
+    employee_id,
+    intended_mode: intendedMode,
+    online: navigator.onLine,
+    cached_open: cachedOpenPunch ? cachedOpenPunch.open : false
+  });
 
   const project_id = kioskConfig && kioskConfig.project_id
     ? parseInt(kioskConfig.project_id, 10)
     : null;
   if (!project_id) {
+    kioskDebug('performPunch blocked: no project');
     if (isAdmin) {
       // Route admins to start-of-day/timesheet setup instead of hard-blocking
       status.textContent = getCopy('timesheetNotSet');
@@ -2598,26 +2803,55 @@ async function performPunch(employee_id) {
   const hasTimesheetToday = hasTodayTimesheet();
   if (!hasTimesheetToday) {
     if (!navigator.onLine) {
+      kioskDebug('performPunch blocked: no timesheet (offline)');
       status.textContent = getCopy('timesheetNotSet');
       status.className = 'glass-status kiosk-status kiosk-status-error';
       return;
     }
     if (isAdmin) {
+      kioskDebug('performPunch admin needs timesheet');
       openAdminDashboard(employee_id, { skipPin: true, forceStart: true });
       return;
     }
   }
 
+  if (intendedMode === 'clock_out' && cachedClockInTs) {
+    const start = new Date(cachedClockInTs);
+    const minutes = computeMinutesFromRange(start, new Date());
+    if (minutes != null) {
+      if (minutes < TINY_PUNCH_MINUTES) {
+        const ok = window.confirm(
+          formatCopy('tinyPunchConfirm', { minutes })
+        );
+        if (!ok) {
+          if (punchBtn) punchBtn.disabled = false;
+          return;
+        }
+      }
+      const hours = minutes / 60;
+      if (hours >= LONG_SHIFT_WARNING_HOURS) {
+        const ok = window.confirm(
+          formatCopy('longShiftConfirm', { hours: hours.toFixed(1) })
+        );
+        if (!ok) {
+          if (punchBtn) punchBtn.disabled = false;
+          return;
+        }
+      }
+    }
+  }
+
   if (punchInFlight) return;
   punchInFlight = true;
-  const punchBtn = document.getElementById('kiosk-punch');
   if (punchBtn) punchBtn.disabled = true;
 
   try {
     const reuseClientId = getRecentPunchClientId(employee_id, intendedMode);
     const client_id = reuseClientId || makeClientId();
     recordPunchClientId(employee_id, intendedMode, client_id);
+    kioskDebug('performPunch: requesting position');
     const pos = await getPosition();
+    kioskDebug('performPunch: position result', pos);
 
     const punch = {
       client_id,
@@ -2633,6 +2867,7 @@ async function performPunch(employee_id) {
     };
 
     if (!navigator.onLine) {
+      kioskDebug('performPunch offline queue', { client_id });
       if (!offlineStorageSupported) {
         status.textContent = getCopy('offlineUnsupported');
         status.className = 'glass-status kiosk-status kiosk-status-error';
@@ -2665,31 +2900,36 @@ async function performPunch(employee_id) {
       return;
     }
 
+    kioskDebug('performPunch sending', { client_id, project_id, intendedMode });
     const data = await fetchJSON('/api/kiosk/punch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(punch)
+      body: JSON.stringify(punch),
+      timeoutMs: 12000
     });
+    kioskDebug('performPunch response', data);
     setCachedOpenPunch(employee_id, {
       open: data.mode === 'clock_in',
       clock_in_ts: data.mode === 'clock_in' ? punch.device_timestamp : null
     });
 
     if (data.mode === 'clock_in') {
-  let msg;
+      let msg;
 
-  if (justCreatedPin) {
-    // First-time PIN message – no extra random text
-    msg = getCopy('pinStatusPinCreatedClocked');
-    justCreatedPin = false; // reset flag
-  } else {
-    // Normal clock-in – keep the fun random messages
-    msg = getRandomClockInMessage();
-  }
+      if (data.geofence_violation) {
+        msg = getCopy('geofenceClockInWarning');
+      } else if (justCreatedPin) {
+        // First-time PIN message – no extra random text
+        msg = getCopy('pinStatusPinCreatedClocked');
+        justCreatedPin = false; // reset flag
+      } else {
+        // Normal clock-in – keep the fun random messages
+        msg = getRandomClockInMessage();
+      }
 
-  // Show the overlay and keep the kiosk page clean
-  showSuccessOverlay(msg);        // uses the default 5000ms unless you override
-  status.textContent = '';
+      // Show the overlay and keep the kiosk page clean
+      showSuccessOverlay(msg);        // uses the default 5000ms unless you override
+      status.textContent = '';
 
 
     } else {
@@ -2702,7 +2942,8 @@ async function performPunch(employee_id) {
       status.textContent = '';
     }
 
-  status.className = 'glass-status kiosk-status kiosk-status-ok';
+  // Clear any prior success/error styling when no status text is shown.
+  status.className = 'glass-status kiosk-status';
 
 
     const empSel = document.getElementById('kiosk-employee');
@@ -2711,13 +2952,34 @@ async function performPunch(employee_id) {
     resetLanguageOverride();
   } catch (err) {
     console.error('Error syncing punch', err);
+    kioskDebug('performPunch error', {
+      message: err && err.message,
+      status: err && err.status,
+      code: err && err.code
+    });
     const msg = err && err.message ? String(err.message) : '';
     const projectMsg = getCopy(isAdmin ? 'timesheetNotSet' : 'projectNotSet');
     const showProjectMsg = /project|timesheet/i.test(msg);
     const offlineIssue = isConnectionIssue(err, msg);
     const authIssue = err && (err.status === 401 || err.status === 403);
 
-    if (showProjectMsg) {
+    const activeChanged =
+      err &&
+      err.status === 409 &&
+      err.data &&
+      err.data.active_project_id;
+
+    if (activeChanged) {
+      const activeId = Number(err.data.active_project_id);
+      const activeLabel = Number.isFinite(activeId)
+        ? (getProjectNameById(activeId) || formatCopy('projectLabelWithId', { id: activeId }))
+        : '';
+      status.textContent = activeLabel
+        ? `Active project changed to ${activeLabel}. Please try again.`
+        : 'Active project changed. Ask an admin to set today’s timesheet.';
+      status.className = 'glass-status kiosk-status kiosk-status-error';
+      refreshKioskProjectFromServer();
+    } else if (showProjectMsg) {
       status.textContent = projectMsg;
       status.className = 'glass-status kiosk-status kiosk-status-error';
     } else if (offlineIssue || authIssue) {
@@ -2906,6 +3168,12 @@ async function onEmployeeChange() {
   const empId = empSel.value;
   const emp = employeesCache.find(e => String(e.id) === String(empId));
 
+  if (!empId) {
+    resetLanguageOverride();
+    await updatePunchButtonForEmployee(null);
+    return;
+  }
+
   // If a manual override is active but this is a different employee selection, clear the override.
   if (
     manualLanguageOverride &&
@@ -2925,11 +3193,6 @@ async function onEmployeeChange() {
     manualLanguageOverride ||
     (emp ? normalizeLanguage(emp.language) : currentLanguage);
   setLanguage(langToUse);
-
-  if (!empId) {
-    await updatePunchButtonForEmployee(null);
-    return;
-  }
 
   await updatePunchButtonForEmployee(empId);
 }
@@ -3173,12 +3436,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // PIN modal buttons
   const pinClose = document.getElementById('pin-close-btn');
   if (pinClose) {
-    pinClose.addEventListener('click', hidePinModal);
+    pinClose.addEventListener('click', cancelPinModal);
   }
 
   const pinCancel = document.getElementById('pin-cancel');
   if (pinCancel) {
-    pinCancel.addEventListener('click', hidePinModal);
+    pinCancel.addEventListener('click', cancelPinModal);
   }
 
   const pinContinue = document.getElementById('pin-continue');

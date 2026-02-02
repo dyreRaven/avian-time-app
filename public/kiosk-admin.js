@@ -12,6 +12,8 @@ let kaCurrentAdmin = null;  // whoever opened kiosk-admin (via employee_id)
 let kaAdminValidated = false;
 let kaSelectedAdminId = null;
 let kaSessions = [];
+const kaSessionClosePrompted = new Set();
+const kaSessionOpenCountCache = new Map();
 let kaActiveSessionId = null;
 let kaSessionFilterMode = 'all'; // active | all | inactive
 let kaShipmentItemsDirty = new Map(); // shipment_item_id -> verification payload
@@ -27,26 +29,35 @@ let kaItemsFilterTerm = '';
 let kaItemsStatusFilter = 'all';
 let kaItemsActiveTab = 'items';
 let kaEmployeeFormVisible = false;
+let kaEmployeeSearchQuery = '';
+let kaEmployeeStatusFilter = 'all';
 const kaItemAutoSaveTimers = new Map();
 const kaSavedItemStatuses = new Map();
+const kaSavedItemNotes = new Map();
 const kaExpandedItems = new Set();
+const kaAutoExpandedItems = new Set();
 const kaRecentlySavedItems = new Map(); // itemId -> timeout id
 const KA_ITEM_SAVE_FLASH_MS = 2500;
 const KA_ITEMS_AUTO_SAVE_ENABLED = false; // keep items from autosaving/reordering mid-edit
 let kaTimeRangeMode = 'today';
+let kaTimeReportHasRun = false;
 let kaTimeActionEntry = null;
 let kaTimeActionMode = null;
+let kaTimePendingGlobalCount = null;
+let kaTimePendingGlobalLastFetched = 0;
+let kaTimePendingGlobalInFlight = false;
 const kaOpenDetailEntries = new Set();
 let kaAccessPerms = {
   see_shipments: true,
   modify_time: true,
   view_time_reports: true,
   view_all_timesheets: false,
+  assign_timesheets: false,
   view_payroll: true,
   modify_pay_rates: false
 };
 let kaShipments = [];
-let kaShowPayUI = true;
+let kaShowPayUI = false;
 let kaShowApprovalsUI = true;
 let kaShowHideResolved = true;
 let kaRatesUnlockedAll = false;
@@ -56,9 +67,98 @@ let kaNewSessionVisible = false;
 let kaFirstActiveSetShown = false;
 let kaClockInPhotoRequired = false;
 let kaTimesheetWorkersSheetState = { open: false, dragging: false, startY: 0, currentY: 0 };
-let kaEmployeeSheetState = { open: false, dragging: false, startY: 0, currentY: 0, employeeId: null };
+let kaCustomerSheetState = { open: false, dragging: false, startY: 0, currentY: 0 };
+let kaEmployeesSheetState = {
+  open: false,
+  dragging: false,
+  startY: 0,
+  currentY: 0,
+  contentParent: null,
+  contentNext: null,
+  restoreHidden: false,
+  addBtnParent: null,
+  addBtnNext: null,
+  addBtnWasHidden: false
+};
+let kaAccountSheetState = {
+  open: false,
+  dragging: false,
+  startY: 0,
+  currentY: 0,
+  contentParent: null,
+  contentNext: null,
+  restoreHidden: false
+};
+let kaSettingsSheetState = {
+  open: false,
+  dragging: false,
+  startY: 0,
+  currentY: 0,
+  contentParent: null,
+  contentNext: null,
+  restoreHidden: false
+};
+let kaEmployeeSheetState = {
+  open: false,
+  dragging: false,
+  startY: 0,
+  currentY: 0,
+  employeeId: null,
+  reactivatePending: false,
+  reactivateSnapshot: null,
+  history: []
+};
+let kaEmployeePinSheetState = {
+  open: false,
+  dragging: false,
+  startY: 0,
+  currentY: 0,
+  employeeId: null
+};
+let kaTimeDetailSheetState = {
+  open: false,
+  dragging: false,
+  startY: 0,
+  currentY: 0,
+  entryId: null,
+  entry: null
+};
+let kaTimeReportSheetState = {
+  open: false,
+  dragging: false,
+  startY: 0,
+  currentY: 0
+};
+let kaTimeReviewSheetState = {
+  open: false,
+  dragging: false,
+  startY: 0,
+  currentY: 0,
+  entries: [],
+  pendingCount: 0,
+  params: null,
+  needsRefresh: false
+};
+let kaTimeCalendarState = {
+  year: null,
+  month: null,
+  selectedDate: null
+};
+let kaTimeCalendarSheetState = {
+  open: false,
+  dragging: false,
+  startY: 0,
+  currentY: 0,
+  date: null,
+  entries: []
+};
+let kaTimeEntriesCache = null;
 let kaDocViewObjectUrl = null;
+let kaTimesheetAssignees = [];
+let kaTimesheetAssigneesLoaded = false;
+let kaTimesheetAssigneesLoading = false;
 let kaDocViewCurrentUrl = null;
+let kaDebugTapEnabled = false;
 
 const KA_VIEWS = ['timesheets', 'workers', 'employees', 'shipments', 'time', 'account', 'settings'];
 const KA_PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
@@ -66,6 +166,10 @@ const KA_OFFLINE_QUEUE_KEY = 'avian_kiosk_offline_punches_v1';
 const KA_VERIFY_QUEUE_KEY = 'avian_kiosk_verify_queue_v1';
 const KA_SHIPMENT_NOTES_QUEUE_KEY = 'avian_kiosk_shipment_notes_queue_v1';
 const KA_TIME_REVIEW_QUEUE_KEY = 'avian_kiosk_time_review_queue_v1';
+const KA_EMPLOYEE_UPDATES_QUEUE_KEY = 'avian_kiosk_employee_updates_queue_v1';
+const KA_EMPLOYEE_DOCS_DB = 'avian_kiosk_employee_docs_v1';
+const KA_EMPLOYEE_DOCS_STORE = 'uploads';
+const KA_EMPLOYEE_DOCS_QUEUE_FLAG = 'avian_kiosk_employee_docs_pending_v1';
 const KA_SHIPMENTS_CACHE_KEY = 'avian_kiosk_shipments_cache_v1';
 const KA_DOC_CACHE_NAME = 'avian_doc_cache_v1';
 const KA_ORG_TIMEZONE_KEY = 'avian_kiosk_org_timezone_v1';
@@ -87,21 +191,70 @@ const KA_SHIPMENT_STATUSES = [
   'Picked Up',
   'Archived'
 ];
-const KA_NOTIFY_DEFAULT = {
-  enabled: false, // legacy flag for shipments alerts
-  shipments_enabled: false,
-  statuses: ['Cleared - Ready for Pickup'],
+const KA_TIME_EVENTS = [
+  { value: 'TIME_EXCEPTION_OPEN', label: 'Exceptions opened' },
+  { value: 'TIME_EXCEPTION_REVIEWED', label: 'Exceptions reviewed' },
+  { value: 'TIME_EXCEPTION_RESOLVED', label: 'Exceptions resolved' },
+  { value: 'TIME_ENTRY_MANUAL_CREATED', label: 'Manual entries created' },
+  { value: 'TIME_ENTRY_MANUAL_EDITED', label: 'Manual entries edited' },
+  { value: 'TIME_SHIFT_LONG', label: 'Long shifts (12+ hours)' },
+  { value: 'TIME_SHIFT_MULTI_DAY', label: 'Multi-day shifts (24+ hours)' },
+  { value: 'TIME_PUNCH_OPEN_LONG', label: 'Open punches (12+ hours)' },
+  { value: 'TIME_PUNCH_OPEN_MULTI_DAY', label: 'Open punches (24+ hours)' },
+  { value: 'TIME_WEEKLY_THRESHOLD_NEAR', label: 'Weekly hours near limit' },
+  { value: 'TIME_WEEKLY_THRESHOLD_EXCEEDED', label: 'Weekly hours exceeded' }
+];
+
+const KA_PAYROLL_EVENTS = [
+  { value: 'PAYROLL_RUN_DUE', label: 'Payroll due' },
+  { value: 'PAYROLL_RUN_STARTED', label: 'Payroll started' },
+  { value: 'PAYROLL_RUN_SUCCESS', label: 'Payroll success' },
+  { value: 'PAYROLL_RUN_PARTIAL', label: 'Payroll partial' },
+  { value: 'PAYROLL_RUN_FAILURE', label: 'Payroll failure' },
+  { value: 'PAYROLL_FATAL_ERROR', label: 'Payroll fatal error' },
+  { value: 'PAYROLL_QBO_ERROR', label: 'QuickBooks error' },
+  { value: 'PAYROLL_UNPAY', label: 'Payroll unpaid' }
+];
+
+const KA_SHIPMENT_NOTIFY_DEFAULT = {
+  enabled: false,
+  statuses: [],
   project_ids: [],
-  remind_every_days: 1,
-  remind_time: '19:00',
-  clockout_enabled: false,
-  clockout_time: '19:00',
-  notify_phone: '',
-  notify_phone_enabled: false,
-  notify_email: '',
-  notify_email_enabled: false
+  shipment_ids: [],
+  notify_time: '19:00',
+  remind_every_days: 1
 };
-let kaNotifyPref = { ...KA_NOTIFY_DEFAULT };
+
+const KA_NOTIFICATION_PREF_DEFAULT = {
+  email_enabled: true,
+  push_enabled: true,
+  shipment_filters: {
+    enabled: true,
+    statuses: [],
+    project_ids: []
+  },
+  payroll_filters: {
+    enabled: true,
+    event_types: [
+      'PAYROLL_RUN_DUE',
+      'PAYROLL_RUN_FAILURE',
+      'PAYROLL_QBO_ERROR',
+      'PAYROLL_FATAL_ERROR'
+    ]
+  },
+  time_filters: {
+    enabled: true,
+    event_types: ['TIME_EXCEPTION_OPEN']
+  },
+  remind_time: '',
+  remind_every_days: 1,
+  clockout_enabled: false,
+  clockout_time: '19:00'
+};
+
+let kaShipmentNotifyPref = { ...KA_SHIPMENT_NOTIFY_DEFAULT };
+let kaNotificationPrefs = { ...KA_NOTIFICATION_PREF_DEFAULT };
+let kaPushPublicKey = '';
 let kaNotifyTimer = null;
 let kaNotifyLastKey = '';
 let kaNotifiedShipments = new Set();
@@ -127,6 +280,7 @@ let kaCsrfToken = null;
 
 function kaLoadCsrfToken() {
   if (kaCsrfToken) return kaCsrfToken;
+
   try {
     const stored = localStorage.getItem(KA_CSRF_TOKEN_KEY);
     if (stored) kaCsrfToken = stored;
@@ -223,7 +377,9 @@ function kaOfflineQueueCount() {
   const verify = kaLoadVerificationQueue().length;
   const notes = kaLoadShipmentNotesQueue().length;
   const reviews = kaLoadTimeReviewQueue().length;
-  return punches + pins + verify + notes + reviews;
+  const docs = kaHasEmployeeDocsQueueFlag() ? 1 : 0;
+  const updates = kaLoadEmployeeUpdatesQueue().length;
+  return punches + pins + verify + notes + reviews + docs + updates;
 }
 
 function kaUpdateOfflineIndicator() {
@@ -242,8 +398,20 @@ function kaUpdateOfflineIndicator() {
 }
 
 function kaSessionCounts(session) {
-  const openCount = Number(session && (session.device_open_count ?? session.open_count ?? 0));
-  const entryCount = Number(session && (session.device_entry_count ?? session.entry_count ?? 0));
+  const openCount = Number(
+    session &&
+      (session.session_open_count ??
+        session.device_open_count ??
+        session.open_count ??
+        0)
+  );
+  const entryCount = Number(
+    session &&
+      (session.session_entry_count ??
+        session.device_entry_count ??
+        session.entry_count ??
+        0)
+  );
   return { openCount, entryCount };
 }
 
@@ -253,7 +421,7 @@ function kaNotifySessionDeleteBlocked(message, row = null) {
   // Surface a single clear dialog so it is impossible to miss
   kaShowConfirmDialog(msg, {
     okLabel: 'OK',
-    cancelLabel: 'Close',
+    cancelLabel: null,
     title: 'Cannot delete timesheet'
   }).then(() => {
     if (row) {
@@ -484,7 +652,9 @@ async function fetchJSON(url, options = {}) {
 
   // Auto-attach kiosk device auth for kiosk endpoints when no session is present.
   const needsKioskAuth =
-    url.startsWith('/api/kiosk') || url.startsWith('/api/kiosks');
+    url.startsWith('/api/kiosk') ||
+    url.startsWith('/api/kiosks') ||
+    url.startsWith('/api/kiosk-sessions');
   const needsShipmentAuth =
     url.startsWith('/api/shipments') ||
     url.startsWith('/api/reports/shipment-verification');
@@ -601,10 +771,10 @@ function kaEnsureConfirmModal() {
   backdrop.id = 'ka-confirm-backdrop';
   backdrop.className = 'ka-modal-backdrop hidden';
   backdrop.innerHTML = `
-    <div class="ka-modal" role="dialog" aria-modal="true">
+    <div class="ka-modal ka-confirm-modal" role="dialog" aria-modal="true">
       <h3 id="ka-confirm-title">Confirm</h3>
       <p id="ka-confirm-message"></p>
-      <div class="ka-modal-actions">
+      <div class="ka-modal-actions ka-confirm-actions">
         <button type="button" class="btn secondary btn-sm" id="ka-confirm-cancel">Cancel</button>
         <button type="button" class="btn danger btn-sm" id="ka-confirm-alt" hidden>Discard</button>
         <button type="button" class="btn primary btn-sm" id="ka-confirm-yes">Yes</button>
@@ -627,10 +797,17 @@ function kaShowConfirmDialog(message, { okLabel = 'Yes', cancelLabel = 'Cancel',
     return Promise.resolve(window.confirm ? window.confirm(message) : true);
   }
 
+  const hideCancel = cancelLabel === null;
   msgEl.textContent = message || '';
   titleEl.textContent = title || 'Confirm';
   yesBtn.textContent = okLabel || 'Yes';
-  cancelBtn.textContent = cancelLabel || 'Cancel';
+  if (hideCancel) {
+    cancelBtn.hidden = true;
+    cancelBtn.textContent = '';
+  } else {
+    cancelBtn.hidden = false;
+    cancelBtn.textContent = cancelLabel || 'Cancel';
+  }
   if (altBtn) {
     altBtn.hidden = true;
     altBtn.onclick = null;
@@ -648,9 +825,9 @@ function kaShowConfirmDialog(message, { okLabel = 'Yes', cancelLabel = 'Cancel',
     };
 
     yesBtn.onclick = () => cleanup(true);
-    cancelBtn.onclick = () => cleanup(false);
+    cancelBtn.onclick = hideCancel ? null : () => cleanup(false);
     backdrop.onclick = (e) => {
-      if (e.target === backdrop) cleanup(false);
+      if (e.target === backdrop && !hideCancel) cleanup(false);
     };
   });
 }
@@ -698,6 +875,336 @@ function kaShowChoiceDialog(
   });
 }
 
+function kaEnsureTimesheetActionModal() {
+  let backdrop = document.getElementById('ka-timesheet-action-backdrop');
+  if (backdrop) return backdrop;
+
+  backdrop = document.createElement('div');
+  backdrop.id = 'ka-timesheet-action-backdrop';
+  backdrop.className = 'ka-modal-backdrop hidden';
+  backdrop.innerHTML = `
+    <div class="ka-modal ka-timesheet-action-modal" role="dialog" aria-modal="true" aria-labelledby="ka-timesheet-action-title">
+      <div class="ka-modal-header">
+        <h3 id="ka-timesheet-action-title">Timesheet options</h3>
+        <button type="button" class="ka-modal-close" id="ka-timesheet-action-close" aria-label="Close">×</button>
+      </div>
+      <p id="ka-timesheet-action-message"></p>
+      <div class="ka-modal-actions">
+        <button type="button" class="btn danger btn-sm" id="ka-timesheet-action-delete">Delete</button>
+        <button type="button" class="btn secondary btn-sm" id="ka-timesheet-action-close-sheet">Close timesheet</button>
+        <button type="button" class="btn secondary btn-sm" id="ka-timesheet-action-assign-btn">Assign to admin</button>
+        <button type="button" class="btn primary btn-sm" id="ka-timesheet-action-set">Set active</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  return backdrop;
+}
+
+function kaEnsureTimesheetAssignModal() {
+  let backdrop = document.getElementById('ka-timesheet-assign-backdrop');
+  if (backdrop) return backdrop;
+
+  backdrop = document.createElement('div');
+  backdrop.id = 'ka-timesheet-assign-backdrop';
+  backdrop.className = 'ka-modal-backdrop hidden';
+  backdrop.innerHTML = `
+    <div class="ka-modal ka-timesheet-assign-modal" role="dialog" aria-modal="true" aria-labelledby="ka-timesheet-assign-title">
+      <div class="ka-modal-header">
+        <h3 id="ka-timesheet-assign-title">Assign to admin</h3>
+        <button type="button" class="ka-modal-close" id="ka-timesheet-assign-close" aria-label="Close">×</button>
+      </div>
+      <p id="ka-timesheet-assign-message"></p>
+      <div class="ka-timesheet-assign-field">
+        <label class="ka-timesheet-assign-label" for="ka-timesheet-assign-select">Assign to</label>
+        <select id="ka-timesheet-assign-select" class="ka-timesheet-assign-select"></select>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  return backdrop;
+}
+
+function kaEnsureTimesheetReplaceModal() {
+  let backdrop = document.getElementById('ka-timesheet-replace-backdrop');
+  if (backdrop) return backdrop;
+
+  backdrop = document.createElement('div');
+  backdrop.id = 'ka-timesheet-replace-backdrop';
+  backdrop.className = 'ka-modal-backdrop hidden';
+  backdrop.innerHTML = `
+    <div class="ka-modal ka-timesheet-assign-modal" role="dialog" aria-modal="true" aria-labelledby="ka-timesheet-replace-title">
+      <div class="ka-modal-header">
+        <h3 id="ka-timesheet-replace-title">Set a different active timesheet</h3>
+        <button type="button" class="ka-modal-close" id="ka-timesheet-replace-close" aria-label="Close">×</button>
+      </div>
+      <p id="ka-timesheet-replace-message"></p>
+      <div class="ka-modal-actions">
+        <button type="button" class="btn secondary btn-sm" id="ka-timesheet-replace-cancel">Cancel</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  return backdrop;
+}
+
+function kaShowActiveReplacementModal({ session, options }) {
+  const backdrop = kaEnsureTimesheetReplaceModal();
+  const titleEl = document.getElementById('ka-timesheet-replace-title');
+  const msgEl = document.getElementById('ka-timesheet-replace-message');
+  const closeBtn = document.getElementById('ka-timesheet-replace-close');
+  const cancelBtn = document.getElementById('ka-timesheet-replace-cancel');
+  if (!backdrop || !titleEl || !msgEl || !closeBtn || !cancelBtn) {
+    return Promise.resolve(null);
+  }
+
+  titleEl.textContent = 'Cannot delete active timesheet';
+  msgEl.textContent =
+    'Set a new active timesheet before deleting this one.';
+
+  backdrop.classList.remove('hidden');
+
+  return new Promise(resolve => {
+    const cleanup = (result) => {
+      backdrop.classList.add('hidden');
+      closeBtn.onclick = null;
+      cancelBtn.onclick = null;
+      backdrop.onclick = null;
+      resolve(result);
+    };
+
+    closeBtn.onclick = () => cleanup(null);
+    cancelBtn.onclick = () => cleanup(null);
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) cleanup(null);
+    };
+  });
+}
+
+function kaSetPinToggleState(button, isVisible) {
+  if (!button) return;
+  button.dataset.state = isVisible ? 'visible' : 'hidden';
+  button.setAttribute('aria-pressed', isVisible ? 'true' : 'false');
+  button.setAttribute('aria-label', isVisible ? 'Hide PIN' : 'Show PIN');
+}
+
+function kaDebugTapFlash(target, label) {
+  if (!kaDebugTapEnabled) return;
+  const host = document.body || document.documentElement;
+  if (!host) return;
+  const bubble = document.createElement('div');
+  bubble.className = 'ka-tap-debug';
+  bubble.textContent = label || 'tap';
+  host.appendChild(bubble);
+
+  const cleanup = () => {
+    if (bubble.parentNode) bubble.parentNode.removeChild(bubble);
+  };
+
+  let rect = null;
+  if (target && target.getBoundingClientRect) {
+    rect = target.getBoundingClientRect();
+  }
+  if (rect) {
+    bubble.style.left = `${Math.min(window.innerWidth - 140, Math.max(12, rect.left + rect.width / 2 - 60))}px`;
+    bubble.style.top = `${Math.max(12, rect.top - 12)}px`;
+  } else {
+    bubble.style.left = '12px';
+    bubble.style.top = '12px';
+  }
+
+  window.setTimeout(() => {
+    bubble.classList.add('is-fade');
+    window.setTimeout(cleanup, 400);
+  }, 700);
+}
+
+function kaEnsureTapDebugPanel() {
+  let panel = document.getElementById('ka-tap-debug-panel');
+  if (panel) return panel;
+  panel = document.createElement('div');
+  panel.id = 'ka-tap-debug-panel';
+  panel.className = 'ka-tap-debug-panel';
+  panel.innerHTML = '<div class="ka-tap-debug-title">Tap Debug</div>';
+  document.body.appendChild(panel);
+  return panel;
+}
+
+function kaDebugTapLog(message) {
+  if (!kaDebugTapEnabled) return;
+  const panel = kaEnsureTapDebugPanel();
+  if (!panel) return;
+  const line = document.createElement('div');
+  line.className = 'ka-tap-debug-line';
+  const ts = new Date();
+  const stamp = ts.toLocaleTimeString([], { minute: '2-digit', second: '2-digit' });
+  line.textContent = `[${stamp}] ${message}`;
+  panel.appendChild(line);
+  const lines = panel.querySelectorAll('.ka-tap-debug-line');
+  if (lines.length > 8) {
+    lines[0].remove();
+  }
+}
+
+function kaEnsureAdminPinModal() {
+  let backdrop = document.getElementById('ka-admin-pin-backdrop');
+  if (!backdrop) {
+    backdrop = document.createElement('div');
+    backdrop.id = 'ka-admin-pin-backdrop';
+    backdrop.className = 'ka-modal-backdrop ka-pin-backdrop hidden';
+    backdrop.innerHTML = `
+      <div class="ka-pin-modal" role="dialog" aria-modal="true" aria-labelledby="ka-admin-pin-title">
+        <div class="ka-pin-header">
+          <div>
+            <div class="ka-pin-title" id="ka-admin-pin-title">Admin Access</div>
+            <div class="ka-pin-sub" id="ka-admin-pin-sub">Enter your admin PIN.</div>
+          </div>
+          <button type="button" class="ka-pin-close" id="ka-admin-pin-close" aria-label="Close">×</button>
+        </div>
+        <div class="ka-pin-body">
+          <div class="ka-pin-input-wrap">
+            <input
+              id="ka-admin-pin-input"
+              class="ka-pin-input"
+              type="password"
+              inputmode="numeric"
+              maxlength="4"
+              placeholder="PIN"
+            />
+            <button type="button" class="ka-pin-toggle" id="ka-admin-pin-toggle" aria-label="Show PIN" data-state="hidden">
+              <svg class="ka-pin-eye-icon ka-pin-eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12Z"></path>
+                <circle cx="12" cy="12" r="3.2"></circle>
+              </svg>
+              <svg class="ka-pin-eye-icon ka-pin-eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12Z"></path>
+                <circle cx="12" cy="12" r="3.2"></circle>
+                <path d="M4 4l16 16"></path>
+              </svg>
+            </button>
+          </div>
+          <div id="ka-admin-pin-status" class="ka-pin-status"></div>
+          <div class="ka-pin-actions">
+            <button type="button" class="ka-pin-btn ka-pin-btn-outline" id="ka-admin-pin-cancel">Cancel</button>
+            <button type="button" class="ka-pin-btn" id="ka-admin-pin-continue">Continue</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+  }
+
+  return {
+    backdrop,
+    modal: backdrop.querySelector('.ka-pin-modal'),
+    title: document.getElementById('ka-admin-pin-title'),
+    sub: document.getElementById('ka-admin-pin-sub'),
+    input: document.getElementById('ka-admin-pin-input'),
+    toggle: document.getElementById('ka-admin-pin-toggle'),
+    status: document.getElementById('ka-admin-pin-status'),
+    cancel: document.getElementById('ka-admin-pin-cancel'),
+    confirm: document.getElementById('ka-admin-pin-continue'),
+    close: document.getElementById('ka-admin-pin-close')
+  };
+}
+
+function kaPromptAdminPin({ title, message, confirmLabel = 'Continue', validatePin } = {}) {
+  const els = kaEnsureAdminPinModal();
+  if (!els || !els.backdrop) {
+    return Promise.resolve(null);
+  }
+
+  if (els.title) els.title.textContent = title || 'Admin Access';
+  if (els.sub) els.sub.textContent = message || 'Enter your admin PIN.';
+  if (els.confirm) els.confirm.textContent = confirmLabel || 'Continue';
+  if (els.status) {
+    els.status.textContent = '';
+    els.status.classList.remove('is-error');
+  }
+
+  if (els.input) {
+    els.input.value = '';
+    els.input.type = 'password';
+    kaDisableAutofill(els.input);
+  }
+  kaSetPinToggleState(els.toggle, false);
+
+  els.backdrop.classList.remove('hidden');
+  kaSyncModalOpenState();
+
+  return new Promise(resolve => {
+    const controls = [els.input, els.confirm].filter(Boolean);
+
+    const cleanup = (result) => {
+      els.backdrop.classList.add('hidden');
+      kaSyncModalOpenState();
+      if (els.confirm) els.confirm.onclick = null;
+      if (els.cancel) els.cancel.onclick = null;
+      if (els.close) els.close.onclick = null;
+      if (els.toggle) els.toggle.onclick = null;
+      if (els.input) els.input.onkeydown = null;
+      els.backdrop.onclick = null;
+      resolve(result);
+    };
+
+    const showError = (msg) => {
+      if (!els.status) return;
+      els.status.textContent = msg;
+      els.status.classList.add('is-error');
+    };
+
+    const handleSubmit = async () => {
+      if (kaEnforcePinThrottle('admin', controls)) {
+        showError('Please wait a moment and try again.');
+        return;
+      }
+      const pin = (els.input?.value || '').trim();
+      if (!/^[0-9]{4}$/.test(pin)) {
+        kaRegisterPinFailure('admin', controls);
+        showError('PIN must be exactly 4 digits.');
+        return;
+      }
+      if (typeof validatePin === 'function') {
+        const error = await validatePin(pin);
+        if (error) {
+          kaRegisterPinFailure('admin', controls);
+          showError(error);
+          return;
+        }
+      }
+      kaResetPinFailures('admin');
+      cleanup(pin);
+    };
+
+    if (els.confirm) els.confirm.onclick = handleSubmit;
+    if (els.cancel) els.cancel.onclick = () => cleanup(null);
+    if (els.close) els.close.onclick = () => cleanup(null);
+    if (els.toggle && els.input) {
+      els.toggle.onclick = () => {
+        const isVisible = els.input.type === 'password';
+        els.input.type = isVisible ? 'text' : 'password';
+        kaSetPinToggleState(els.toggle, isVisible);
+      };
+    }
+    if (els.input) {
+      els.input.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          handleSubmit();
+        }
+      };
+      setTimeout(() => {
+        try {
+          els.input.focus();
+        } catch {}
+      }, 0);
+    }
+    els.backdrop.onclick = (e) => {
+      if (e.target === els.backdrop) cleanup(null);
+    };
+  });
+}
+
 function kaCurrentLiveProjectId() {
   if (kaLiveProjectOverride !== null && kaLiveProjectOverride !== undefined) {
     const overridePid = Number(kaLiveProjectOverride);
@@ -717,7 +1224,11 @@ async function kaRefreshLiveData() {
   if (kaLiveRefreshInFlight) return;
   kaLiveRefreshInFlight = true;
   try {
-    await Promise.all([kaLoadLiveWorkers(), kaLoadTimeEntries()]);
+    const tasks = [kaLoadLiveWorkers()];
+    if (kaCurrentView === 'time' && kaTimeReportHasRun) {
+      tasks.push(kaLoadTimeEntries());
+    }
+    await Promise.all(tasks);
   } catch (err) {
     console.warn('Live refresh failed', err);
   } finally {
@@ -1029,6 +1540,270 @@ async function kaSyncPendingPins() {
   kaWritePendingPins(remaining);
 }
 
+function kaLoadEmployeeUpdatesQueue() {
+  const list = kaStoreGet(KA_EMPLOYEE_UPDATES_QUEUE_KEY, []);
+  return Array.isArray(list) ? list : [];
+}
+
+function kaSaveEmployeeUpdatesQueue(list) {
+  kaStoreSet(KA_EMPLOYEE_UPDATES_QUEUE_KEY, list || []);
+  kaUpdateOfflineIndicator();
+}
+
+function kaQueueEmployeeUpdates(entries = []) {
+  if (!Array.isArray(entries) || !entries.length) return;
+  const list = kaLoadEmployeeUpdatesQueue();
+  entries.forEach(entry => {
+    if (!entry || !entry.employee_id || !entry.action) return;
+    list.push({
+      ...entry,
+      queued_at: entry.queued_at || new Date().toISOString()
+    });
+  });
+  kaSaveEmployeeUpdatesQueue(list);
+}
+
+async function kaDispatchEmployeeUpdate(entry) {
+  const id = entry.employee_id;
+  const auth = entry.auth || {};
+  const payload = entry.payload || {};
+  switch (entry.action) {
+    case 'name':
+      return fetchJSON(`/api/employees/${id}/name`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: payload.name, ...auth })
+      });
+    case 'phone':
+      return fetchJSON(`/api/employees/${id}/phone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: payload.phone || null, ...auth })
+      });
+    case 'language':
+      return fetchJSON(`/api/employees/${id}/language`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language: payload.language, ...auth })
+      });
+    case 'name_on_checks':
+      return fetchJSON(`/api/employees/${id}/name-on-checks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name_on_checks: payload.name_on_checks || null, ...auth })
+      });
+    case 'employment_dates':
+      return fetchJSON(`/api/employees/${id}/employment-dates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start_date: payload.start_date || null,
+          termination_date: payload.termination_date || null,
+          ...auth
+        })
+      });
+    case 'reactivate':
+      return fetchJSON(`/api/employees/${id}/reactivate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start_date: payload.start_date, ...auth })
+      });
+    case 'rate':
+      return fetchJSON(`/api/kiosk/rates/${id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rate: payload.rate })
+      });
+    default:
+      return null;
+  }
+}
+
+async function kaSyncEmployeeUpdatesQueue() {
+  if (!navigator.onLine) return;
+  const queue = kaLoadEmployeeUpdatesQueue();
+  if (!queue.length) return;
+
+  const remaining = [];
+  for (const entry of queue) {
+    if (!entry || !entry.employee_id || !entry.action) continue;
+    try {
+      await kaDispatchEmployeeUpdate(entry);
+    } catch (err) {
+      const msg = (err && err.message) ? err.message : '';
+      const authLike = /auth|login|credential|session/i.test(msg);
+      const netLike = /network|failed to fetch|offline/i.test(msg);
+      remaining.push(entry);
+      if (authLike || netLike) {
+        // Stop processing; wait for auth/connection recovery.
+        break;
+      }
+    }
+  }
+
+  if (remaining.length) {
+    kaSaveEmployeeUpdatesQueue(remaining);
+  } else {
+    kaSaveEmployeeUpdatesQueue([]);
+  }
+}
+
+function kaEmployeeDocsDbAvailable() {
+  return typeof indexedDB !== 'undefined';
+}
+
+function kaSetEmployeeDocsQueueFlag(hasPending) {
+  kaStoreSet(KA_EMPLOYEE_DOCS_QUEUE_FLAG, hasPending ? 1 : 0);
+  kaUpdateOfflineIndicator();
+}
+
+function kaHasEmployeeDocsQueueFlag() {
+  return !!kaStoreGet(KA_EMPLOYEE_DOCS_QUEUE_FLAG, 0);
+}
+
+function kaOpenEmployeeDocsDb() {
+  if (!kaEmployeeDocsDbAvailable()) {
+    return Promise.reject(new Error('IndexedDB unavailable'));
+  }
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(KA_EMPLOYEE_DOCS_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(KA_EMPLOYEE_DOCS_STORE)) {
+        const store = db.createObjectStore(KA_EMPLOYEE_DOCS_STORE, { keyPath: 'id', autoIncrement: true });
+        store.createIndex('queued_at', 'queued_at');
+        store.createIndex('employee_id', 'employee_id');
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Failed to open employee docs DB'));
+  });
+}
+
+async function kaEmployeeDocsGetAll() {
+  const db = await kaOpenEmployeeDocsDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(KA_EMPLOYEE_DOCS_STORE, 'readonly');
+    const store = tx.objectStore(KA_EMPLOYEE_DOCS_STORE);
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error || new Error('Failed to read employee docs queue'));
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
+async function kaEmployeeDocsAdd(entry) {
+  const db = await kaOpenEmployeeDocsDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(KA_EMPLOYEE_DOCS_STORE, 'readwrite');
+    const store = tx.objectStore(KA_EMPLOYEE_DOCS_STORE);
+    const req = store.add(entry);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('Failed to queue employee document'));
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
+async function kaEmployeeDocsDelete(id) {
+  const db = await kaOpenEmployeeDocsDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(KA_EMPLOYEE_DOCS_STORE, 'readwrite');
+    const store = tx.objectStore(KA_EMPLOYEE_DOCS_STORE);
+    const req = store.delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error || new Error('Failed to delete queued employee doc'));
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
+async function kaQueueEmployeeDocUpload({ employeeId, type, label, file, auth }) {
+  if (!employeeId || !type || !file) {
+    throw new Error('Missing required document data.');
+  }
+  const entry = {
+    employee_id: Number(employeeId),
+    doc_type: type,
+    doc_label: label || '',
+    filename: file.name || 'document',
+    mime: file.type || '',
+    size: file.size || 0,
+    blob: file,
+    auth: auth || {},
+    queued_at: new Date().toISOString()
+  };
+  await kaEmployeeDocsAdd(entry);
+  kaSetEmployeeDocsQueueFlag(true);
+}
+
+async function kaSyncEmployeeDocUploads() {
+  if (!navigator.onLine || !kaEmployeeDocsDbAvailable()) return;
+  let queued = [];
+  try {
+    queued = await kaEmployeeDocsGetAll();
+  } catch (err) {
+    console.warn('Unable to read employee doc queue', err);
+    return;
+  }
+  if (!queued.length) {
+    kaSetEmployeeDocsQueueFlag(false);
+    return;
+  }
+
+  let refreshedEmployeeId = null;
+  for (const entry of queued) {
+    if (!entry || !entry.employee_id || !entry.blob) continue;
+    const type = entry.doc_type || '';
+    const auth = entry.auth || {};
+    const form = new FormData();
+    form.append('doc_type', type);
+    if (entry.doc_label) form.append('doc_label', entry.doc_label);
+    if (auth.admin_id) form.append('admin_id', String(auth.admin_id));
+    if (auth.device_id) form.append('device_id', String(auth.device_id));
+    if (auth.device_secret) form.append('device_secret', String(auth.device_secret));
+
+    let endpoint = `/api/kiosk/admin/employees/${entry.employee_id}/documents`;
+    if (type === 'Photo') {
+      endpoint = `/api/kiosk/admin/employees/${entry.employee_id}/photo`;
+      form.append('employee_photo', entry.blob, entry.filename);
+    } else if (type === 'ID') {
+      endpoint = `/api/kiosk/admin/employees/${entry.employee_id}/id-document`;
+      form.append('id_document', entry.blob, entry.filename);
+    } else {
+      form.append('documents', entry.blob, entry.filename);
+    }
+
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        body: form,
+        credentials: 'include',
+        headers: kaGetCsrfHeader()
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Upload failed.');
+      }
+      await kaEmployeeDocsDelete(entry.id);
+      refreshedEmployeeId = entry.employee_id;
+    } catch (err) {
+      const msg = (err && err.message) ? String(err.message) : '';
+      const authLike = /auth|login|credential|session/i.test(msg);
+      const netLike = /network|failed to fetch|offline/i.test(msg);
+      if (authLike || netLike) break;
+    }
+  }
+
+  const remaining = await kaEmployeeDocsGetAll().catch(() => []);
+  kaSetEmployeeDocsQueueFlag(Array.isArray(remaining) && remaining.length > 0);
+  if (refreshedEmployeeId && kaEmployeeSheetState.employeeId === refreshedEmployeeId) {
+    kaLoadEmployeeDocs(refreshedEmployeeId);
+    kaRefreshEmployeeSheet();
+  }
+}
+
 function kaIsConnectionIssue(err) {
   const msg = err && err.message ? String(err.message) : '';
   return !navigator.onLine || /network|failed to fetch|offline/i.test(msg);
@@ -1198,11 +1973,15 @@ function kaHasOfflineDataToSync() {
     const notes = kaLoadShipmentNotesQueue();
     const punches = kaLoadOfflinePunches();
     const reviews = kaLoadTimeReviewQueue();
+    const docsPending = kaHasEmployeeDocsQueueFlag();
+    const updates = kaLoadEmployeeUpdatesQueue();
     return (Array.isArray(pins) && pins.length > 0) ||
       (Array.isArray(verify) && verify.length > 0) ||
       (Array.isArray(notes) && notes.length > 0) ||
       (Array.isArray(punches) && punches.length > 0) ||
-      (Array.isArray(reviews) && reviews.length > 0);
+      (Array.isArray(reviews) && reviews.length > 0) ||
+      docsPending ||
+      (Array.isArray(updates) && updates.length > 0);
   } catch {
     return false;
   }
@@ -1219,6 +1998,8 @@ async function kaSyncOfflineData(trigger = 'manual') {
     await kaSyncVerificationQueue();
     await kaSyncOfflinePunches();
     await kaSyncTimeReviewQueue();
+    await kaSyncEmployeeDocUploads();
+    await kaSyncEmployeeUpdatesQueue();
   } catch (err) {
     console.warn('Offline sync failed', trigger, err);
   } finally {
@@ -1387,7 +2168,7 @@ function kaDisableAutofill(el) {
 }
 
 function kaHardenPinInputs() {
-  ['admin-login-pin', 'ka-pin-new', 'ka-pin-confirm', 'ka-rates-pin', 'ka-rate-pin'].forEach(id => {
+  ['admin-login-pin', 'ka-pin-new', 'ka-pin-confirm', 'ka-rates-pin', 'ka-rate-pin', 'ka-admin-pin-input'].forEach(id => {
     kaDisableAutofill(document.getElementById(id));
   });
 }
@@ -1402,7 +2183,9 @@ function kaNormalizeDocs(resp) {
     .filter(Boolean)
     .map(doc => ({
       ...doc,
-      url: doc.url || doc.file_path || null,
+      view_url: doc.view_url || null,
+      download_url: doc.download_url || null,
+      url: doc.view_url || doc.url || doc.file_path || null,
       label: doc.label || doc.doc_label || null,
       filename: doc.filename || doc.original_name || doc.title || null
     }));
@@ -1463,7 +2246,7 @@ function kaRenderPaymentDocList(docs) {
   }
 
   const items = docs.map(doc => {
-    const href = kaAppendShipmentAuth(doc.url || doc.file_path || '#');
+    const href = kaAppendShipmentAuth(doc.view_url || doc.url || doc.file_path || '#');
     const label =
       doc.label ||
       doc.doc_label ||
@@ -1510,7 +2293,7 @@ function kaSetBolLink(shipmentId, doc) {
     el.classList.add('disabled');
     return;
   }
-  const rawHref = doc.url || doc.file_path || '#';
+  const rawHref = doc.view_url || doc.url || doc.file_path || '#';
   const href = kaAppendShipmentAuth(rawHref);
   el.dataset.bolUrl = href;
   el.href = href;
@@ -1537,6 +2320,11 @@ function kaShipmentAuthMeta() {
 
 function kaAppendShipmentAuth(url) {
   const params = kaShipmentAuthParams();
+  const auth = kaShipmentAuthMeta();
+  if (auth.device_id && auth.device_secret) {
+    params.set('device_id', auth.device_id);
+    params.set('device_secret', auth.device_secret);
+  }
   if (!params.toString() || !url || url === '#') return url;
   try {
     const u = new URL(url, window.location.origin);
@@ -1557,9 +2345,9 @@ function kaUpdateBolDetail(shipmentId, doc) {
   detail.innerHTML = '';
 }
 
-// --- Shipment notification helpers (per kiosk device/admin) ---
+// --- Notification helpers (per kiosk device/admin) ---
 
-function kaNotifyStorageKey() {
+function kaShipmentNotifyStorageKey() {
   const adminPart = kaCurrentAdmin && kaCurrentAdmin.id
     ? `admin_${kaCurrentAdmin.id}`
     : 'admin_unknown';
@@ -1567,39 +2355,40 @@ function kaNotifyStorageKey() {
   return `avian_kiosk_ship_notify_${adminPart}_${devicePart}`;
 }
 
-function kaFormatPhoneValue(val) {
-  const digits = String(val || '').replace(/\D/g, '').slice(0, 10);
-  if (digits.length <= 3) return digits;
-  if (digits.length <= 6) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
-  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+function kaNotificationPrefsStorageKey() {
+  const adminPart = kaCurrentAdmin && kaCurrentAdmin.id
+    ? `admin_${kaCurrentAdmin.id}`
+    : 'admin_unknown';
+  const devicePart = kaDeviceId ? `device_${kaDeviceId}` : 'device_unknown';
+  return `avian_kiosk_notify_prefs_${adminPart}_${devicePart}`;
 }
 
-function kaLoadNotifyPrefFromStorage() {
-  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return { ...KA_NOTIFY_DEFAULT };
-  try {
-    const raw = localStorage.getItem(kaNotifyStorageKey());
-    if (!raw) return { ...KA_NOTIFY_DEFAULT };
-    const parsed = JSON.parse(raw);
+function kaNormalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(v => String(v)).filter(v => v);
+}
 
-    const shipmentsEnabled =
-      parsed.shipments_enabled !== undefined
-        ? parsed.shipments_enabled
-        : (parsed.enabled !== undefined ? parsed.enabled : KA_NOTIFY_DEFAULT.shipments_enabled);
-    const clockoutEnabled =
-      parsed.clockout_enabled !== undefined
-        ? parsed.clockout_enabled
-        : KA_NOTIFY_DEFAULT.clockout_enabled;
-    const clockoutTime = parsed.clockout_time || KA_NOTIFY_DEFAULT.clockout_time;
-    const notifyPhone = typeof parsed.notify_phone === 'string' ? parsed.notify_phone : '';
-    const notifyPhoneEnabled =
-      parsed.notify_phone_enabled !== undefined
-        ? !!parsed.notify_phone_enabled
-        : !!notifyPhone;
-    const notifyEmail = typeof parsed.notify_email === 'string' ? parsed.notify_email : '';
-    const notifyEmailEnabled =
-      parsed.notify_email_enabled !== undefined
-        ? !!parsed.notify_email_enabled
-        : !!notifyEmail;
+function kaNormalizeNumberArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(val => Number(val))
+    .filter(num => Number.isFinite(num));
+}
+
+function kaLoadShipmentNotifyPrefFromStorage() {
+  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return { ...KA_SHIPMENT_NOTIFY_DEFAULT };
+  try {
+    const raw = localStorage.getItem(kaShipmentNotifyStorageKey());
+    if (!raw) return { ...KA_SHIPMENT_NOTIFY_DEFAULT };
+    const parsed = JSON.parse(raw);
+    const enabled =
+      parsed.enabled !== undefined
+        ? parsed.enabled
+        : (parsed.shipments_enabled !== undefined ? parsed.shipments_enabled : false);
+    const notifyTime =
+      parsed.notify_time ||
+      parsed.remind_time ||
+      KA_SHIPMENT_NOTIFY_DEFAULT.notify_time;
 
     // Migrate old frequency/day to every_days if present
     let migratedEvery = parsed.remind_every_days;
@@ -1610,35 +2399,172 @@ function kaLoadNotifyPrefFromStorage() {
     }
 
     return {
-      ...KA_NOTIFY_DEFAULT,
+      ...KA_SHIPMENT_NOTIFY_DEFAULT,
       ...parsed,
-      statuses: Array.isArray(parsed.statuses) ? parsed.statuses : [],
-      project_ids: Array.isArray(parsed.project_ids) ? parsed.project_ids : [],
-      remind_every_days: Number(migratedEvery || parsed.remind_every_days || KA_NOTIFY_DEFAULT.remind_every_days),
-      remind_time: parsed.remind_time || KA_NOTIFY_DEFAULT.remind_time,
-      shipments_enabled: !!shipmentsEnabled,
-      enabled: !!shipmentsEnabled,
-      clockout_enabled: !!clockoutEnabled,
-      clockout_time: clockoutTime,
-      notify_phone: notifyPhone,
-      notify_phone_enabled: notifyPhoneEnabled,
-      notify_email: notifyEmail,
-      notify_email_enabled: notifyEmailEnabled
+      enabled: !!enabled,
+      statuses: kaNormalizeStringArray(parsed.statuses),
+      project_ids: kaNormalizeNumberArray(parsed.project_ids),
+      shipment_ids: kaNormalizeNumberArray(parsed.shipment_ids),
+      notify_time: notifyTime,
+      remind_every_days: Number(migratedEvery || parsed.remind_every_days || KA_SHIPMENT_NOTIFY_DEFAULT.remind_every_days) || 1
     };
   } catch {
-    return { ...KA_NOTIFY_DEFAULT };
+    return { ...KA_SHIPMENT_NOTIFY_DEFAULT };
   }
 }
 
-function kaSaveNotifyPref(pref) {
+function kaSaveShipmentNotifyPref(pref) {
   if (!kaCurrentAdmin || !kaCurrentAdmin.id) return;
   try {
-    localStorage.setItem(kaNotifyStorageKey(), JSON.stringify(pref || KA_NOTIFY_DEFAULT));
+    localStorage.setItem(kaShipmentNotifyStorageKey(), JSON.stringify(pref || KA_SHIPMENT_NOTIFY_DEFAULT));
   } catch {}
+}
+
+function kaLoadNotificationPrefsFromStorage() {
+  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return { ...KA_NOTIFICATION_PREF_DEFAULT };
+  try {
+    const raw = localStorage.getItem(kaNotificationPrefsStorageKey());
+    if (!raw) return { ...KA_NOTIFICATION_PREF_DEFAULT };
+    const parsed = JSON.parse(raw);
+    const shipmentFilters = parsed.shipment_filters || {};
+    const payrollFilters = parsed.payroll_filters || {};
+    const timeFilters = parsed.time_filters || {};
+    return {
+      ...KA_NOTIFICATION_PREF_DEFAULT,
+      ...parsed,
+      email_enabled: parsed.email_enabled !== false && parsed.email_enabled !== 0,
+      push_enabled: parsed.push_enabled !== false && parsed.push_enabled !== 0,
+      shipment_filters: {
+        enabled: shipmentFilters.enabled !== false && shipmentFilters.enabled !== 0 && shipmentFilters.enabled !== 'false',
+        statuses: kaNormalizeStringArray(shipmentFilters.statuses),
+        project_ids: kaNormalizeNumberArray(shipmentFilters.project_ids)
+      },
+      payroll_filters: {
+        enabled: payrollFilters.enabled !== false && payrollFilters.enabled !== 0 && payrollFilters.enabled !== 'false',
+        event_types: kaNormalizeStringArray(payrollFilters.event_types)
+      },
+      time_filters: {
+        enabled: timeFilters.enabled !== false && timeFilters.enabled !== 0 && timeFilters.enabled !== 'false',
+        event_types: kaNormalizeStringArray(timeFilters.event_types)
+      },
+      remind_time: parsed.remind_time || '',
+      remind_every_days: Number(parsed.remind_every_days) || 1,
+      clockout_enabled: parsed.clockout_enabled === true || parsed.clockout_enabled === 1 || parsed.clockout_enabled === 'true',
+      clockout_time: parsed.clockout_time || KA_NOTIFICATION_PREF_DEFAULT.clockout_time
+    };
+  } catch {
+    return { ...KA_NOTIFICATION_PREF_DEFAULT };
+  }
+}
+
+function kaSaveNotificationPrefs(pref) {
+  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return;
+  try {
+    localStorage.setItem(kaNotificationPrefsStorageKey(), JSON.stringify(pref || KA_NOTIFICATION_PREF_DEFAULT));
+  } catch {}
+}
+
+function kaNormalizeShipmentNotifyPref(raw = {}) {
+  const enabled =
+    raw.enabled !== undefined
+      ? raw.enabled
+      : (raw.shipments_enabled !== undefined ? raw.shipments_enabled : false);
+  const notifyTime = raw.notify_time || raw.remind_time || KA_SHIPMENT_NOTIFY_DEFAULT.notify_time;
+  const every = Number(raw.remind_every_days) || 1;
+  return {
+    ...KA_SHIPMENT_NOTIFY_DEFAULT,
+    ...raw,
+    enabled: !!enabled,
+    statuses: kaNormalizeStringArray(raw.statuses),
+    project_ids: kaNormalizeNumberArray(raw.project_ids),
+    shipment_ids: kaNormalizeNumberArray(raw.shipment_ids),
+    notify_time: notifyTime,
+    remind_every_days: every > 0 ? every : 1
+  };
+}
+
+function kaNormalizeNotificationPrefs(raw = {}) {
+  const shipmentFilters = raw.shipment_filters || {};
+  const payrollFilters = raw.payroll_filters || {};
+  const timeFilters = raw.time_filters || {};
+
+  return {
+    ...KA_NOTIFICATION_PREF_DEFAULT,
+    ...raw,
+    email_enabled: raw.email_enabled !== false && raw.email_enabled !== 0,
+    push_enabled: raw.push_enabled !== false && raw.push_enabled !== 0,
+    shipment_filters: {
+      enabled:
+        shipmentFilters.enabled !== false &&
+        shipmentFilters.enabled !== 0 &&
+        shipmentFilters.enabled !== 'false',
+      statuses: kaNormalizeStringArray(shipmentFilters.statuses),
+      project_ids: kaNormalizeNumberArray(shipmentFilters.project_ids)
+    },
+    payroll_filters: {
+      enabled:
+        payrollFilters.enabled !== false &&
+        payrollFilters.enabled !== 0 &&
+        payrollFilters.enabled !== 'false',
+      event_types: kaNormalizeStringArray(payrollFilters.event_types)
+    },
+    time_filters: {
+      enabled:
+        timeFilters.enabled !== false &&
+        timeFilters.enabled !== 0 &&
+        timeFilters.enabled !== 'false',
+      event_types: kaNormalizeStringArray(timeFilters.event_types)
+    },
+    remind_time: raw.remind_time || '',
+    remind_every_days: Number(raw.remind_every_days) || 1,
+    clockout_enabled:
+      raw.clockout_enabled === true ||
+      raw.clockout_enabled === 1 ||
+      raw.clockout_enabled === 'true',
+    clockout_time: raw.clockout_time || KA_NOTIFICATION_PREF_DEFAULT.clockout_time
+  };
 }
 
 function kaNotifyStatusesSource() {
   return [...KA_SHIPMENT_STATUSES];
+}
+
+function kaRenderCheckboxGroup(container, options, selectedSet) {
+  if (!container) return;
+  container.innerHTML = '';
+  (options || []).forEach(opt => {
+    if (!opt || !opt.value) return;
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = opt.value;
+    input.checked = selectedSet.has(opt.value);
+    label.appendChild(input);
+    label.append(` ${opt.label}`);
+    container.appendChild(label);
+  });
+}
+
+function kaSetNotifyGroupDisabled(container, disabled) {
+  if (!container) return;
+  container.querySelectorAll('input, button, select').forEach(el => {
+    el.disabled = !!disabled;
+  });
+}
+
+function kaUpdateShipmentFilterState({ statuses = null, projectIds = null } = {}) {
+  if (statuses) {
+    kaShipmentNotifyPref.statuses = statuses;
+    kaNotificationPrefs.shipment_filters.statuses = statuses;
+  }
+  if (projectIds) {
+    kaShipmentNotifyPref.project_ids = projectIds;
+    kaNotificationPrefs.shipment_filters.project_ids = projectIds;
+  }
+  kaNotifiedShipments = new Set();
+  kaReminderTimestamps = {};
+  kaSaveShipmentNotifyPref(kaShipmentNotifyPref);
+  kaSaveNotificationPrefs(kaNotificationPrefs);
 }
 
 function kaRenderNotifyStatuses(statuses) {
@@ -1647,7 +2573,7 @@ function kaRenderNotifyStatuses(statuses) {
   if (!menu || !labelEl) return;
 
   const list = Array.isArray(statuses) && statuses.length ? statuses : KA_SHIPMENT_STATUSES;
-  const selected = new Set(kaNotifyPref.statuses || []);
+  const selected = new Set(kaShipmentNotifyPref.statuses || []);
   const defaultChecked = selected.size === 0;
 
   menu.innerHTML = '';
@@ -1670,19 +2596,15 @@ function kaRenderNotifyStatuses(statuses) {
     const picked = Array.from(
       menu.querySelectorAll('input[type="checkbox"]:checked')
     ).map(cb => cb.value);
-    if (!picked.length) {
+    if (!picked.length || picked.length === list.length) {
       labelEl.textContent = 'All statuses';
       labelEl.classList.add('placeholder');
     } else {
-      labelEl.textContent = picked.length === list.length
-        ? 'All statuses'
-        : `${picked.length} selected`;
+      labelEl.textContent = `${picked.length} selected`;
       labelEl.classList.remove('placeholder');
     }
-    kaNotifyPref.statuses = picked;
-    kaNotifiedShipments = new Set();
-    kaReminderTimestamps = {};
-    kaSaveNotifyPref(kaNotifyPref);
+    const normalized = picked.length === list.length ? [] : picked;
+    kaUpdateShipmentFilterState({ statuses: normalized });
   }
 
   menu.onchange = updateLabel;
@@ -1694,7 +2616,7 @@ function kaRefreshNotifyProjectSelect() {
   const labelEl = document.getElementById('ka-notify-projects-label');
   if (!menu || !labelEl) return;
 
-  const selected = new Set(kaNotifyPref.project_ids || []);
+  const selected = new Set(kaShipmentNotifyPref.project_ids || []);
   menu.innerHTML = '';
 
   if (!kaProjects || !kaProjects.length) {
@@ -1736,146 +2658,191 @@ function kaRefreshNotifyProjectSelect() {
       labelEl.classList.remove('placeholder');
     }
 
-    kaNotifyPref.project_ids = picked;
-    kaNotifiedShipments = new Set();
-    kaReminderTimestamps = {};
-    kaSaveNotifyPref(kaNotifyPref);
+    const normalized =
+      kaProjects && picked.length === kaProjects.length ? [] : picked;
+    kaUpdateShipmentFilterState({ projectIds: normalized });
   }
 
   menu.onchange = updateLabel;
   updateLabel();
 }
 
-function kaApplyNotifyPrefToUI(pref, statusesList) {
-  const alertTime =
-    pref?.remind_time ||
-    pref?.clockout_time ||
-    KA_NOTIFY_DEFAULT.remind_time;
+function kaUpdateShipmentNotifyVisibility() {
+  const updatesToggle = document.getElementById('ka-notify-shipments-updates-enabled');
+  const remindersToggle = document.getElementById('ka-notify-shipments-reminders-enabled');
+  const filtersBody = document.getElementById('ka-notify-shipments-filters');
+  const reminderBody = document.getElementById('ka-notify-shipments-reminder-body');
+  const statusBtn = document.getElementById('ka-notify-statuses-btn');
+  const projectBtn = document.getElementById('ka-notify-projects-btn');
 
-  kaNotifyPref = {
-    ...KA_NOTIFY_DEFAULT,
-    ...pref,
-    statuses: Array.isArray(pref?.statuses) ? pref.statuses : [],
-    project_ids: Array.isArray(pref?.project_ids) ? pref.project_ids : [],
-    remind_every_days: Number(pref?.remind_every_days) || KA_NOTIFY_DEFAULT.remind_every_days,
-    remind_time: alertTime,
-    shipments_enabled:
-      pref?.shipments_enabled !== undefined
-        ? pref.shipments_enabled
-        : (pref?.enabled !== undefined ? pref.enabled : KA_NOTIFY_DEFAULT.shipments_enabled),
-    clockout_enabled: pref?.clockout_enabled !== undefined ? pref.clockout_enabled : KA_NOTIFY_DEFAULT.clockout_enabled,
-    clockout_time: alertTime,
-    notify_phone: pref?.notify_phone || '',
-    notify_phone_enabled: !!pref?.notify_phone_enabled,
-    notify_email: pref?.notify_email || '',
-    notify_email_enabled: !!pref?.notify_email_enabled,
-    enabled:
-      pref?.shipments_enabled !== undefined
-        ? pref.shipments_enabled
-        : (pref?.enabled !== undefined ? pref.enabled : KA_NOTIFY_DEFAULT.shipments_enabled)
-  };
+  const updatesEnabled = !!updatesToggle?.checked;
+  const remindersEnabled = !!remindersToggle?.checked;
+  const filtersDisabled = !(updatesEnabled || remindersEnabled);
 
-  const shipToggle = document.getElementById('ka-notify-shipments-enabled');
-  if (shipToggle) shipToggle.checked = !!kaNotifyPref.shipments_enabled;
-  kaToggleShipmentFields(!!kaNotifyPref.shipments_enabled);
+  if (filtersBody) {
+    kaSetNotifyGroupDisabled(filtersBody, filtersDisabled);
+  }
+  if (statusBtn) statusBtn.disabled = filtersDisabled;
+  if (projectBtn) projectBtn.disabled = filtersDisabled;
+  if (reminderBody) reminderBody.classList.toggle('hidden', !remindersEnabled);
+}
 
-  const clockToggle = document.getElementById('ka-notify-clockout-enabled');
-  if (clockToggle) clockToggle.checked = !!kaNotifyPref.clockout_enabled;
-  const clockBody = document.getElementById('ka-notify-clockout-body');
-  if (clockBody) clockBody.classList.toggle('hidden', !kaNotifyPref.clockout_enabled);
+function kaApplyShipmentNotifyPrefToUI(pref, statusesList) {
+  kaShipmentNotifyPref = kaNormalizeShipmentNotifyPref(pref || {});
+  kaSaveShipmentNotifyPref(kaShipmentNotifyPref);
 
-  const everyEl = document.getElementById('ka-notify-every-days');
-  if (everyEl) {
-    everyEl.value = Number(kaNotifyPref.remind_every_days) || 1;
-  }
-  const alertTimeEl = document.getElementById('ka-notify-alert-time');
-  if (alertTimeEl) {
-    alertTimeEl.value = kaNotifyPref.remind_time || KA_NOTIFY_DEFAULT.remind_time;
-  }
-  const phoneEl = document.getElementById('ka-notify-phone');
-  const phoneToggle = document.getElementById('ka-notify-phone-enabled');
-  if (phoneToggle) {
-    phoneToggle.checked = !!kaNotifyPref.notify_phone_enabled;
-    phoneToggle.addEventListener('change', () => {
-      kaNotifyPref.notify_phone_enabled = phoneToggle.checked;
-      if (!phoneToggle.checked) kaNotifyPref.notify_phone = '';
-      if (phoneEl) {
-        phoneEl.classList.toggle('hidden', !phoneToggle.checked);
-        if (!phoneToggle.checked) phoneEl.value = '';
-      }
-      kaSaveNotifyPref(kaNotifyPref);
-    });
-  }
-  if (phoneEl) {
-    phoneEl.value = kaFormatPhoneValue(kaNotifyPref.notify_phone || '');
-    phoneEl.classList.toggle('hidden', !kaNotifyPref.notify_phone_enabled);
-    phoneEl.addEventListener('input', () => {
-      const formatted = kaFormatPhoneValue(phoneEl.value);
-      phoneEl.value = formatted;
-      kaNotifyPref.notify_phone = formatted;
-      kaSaveNotifyPref(kaNotifyPref);
-    });
-  }
-  const emailEl = document.getElementById('ka-notify-email');
-  const emailToggle = document.getElementById('ka-notify-email-enabled');
-  if (emailToggle) {
-    emailToggle.checked = !!kaNotifyPref.notify_email_enabled;
-    emailToggle.addEventListener('change', () => {
-      kaNotifyPref.notify_email_enabled = emailToggle.checked;
-      if (!emailToggle.checked) kaNotifyPref.notify_email = '';
-      if (emailEl) {
-        emailEl.classList.toggle('hidden', !emailToggle.checked);
-        if (!emailToggle.checked) emailEl.value = '';
-      }
-      kaSaveNotifyPref(kaNotifyPref);
-    });
-  }
-  if (emailEl) {
-    emailEl.value = kaNotifyPref.notify_email || '';
-    emailEl.classList.toggle('hidden', !kaNotifyPref.notify_email_enabled);
-  }
+  const remindersToggle = document.getElementById('ka-notify-shipments-reminders-enabled');
+  if (remindersToggle) remindersToggle.checked = !!kaShipmentNotifyPref.enabled;
+
+  const timeEl = document.getElementById('ka-notify-shipments-time');
+  if (timeEl) timeEl.value = kaShipmentNotifyPref.notify_time || KA_SHIPMENT_NOTIFY_DEFAULT.notify_time;
+
+  const everyEl = document.getElementById('ka-notify-shipments-every-days');
+  if (everyEl) everyEl.value = kaShipmentNotifyPref.remind_every_days || 1;
 
   kaRenderNotifyStatuses(statusesList || kaNotifyStatusesSource());
   kaRefreshNotifyProjectSelect();
+  kaUpdateShipmentNotifyVisibility();
 }
 
-function kaCollectNotifyForm() {
-  const shipmentsEnabled = document.getElementById('ka-notify-shipments-enabled')?.checked || false;
-  const clockoutEnabled = document.getElementById('ka-notify-clockout-enabled')?.checked || false;
-  const everyVal = Number(document.getElementById('ka-notify-every-days')?.value || 1);
-  const alertTimeVal = document.getElementById('ka-notify-alert-time')?.value || KA_NOTIFY_DEFAULT.remind_time;
-  const phoneVal = (document.getElementById('ka-notify-phone')?.value || '').trim();
-  const phoneEnabled = document.getElementById('ka-notify-phone-enabled')?.checked || false;
-  const emailVal = (document.getElementById('ka-notify-email')?.value || '').trim();
-  const emailEnabled = document.getElementById('ka-notify-email-enabled')?.checked || false;
+function kaApplyNotificationPrefsToUI(prefs) {
+  kaNotificationPrefs = kaNormalizeNotificationPrefs(prefs || {});
+  kaSaveNotificationPrefs(kaNotificationPrefs);
 
-  const statuses = Array.from(
+  const emailToggle = document.getElementById('ka-notify-email-enabled');
+  const pushToggle = document.getElementById('ka-notify-push-enabled');
+  const shipmentsToggle = document.getElementById('ka-notify-shipments-updates-enabled');
+  const timeToggle = document.getElementById('ka-notify-time-enabled');
+  const payrollToggle = document.getElementById('ka-notify-payroll-enabled');
+  const dailyToggle = document.getElementById('ka-notify-daily-enabled');
+  const dailyBody = document.getElementById('ka-notify-daily-body');
+  const dailyTime = document.getElementById('ka-notify-daily-time');
+  const dailyEvery = document.getElementById('ka-notify-daily-every');
+  const clockoutToggle = document.getElementById('ka-notify-clockout-enabled');
+  const clockoutTime = document.getElementById('ka-notify-clockout-time');
+
+  if (emailToggle) emailToggle.checked = !!kaNotificationPrefs.email_enabled;
+  if (pushToggle) pushToggle.checked = !!kaNotificationPrefs.push_enabled;
+
+  if (shipmentsToggle) {
+    shipmentsToggle.checked = kaNotificationPrefs.shipment_filters?.enabled !== false;
+  }
+
+  if (timeToggle) timeToggle.checked = kaNotificationPrefs.time_filters?.enabled !== false;
+  if (payrollToggle) payrollToggle.checked = kaNotificationPrefs.payroll_filters?.enabled !== false;
+
+  const dailyEnabled = !!kaNotificationPrefs.remind_time;
+  if (dailyToggle) dailyToggle.checked = dailyEnabled;
+  if (dailyBody) dailyBody.classList.toggle('hidden', !dailyEnabled);
+  if (dailyTime) dailyTime.value = kaNotificationPrefs.remind_time || KA_SHIPMENT_NOTIFY_DEFAULT.notify_time;
+  if (dailyEvery) dailyEvery.value = kaNotificationPrefs.remind_every_days || 1;
+
+  if (clockoutToggle) clockoutToggle.checked = !!kaNotificationPrefs.clockout_enabled;
+  if (clockoutTime) clockoutTime.value = kaNotificationPrefs.clockout_time || KA_NOTIFICATION_PREF_DEFAULT.clockout_time;
+  if (clockoutTime) clockoutTime.disabled = !clockoutToggle?.checked;
+
+  kaRenderCheckboxGroup(
+    document.getElementById('ka-notify-time-events'),
+    KA_TIME_EVENTS,
+    new Set(kaNotificationPrefs.time_filters?.event_types || [])
+  );
+  kaRenderCheckboxGroup(
+    document.getElementById('ka-notify-payroll-events'),
+    KA_PAYROLL_EVENTS,
+    new Set(kaNotificationPrefs.payroll_filters?.event_types || [])
+  );
+
+  kaSetNotifyGroupDisabled(
+    document.getElementById('ka-notify-time-events'),
+    !timeToggle?.checked
+  );
+  kaSetNotifyGroupDisabled(
+    document.getElementById('ka-notify-payroll-events'),
+    !payrollToggle?.checked
+  );
+
+  kaUpdateShipmentNotifyVisibility();
+}
+
+function kaCollectSelectedStatuses() {
+  const picked = Array.from(
     document.querySelectorAll('#ka-notify-statuses-menu input[type="checkbox"]:checked')
   ).map(cb => cb.value);
+  const total = KA_SHIPMENT_STATUSES.length;
+  if (total && picked.length === total) return [];
+  return picked;
+}
 
-  const projectIds = Array.from(
+function kaCollectSelectedProjects() {
+  const picked = Array.from(
     document.querySelectorAll('#ka-notify-projects-menu input[type="checkbox"]:checked')
-  ).map(cb => Number(cb.value)).filter(n => Number.isFinite(n));
+  ).map(cb => Number(cb.value)).filter(Number.isFinite);
+  const total = Array.isArray(kaProjects) ? kaProjects.length : 0;
+  if (total && picked.length === total) return [];
+  return picked;
+}
+
+function kaCollectShipmentNotifyPrefsFromUI() {
+  const enabled = document.getElementById('ka-notify-shipments-reminders-enabled')?.checked || false;
+  const timeValue = document.getElementById('ka-notify-shipments-time')?.value || KA_SHIPMENT_NOTIFY_DEFAULT.notify_time;
+  const everyVal = Number(document.getElementById('ka-notify-shipments-every-days')?.value || 1);
+  const statuses = kaCollectSelectedStatuses();
+  const projectIds = kaCollectSelectedProjects();
 
   return {
-    enabled: shipmentsEnabled, // legacy
-    shipments_enabled: shipmentsEnabled,
-    clockout_enabled: clockoutEnabled,
-    clockout_time: alertTimeVal,
-    notify_phone: phoneEnabled ? phoneVal : '',
-    notify_phone_enabled: phoneEnabled,
-    notify_email: emailEnabled ? emailVal : '',
-    notify_email_enabled: emailEnabled,
+    enabled,
     statuses,
     project_ids: projectIds,
-    remind_every_days: everyVal > 0 ? everyVal : 1,
-    remind_time: alertTimeVal
+    shipment_ids: [],
+    notify_time: enabled ? timeValue : '',
+    remind_every_days: everyVal > 0 ? everyVal : 1
   };
 }
 
-function kaToggleShipmentFields(enabled) {
-  const body = document.getElementById('ka-notify-fields');
-  if (body) body.classList.toggle('hidden', !enabled);
+function kaCollectNotificationPrefsFromUI() {
+  const emailEnabled = document.getElementById('ka-notify-email-enabled')?.checked || false;
+  const pushEnabled = document.getElementById('ka-notify-push-enabled')?.checked || false;
+  const shipmentsUpdates = document.getElementById('ka-notify-shipments-updates-enabled')?.checked || false;
+  const timeEnabled = document.getElementById('ka-notify-time-enabled')?.checked || false;
+  const payrollEnabled = document.getElementById('ka-notify-payroll-enabled')?.checked || false;
+  const dailyEnabled = document.getElementById('ka-notify-daily-enabled')?.checked || false;
+  const dailyTimeVal = document.getElementById('ka-notify-daily-time')?.value || KA_SHIPMENT_NOTIFY_DEFAULT.notify_time;
+  const dailyEveryVal = Number(document.getElementById('ka-notify-daily-every')?.value || 1);
+  const clockoutEnabled = document.getElementById('ka-notify-clockout-enabled')?.checked || false;
+  const clockoutTimeVal = document.getElementById('ka-notify-clockout-time')?.value || KA_NOTIFICATION_PREF_DEFAULT.clockout_time;
+
+  const statuses = kaCollectSelectedStatuses();
+  const projectIds = kaCollectSelectedProjects();
+
+  const timeEvents = Array.from(
+    document.querySelectorAll('#ka-notify-time-events input[type="checkbox"]:checked')
+  ).map(cb => cb.value);
+
+  const payrollEvents = Array.from(
+    document.querySelectorAll('#ka-notify-payroll-events input[type="checkbox"]:checked')
+  ).map(cb => cb.value);
+
+  return {
+    email_enabled: emailEnabled,
+    push_enabled: pushEnabled,
+    shipment_filters: {
+      enabled: shipmentsUpdates,
+      statuses,
+      project_ids: projectIds
+    },
+    time_filters: {
+      enabled: timeEnabled,
+      event_types: timeEvents
+    },
+    payroll_filters: {
+      enabled: payrollEnabled,
+      event_types: payrollEvents
+    },
+    remind_time: dailyEnabled ? dailyTimeVal : '',
+    remind_every_days: dailyEveryVal > 0 ? dailyEveryVal : 1,
+    clockout_enabled: clockoutEnabled,
+    clockout_time: clockoutEnabled ? clockoutTimeVal : ''
+  };
 }
 
 function kaShipStatusTone(status) {
@@ -1941,6 +2908,19 @@ function kaShipVerificationInfo(sh) {
   };
 }
 
+function kaShipIsReadyForPickup(status) {
+  const st = String(status || '').toLowerCase();
+  return st.includes('ready') && st.includes('pickup');
+}
+
+function kaShipIsPickedUp(sh) {
+  if (!sh) return false;
+  const status = String(sh.status || '').toLowerCase();
+  if (status.includes('archived')) return true;
+  return status.includes('picked') && status.includes('up');
+}
+
+
 function kaStorageLateFees(dueDateStr, dailyFeeRaw) {
   const dailyFee = Number(dailyFeeRaw);
   if (!dueDateStr || Number.isNaN(dailyFee) || dailyFee < 0) {
@@ -1977,6 +2957,12 @@ function kaFmtCurrency(val) {
   return `$${num.toFixed(2)}`;
 }
 
+function kaStripNoChargesLabel(title) {
+  if (!title) return title;
+  const stripped = String(title).replace(/\s*[-–—]\s*no charges\s*/gi, ' ').trim();
+  return stripped;
+}
+
 function kaBindExpandableSelect(select) {
   if (!select || select.dataset.expandSelectBound) return;
   const expand = () => {
@@ -2008,73 +2994,223 @@ function kaRenderShipmentsList(list) {
   wrap.innerHTML = '';
 
   list.forEach(sh => {
-    const title = sh.title || sh.sku || `Shipment #${sh.id || ''}`;
+    const rawTitle = sh.title || sh.sku || `Shipment #${sh.id || ''}`;
     const bol = sh.bol_number ? `BOL ${sh.bol_number}` : '';
     const project = sh.project_name ? sh.project_name : 'No project set';
+    const statusText = sh.status || 'Status';
+    const statusTone = kaShipStatusTone(statusText);
+    const tracking = sh.tracking_number ? String(sh.tracking_number).trim() : '';
+    const trackingHref = tracking
+      ? `https://www.google.com/search?q=${encodeURIComponent(`tracking ${tracking}`)}`
+      : '';
     const verify = kaShipVerificationInfo(sh);
     const late = kaStorageLateFees(sh.storage_due_date, sh.storage_daily_late_fee);
     const isOverdue = late.daysLate > 0 && late.estimate > 0;
+    const strippedTitle = kaStripNoChargesLabel(rawTitle);
+    const title = strippedTitle ? strippedTitle : rawTitle;
     const showPaymentDetails = kaCanViewPayroll();
     const overdueText = showPaymentDetails
       ? `Shipment overdue · Estimated charges: $${late.estimate.toFixed(2)}`
       : 'Shipment overdue';
+    const isReadyForPickup = kaShipIsReadyForPickup(statusText);
+    const isPickedUp = kaShipIsPickedUp(sh);
+    const showPickupControls = isReadyForPickup && !isPickedUp;
+    const showVerification = isPickedUp;
+    const pickedBy = sh.picked_up_by ? String(sh.picked_up_by).trim() : '';
+    const pickedDateRaw = sh.picked_up_date ? String(sh.picked_up_date).slice(0, 10) : '';
+    const pickedDate = pickedDateRaw ? kaFmtDateMMDDYYYY(pickedDateRaw) : '';
+    const pickupSummaryLabel = pickedBy ? 'Picked up by' : 'Picked up on';
+    const pickupSummary = pickedBy
+      ? `${pickedBy}${pickedDate ? ` (${pickedDate})` : ''}`
+      : (pickedDate ? pickedDate : '');
+    const storageNote = sh.notes ? String(sh.notes) : '';
+
+    let pickupSection = '';
+    if (showPickupControls) {
+      const admins = kaPickupAdminOptions();
+      const matchedAdmin = admins.find(a => a.label === pickedBy);
+      const otherSelected = !!pickedBy && !matchedAdmin;
+      const otherValue = otherSelected ? pickedBy : '';
+      const pickupDateValue = pickedDateRaw || '';
+      const canEditPickup = !!kaAdminAuthId() && kaCanViewShipments();
+      const disabledAttr = canEditPickup ? '' : 'disabled';
+      const statusMsg = canEditPickup
+        ? ''
+        : (kaAdminAuthId()
+          ? 'You do not have shipments access.'
+          : 'Identify yourself on this device to edit.');
+      const savedOtherOption = otherSelected
+        ? `<option value="__other_saved__" data-other-name="${escapeHTML(otherValue)}" selected>${escapeHTML(otherValue)}</option>`
+        : '';
+      const pickupOptions = [
+        '<option value="">Select Name</option>',
+        ...admins.map(a => {
+          const isSelected = matchedAdmin && String(a.id) === String(matchedAdmin.id);
+          return `<option value="${escapeHTML(String(a.id))}" ${isSelected ? 'selected' : ''}>${escapeHTML(a.label)}</option>`;
+        }),
+        savedOtherOption,
+        `<option value="__other__">Other</option>`
+      ].join('');
+
+      pickupSection = `
+        <div class="ka-ship-info-box">
+          <div class="ka-ship-detail-grid ka-ship-detail-grid--pickup">
+            <div class="ka-ship-info-row ka-ship-info-row--half ka-ship-info-row--label-left">
+              <div class="ka-ship-info-label">Picked up by</div>
+              <div class="ka-ship-info-value">
+                <select data-ka-pickup-select aria-label="Picked up by" data-ka-pickup-current-other="${escapeHTML(otherValue)}" ${disabledAttr}>${pickupOptions}</select>
+              </div>
+            </div>
+            <div class="ka-ship-info-row hidden" data-ka-pickup-other-row>
+              <div class="ka-ship-info-value">
+                <input type="text" data-ka-pickup-other placeholder="Other name" aria-label="Other name" value="${escapeHTML(otherValue)}" ${disabledAttr} />
+              </div>
+            </div>
+            <div class="ka-ship-info-row ka-ship-info-row--half ka-ship-info-row--label-left">
+              <div class="ka-ship-info-label">Pickup date</div>
+              <div class="ka-ship-info-value">
+                <input type="date" data-ka-pickup-date aria-label="Pickup date" value="${escapeHTML(pickupDateValue)}" ${disabledAttr} />
+              </div>
+            </div>
+            <div class="ka-ship-info-row wide">
+              <div class="ka-ship-info-value">
+                <textarea rows="2" data-ka-pickup-note aria-label="Storage note" placeholder="Notes / Storage information (optional)" ${disabledAttr}>${escapeHTML(storageNote)}</textarea>
+              </div>
+            </div>
+            <div class="ka-ship-info-row wide">
+              <div class="ka-ship-info-value ka-storage-actions ka-storage-actions--pickup">
+                <div class="ka-storage-action-row">
+                  <button class="btn primary btn-sm" data-ka-pickup-save ${disabledAttr}>Save pickup</button>
+                  <button type="button" class="ka-ship-chevron-btn ka-ship-chevron-btn--inline" data-ka-open-overview="${sh.id}" aria-label="View more">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                </div>
+                <span class="ka-status" data-ka-pickup-status>${escapeHTML(statusMsg)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    const actionsHtml = showVerification
+      ? `
+        <div class="ka-ship-card-actions">
+          <button type="button" class="btn secondary btn-sm" data-ka-open-items="${sh.id}">
+            View & verify items
+          </button>
+        </div>
+      `
+      : '';
 
     const card = document.createElement('div');
     card.className = 'ka-ship-card';
+    if (showPickupControls) card.classList.add('ka-ship-card--pickup');
     card.dataset.shipmentId = sh.id;
     card.innerHTML = `
       ${isOverdue ? `<div class="ka-ship-overdue">${overdueText}</div>` : ''}
       <div class="ka-ship-card-header">
         <div class="ka-ship-card-titlewrap">
           <div class="ka-ship-title-row">
-            <div class="ka-ship-title">${title} — ${project}</div>
+            <div class="ka-ship-title">${escapeHTML(title)} — ${escapeHTML(project)}</div>
           </div>
           <div class="ka-ship-meta-row">
             ${
-              sh.storage_due_date
-                ? `<span class="ka-ship-meta-text">Due for pickup: ${kaFmtDateMMDDYYYY(sh.storage_due_date)}</span>`
+              !isReadyForPickup
+                ? `<span class="ka-ship-meta-text">
+                    Tracking: ${
+                      tracking
+                        ? `<a class="ka-tracking-link" href="${trackingHref}" target="_blank" rel="noopener noreferrer">${escapeHTML(tracking)}</a>`
+                        : '—'
+                    }
+                  </span>`
+                : ''
+            }
+            ${
+              !isPickedUp && sh.storage_due_date
+                ? `<span class="ka-ship-meta-text ka-ship-meta-text--due">Due for pickup: ${kaFmtDateMMDDYYYY(sh.storage_due_date)}</span>`
+                : ''
+            }
+            ${
+              isPickedUp && pickupSummary
+                ? `<span class="ka-ship-meta-text">${pickupSummaryLabel}: ${escapeHTML(pickupSummary)}</span>`
                 : ''
             }
           </div>
         </div>
         <div class="ka-ship-header-right">
+          <div class="ka-ship-header-top">
+            <span class="ka-ship-status-pill ${statusTone}">${escapeHTML(statusText)}</span>
+            ${
+              bol
+                ? `<a class="ka-ship-bol-pill ka-ship-bol" data-bol-for="${sh.id}" href="javascript:void(0)">${escapeHTML(bol)}</a>`
+                : ''
+            }
+          </div>
           ${
-            bol
-              ? `<a class="ka-ship-bol-pill ka-ship-bol" data-bol-for="${sh.id}" href="javascript:void(0)">${bol}</a>`
+            !isPickedUp && !showPickupControls
+              ? `<button type="button" class="ka-ship-chevron-btn" data-ka-open-overview="${sh.id}" aria-label="View more">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                  </svg>
+                </button>`
               : ''
           }
         </div>
       </div>
 
-      <div class="ka-ship-verify-row">
-        ${
-          verify.total
-            ? `<div class="ka-ship-verify-bar"><span style="width:${verify.percent}%;"></span></div>`
-            : ''
-        }
-        <div class="ka-ship-verify-meta">
-          <div class="ka-ship-verify-label ${verify.tone}">
-            ${verify.tone === 'done' ? 'All items verified ✓' : verify.label}
-          </div>
-        </div>
-      </div>
-
-      <div class="ka-ship-card-actions">
-        <button type="button" class="btn secondary btn-sm" data-ka-open-items="${sh.id}">
-          View & verify items
-        </button>
-        <button type="button" class="ka-ship-chevron-btn" data-ka-open-overview="${sh.id}" aria-label="View shipment details">
-          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
-          </svg>
-        </button>
-      </div>
+      ${pickupSection}
+      ${
+        showVerification
+          ? `
+            <div class="ka-ship-verify-row">
+              ${
+                verify.total
+                  ? `<div class="ka-ship-verify-bar"><span style="width:${verify.percent}%;"></span></div>`
+                  : ''
+              }
+              <div class="ka-ship-verify-meta">
+                <div class="ka-ship-verify-label ${verify.tone}">
+                  ${verify.tone === 'done' ? 'All items verified ✓' : verify.label}
+                </div>
+              </div>
+            </div>
+          `
+          : ''
+      }
+      ${actionsHtml}
     `;
+    const openItemsBtn = card.querySelector('[data-ka-open-items]');
+    if (openItemsBtn && !openItemsBtn.dataset.bound) {
+      openItemsBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const sid = Number(openItemsBtn.dataset.kaOpenItems || card.dataset.shipmentId);
+        if (sid) {
+          kaOpenItemsModal(sid, { tab: 'items' });
+        }
+      });
+      openItemsBtn.dataset.bound = '1';
+    }
+    const openOverviewBtn = card.querySelector('[data-ka-open-overview]');
+    if (openOverviewBtn && !openOverviewBtn.dataset.bound) {
+      openOverviewBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const sid = Number(openOverviewBtn.dataset.kaOpenOverview || card.dataset.shipmentId);
+        if (sid) {
+          kaOpenItemsModal(sid, { tab: 'overview' });
+        }
+      });
+      openOverviewBtn.dataset.bound = '1';
+    }
     wrap.appendChild(card);
   });
 
   if (!wrap.dataset.bound) {
-    wrap.addEventListener('click', (e) => {
+    wrap.addEventListener('click', async (e) => {
       const bolLink = e.target.closest('.ka-ship-bol');
       if (bolLink) {
         e.preventDefault();
@@ -2106,11 +3242,146 @@ function kaRenderShipmentsList(list) {
         return;
       }
 
-      const overviewBtn = e.target.closest('[data-ka-open-overview]');
-      if (overviewBtn) {
-        const sid = Number(overviewBtn.dataset.kaOpenOverview);
-        if (sid) {
-          kaOpenItemsModal(sid, { tab: 'overview' });
+      const saveBtn = e.target.closest('[data-ka-pickup-save]');
+      if (saveBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const card = saveBtn.closest('.ka-ship-card');
+        const shipmentId = Number(card?.dataset.shipmentId || 0);
+        if (!shipmentId) return;
+
+        const select = card?.querySelector('[data-ka-pickup-select]');
+        const otherRow = card?.querySelector('[data-ka-pickup-other-row]');
+        const otherInput = card?.querySelector('[data-ka-pickup-other]');
+        const dateInput = card?.querySelector('[data-ka-pickup-date]');
+        const noteInput = card?.querySelector('[data-ka-pickup-note]');
+        const statusEl = card?.querySelector('[data-ka-pickup-status]');
+        if (!select || !dateInput) return;
+
+        const setStatus = (msg, type) => {
+          if (!statusEl) return;
+          statusEl.textContent = msg || '';
+          statusEl.className = 'ka-status';
+          if (type === 'ok') statusEl.classList.add('ka-status-ok');
+          if (type === 'error') statusEl.classList.add('ka-status-error');
+        };
+
+        const adminId = kaAdminAuthId();
+        if (!adminId) {
+          setStatus('Identify yourself on this device to edit.', 'error');
+          return;
+        }
+        if (!kaCanViewShipments()) {
+          setStatus('You do not have shipments access.', 'error');
+          return;
+        }
+
+        const admins = kaPickupAdminOptions();
+        const isOther = select.value === '__other__';
+        const isSavedOther = select.value === '__other_saved__';
+        const selectedOption = select.selectedOptions ? select.selectedOptions[0] : null;
+        const pickedVal = isOther
+          ? (otherInput?.value || '').trim()
+          : isSavedOther
+            ? (selectedOption?.dataset.otherName || selectedOption?.textContent || '').trim()
+            : (admins.find(a => String(a.id) === select.value)?.label || '');
+        const pickedDate = dateInput.value || '';
+        const noteValue = noteInput ? noteInput.value.trim() : '';
+
+        if (!pickedVal) {
+          setStatus(isOther ? 'Enter a pickup name for Other.' : 'Choose a pickup name.', 'error');
+          return;
+        }
+
+        const shipment = kaShipments.find(s => Number(s.id) === shipmentId) || {};
+        const existingName = (shipment.picked_up_by || '').trim();
+        const existingDate = shipment.picked_up_date
+          ? String(shipment.picked_up_date).slice(0, 10)
+          : '';
+        const lastBy = shipment.picked_up_updated_by || '';
+        const lastAt = shipment.picked_up_updated_at || '';
+        const changingExisting =
+          (existingName && existingName !== pickedVal) ||
+          (existingDate && existingDate !== pickedDate);
+
+        if (changingExisting && (existingName || existingDate)) {
+          const confirmMsg = `Pickup info was last set by ${lastBy || 'someone'}${lastAt ? ` on ${lastAt}` : ''}.\nDo you want to overwrite it with your changes?`;
+          const ok = await kaShowConfirmDialog(confirmMsg, { okLabel: 'Overwrite', cancelLabel: 'Cancel', title: 'Update pickup' });
+          if (!ok) return;
+        }
+
+        setStatus('Saving pickup…');
+        saveBtn.disabled = true;
+        try {
+          const payload = {
+            picked_up_by: pickedVal,
+            picked_up_date: pickedDate || null,
+            employee_id: adminId,
+            device_id: kaDeviceId,
+            device_secret: kaGetDeviceSecret()
+          };
+          const resp = await fetchJSON(
+            `/api/shipments/${shipmentId}/storage`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            }
+          );
+          const saved = resp && resp.shipment ? resp.shipment : resp;
+
+          const existingNotes = shipment.notes ? String(shipment.notes).trim() : '';
+          const notesChanged =
+            noteInput && noteValue.trim() !== existingNotes;
+          let nextNotes = existingNotes;
+
+          if (notesChanged) {
+            if (!navigator.onLine) {
+              kaQueueShipmentNotes(shipmentId, noteValue);
+              nextNotes = noteValue;
+            } else {
+              try {
+                const notesResp = await fetchJSON(
+                  `/api/shipments/${shipmentId}/notes`,
+                  {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ notes: noteValue })
+                  }
+                );
+                const savedNotes =
+                  notesResp && notesResp.shipment ? notesResp.shipment : notesResp;
+                if (savedNotes && savedNotes.notes !== undefined) {
+                  nextNotes = savedNotes.notes || '';
+                } else {
+                  nextNotes = noteValue;
+                }
+              } catch (err) {
+                console.error('Storage note save failed', err);
+                kaShowInlineAlert('Pickup saved, but storage note failed to save.', 'error', 6000);
+              }
+            }
+          }
+          const idx = kaShipments.findIndex(s => Number(s.id) === shipmentId);
+          if (idx !== -1) {
+            kaShipments[idx] = { ...kaShipments[idx], ...saved, notes: nextNotes };
+          }
+          kaSaveShipmentsCache(kaShipments);
+          kaShowInlineAlert('Pickup saved.', 'ok', 4000);
+          kaRenderShipmentsList(kaShipments);
+        } catch (err) {
+          console.error('Pickup save failed', err);
+          setStatus(err.message || 'Error saving pickup.', 'error');
+        } finally {
+          if (card && card.isConnected) {
+            saveBtn.disabled = false;
+            if (select) select.disabled = false;
+            if (otherInput) otherInput.disabled = false;
+            if (dateInput) dateInput.disabled = false;
+            if (otherRow && select.value !== '__other__') {
+              otherRow.classList.add('hidden');
+            }
+          }
         }
         return;
       }
@@ -2120,6 +3391,35 @@ function kaRenderShipmentsList(list) {
         const sid = Number(btn.dataset.kaOpenItems);
         if (sid) {
           kaOpenItemsModal(sid, { tab: 'items' });
+        }
+      }
+
+      const overviewBtn = e.target.closest('[data-ka-open-overview]');
+      if (overviewBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const sid = Number(overviewBtn.dataset.kaOpenOverview);
+        if (sid) {
+          kaOpenItemsModal(sid, { tab: 'overview' });
+        }
+      }
+    });
+
+    wrap.addEventListener('change', (e) => {
+      const select = e.target.closest('[data-ka-pickup-select]');
+      if (!select) return;
+      const card = select.closest('.ka-ship-card');
+      const otherRow = card?.querySelector('[data-ka-pickup-other-row]');
+      const otherInput = card?.querySelector('[data-ka-pickup-other]');
+      if (!otherRow) return;
+      const isOther = select.value === '__other__';
+      otherRow.classList.toggle('hidden', !isOther);
+      if (otherInput) {
+        otherInput.required = isOther;
+        otherInput.setAttribute('aria-required', isOther ? 'true' : 'false');
+        if (isOther && !otherInput.value) {
+          const currentOther = select.dataset.kaPickupCurrentOther || '';
+          if (currentOther) otherInput.value = currentOther;
         }
       }
     });
@@ -2223,6 +3523,7 @@ function kaSetNotifyMsg(text, color) {
 }
 
 async function kaEnsureNotifyPermission() {
+  if (!kaNotificationPrefs.push_enabled) return false;
   if (typeof Notification === 'undefined') return false;
   if (Notification.permission === 'granted') return true;
   if (Notification.permission === 'denied') return false;
@@ -2252,16 +3553,11 @@ function kaShipmentsMatchingNotify(pref) {
   });
 }
 
-function kaToggleDayRow() {
-  const row = document.getElementById('ka-notify-day-row');
-  if (row) row.style.display = 'none';
-}
-
 async function kaTriggerShipmentNotification(force = false) {
-  const pref = kaNotifyPref || KA_NOTIFY_DEFAULT;
+  const pref = kaShipmentNotifyPref || KA_SHIPMENT_NOTIFY_DEFAULT;
   const matching = kaShipmentsMatchingNotify(pref);
 
-  const title = force ? 'Test: Shipments alert' : 'Shipments alert';
+  const title = force ? 'Test: Shipment reminder' : 'Shipment reminder';
   let body;
 
   if (!matching.length) {
@@ -2289,14 +3585,14 @@ async function kaTriggerShipmentNotification(force = false) {
 }
 
 async function kaCheckNotifyWindow(forceNow = false) {
-  if (!kaNotifyPref.shipments_enabled) return;
+  if (!kaShipmentNotifyPref.enabled) return;
 
   await kaTriggerShipmentNotification(forceNow);
 }
 
 function kaProcessNewShipmentsForAlert() {
-  if (!kaNotifyPref.shipments_enabled) return;
-  const matches = kaShipmentsMatchingNotify(kaNotifyPref);
+  if (!kaNotificationPrefs.shipment_filters?.enabled) return;
+  const matches = kaShipmentsMatchingNotify(kaShipmentNotifyPref);
   const newOnes = matches.filter(sh => !kaNotifiedShipments.has(sh.id));
   if (!newOnes.length) return;
 
@@ -2322,20 +3618,20 @@ function kaProcessNewShipmentsForAlert() {
 }
 
 async function kaReminderCheck(forceNow = false) {
-  if (!kaNotifyPref.shipments_enabled) return;
+  if (!kaShipmentNotifyPref.enabled) return;
   const now = Date.now();
-  const matches = kaShipmentsMatchingNotify(kaNotifyPref);
+  const matches = kaShipmentsMatchingNotify(kaShipmentNotifyPref);
 
   const outstanding = matches.filter(sh =>
     (sh.status || '') === 'Cleared - Ready for Pickup' &&
     (!sh.picked_up_by || String(sh.picked_up_by).trim() === '')
   );
 
-  const everyDays = Math.max(Number(kaNotifyPref.remind_every_days) || 1, 1);
+  const everyDays = Math.max(Number(kaShipmentNotifyPref.remind_every_days) || 1, 1);
   const today = new Date();
-  const targetTime = (kaNotifyPref.remind_time || KA_NOTIFY_DEFAULT.remind_time).match(/^(\d{2}):(\d{2})$/)
-    ? kaNotifyPref.remind_time
-    : KA_NOTIFY_DEFAULT.remind_time;
+  const targetTime = (kaShipmentNotifyPref.notify_time || KA_SHIPMENT_NOTIFY_DEFAULT.notify_time).match(/^(\d{2}):(\d{2})$/)
+    ? kaShipmentNotifyPref.notify_time
+    : KA_SHIPMENT_NOTIFY_DEFAULT.notify_time;
 
   const [hh, mm] = targetTime.split(':').map(n => Number(n));
   const targetDate = new Date(today);
@@ -2381,12 +3677,12 @@ async function kaReminderCheck(forceNow = false) {
 }
 
 async function kaClockoutAlertCheck(forceNow = false) {
-  if (!kaNotifyPref.clockout_enabled || !kaKiosk) return;
+  if (!kaNotificationPrefs.clockout_enabled || !kaKiosk) return;
 
   const timeStr =
-    (kaNotifyPref.clockout_time || KA_NOTIFY_DEFAULT.clockout_time).match(/^(\d{2}):(\d{2})$/)
-      ? kaNotifyPref.clockout_time
-      : KA_NOTIFY_DEFAULT.clockout_time;
+    (kaNotificationPrefs.clockout_time || KA_NOTIFICATION_PREF_DEFAULT.clockout_time).match(/^(\d{2}):(\d{2})$/)
+      ? kaNotificationPrefs.clockout_time
+      : KA_NOTIFICATION_PREF_DEFAULT.clockout_time;
 
   const [hh, mm] = timeStr.split(':').map(n => Number(n));
   const target = new Date();
@@ -2441,7 +3737,7 @@ async function kaStartNotifyTimer(forcePing = false) {
     kaNotifyTimer = null;
   }
 
-  if (!kaNotifyPref.shipments_enabled && !kaNotifyPref.clockout_enabled) return;
+  if (!kaShipmentNotifyPref.enabled && !kaNotificationPrefs.clockout_enabled) return;
 
   const perm = await kaEnsureNotifyPermission();
   if (!perm) {
@@ -2468,7 +3764,282 @@ async function kaStartNotifyTimer(forcePing = false) {
   }
 }
 
-function kaInitNotifyPanel() {
+function kaSetNotifyMessage(text, color) {
+  const el = document.getElementById('ka-notify-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  if (color) el.style.color = color;
+}
+
+async function kaSyncNotificationPrefsQueue() {
+  if (!navigator.onLine) return;
+  const queue = loadSettingsQueue();
+  if (!queue.length) return;
+
+  const remaining = [];
+  for (const entry of queue) {
+    if (!entry || entry.type !== 'notifications_prefs') continue;
+    try {
+      const data = await fetchJSON('/api/notifications/prefs', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(entry.payload || {})
+      });
+      kaNotificationPrefs = kaNormalizeNotificationPrefs(data.prefs || entry.payload || {});
+      kaSaveNotificationPrefs(kaNotificationPrefs);
+    } catch (err) {
+      if (!navigator.onLine) {
+        remaining.push(entry);
+        break;
+      }
+      remaining.push(entry);
+    }
+  }
+  replaceSettingsQueueTypes(['notifications_prefs'], remaining);
+}
+
+async function kaSyncShipmentNotifyPrefsQueue() {
+  if (!navigator.onLine) return;
+  const queue = loadSettingsQueue();
+  if (!queue.length) return;
+
+  const remaining = [];
+  for (const entry of queue) {
+    if (!entry || entry.type !== 'shipments_notifications') continue;
+    try {
+      const data = await fetchJSON('/api/shipments/notifications', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(entry.payload || {})
+      });
+      kaShipmentNotifyPref = kaNormalizeShipmentNotifyPref(data.preference || entry.payload || {});
+      kaSaveShipmentNotifyPref(kaShipmentNotifyPref);
+    } catch (err) {
+      if (!navigator.onLine) {
+        remaining.push(entry);
+        break;
+      }
+      remaining.push(entry);
+    }
+  }
+  replaceSettingsQueueTypes(['shipments_notifications'], remaining);
+}
+
+function kaIsPushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window;
+}
+
+function kaUrlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding)
+    .replace(/-/g, '+')
+    .replace(/_/g, '/');
+  const raw = atob(base64);
+  const output = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) {
+    output[i] = raw.charCodeAt(i);
+  }
+  return output;
+}
+
+async function kaRefreshPushStatus() {
+  const statusEl = document.getElementById('ka-notify-push-status');
+  const subscribeBtn = document.getElementById('ka-notify-push-subscribe');
+  const unsubscribeBtn = document.getElementById('ka-notify-push-unsubscribe');
+
+  if (!kaIsPushSupported()) {
+    if (statusEl) statusEl.textContent = 'Push not supported on this browser.';
+    if (subscribeBtn) subscribeBtn.disabled = true;
+    if (unsubscribeBtn) unsubscribeBtn.disabled = true;
+    return;
+  }
+
+  if (!kaPushPublicKey) {
+    if (statusEl) statusEl.textContent = 'Push keys are not configured yet.';
+    if (subscribeBtn) subscribeBtn.disabled = true;
+    if (unsubscribeBtn) unsubscribeBtn.disabled = true;
+    return;
+  }
+
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  if (sub) {
+    if (statusEl) statusEl.textContent = 'Push is enabled on this device.';
+    if (subscribeBtn) subscribeBtn.disabled = true;
+    if (unsubscribeBtn) unsubscribeBtn.disabled = false;
+  } else {
+    if (statusEl) statusEl.textContent = 'Push is not enabled on this device.';
+    if (subscribeBtn) subscribeBtn.disabled = false;
+    if (unsubscribeBtn) unsubscribeBtn.disabled = true;
+  }
+}
+
+async function kaSubscribeToPush() {
+  const statusEl = document.getElementById('ka-notify-push-status');
+  try {
+    if (!kaPushPublicKey) {
+      if (statusEl) statusEl.textContent = 'Push keys are not configured yet.';
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      if (statusEl) statusEl.textContent = 'Push permission was not granted.';
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: kaUrlBase64ToUint8Array(kaPushPublicKey)
+      });
+    }
+    const json = sub.toJSON();
+    await fetchJSON('/api/notifications/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        endpoint: sub.endpoint,
+        p256dh: json.keys?.p256dh || '',
+        auth: json.keys?.auth || '',
+        user_agent: navigator.userAgent
+      })
+    });
+    if (statusEl) statusEl.textContent = 'Push enabled for this device.';
+    await kaRefreshPushStatus();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = err.message || 'Failed to enable push.';
+  }
+}
+
+async function kaUnsubscribeFromPush() {
+  const statusEl = document.getElementById('ka-notify-push-status');
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      if (statusEl) statusEl.textContent = 'Push is already disabled.';
+      await kaRefreshPushStatus();
+      return;
+    }
+    await fetchJSON('/api/notifications/push/unsubscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: sub.endpoint })
+    });
+    await sub.unsubscribe();
+    if (statusEl) statusEl.textContent = 'Push disabled for this device.';
+    await kaRefreshPushStatus();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = err.message || 'Failed to disable push.';
+  }
+}
+
+async function kaLoadNotificationPrefs() {
+  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return;
+  try {
+    const data = await fetchJSON('/api/notifications/prefs');
+    kaPushPublicKey = data.push_public_key || '';
+    kaNotificationPrefs = kaNormalizeNotificationPrefs(data.prefs || {});
+    kaSaveNotificationPrefs(kaNotificationPrefs);
+  } catch (err) {
+    kaNotificationPrefs = kaLoadNotificationPrefsFromStorage();
+  }
+  kaApplyNotificationPrefsToUI(kaNotificationPrefs);
+  await kaRefreshPushStatus();
+}
+
+function kaSyncShipmentFilterPrefs() {
+  if (!kaNotificationPrefs.shipment_filters) {
+    kaNotificationPrefs.shipment_filters = { enabled: true, statuses: [], project_ids: [] };
+  }
+  kaNotificationPrefs.shipment_filters.statuses = (kaShipmentNotifyPref.statuses || []).slice();
+  kaNotificationPrefs.shipment_filters.project_ids = (kaShipmentNotifyPref.project_ids || []).slice();
+  kaSaveNotificationPrefs(kaNotificationPrefs);
+}
+
+async function kaLoadShipmentNotifyPrefs() {
+  if (!kaCurrentAdmin || !kaCurrentAdmin.id) return;
+  try {
+    const data = await fetchJSON('/api/shipments/notifications');
+    kaShipmentNotifyPref = kaNormalizeShipmentNotifyPref(data.preference || {});
+    kaSaveShipmentNotifyPref(kaShipmentNotifyPref);
+  } catch (err) {
+    kaShipmentNotifyPref = kaLoadShipmentNotifyPrefFromStorage();
+  }
+  if (
+    (!kaShipmentNotifyPref.statuses || !kaShipmentNotifyPref.statuses.length) &&
+    kaNotificationPrefs.shipment_filters?.statuses?.length
+  ) {
+    kaShipmentNotifyPref.statuses = kaNotificationPrefs.shipment_filters.statuses.slice();
+  }
+  if (
+    (!kaShipmentNotifyPref.project_ids || !kaShipmentNotifyPref.project_ids.length) &&
+    kaNotificationPrefs.shipment_filters?.project_ids?.length
+  ) {
+    kaShipmentNotifyPref.project_ids = kaNotificationPrefs.shipment_filters.project_ids.slice();
+  }
+  kaSyncShipmentFilterPrefs();
+  kaApplyShipmentNotifyPrefToUI(kaShipmentNotifyPref, kaNotifyStatusesSource());
+}
+
+async function kaSaveNotificationsToServer({ notificationPrefs, shipmentPrefs }) {
+  if (notificationPrefs) {
+    const payload = kaNormalizeNotificationPrefs(notificationPrefs);
+    kaNotificationPrefs = payload;
+    kaSaveNotificationPrefs(payload);
+    if (!navigator.onLine) {
+      queueSettingsUpdate('notifications_prefs', payload);
+    } else {
+      await fetchJSON('/api/notifications/prefs', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    }
+  }
+
+  if (shipmentPrefs) {
+    const payload = kaNormalizeShipmentNotifyPref(shipmentPrefs);
+    kaShipmentNotifyPref = payload;
+    kaSaveShipmentNotifyPref(payload);
+    if (!navigator.onLine) {
+      queueSettingsUpdate('shipments_notifications', payload);
+    } else {
+      await fetchJSON('/api/shipments/notifications', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    }
+  }
+}
+
+async function kaSendTestNotification() {
+  try {
+    const channels = ['in_app'];
+    if (kaNotificationPrefs.email_enabled) channels.push('email');
+    if (kaNotificationPrefs.push_enabled) channels.push('push');
+    const data = await fetchJSON('/api/notifications/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channels,
+        title: 'Test notification',
+        body: 'This is a test notification from Avian.'
+      })
+    });
+    const results = data.results || {};
+    const summary = Object.entries(results)
+      .map(([key, val]) => `${key}: ${val}`)
+      .join(', ');
+    kaSetNotifyMessage(summary ? `Test sent (${summary}).` : 'Test sent.', 'green');
+  } catch (err) {
+    kaSetNotifyMessage(err.message || 'Failed to send test.', '#b91c1c');
+  }
+}
+
+async function kaInitNotifyPanel() {
   if (!kaCurrentAdmin || !kaCurrentAdmin.id) return;
 
   kaNotifiedShipments = new Set();
@@ -2479,8 +4050,8 @@ function kaInitNotifyPanel() {
     kaNotifyTimer = null;
   }
 
-  const saved = kaLoadNotifyPrefFromStorage();
-  kaApplyNotifyPrefToUI(saved, kaNotifyStatusesSource());
+  await kaLoadNotificationPrefs();
+  await kaLoadShipmentNotifyPrefs();
 
   const statusBtn = document.getElementById('ka-notify-statuses-btn');
   const statusMenu = document.getElementById('ka-notify-statuses-menu');
@@ -2510,89 +4081,183 @@ function kaInitNotifyPanel() {
     });
   }
 
-  const shipToggle = document.getElementById('ka-notify-shipments-enabled');
-  if (shipToggle) {
-    shipToggle.addEventListener('change', () => {
-      kaNotifyPref.shipments_enabled = shipToggle.checked;
-      kaNotifyPref.enabled = shipToggle.checked; // legacy
-      kaToggleShipmentFields(shipToggle.checked);
-      kaReminderTimestamps = {};
-      kaNotifiedShipments = new Set();
-      kaSaveNotifyPref(kaNotifyPref);
+  const shipmentsUpdatesToggle = document.getElementById('ka-notify-shipments-updates-enabled');
+  if (shipmentsUpdatesToggle) {
+    shipmentsUpdatesToggle.addEventListener('change', () => {
+      kaNotificationPrefs.shipment_filters.enabled = shipmentsUpdatesToggle.checked;
+      kaUpdateShipmentNotifyVisibility();
+    });
+  }
+
+  const shipmentRemindersToggle = document.getElementById('ka-notify-shipments-reminders-enabled');
+  if (shipmentRemindersToggle) {
+    shipmentRemindersToggle.addEventListener('change', () => {
+      kaShipmentNotifyPref.enabled = shipmentRemindersToggle.checked;
+      if (!kaShipmentNotifyPref.enabled) {
+        kaShipmentNotifyPref.notify_time = '';
+      }
+      kaUpdateShipmentNotifyVisibility();
       kaStartNotifyTimer(true);
+    });
+  }
+
+  const shipmentTimeEl = document.getElementById('ka-notify-shipments-time');
+  if (shipmentTimeEl) {
+    shipmentTimeEl.addEventListener('change', () => {
+      kaShipmentNotifyPref.notify_time = shipmentTimeEl.value || KA_SHIPMENT_NOTIFY_DEFAULT.notify_time;
+      kaReminderTimestamps = {};
+      kaStartNotifyTimer(true);
+    });
+  }
+
+  const shipmentEveryEl = document.getElementById('ka-notify-shipments-every-days');
+  if (shipmentEveryEl) {
+    shipmentEveryEl.addEventListener('change', () => {
+      const val = Number(shipmentEveryEl.value) || 1;
+      kaShipmentNotifyPref.remind_every_days = val > 0 ? val : 1;
+      kaReminderTimestamps = {};
+      kaStartNotifyTimer(true);
+    });
+  }
+
+  const timeToggle = document.getElementById('ka-notify-time-enabled');
+  if (timeToggle) {
+    timeToggle.addEventListener('change', () => {
+      kaNotificationPrefs.time_filters.enabled = timeToggle.checked;
+      kaSetNotifyGroupDisabled(
+        document.getElementById('ka-notify-time-events'),
+        !timeToggle.checked
+      );
+    });
+  }
+
+  const payrollToggle = document.getElementById('ka-notify-payroll-enabled');
+  if (payrollToggle) {
+    payrollToggle.addEventListener('change', () => {
+      kaNotificationPrefs.payroll_filters.enabled = payrollToggle.checked;
+      kaSetNotifyGroupDisabled(
+        document.getElementById('ka-notify-payroll-events'),
+        !payrollToggle.checked
+      );
+    });
+  }
+
+  const dailyToggle = document.getElementById('ka-notify-daily-enabled');
+  if (dailyToggle) {
+    dailyToggle.addEventListener('change', () => {
+      const body = document.getElementById('ka-notify-daily-body');
+      if (body) body.classList.toggle('hidden', !dailyToggle.checked);
     });
   }
 
   const clockToggle = document.getElementById('ka-notify-clockout-enabled');
   if (clockToggle) {
     clockToggle.addEventListener('change', () => {
-      kaNotifyPref.clockout_enabled = clockToggle.checked;
+      kaNotificationPrefs.clockout_enabled = clockToggle.checked;
       kaClockoutAlertedDay = '';
       const clockBody = document.getElementById('ka-notify-clockout-body');
       if (clockBody) clockBody.classList.toggle('hidden', !clockToggle.checked);
-      kaSaveNotifyPref(kaNotifyPref);
       kaStartNotifyTimer(true);
     });
   }
 
-  const everyEl = document.getElementById('ka-notify-every-days');
-  if (everyEl) {
-    everyEl.addEventListener('change', () => {
-      const val = Number(everyEl.value) || 1;
-      kaNotifyPref.remind_every_days = val > 0 ? val : 1;
-      kaSaveNotifyPref(kaNotifyPref);
-      kaReminderTimestamps = {};
-      kaStartNotifyTimer(true);
-    });
-  }
-
-  const alertTimeEl = document.getElementById('ka-notify-alert-time');
-  if (alertTimeEl) {
-    alertTimeEl.addEventListener('change', () => {
-      const val = alertTimeEl.value || KA_NOTIFY_DEFAULT.remind_time;
-      kaNotifyPref.remind_time = val;
-      kaNotifyPref.clockout_time = val;
+  const clockoutTimeEl = document.getElementById('ka-notify-clockout-time');
+  if (clockoutTimeEl) {
+    clockoutTimeEl.addEventListener('change', () => {
+      const val = clockoutTimeEl.value || KA_NOTIFICATION_PREF_DEFAULT.clockout_time;
+      kaNotificationPrefs.clockout_time = val;
       kaClockoutAlertedDay = '';
-      kaReminderTimestamps = {};
-      kaSaveNotifyPref(kaNotifyPref);
       kaStartNotifyTimer(true);
     });
+  }
+
+  const dailyTimeEl = document.getElementById('ka-notify-daily-time');
+  if (dailyTimeEl) {
+    dailyTimeEl.addEventListener('change', () => {
+      kaNotificationPrefs.remind_time = dailyTimeEl.value || KA_SHIPMENT_NOTIFY_DEFAULT.notify_time;
+    });
+  }
+
+  const dailyEveryEl = document.getElementById('ka-notify-daily-every');
+  if (dailyEveryEl) {
+    dailyEveryEl.addEventListener('change', () => {
+      const val = Number(dailyEveryEl.value) || 1;
+      kaNotificationPrefs.remind_every_days = val > 0 ? val : 1;
+    });
+  }
+
+  const emailToggle = document.getElementById('ka-notify-email-enabled');
+  if (emailToggle) {
+    emailToggle.addEventListener('change', () => {
+      kaNotificationPrefs.email_enabled = emailToggle.checked;
+    });
+  }
+
+  const pushToggle = document.getElementById('ka-notify-push-enabled');
+  if (pushToggle) {
+    pushToggle.addEventListener('change', () => {
+      kaNotificationPrefs.push_enabled = pushToggle.checked;
+    });
+  }
+
+  const pushSubscribeBtn = document.getElementById('ka-notify-push-subscribe');
+  if (pushSubscribeBtn) {
+    pushSubscribeBtn.addEventListener('click', kaSubscribeToPush);
+  }
+  const pushUnsubscribeBtn = document.getElementById('ka-notify-push-unsubscribe');
+  if (pushUnsubscribeBtn) {
+    pushUnsubscribeBtn.addEventListener('click', kaUnsubscribeFromPush);
   }
 
   const saveBtn = document.getElementById('ka-notify-save');
   if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
-      const pref = kaCollectNotifyForm();
-      kaNotifyPref = pref;
-      kaSaveNotifyPref(pref);
-      await kaStartNotifyTimer(true);
-      kaReminderTimestamps = {};
-      kaNotifiedShipments = new Set();
-      kaClockoutAlertedDay = '';
-      kaSetNotifyMsg('Notification settings saved for this kiosk.', 'green');
-
+      const shipmentPayload = kaCollectShipmentNotifyPrefsFromUI();
+      const notificationPayload = kaCollectNotificationPrefsFromUI();
+      try {
+        await kaSaveNotificationsToServer({
+          notificationPrefs: notificationPayload,
+          shipmentPrefs: shipmentPayload
+        });
+        kaApplyNotificationPrefsToUI(kaNotificationPrefs);
+        kaApplyShipmentNotifyPrefToUI(kaShipmentNotifyPref, kaNotifyStatusesSource());
+        kaReminderTimestamps = {};
+        kaNotifiedShipments = new Set();
+        kaClockoutAlertedDay = '';
+        await kaStartNotifyTimer(true);
+        if (!navigator.onLine) {
+          kaSetNotifyMessage('Saved offline — will sync when back online.', '#b45309');
+        } else {
+          kaSetNotifyMessage('Notification settings saved.', 'green');
+        }
+      } catch (err) {
+        kaSetNotifyMessage(err.message || 'Failed to save notification settings.', '#b91c1c');
+      }
       const statusMenu = document.getElementById('ka-notify-statuses-menu');
       if (statusMenu) statusMenu.classList.add('hidden');
       const projMenu = document.getElementById('ka-notify-projects-menu');
       if (projMenu) projMenu.classList.add('hidden');
-      kaToggleShipmentFields(!!pref.shipments_enabled);
+      kaUpdateShipmentNotifyVisibility();
     });
   }
 
   const testBtn = document.getElementById('ka-notify-test');
   if (testBtn) {
-    testBtn.addEventListener('click', () => {
+    testBtn.addEventListener('click', async () => {
       const tests = [];
-      if (kaNotifyPref.shipments_enabled) tests.push(kaTriggerShipmentNotification(true));
-      if (kaNotifyPref.clockout_enabled) tests.push(kaClockoutAlertCheck(true));
+      if (kaShipmentNotifyPref.enabled) tests.push(kaTriggerShipmentNotification(true));
+      if (kaNotificationPrefs.clockout_enabled) tests.push(kaClockoutAlertCheck(true));
+      await kaSendTestNotification();
       if (!tests.length) {
-        kaSetNotifyMsg('Enable a notification type to send a test.', '#b45309');
+        kaSetNotifyMessage('Test sent. Enable shipment reminders or clock-out alerts for device popups.', '#b45309');
         return;
       }
       Promise.allSettled(tests);
     });
   }
 
+  await kaSyncNotificationPrefsQueue();
+  await kaSyncShipmentNotifyPrefsQueue();
   kaStartNotifyTimer(true);
 }
 
@@ -2600,12 +4265,17 @@ function kaPerm(key) {
   return !!kaAccessPerms[key];
 }
 
+function kaIsSuperAdmin() {
+  const value = kaCurrentAdmin && kaCurrentAdmin.is_super_admin;
+  return value === true || value === 1 || value === '1';
+}
+
 function kaCanViewShipments() {
   return kaPerm('see_shipments');
 }
 
 function kaCanViewTimeReports() {
-  return kaPerm('view_time_reports');
+  return kaPerm('view_time_reports') || kaPerm('view_payroll');
 }
 
 function kaCanModifyTime() {
@@ -2620,6 +4290,10 @@ function kaCanModifyPayRates() {
   return kaPerm('modify_pay_rates');
 }
 
+function kaCanAssignTimesheets() {
+  return kaPerm('assign_timesheets') || kaIsSuperAdmin();
+}
+
 function kaApplyAccessUI() {
   const shipBtn = document.querySelector('.ka-bottom-nav button[data-ka-view=\"shipments\"]');
   if (shipBtn) shipBtn.style.display = kaCanViewShipments() ? '' : 'none';
@@ -2632,7 +4306,22 @@ function kaApplyAccessUI() {
 
   const showNotify = kaCanViewShipments();
   const notifyTile = document.getElementById('ka-notify-settings-tile');
-  if (notifyTile) notifyTile.style.display = showNotify ? '' : 'none';
+  const canTimeNotify = kaCanModifyTime() || kaCanViewTimeReports() || kaCanViewPayroll();
+  const canPayrollNotify = kaCanViewPayroll();
+  const canShipmentNotify = kaCanViewShipments();
+  const canAnyNotify = canShipmentNotify || canTimeNotify || canPayrollNotify;
+  if (notifyTile) notifyTile.style.display = canAnyNotify ? '' : 'none';
+
+  const notifyShipSection = document.getElementById('ka-notify-shipments-section');
+  if (notifyShipSection) notifyShipSection.style.display = canShipmentNotify ? '' : 'none';
+  const notifyTimeSection = document.getElementById('ka-notify-time-section');
+  if (notifyTimeSection) notifyTimeSection.style.display = canTimeNotify ? '' : 'none';
+  const payrollSection = document.getElementById('ka-notify-payroll-section');
+  if (payrollSection) payrollSection.style.display = canPayrollNotify ? '' : 'none';
+  const summarySection = document.getElementById('ka-notify-summary-section');
+  if (summarySection) summarySection.style.display = (canTimeNotify || canPayrollNotify) ? '' : 'none';
+  const clockoutSection = document.getElementById('ka-notify-clockout-section');
+  if (clockoutSection) clockoutSection.style.display = canTimeNotify ? '' : 'none';
 
   const timeSection = document.getElementById('ka-view-time');
   if (timeSection) timeSection.classList.toggle('hidden', !kaCanViewTimeReports());
@@ -2654,6 +4343,9 @@ function kaApplyAccessUI() {
     ratesEditor?.classList.add('hidden');
   }
 
+  const rateField = document.querySelector('.ka-employee-rate-field');
+  if (rateField) rateField.classList.toggle('hidden', !canRates);
+
   if (!kaCanViewShipments() && kaCurrentView === 'shipments') {
     kaShowView('timesheets');
   } else if (!kaCanViewTimeReports() && kaCurrentView === 'time') {
@@ -2669,6 +4361,7 @@ async function kaLoadAccessPerms() {
     modify_time: true,
     view_time_reports: true,
     view_all_timesheets: false,
+    assign_timesheets: false,
     view_payroll: true,
     modify_pay_rates: false
   };
@@ -2695,9 +4388,23 @@ async function kaLoadAccessPerms() {
     modify_time: coerceFlag(admin.modify_time, defaults.modify_time),
     view_time_reports: coerceFlag(admin.view_time_reports, defaults.view_time_reports),
     view_all_timesheets: coerceFlag(admin.view_all_timesheets, defaults.view_all_timesheets),
+    assign_timesheets: coerceFlag(admin.assign_timesheets, defaults.assign_timesheets),
     view_payroll: coerceFlag(admin.view_payroll, defaults.view_payroll),
     modify_pay_rates: coerceFlag(admin.modify_pay_rates, defaults.modify_pay_rates)
   };
+
+  if (kaIsSuperAdmin()) {
+    nextPerms = {
+      ...nextPerms,
+      see_shipments: true,
+      modify_time: true,
+      view_time_reports: true,
+      view_all_timesheets: true,
+      assign_timesheets: true,
+      view_payroll: true,
+      modify_pay_rates: true
+    };
+  }
 
   kaAccessPerms = nextPerms;
   if (kaCurrentAdmin) {
@@ -3042,6 +4749,45 @@ function kaSetAccountDisabled(disabled) {
   });
 }
 
+function kaAccountAuthMessage(err) {
+  const raw = err && (err.message || err.error) ? String(err.message || err.error) : '';
+  const msg = raw.trim();
+  if (/no login account/i.test(msg)) {
+    return 'No login account is linked to this admin. Ask a super admin to create one.';
+  }
+  if (/login is disabled/i.test(msg)) {
+    return 'Login is disabled for this account.';
+  }
+  if (/desktop access/i.test(msg)) {
+    return 'Desktop access is required to update login details.';
+  }
+  if (/not authenticated|not authorized|admin privileges required/i.test(msg)) {
+    return 'Sign in as a kiosk admin to update your account.';
+  }
+  return msg || 'Unable to load account.';
+}
+
+function kaUpdateAccountProfile({ employee, email } = {}) {
+  const nameEl = document.getElementById('ka-account-name');
+  const emailEl = document.getElementById('ka-account-email');
+  const photoEl = document.getElementById('ka-account-photo');
+  const initialsEl = document.getElementById('ka-account-initials');
+  const resolved = employee || kaCurrentAdmin || null;
+  const displayName = resolved?.nickname || resolved?.name || 'My account';
+  if (nameEl) nameEl.textContent = displayName;
+  if (emailEl) {
+    const label = (email || resolved?.email || '').trim();
+    emailEl.textContent = label || '—';
+  }
+  kaApplyEmployeeAvatar({
+    imgEl: photoEl,
+    initialsEl,
+    employeeId: resolved?.id,
+    uploadedAt: resolved?.employee_photo_uploaded_at,
+    name: displayName
+  });
+}
+
 async function kaLoadAccountInfo() {
   const authStatusEl = document.getElementById('ka-account-auth-status');
   const emailCurrent = document.getElementById('ka-account-email-current');
@@ -3051,24 +4797,27 @@ async function kaLoadAccountInfo() {
   kaSetInlineStatus(emailStatus, '');
   kaSetInlineStatus(passwordStatus, '');
   kaSetAccountDisabled(true);
+  kaUpdateAccountProfile({ employee: kaCurrentAdmin });
 
   try {
-    const me = await fetchJSON('/api/auth/me');
+    const me = await fetchJSON('/api/kiosk/admin/account');
     kaAccountAuthed = !!me?.ok;
     if (emailCurrent) {
       emailCurrent.value = me?.user?.email || '';
     }
+    const employeeId = me?.employee?.id;
+    const employee = employeeId
+      ? (kaFindEmployeeById(employeeId) || { id: employeeId, name: me?.employee?.name || '' })
+      : kaCurrentAdmin;
+    kaUpdateAccountProfile({ employee, email: me?.user?.email || '' });
     kaSetInlineStatus(authStatusEl, '');
     kaSetAccountDisabled(!kaAccountAuthed);
   } catch (err) {
     kaAccountAuthed = false;
     if (emailCurrent) emailCurrent.value = '';
-    kaSetInlineStatus(
-      authStatusEl,
-      'Sign in to the Admin Console to update your account.',
-      'error'
-    );
+    kaSetInlineStatus(authStatusEl, kaAccountAuthMessage(err), 'error');
     kaSetAccountDisabled(true);
+    kaUpdateAccountProfile({ employee: kaCurrentAdmin });
   }
 }
 
@@ -3113,7 +4862,7 @@ function kaBindAccountActions() {
       kaSetInlineStatus(emailStatus, 'Updating email…');
 
       try {
-        const res = await fetchJSON('/api/auth/change-email', {
+        const res = await fetchJSON('/api/kiosk/admin/account/email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -3126,6 +4875,7 @@ function kaBindAccountActions() {
         if (emailNew) emailNew.value = '';
         if (emailConfirm) emailConfirm.value = '';
         if (emailPassword) emailPassword.value = '';
+        kaUpdateAccountProfile({ employee: kaCurrentAdmin, email: updatedEmail });
         kaSetInlineStatus(emailStatus, 'Email updated.', 'ok');
       } catch (err) {
         console.error('Kiosk admin email update error:', err);
@@ -3172,7 +4922,7 @@ function kaBindAccountActions() {
       kaSetInlineStatus(passwordStatus, 'Updating password…');
 
       try {
-        await fetchJSON('/api/auth/change-password', {
+        await fetchJSON('/api/kiosk/admin/account/password', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -3266,6 +5016,19 @@ function kaFmtDateMDY(input) {
   return `${mm}/${dd}/${yy}`;
 }
 
+function kaFmtDateTimeMDY(input) {
+  if (!input) return '';
+  const dt = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(dt.getTime())) return '';
+  const datePart = kaFmtDateMDY(dt);
+  const timePart = dt.toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+  return `${datePart}, ${timePart}`;
+}
+
 function kaDatePartsFromInput(input) {
   if (!input) return null;
   if (typeof input === 'string') {
@@ -3281,19 +5044,11 @@ function kaDatePartsFromInput(input) {
 }
 
 function kaFmtDateShort(input) {
-  const parts = kaDatePartsFromInput(input);
-  if (!parts) return '';
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const month = months[parts.m - 1] || '';
-  return `${month} ${parts.d}`;
+  return kaFmtDateMDY(input);
 }
 
 function kaFmtDateLong(input) {
-  const parts = kaDatePartsFromInput(input);
-  if (!parts) return '';
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const month = months[parts.m - 1] || '';
-  return `${month} ${parts.d}, ${parts.y}`;
+  return kaFmtDateMDY(input);
 }
 
 function kaSetHeaderView(title, dateLabel = '') {
@@ -3313,6 +5068,14 @@ function kaTimesheetHeaderDateValue(activeSession = null) {
   return kaTimesheetDate || sessionDate || kaTodayIso();
 }
 
+function kaCurrentShipmentsHeaderLabel() {
+  const select = document.getElementById('ka-shipments-filter');
+  if (!select) return '';
+  const option = select.options[select.selectedIndex];
+  if (!option) return '';
+  return (option.textContent || '').trim();
+}
+
 function kaUpdateHeaderTitle(view = kaCurrentView) {
   const current = view || kaCurrentView || 'timesheets';
   let title = '';
@@ -3324,7 +5087,8 @@ function kaUpdateHeaderTitle(view = kaCurrentView) {
     title = 'Current Workers';
     dateLabel = kaCurrentWorkersProjectLabel();
   } else if (current === 'shipments') {
-    title = 'Shipments – Ready to Pick Up';
+    const label = kaCurrentShipmentsHeaderLabel();
+    title = label ? `Shipments – ${label}` : 'Shipments';
   } else if (current === 'time') {
     title = 'Time Entries';
   } else if (current === 'employees') {
@@ -3443,16 +5207,20 @@ function kaFmtDateLongTZ(input = new Date()) {
   const dt = input instanceof Date ? input : new Date(input);
   if (Number.isNaN(dt.getTime())) return '';
   try {
-    return new Intl.DateTimeFormat(undefined, {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
       timeZone: kaOrgTimezone || KA_DEFAULT_TIMEZONE,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    }).format(dt);
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    const parts = fmt.formatToParts(dt);
+    const y = parts.find(p => p.type === 'year')?.value;
+    const m = parts.find(p => p.type === 'month')?.value;
+    const d = parts.find(p => p.type === 'day')?.value;
+    if (y && m && d) return `${m}/${d}/${y}`;
   } catch (err) {
     console.warn('Falling back to local date for kaFmtDateLongTZ:', err);
-    return dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    return kaFmtDateMDY(dt);
   }
 }
 
@@ -3644,7 +5412,14 @@ function kaQueueTimeReview(entry) {
   if (!entry || !entry.exception_id || !entry.payload) return;
   const queue = kaLoadTimeReviewQueue();
   const id = Number(entry.exception_id);
-  const remaining = queue.filter(item => Number(item.exception_id) !== id);
+  const source = entry.payload && entry.payload.source ? String(entry.payload.source) : 'time_entry';
+  const remaining = queue.filter(item => {
+    const itemId = Number(item.exception_id);
+    const itemSource = item && item.payload && item.payload.source
+      ? String(item.payload.source)
+      : 'time_entry';
+    return !(itemId === id && itemSource === source);
+  });
   remaining.push(entry);
   kaSaveTimeReviewQueue(remaining);
 }
@@ -3832,6 +5607,8 @@ function kaOfflinePunchToEntry(punch) {
     verified: false,
     has_geo_violation: false,
     has_auto_clock_out: false,
+    punch_exception_unresolved: 0,
+    punch_exception_ids: [],
     _offline: true
   };
 }
@@ -3931,7 +5708,8 @@ async function kaLoadLiveWorkers() {
         // Clock In (local time)
         clockInLabel = dt.toLocaleTimeString([], {
           hour: '2-digit',
-          minute: '2-digit'
+          minute: '2-digit',
+          hour12: true
         });
         clockInDateLabel = kaFmtDateLong(dt);
 
@@ -3945,7 +5723,8 @@ async function kaLoadLiveWorkers() {
           const out = new Date(r.clock_out_ts);
           clockOutLabel = out.toLocaleTimeString([], {
             hour: '2-digit',
-            minute: '2-digit'
+            minute: '2-digit',
+            hour12: true
           });
         }
 
@@ -3961,7 +5740,8 @@ async function kaLoadLiveWorkers() {
       }
 
       const employeeName = r.employee_name || '(Unknown employee)';
-      const initials = kaInitialsFromName(r.employee_name || 'Employee');
+      const initials = kaInitialsFromName(r.employee_name || 'Employee') || '?';
+      const empRecord = r.employee_id ? kaFindEmployeeById(r.employee_id) : null;
       const clockInStamp = clockInDateLabel || '';
       const clockInText = clockInLabel ? `Clocked in ${clockInLabel}` : 'Clocked in';
       const clockOutText = clockOutLabel ? `Clocked out ${clockOutLabel}` : '';
@@ -3973,7 +5753,8 @@ async function kaLoadLiveWorkers() {
       item.setAttribute('role', 'listitem');
       item.innerHTML = `
         <div class="ka-live-avatar" aria-hidden="true">
-          <span class="ka-live-initials">${initials || '?'}</span>
+          <img class="ka-live-photo hidden" alt="" />
+          <span class="ka-live-initials">${initials}</span>
         </div>
         <div class="ka-live-details">
           <div class="ka-live-name-row">
@@ -3991,6 +5772,16 @@ async function kaLoadLiveWorkers() {
           <span class="ka-live-metric-value">${durationLabel}</span>
         </div>
       `;
+
+      const photoEl = item.querySelector('.ka-live-photo');
+      const initialsEl = item.querySelector('.ka-live-initials');
+      kaApplyEmployeeAvatar({
+        imgEl: photoEl,
+        initialsEl,
+        employeeId: r.employee_id,
+        uploadedAt: empRecord?.employee_photo_uploaded_at,
+        initials
+      });
 
       fragment.appendChild(item);
     });
@@ -4070,6 +5861,11 @@ function kaBindTimeOrientationListener() {
   kaTimeOrientationListenerBound = true;
 }
 
+function kaSetTimeReportVisible(show) {
+  const report = document.getElementById('ka-time-report');
+  if (report) report.classList.toggle('hidden', !show);
+}
+
 function kaSyncLiveCountPill() {
   const pill = document.getElementById('ka-live-count-tag');
   if (!pill) return;
@@ -4081,12 +5877,14 @@ function kaSyncLiveCountPill() {
 
 function kaSetEmployeeFormVisible(nextVisible, { skipScroll = false } = {}) {
   const form = document.getElementById('ka-employee-add-form');
-  const toggleBtn = document.getElementById('ka-employee-add-toggle');
+  const toggleBtn = document.getElementById('ka-employee-add-cta');
+  const card = document.getElementById('ka-employee-add-card');
   const statusEl = document.getElementById('ka-helper-status');
-  if (!form || !toggleBtn) return;
+  if (!form || !toggleBtn || !card) return;
   kaEmployeeFormVisible = !!nextVisible;
   form.classList.toggle('hidden', !kaEmployeeFormVisible);
-  toggleBtn.textContent = kaEmployeeFormVisible ? 'Hide form' : 'Add employee';
+  card.classList.toggle('hidden', !kaEmployeeFormVisible);
+  toggleBtn.textContent = kaEmployeeFormVisible ? 'Close' : '+ New Employee';
   toggleBtn.setAttribute('aria-expanded', String(kaEmployeeFormVisible));
   if (statusEl && !kaEmployeeFormVisible) {
     statusEl.textContent = '';
@@ -4101,7 +5899,7 @@ function kaNormalizeEmployees(rows) {
   return (rows || []).map(e => ({
     ...e,
     is_admin: !!e.kiosk_admin_access,
-    uses_timekeeping: e.worker_timekeeping !== undefined ? Number(e.worker_timekeeping) : 1
+    is_super_admin: e.is_super_admin === true || e.is_super_admin === 1 || e.is_super_admin === '1'
   }));
 }
 
@@ -4120,33 +5918,49 @@ function kaUpdateEmployeeRecord(id, updates = {}) {
   return emp;
 }
 
-function kaEmployeeQboStatus(emp = {}) {
-  const hasQboId = !!(emp.employee_qbo_id || emp.vendor_qbo_id);
-  const needsSync = emp.needs_qbo_sync === 1 || emp.needs_qbo_sync === true;
-  if (!hasQboId && !needsSync) {
-    return { label: 'Not linked to QuickBooks', className: 'gray', shortLabel: 'QuickBooks not linked' };
-  }
-  if (needsSync) {
-    return {
-      label: hasQboId ? 'QuickBooks sync needed' : 'Needs QuickBooks linking',
-      className: 'orange',
-      shortLabel: 'QuickBooks pending'
-    };
-  }
-  return { label: 'Synced to QuickBooks', className: 'green', shortLabel: 'QuickBooks synced' };
-}
-
-function kaEmployeeDocTypeLabel(value) {
-  const v = String(value || '').trim().toLowerCase();
-  if (v === 'drivers_license') return "Driver's license";
-  if (v === 'passport') return 'Passport';
-  if (v === 'other') return 'Other';
-  return '';
-}
-
 function kaEmployeeDateLabel(value) {
   const label = kaFmtDateLong(value);
   return label || 'Not set';
+}
+
+function kaEmployeeInitials(name) {
+  const text = (name || '').toString().trim();
+  if (!text) return '—';
+  const parts = text.split(/\s+/).filter(Boolean);
+  const first = parts[0] ? parts[0][0] : '';
+  const last = parts.length > 1 ? parts[parts.length - 1][0] : '';
+  return (first + last).toUpperCase() || '—';
+}
+
+function kaEmployeeDateInputValue(value) {
+  const raw = value == null ? '' : String(value).trim();
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toISOString().slice(0, 10);
+}
+
+function kaSetEmployeeDateInput(el, value) {
+  if (!el) return;
+  const normalized = kaEmployeeDateInputValue(value);
+  if (el instanceof HTMLInputElement) {
+    el.value = normalized;
+  } else {
+    el.textContent = normalized || 'Not set';
+  }
+}
+
+function kaSetEmployeeFieldValue(el, value, placeholder = 'Not set') {
+  if (!el) return;
+  const text = value == null ? '' : String(value).trim();
+  const isEmpty = !text || text.toLowerCase() === 'not set';
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    el.value = isEmpty ? '' : text;
+    el.placeholder = isEmpty ? placeholder : '';
+  } else {
+    el.textContent = isEmpty ? placeholder : text;
+  }
 }
 
 function kaEmployeeAuthParams() {
@@ -4190,6 +6004,361 @@ function kaEmployeeDocUrl(employeeId, kind) {
   return kaAppendEmployeeAuth(base);
 }
 
+function kaEmployeePhotoSrc(employeeId, uploadedAt) {
+  if (!employeeId || !uploadedAt) return '';
+  const base = kaEmployeeDocUrl(employeeId, 'photo');
+  if (!base || base === '#') return '';
+  const cacheBust = encodeURIComponent(uploadedAt);
+  return `${base}${base.includes('?') ? '&' : '?'}v=${cacheBust}`;
+}
+
+function kaBindAvatarImage(imgEl, initialsEl) {
+  if (!imgEl || imgEl.dataset.bound) return;
+  imgEl.addEventListener('load', () => {
+    imgEl.classList.remove('hidden');
+    if (initialsEl) initialsEl.classList.add('hidden');
+  });
+  imgEl.addEventListener('error', () => {
+    imgEl.classList.add('hidden');
+    if (initialsEl) initialsEl.classList.remove('hidden');
+  });
+  imgEl.dataset.bound = '1';
+}
+
+function kaApplyEmployeeAvatar({ imgEl, initialsEl, employeeId, uploadedAt, name, initials }) {
+  if (initialsEl) {
+    if (initials != null) {
+      initialsEl.textContent = initials;
+    } else if (name != null) {
+      initialsEl.textContent = kaEmployeeInitials(name);
+    }
+  }
+  if (!imgEl) return;
+  const src = kaEmployeePhotoSrc(employeeId, uploadedAt);
+  if (src) {
+    imgEl.classList.add('hidden');
+    imgEl.src = src;
+    if (initialsEl) initialsEl.classList.remove('hidden');
+  } else {
+    imgEl.removeAttribute('src');
+    imgEl.classList.add('hidden');
+    if (initialsEl) initialsEl.classList.remove('hidden');
+  }
+  kaBindAvatarImage(imgEl, initialsEl);
+}
+
+function kaEmployeeDocCardTypeLabel(doc = {}) {
+  const rawType = (doc.doc_type || doc.type || '').toString().toLowerCase();
+  const label = (doc.doc_label || '').toString().trim();
+  if (rawType === 'photo') return 'Photo';
+  if (rawType === 'id') return label || 'ID';
+  if (rawType === 'worker_authorization' || rawType === 'worker authorization') {
+    return 'Worker Authorization';
+  }
+  if (rawType === 'other') return label || 'Other';
+  return label || 'Document';
+}
+
+function kaEmployeeHistoryCacheKey(employeeId) {
+  return `ka_employee_history_${employeeId}`;
+}
+
+function kaCacheEmployeeHistory(employeeId, history = []) {
+  if (!employeeId) return;
+  kaStoreSet(kaEmployeeHistoryCacheKey(employeeId), history || []);
+}
+
+function kaLoadCachedEmployeeHistory(employeeId) {
+  if (!employeeId) return [];
+  const history = kaStoreGet(kaEmployeeHistoryCacheKey(employeeId), []);
+  return Array.isArray(history) ? history : [];
+}
+
+function kaUpdateEmployeeHistoryButton(history = []) {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.historyBtn) return;
+  const hasHistory = Array.isArray(history) && history.length > 0;
+  els.historyBtn.classList.toggle('hidden', !hasHistory);
+}
+
+async function kaLoadEmployeeHistory(employeeId) {
+  if (!employeeId) return [];
+  if (!navigator.onLine) {
+    const cached = kaLoadCachedEmployeeHistory(employeeId);
+    kaEmployeeSheetState.history = cached;
+    kaUpdateEmployeeHistoryButton(cached);
+    return cached;
+  }
+  try {
+    const url = kaAppendEmployeeAuth(`/api/kiosk/admin/employees/${employeeId}/employment-history`);
+    const res = await fetchJSON(url);
+    const history = res && Array.isArray(res.history) ? res.history : [];
+    kaCacheEmployeeHistory(employeeId, history);
+    kaEmployeeSheetState.history = history;
+    kaUpdateEmployeeHistoryButton(history);
+    return history;
+  } catch (err) {
+    console.error('Failed to load employee history', err);
+    const cached = kaLoadCachedEmployeeHistory(employeeId);
+    kaEmployeeSheetState.history = cached;
+    kaUpdateEmployeeHistoryButton(cached);
+    return cached;
+  }
+}
+
+function kaEmployeeDocsCacheKey(employeeId) {
+  return `ka_employee_docs_cache_${employeeId}`;
+}
+
+function kaCacheEmployeeDocs(employeeId, docs = []) {
+  if (!employeeId) return;
+  kaStoreSet(kaEmployeeDocsCacheKey(employeeId), docs || []);
+}
+
+function kaLoadCachedEmployeeDocs(employeeId) {
+  if (!employeeId) return [];
+  const docs = kaStoreGet(kaEmployeeDocsCacheKey(employeeId), []);
+  return Array.isArray(docs) ? docs : [];
+}
+
+function kaRenderEmployeeDocsList(docs = []) {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.docsList) return;
+  const list = Array.isArray(docs) ? docs : [];
+  if (!list.length) {
+    els.docsList.innerHTML = '<div class="ka-ship-muted">(No documents uploaded)</div>';
+    return;
+  }
+  const items = list.map(doc => {
+    const href = kaAppendEmployeeAuth(doc.url || doc.file_path || '#');
+    const title = doc.title || doc.filename || doc.label || doc.doc_label || 'Document';
+    const typeLabel = kaEmployeeDocCardTypeLabel(doc);
+    return `
+      <li class="ka-doc-card" data-doc-url="${escapeHTML(href)}" data-doc-name="${escapeHTML(title)}" data-doc-type="${escapeHTML(typeLabel)}">
+        <a class="ka-doc-card-link" href="${href}" target="_blank" rel="noopener noreferrer" data-doc-url="${escapeHTML(href)}" data-doc-name="${escapeHTML(title)}" data-doc-type="${escapeHTML(typeLabel)}">${escapeHTML(title)}</a>
+        <div class="ka-doc-card-type">Type: ${escapeHTML(typeLabel)}</div>
+      </li>
+    `;
+  });
+  els.docsList.innerHTML = `<ul class="ka-docs-card-list">${items.join('')}</ul>`;
+}
+
+async function kaLoadEmployeeDocs(employeeId) {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.docsList || !employeeId) return;
+  if (!navigator.onLine) {
+    const cached = kaLoadCachedEmployeeDocs(employeeId);
+    if (cached.length) {
+      kaRenderEmployeeDocsList(cached);
+    } else {
+      els.docsList.innerHTML = '<div class="ka-ship-muted">(Offline — connect to load documents)</div>';
+    }
+    return;
+  }
+  els.docsList.innerHTML = '<div class="ka-ship-muted">(Loading documents…)</div>';
+  try {
+    const url = kaAppendEmployeeAuth(`/api/kiosk/admin/employees/${employeeId}/documents`);
+    const res = await fetchJSON(url);
+    const docs = res && Array.isArray(res.documents) ? res.documents : [];
+    kaRenderEmployeeDocsList(docs);
+    kaCacheEmployeeDocs(employeeId, docs);
+    kaPrefetchEmployeeDocsForOffline(docs);
+  } catch (err) {
+    console.error('Failed to load employee documents', err);
+    els.docsList.innerHTML = '<div class="ka-ship-muted">(Error loading documents)</div>';
+  }
+}
+
+function kaBindEmployeeDocsUploader() {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.docsFileInput || !els.docsType || !els.docsUpload || els.docsUpload.dataset.bound) {
+    return;
+  }
+  els.docsUpload.dataset.bound = '1';
+
+  if (els.docsChoose) {
+    els.docsChoose.addEventListener('click', () => {
+      els.docsFileInput.click();
+    });
+  }
+
+  const updateTypeVisibility = () => {
+    const value = els.docsType.value || '';
+    const showLabel = value === 'Other';
+    if (els.docsLabelWrap) els.docsLabelWrap.hidden = !showLabel;
+    if (els.docsLabel && !showLabel) els.docsLabel.value = '';
+    if (els.docsFileInput) {
+      if (value === 'Photo') {
+        els.docsFileInput.accept = 'image/*';
+      } else if (value === 'ID') {
+        els.docsFileInput.accept = 'image/*,application/pdf';
+      } else {
+        els.docsFileInput.accept = 'image/*,application/pdf';
+      }
+    }
+  };
+
+  els.docsType.addEventListener('change', updateTypeVisibility);
+  updateTypeVisibility();
+
+  els.docsFileInput.addEventListener('change', () => {
+    const file = els.docsFileInput.files && els.docsFileInput.files[0];
+    if (els.docsFileName) {
+      els.docsFileName.textContent = file ? file.name : '';
+    }
+  });
+
+  els.docsUpload.addEventListener('click', () => kaHandleEmployeeDocUpload());
+}
+
+function kaBindEmployeeDocsViewer() {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.docsList || els.docsList.dataset.bound) return;
+  els.docsList.addEventListener('click', (event) => {
+    const link = event.target.closest('.ka-doc-card-link');
+    if (!link) return;
+    const url = link.getAttribute('data-doc-url') || link.getAttribute('href') || '';
+    if (!url || url === '#') return;
+    event.preventDefault();
+    const name = link.getAttribute('data-doc-name') || link.textContent || 'Document';
+    const type = link.getAttribute('data-doc-type') || '';
+    kaOpenDocViewer({ url, name, type });
+  });
+  els.docsList.dataset.bound = '1';
+}
+
+function kaBindEmployeeHistoryModal() {
+  const backdrop = document.getElementById('ka-employee-history-backdrop');
+  if (!backdrop || backdrop.dataset.bound) return;
+  const closeBtn = document.getElementById('ka-employee-history-close');
+  const closeBtnAlt = document.getElementById('ka-employee-history-close-btn');
+  const close = () => kaCloseEmployeeHistoryModal();
+  closeBtn?.addEventListener('click', close);
+  closeBtnAlt?.addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) close();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !backdrop.classList.contains('hidden')) {
+      close();
+    }
+  });
+  backdrop.dataset.bound = '1';
+}
+
+async function kaHandleEmployeeDocUpload() {
+  const els = kaEmployeeSheetElements();
+  if (!els || !els.docsFileInput || !els.docsType || !els.docsStatus) return;
+  const id = kaEmployeeSheetState.employeeId;
+  if (!id) {
+    kaSetInlineStatus(els.docsStatus, 'Employee not selected.', 'error');
+    return;
+  }
+  const type = (els.docsType.value || '').trim();
+  if (!type) {
+    kaSetInlineStatus(els.docsStatus, 'Select a document type.', 'error');
+    return;
+  }
+  const file = els.docsFileInput.files && els.docsFileInput.files[0];
+  if (!file) {
+    kaSetInlineStatus(els.docsStatus, 'Choose a file to upload.', 'error');
+    return;
+  }
+  const label = (els.docsLabel && els.docsLabel.value ? els.docsLabel.value : '').trim();
+  if (type === 'Other' && !label) {
+    kaSetInlineStatus(els.docsStatus, 'Enter a label for Other documents.', 'error');
+    return;
+  }
+
+  const form = new FormData();
+  form.append('doc_type', type);
+  if (label) form.append('doc_label', label);
+  const auth = kaEmployeeAuthMeta();
+  if (auth.admin_id) form.append('admin_id', String(auth.admin_id));
+  if (auth.device_id) form.append('device_id', String(auth.device_id));
+  if (auth.device_secret) form.append('device_secret', String(auth.device_secret));
+
+  let endpoint = `/api/kiosk/admin/employees/${id}/documents`;
+  if (type === 'Photo') {
+    endpoint = `/api/kiosk/admin/employees/${id}/photo`;
+    form.append('employee_photo', file);
+  } else if (type === 'ID') {
+    endpoint = `/api/kiosk/admin/employees/${id}/id-document`;
+    form.append('id_document', file);
+  } else {
+    form.append('documents', file);
+  }
+
+  if (!navigator.onLine) {
+    try {
+      await kaQueueEmployeeDocUpload({
+        employeeId: id,
+        type,
+        label,
+        file,
+        auth
+      });
+      if (els.docsFileInput) els.docsFileInput.value = '';
+      if (els.docsFileName) els.docsFileName.textContent = '';
+      if (els.docsType) els.docsType.value = '';
+      if (els.docsLabel) els.docsLabel.value = '';
+      if (els.docsLabelWrap) els.docsLabelWrap.hidden = true;
+      kaSetInlineStatus(els.docsStatus, 'Saved offline. Will sync when online.', 'ok');
+    } catch (err) {
+      console.error('Employee doc queue failed', err);
+      kaSetInlineStatus(els.docsStatus, err.message || 'Unable to save document offline.', 'error');
+    }
+    return;
+  }
+
+  kaSetInlineStatus(els.docsStatus, 'Uploading document…');
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      body: form,
+      credentials: 'include',
+      headers: kaGetCsrfHeader()
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Upload failed.');
+    }
+
+    if (els.docsFileInput) els.docsFileInput.value = '';
+    if (els.docsFileName) els.docsFileName.textContent = '';
+    if (els.docsType) els.docsType.value = '';
+    if (els.docsLabel) els.docsLabel.value = '';
+    if (els.docsLabelWrap) els.docsLabelWrap.hidden = true;
+    kaSetInlineStatus(els.docsStatus, 'Document uploaded.', 'ok');
+    kaLoadEmployeeDocs(id);
+    kaRefreshEmployeeSheet();
+  } catch (err) {
+    console.error('Employee doc upload failed', err);
+    const offlineLikely = kaIsConnectionIssue(err);
+    if (offlineLikely) {
+      try {
+        await kaQueueEmployeeDocUpload({
+          employeeId: id,
+          type,
+          label,
+          file,
+          auth
+        });
+        if (els.docsFileInput) els.docsFileInput.value = '';
+        if (els.docsFileName) els.docsFileName.textContent = '';
+        if (els.docsType) els.docsType.value = '';
+        if (els.docsLabel) els.docsLabel.value = '';
+        if (els.docsLabelWrap) els.docsLabelWrap.hidden = true;
+        kaSetInlineStatus(els.docsStatus, 'Saved offline. Will sync when online.', 'ok');
+        return;
+      } catch (queueErr) {
+        console.error('Employee doc queue failed', queueErr);
+      }
+    }
+    kaSetInlineStatus(els.docsStatus, err.message || 'Upload failed.', 'error');
+  }
+}
+
 function kaEmployeeSheetElements() {
   const sheet = document.getElementById('ka-employee-detail-sheet');
   if (!sheet) return null;
@@ -4197,138 +6366,356 @@ function kaEmployeeSheetElements() {
     sheet,
     panel: sheet.querySelector('.ka-sheet-panel'),
     handle: sheet.querySelector('[data-ka-employee-sheet-handle]'),
+    header: sheet.querySelector('.ka-sheet-header'),
     title: sheet.querySelector('#ka-employee-detail-title'),
     sub: sheet.querySelector('#ka-employee-detail-sub'),
     status: sheet.querySelector('#ka-employee-detail-status'),
-    qboTag: sheet.querySelector('#ka-employee-detail-qbo'),
+    profileName: sheet.querySelector('#ka-employee-detail-name'),
+    profileState: sheet.querySelector('#ka-employee-detail-state'),
+    profileLang: sheet.querySelector('#ka-employee-detail-meta-lang'),
+    profileStart: sheet.querySelector('#ka-employee-detail-meta-start'),
+    firstName: sheet.querySelector('#ka-employee-detail-first'),
+    lastName: sheet.querySelector('#ka-employee-detail-last'),
+    nickname: sheet.querySelector('#ka-employee-detail-nickname'),
+    email: sheet.querySelector('#ka-employee-detail-email'),
+    phone: sheet.querySelector('#ka-employee-detail-phone'),
     startDate: sheet.querySelector('#ka-employee-detail-start'),
     termDate: sheet.querySelector('#ka-employee-detail-term'),
     language: sheet.querySelector('#ka-employee-detail-language'),
-    languageSave: sheet.querySelector('#ka-employee-detail-language-save'),
-    languageStatus: sheet.querySelector('#ka-employee-detail-language-status'),
     nameChecks: sheet.querySelector('#ka-employee-detail-namechecks'),
-    nameChecksSave: sheet.querySelector('#ka-employee-detail-namechecks-save'),
-    nameChecksStatus: sheet.querySelector('#ka-employee-detail-namechecks-status'),
-    pinInput: sheet.querySelector('#ka-employee-detail-pin'),
-    pinConfirm: sheet.querySelector('#ka-employee-detail-pin-confirm'),
-    pinSave: sheet.querySelector('#ka-employee-detail-pin-save'),
-    pinStatus: sheet.querySelector('#ka-employee-detail-pin-status'),
-    photoImg: sheet.querySelector('#ka-employee-detail-photo-img'),
-    photoPlaceholder: sheet.querySelector('#ka-employee-detail-photo-placeholder'),
-    photoView: sheet.querySelector('#ka-employee-detail-photo-view'),
-    photoDelete: sheet.querySelector('#ka-employee-detail-photo-delete'),
-    photoDate: sheet.querySelector('#ka-employee-detail-photo-date'),
-    idMeta: sheet.querySelector('#ka-employee-detail-id-meta'),
-    idPlaceholder: sheet.querySelector('#ka-employee-detail-id-placeholder'),
-    idView: sheet.querySelector('#ka-employee-detail-id-view')
+    rateField: sheet.querySelector('.ka-employee-rate-field'),
+    rateInput: sheet.querySelector('#ka-employee-detail-rate'),
+    geofenceToggle: sheet.querySelector('#ka-employee-detail-geofence'),
+    reactivateBtn: sheet.querySelector('#ka-employee-detail-reactivate'),
+    reactivateNote: sheet.querySelector('#ka-employee-detail-reactivate-note'),
+    historyBtn: sheet.querySelector('#ka-employee-detail-history-open'),
+    saveBtn: sheet.querySelector('#ka-employee-detail-save'),
+    saveStatus: sheet.querySelector('#ka-employee-detail-save-status'),
+    docsList: sheet.querySelector('#ka-employee-docs-list'),
+    docsChoose: sheet.querySelector('#ka-employee-docs-upload-choose'),
+    docsFileInput: sheet.querySelector('#ka-employee-docs-upload-files'),
+    docsFileName: sheet.querySelector('#ka-employee-docs-upload-filename'),
+    docsType: sheet.querySelector('#ka-employee-docs-upload-type'),
+    docsLabelWrap: sheet.querySelector('#ka-employee-docs-upload-label-wrap'),
+    docsLabel: sheet.querySelector('#ka-employee-docs-upload-label'),
+    docsUpload: sheet.querySelector('#ka-employee-docs-upload-btn'),
+    docsStatus: sheet.querySelector('#ka-employee-docs-upload-status'),
+    photoImg: sheet.querySelector('#ka-employee-detail-photo'),
+    photoInitials: sheet.querySelector('#ka-employee-detail-initials'),
+    photoInput: sheet.querySelector('#ka-employee-detail-photo-input'),
+    photoBtn: sheet.querySelector('#ka-employee-detail-photo-btn'),
+    photoStatus: sheet.querySelector('#ka-employee-detail-photo-status')
   };
 }
 
-function kaPopulateEmployeeSheet(employee) {
-  const els = kaEmployeeSheetElements();
-  if (!els || !employee) return;
-  const displayName = employee.nickname || employee.name || 'Employee';
-  const secondaryName =
-    employee.nickname && employee.name && employee.nickname !== employee.name ? employee.name : '';
-  const qboStatus = kaEmployeeQboStatus(employee);
+function kaEmployeePinSheetElements() {
+  const sheet = document.getElementById('ka-employee-pin-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    handle: sheet.querySelector('[data-ka-employee-pin-handle]'),
+    header: sheet.querySelector('.ka-sheet-header'),
+    title: sheet.querySelector('#ka-employee-pin-title'),
+    sub: sheet.querySelector('#ka-employee-pin-sub'),
+    pinInput: sheet.querySelector('#ka-employee-pin-input'),
+    pinConfirm: sheet.querySelector('#ka-employee-pin-confirm'),
+    pinSave: sheet.querySelector('#ka-employee-pin-save'),
+    pinStatus: sheet.querySelector('#ka-employee-pin-status')
+  };
+}
 
-  if (els.title) els.title.textContent = displayName;
+function kaTimeDetailSheetElements() {
+  const sheet = document.getElementById('ka-time-detail-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    header: sheet.querySelector('.ka-sheet-header'),
+    title: sheet.querySelector('#ka-time-detail-title'),
+    sub: sheet.querySelector('#ka-time-detail-sub'),
+    photo: sheet.querySelector('#ka-time-detail-photo'),
+    initials: sheet.querySelector('#ka-time-detail-initials'),
+    summary: sheet.querySelector('#ka-time-detail-summary'),
+    meta: sheet.querySelector('#ka-time-detail-meta'),
+    actions: sheet.querySelector('#ka-time-detail-actions'),
+    handle: sheet.querySelector('[data-ka-time-detail-handle]')
+  };
+}
+
+function kaTimeReportSheetElements() {
+  const sheet = document.getElementById('ka-time-report-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    header: sheet.querySelector('.ka-sheet-header'),
+    title: sheet.querySelector('#ka-time-report-sheet-title'),
+    sub: sheet.querySelector('#ka-time-report-sheet-sub'),
+    handle: sheet.querySelector('[data-ka-time-report-handle]')
+  };
+}
+
+function kaTimeCalendarSheetElements() {
+  const sheet = document.getElementById('ka-time-calendar-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    header: sheet.querySelector('.ka-sheet-header'),
+    title: sheet.querySelector('#ka-time-calendar-sheet-title'),
+    sub: sheet.querySelector('#ka-time-calendar-sheet-sub'),
+    status: sheet.querySelector('#ka-time-calendar-sheet-status'),
+    cards: sheet.querySelector('#ka-time-calendar-sheet-cards'),
+    empty: sheet.querySelector('#ka-time-calendar-sheet-empty'),
+    handle: sheet.querySelector('[data-ka-time-calendar-handle]')
+  };
+}
+
+function kaPopulateTimeDetailSheet(entry) {
+  const els = kaTimeDetailSheetElements();
+  if (!els || !entry) return;
+
+  const emp = entry.employee_name || '(Unknown)';
+  const proj = entry.project_name || '(No project)';
+  const dateValue = entry.start_date || entry.end_date || '';
+  const dateLabel = dateValue ? kaFmtDateLong(dateValue) : '—';
+  const startLabel = entry.start_time ? kaFormatTimeValue12(entry.start_time) : '—';
+  const endLabel = kaTimeEntryEndLabel(entry);
+  const hoursLabel = entry.hours != null ? Number(entry.hours).toFixed(2) : '—';
+
+  if (els.title) {
+    els.title.textContent = emp || 'Time entry';
+  }
+  const empRecord = entry.employee_id ? kaFindEmployeeById(entry.employee_id) : null;
+  kaApplyEmployeeAvatar({
+    imgEl: els.photo,
+    initialsEl: els.initials,
+    employeeId: entry.employee_id,
+    uploadedAt: empRecord?.employee_photo_uploaded_at,
+    name: emp
+  });
   if (els.sub) {
     const subParts = [];
-    if (secondaryName) subParts.push(secondaryName);
-    subParts.push(employee.active === 0 ? 'Inactive' : 'Active');
-    if (qboStatus.shortLabel) subParts.push(qboStatus.shortLabel);
-    els.sub.textContent = subParts.filter(Boolean).join(' • ');
+    if (proj) subParts.push(proj);
+    if (dateLabel) subParts.push(dateLabel);
+    els.sub.textContent = subParts.join(' • ');
   }
 
-  if (els.status) kaSetInlineStatus(els.status, '');
-  if (els.qboTag) {
-    els.qboTag.textContent = qboStatus.label;
-    els.qboTag.className = `ka-tag ${qboStatus.className || 'gray'}`;
-  }
-  if (els.startDate) els.startDate.textContent = kaEmployeeDateLabel(employee.start_date);
-  if (els.termDate) els.termDate.textContent = kaEmployeeDateLabel(employee.termination_date);
-
-  if (els.language) {
-    const lang = (employee.language || 'en').toString().toLowerCase();
-    els.language.value = KA_LANGUAGE_LABELS[lang] ? lang : 'en';
-  }
-  if (els.languageStatus) kaSetInlineStatus(els.languageStatus, '');
-  if (els.nameChecks) {
-    els.nameChecks.value = employee.name_on_checks || employee.name || '';
-  }
-  if (els.nameChecksStatus) kaSetInlineStatus(els.nameChecksStatus, '');
-  if (els.pinInput) els.pinInput.value = '';
-  if (els.pinConfirm) els.pinConfirm.value = '';
-  if (els.pinStatus) kaSetInlineStatus(els.pinStatus, '');
-
-  const photoUrl = employee.employee_photo_uploaded_at
-    ? kaEmployeeDocUrl(employee.id, 'photo')
-    : '';
-  if (els.photoImg) {
-    if (photoUrl) {
-      els.photoImg.src = photoUrl;
-      els.photoImg.classList.remove('hidden');
-      els.photoImg.alt = `${displayName} photo`;
-    } else {
-      els.photoImg.src = '';
-      els.photoImg.classList.add('hidden');
+  if (els.summary) {
+    const payParts = [];
+    if (kaCanViewPayroll() && entry.total_pay != null) {
+      let rateValue = null;
+      const rateRaw = entry.rate ?? entry.pay_rate ?? entry.hourly_rate ?? entry.employee_rate;
+      if (rateRaw !== undefined && rateRaw !== null && rateRaw !== '') {
+        const parsed = Number(rateRaw);
+        if (Number.isFinite(parsed)) rateValue = parsed;
+      }
+      if (rateValue == null) {
+        const empRateRaw = kaFindEmployeeById(entry.employee_id)?.rate;
+        if (empRateRaw !== undefined && empRateRaw !== null && empRateRaw !== '') {
+          const parsed = Number(empRateRaw);
+          if (Number.isFinite(parsed)) rateValue = parsed;
+        }
+      }
+      if (rateValue == null) {
+        const hoursNum = Number(entry.hours);
+        const totalNum = Number(entry.total_pay);
+        if (Number.isFinite(hoursNum) && hoursNum > 0 && Number.isFinite(totalNum)) {
+          rateValue = totalNum / hoursNum;
+        }
+      }
+      const rateLabel = rateValue != null ? `${kaFmtMoney(rateValue) || '$0.00'}/hr` : '';
+      const totalPayLabel = kaFmtMoney(entry.total_pay) || '$0.00';
+      if (rateLabel) {
+        payParts.push(`
+          <div class="ka-time-detail-item ka-time-detail-item-pay">
+            <div class="ka-time-detail-label">Total Pay</div>
+            <div class="ka-time-detail-label ka-time-detail-rate-label">Rate</div>
+            <div class="ka-time-detail-value ka-time-detail-amount">${totalPayLabel}</div>
+            <div class="ka-time-detail-value ka-time-detail-rate">${rateLabel}</div>
+          </div>
+        `);
+      } else {
+        payParts.push(`
+          <div class="ka-time-detail-item">
+            <div class="ka-time-detail-label">Total Pay</div>
+            <div class="ka-time-detail-value">${totalPayLabel}</div>
+          </div>
+        `);
+      }
     }
+    els.summary.innerHTML = `
+      <div class="ka-time-detail-grid">
+        <div class="ka-time-detail-item">
+          <div class="ka-time-detail-label">Employee</div>
+          <div class="ka-time-detail-value">${emp}</div>
+        </div>
+        <div class="ka-time-detail-item">
+          <div class="ka-time-detail-label">Project</div>
+          <div class="ka-time-detail-value">${proj}</div>
+        </div>
+        <div class="ka-time-detail-item">
+          <div class="ka-time-detail-label">Date</div>
+          <div class="ka-time-detail-value">${dateLabel || '—'}</div>
+        </div>
+        <div class="ka-time-detail-item">
+          <div class="ka-time-detail-label">Clock in</div>
+          <div class="ka-time-detail-value">${startLabel}</div>
+        </div>
+        <div class="ka-time-detail-item">
+          <div class="ka-time-detail-label">Clock out</div>
+          <div class="ka-time-detail-value">${endLabel}</div>
+        </div>
+        <div class="ka-time-detail-item">
+          <div class="ka-time-detail-label">Hours</div>
+          <div class="ka-time-detail-value">${hoursLabel}</div>
+        </div>
+        ${payParts.join('')}
+      </div>
+    `;
   }
-  if (els.photoPlaceholder) {
-    els.photoPlaceholder.classList.toggle('hidden', !!photoUrl);
-  }
-  if (els.photoView) {
-    if (photoUrl) {
-      els.photoView.href = photoUrl;
-      els.photoView.classList.remove('hidden');
-    } else {
-      els.photoView.removeAttribute('href');
-      els.photoView.classList.add('hidden');
+
+  if (els.meta) {
+    const items = [];
+    const addItem = (label, value) => {
+      if (!label || value == null || value === '') return;
+      items.push(`
+        <div class="ka-time-detail-item">
+          <div class="ka-time-detail-label">${label}</div>
+          <div class="ka-time-detail-value">${value}</div>
+        </div>
+      `);
+    };
+
+    addItem('Status', kaTimeEntryStatusText(entry));
+    // Punches row removed per UI simplification request.
+
+    const metaLines = kaEntryDetailMetaList(entry);
+    metaLines.forEach((line) => {
+      const trimmed = String(line || '').trim();
+      if (!trimmed) return;
+      if (trimmed.toLowerCase().startsWith('flags:')) {
+        const rawFlags = trimmed.replace(/^flags:\s*/i, '') || 'None';
+        const flagText = rawFlags.trim();
+        const hasFlags = flagText && flagText.toLowerCase() !== 'none';
+        if (hasFlags) {
+          addItem(
+            'Flags',
+            `<div class="ka-time-flag-inline">
+              <span class="ka-time-flag-text">${escapeHTML(flagText)}</span>
+              <button type="button" class="ka-time-flag-trigger" data-ka-time-flag-trigger aria-label="Explain flags">?</button>
+            </div>`
+          );
+        } else {
+          addItem('Flags', escapeHTML(flagText || 'None'));
+        }
+        return;
+      }
+      if (trimmed.toLowerCase().startsWith('note:')) {
+        addItem('Note', trimmed.replace(/^note:\s*/i, ''));
+        return;
+      }
+      if (trimmed.toLowerCase().startsWith('reviewed by')) {
+        addItem('Field reviewed by', trimmed.replace(/^reviewed by\s*/i, ''));
+        return;
+      }
+      addItem('Detail', trimmed);
+    });
+
+    if (entry._offline) {
+      addItem('Sync', 'Queued offline; waiting to sync.');
     }
-  }
-  if (els.photoDelete) {
-    els.photoDelete.classList.toggle('hidden', !photoUrl);
-  }
-  if (els.photoDate) {
-    els.photoDate.textContent = employee.employee_photo_uploaded_at
-      ? `Uploaded ${kaFmtDateLong(employee.employee_photo_uploaded_at)}`
+    if (entry._open) {
+      addItem('Clock-out', 'Pending');
+    }
+
+    els.meta.innerHTML = items.length
+      ? `<div class="ka-time-detail-grid">${items.join('')}</div>`
       : '';
-  }
 
-  const hasId = !!employee.id_document_uploaded_at;
-  const idUrl = hasId ? kaEmployeeDocUrl(employee.id, 'id-document') : '';
-  if (els.idMeta) {
-    if (hasId) {
-      const typeLabel = kaEmployeeDocTypeLabel(employee.id_document_type);
-      const parts = [];
-      if (typeLabel) parts.push(typeLabel);
-      parts.push(`Uploaded ${kaFmtDateLong(employee.id_document_uploaded_at)}`);
-      els.idMeta.textContent = parts.filter(Boolean).join(' • ');
-    } else {
-      els.idMeta.textContent = '';
+    kaHideTimeFlagBanner();
+    const flagTrigger = els.meta.querySelector('[data-ka-time-flag-trigger]');
+    if (flagTrigger) {
+      flagTrigger.addEventListener('click', () => {
+        const banner = document.getElementById('ka-time-detail-flag-banner');
+        if (banner && !banner.classList.contains('hidden')) {
+          kaHideTimeFlagBanner();
+        } else {
+          kaShowTimeFlagBanner(entry);
+        }
+      });
     }
   }
-  if (els.idPlaceholder) {
-    els.idPlaceholder.classList.toggle('hidden', hasId);
-  }
-  if (els.idView) {
-    if (hasId) {
-      els.idView.href = idUrl;
-      els.idView.classList.remove('hidden');
+
+  if (els.actions) {
+    const canReview = kaCanModifyTime();
+    const isOffline = !!entry._offline;
+    const isOpen = !!entry._open;
+    const meta = kaTimeEntryMeta(entry);
+    if (!canReview) {
+      els.actions.innerHTML = '';
+    } else if (isOffline) {
+      els.actions.innerHTML = '<div class="ka-time-detail-note">Review actions are unavailable while offline.</div>';
+    } else if (isOpen) {
+      els.actions.innerHTML = `
+        <div class="ka-time-detail-actions-row">
+          <button class="btn secondary btn-sm" data-ka-time-detail-action="modify">Edit clock-in</button>
+        </div>
+      `;
     } else {
-      els.idView.removeAttribute('href');
-      els.idView.classList.add('hidden');
+      const actions = [];
+      const needsApprove = meta.isPending;
+      if (meta.isRejected) {
+        actions.push({
+          action: 'approve',
+          label: 'Reactivate',
+          className: 'btn secondary btn-sm'
+        });
+      } else if (needsApprove) {
+        actions.push({
+          action: 'approve',
+          label: 'Approve as-is',
+          className: 'btn secondary btn-sm'
+        });
+      }
+      actions.push({
+        action: 'modify',
+        label: 'Modify',
+        className: 'btn secondary btn-sm'
+      });
+      actions.push({
+        action: 'send_back',
+        label: 'Send back for review',
+        className: 'btn secondary btn-sm'
+      });
+      if (!meta.isRejected) {
+        actions.push({
+          action: 'reject',
+          label: 'Reject',
+          className: 'btn danger btn-sm'
+        });
+      }
+      els.actions.innerHTML = actions.length
+        ? `
+        <div class="ka-time-detail-actions-row">
+          ${actions.map(a => (
+            `<button class="${a.className}" data-ka-time-detail-action="${a.action}">${a.label}</button>`
+          )).join('')}
+        </div>
+      `
+        : '';
     }
   }
 }
 
-function kaOpenEmployeeSheet(employee) {
-  const els = kaEmployeeSheetElements();
-  if (!els || !employee) return;
-  kaEmployeeSheetState.employeeId = Number(employee.id) || null;
-  kaEmployeeSheetState.open = true;
-  kaPopulateEmployeeSheet(employee);
+function kaOpenTimeDetailSheet(entry) {
+  const els = kaTimeDetailSheetElements();
+  if (!els || !entry) return;
+  kaTimeDetailSheetState.entryId = entry.id;
+  kaTimeDetailSheetState.entry = entry;
+  kaTimeDetailSheetState.open = true;
+  kaPopulateTimeDetailSheet(entry);
   els.sheet.classList.remove('hidden');
   requestAnimationFrame(() => {
     els.sheet.classList.add('is-open');
@@ -4338,25 +6725,1296 @@ function kaOpenEmployeeSheet(employee) {
   document.documentElement.classList.add('ka-modal-open');
 }
 
-function kaCloseEmployeeSheet() {
-  const els = kaEmployeeSheetElements();
+function kaCloseTimeDetailSheet() {
+  const els = kaTimeDetailSheetElements();
   if (!els) return;
-  kaEmployeeSheetState.dragging = false;
-  kaEmployeeSheetState.open = false;
-  kaEmployeeSheetState.employeeId = null;
+  kaTimeDetailSheetState.dragging = false;
+  kaTimeDetailSheetState.open = false;
+  kaTimeDetailSheetState.entryId = null;
+  kaTimeDetailSheetState.entry = null;
   els.sheet.classList.remove('is-open');
   els.sheet.setAttribute('aria-hidden', 'true');
   if (els.panel) {
     els.panel.style.transform = '';
   }
   els.sheet.classList.remove('dragging');
-  document.body.classList.remove('ka-modal-open');
-  document.documentElement.classList.remove('ka-modal-open');
+  kaSyncModalOpenState();
   window.setTimeout(() => {
     if (!els.sheet.classList.contains('is-open')) {
       els.sheet.classList.add('hidden');
     }
+    kaSyncModalOpenState();
   }, 260);
+}
+
+function kaResetTimeDetailSheetPosition() {
+  const els = kaTimeDetailSheetElements();
+  if (!els) return;
+  kaTimeDetailSheetState.dragging = false;
+  els.sheet.classList.remove('dragging');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+}
+
+function kaTimeReportSheetSubLabel() {
+  const start = document.getElementById('ka-time-start')?.value || '';
+  const end = document.getElementById('ka-time-end')?.value || start || '';
+  const employeeId = document.getElementById('ka-time-employee')?.value || '';
+  const projectId = document.getElementById('ka-time-project')?.value || '';
+  const parts = [];
+  const rangeLabel = kaTimeReviewRangeLabel(start, end);
+  if (rangeLabel) parts.push(rangeLabel);
+  const filters = kaTimeReviewFilterLabels({ employeeId, projectId });
+  if (filters.length) parts.push(...filters);
+  return parts.join(' • ');
+}
+
+function kaOpenTimeReportSheet() {
+  const els = kaTimeReportSheetElements();
+  if (!els) return;
+  kaTimeReportSheetState.open = true;
+  kaTimeReportSheetState.dragging = false;
+  kaTimeReportSheetState.startY = 0;
+  kaTimeReportSheetState.currentY = 0;
+  if (els.title) els.title.textContent = 'Time entries';
+  if (els.sub) els.sub.textContent = kaTimeReportSheetSubLabel();
+  els.sheet.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    els.sheet.classList.add('is-open');
+  });
+  els.sheet.setAttribute('aria-hidden', 'false');
+  kaSyncModalOpenState();
+}
+
+function kaCloseTimeReportSheet() {
+  const els = kaTimeReportSheetElements();
+  if (!els) return;
+  kaTimeReportSheetState.dragging = false;
+  kaTimeReportSheetState.open = false;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+  kaSyncModalOpenState();
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+      kaSyncModalOpenState();
+    }
+  }, 260);
+}
+
+function kaResetTimeReportSheetPosition() {
+  const els = kaTimeReportSheetElements();
+  if (!els) return;
+  kaTimeReportSheetState.dragging = false;
+  els.sheet.classList.remove('dragging');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+}
+
+function kaTimeReviewSheetElements() {
+  const sheet = document.getElementById('ka-time-review-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    header: sheet.querySelector('.ka-sheet-header'),
+    handle: sheet.querySelector('[data-ka-time-review-handle]'),
+    title: sheet.querySelector('#ka-time-review-title'),
+    sub: sheet.querySelector('#ka-time-review-sub'),
+    count: sheet.querySelector('#ka-time-review-sheet-count'),
+    list: sheet.querySelector('#ka-time-review-list'),
+    empty: sheet.querySelector('#ka-time-review-empty'),
+    status: sheet.querySelector('#ka-time-review-status')
+  };
+}
+
+function kaTimeEntriesCacheKey(params = {}) {
+  const { start = '', end = '', employeeId = '', projectId = '' } = params || {};
+  return [start || '', end || '', employeeId || '', projectId || ''].join('|');
+}
+
+async function kaRefreshTimePendingCount({ force = false } = {}) {
+  if (kaTimePendingGlobalInFlight) return;
+  if (!kaCanViewTimeReports()) {
+    kaTimePendingGlobalCount = 0;
+    kaUpdateTimeSummary({ pending: 0 });
+    return;
+  }
+  const now = Date.now();
+  if (!force && kaTimePendingGlobalLastFetched && now - kaTimePendingGlobalLastFetched < 30000) {
+    return;
+  }
+  if (!navigator.onLine) return;
+  kaTimePendingGlobalInFlight = true;
+  try {
+    const deviceSecret = kaGetDeviceSecret();
+    const useKioskAuth = kaDeviceId && deviceSecret;
+    const endpoint = useKioskAuth
+      ? '/api/kiosk/time-entries/pending-count'
+      : '/api/time-entries/pending-count';
+    const res = await fetchJSON(endpoint);
+    const count = Number(res && res.pending != null ? res.pending : 0);
+    if (Number.isFinite(count)) {
+      kaTimePendingGlobalCount = Math.max(0, count);
+      kaTimePendingGlobalLastFetched = now;
+      kaUpdateTimeSummary({ pending: kaTimePendingGlobalCount });
+    }
+  } catch (err) {
+    // Keep existing count if the request fails.
+  } finally {
+    kaTimePendingGlobalInFlight = false;
+  }
+}
+
+function kaTimeReviewRangeLabel(start, end) {
+  if (!start && !end) return '';
+  const startLabel = start ? (kaFmtDateShort(start) || start) : '';
+  const endLabel = end ? (kaFmtDateShort(end) || end) : '';
+  if (start && end && start === end) return startLabel || endLabel;
+  if (startLabel && endLabel) return `${startLabel} – ${endLabel}`;
+  return startLabel || endLabel || '';
+}
+
+function kaSetTimeReviewStatus(message = '', variant = '') {
+  const els = kaTimeReviewSheetElements();
+  if (!els || !els.status) return;
+  els.status.textContent = message || '';
+  els.status.className = 'ka-status';
+  if (variant === 'error') {
+    els.status.classList.add('ka-status-error');
+  } else if (variant === 'ok') {
+    els.status.classList.add('ka-status-ok');
+  }
+}
+
+function kaUpdateTimeReviewSheetCounts(count = null) {
+  const els = kaTimeReviewSheetElements();
+  if (!els) return;
+  const pending = Number.isFinite(count)
+    ? count
+    : Number(kaTimeReviewSheetState.pendingCount || 0);
+  if (els.count) els.count.textContent = String(pending);
+  if (els.empty) {
+    els.empty.classList.toggle('hidden', pending !== 0);
+  }
+  if (els.list) {
+    els.list.classList.toggle('hidden', pending === 0);
+  }
+}
+
+function kaTimeReviewFilterLabels(params = {}) {
+  const labels = [];
+  if (params.employeeId) {
+    const emp = kaFindEmployeeById(params.employeeId);
+    if (emp) labels.push(emp.nickname || emp.name || 'Employee');
+  }
+  if (params.projectId) {
+    const proj = (kaProjects || []).find(p => String(p.id) === String(params.projectId));
+    if (proj) labels.push(proj.name || 'Project');
+  }
+  return labels;
+}
+
+function kaSetTimeEntriesCache({ key, pendingEntries = [], summaryCounts = {}, params = {} } = {}) {
+  if (!key) return;
+  kaTimeEntriesCache = {
+    key,
+    pendingEntries: Array.isArray(pendingEntries) ? pendingEntries : [],
+    summaryCounts: summaryCounts || {},
+    params,
+    fetchedAt: Date.now()
+  };
+}
+
+function kaRenderTimeReviewList(entries = [], params = {}) {
+  const els = kaTimeReviewSheetElements();
+  if (!els) return;
+  const list = Array.isArray(entries) ? entries : [];
+  kaTimeReviewSheetState.entries = list.slice();
+  kaTimeReviewSheetState.pendingCount = kaTimeReviewSheetState.entries.length;
+  kaTimeReviewSheetState.params = params || null;
+
+  if (els.list) {
+    els.list.replaceChildren();
+    kaTimeReviewSheetState.entries.forEach(entry => {
+      const row = kaBuildTimeReviewRow(entry);
+      if (row) els.list.appendChild(row);
+    });
+  }
+
+  const filterLabels = kaTimeReviewFilterLabels(params);
+  const subParts = [];
+  if (params && params.scope === 'all') {
+    subParts.push('All dates');
+  } else {
+    const rangeLabel = kaTimeReviewRangeLabel(params.start, params.end);
+    if (rangeLabel) subParts.push(rangeLabel);
+  }
+  if (filterLabels.length) subParts.push(...filterLabels);
+  if (els.sub) {
+    els.sub.textContent = subParts.join(' • ');
+  }
+
+  kaUpdateTimeReviewSheetCounts(kaTimeReviewSheetState.pendingCount);
+  kaUpdateTimeSummary({ pending: kaTimeReviewSheetState.pendingCount });
+}
+
+function kaSetTimeReviewRowStatus(row, message = '', variant = '') {
+  if (!row) return;
+  const status = row.querySelector('[data-ka-time-review-status]');
+  if (!status) return;
+  status.textContent = message || '';
+  status.classList.remove('is-error');
+  if (variant === 'error') status.classList.add('is-error');
+}
+
+function kaRemoveTimeReviewRow(row) {
+  if (!row) return;
+  row.classList.add('show-approve');
+  row.classList.add('is-removing');
+  const cleanup = () => {
+    if (row && row.parentElement) row.remove();
+  };
+  row.addEventListener('transitionend', cleanup, { once: true });
+  window.setTimeout(cleanup, 260);
+}
+
+function kaApplyTimeReviewRemoval(entryId, row) {
+  const idNum = Number(entryId);
+  if (!Number.isFinite(idNum)) return;
+  const sheetEntries = Array.isArray(kaTimeReviewSheetState.entries)
+    ? kaTimeReviewSheetState.entries
+    : [];
+  const nextEntries = sheetEntries.filter(e => Number(e.id) !== idNum);
+  const hasSheetEntries = kaTimeReviewSheetState.open || sheetEntries.length > 0;
+  if (hasSheetEntries) {
+    kaTimeReviewSheetState.entries = nextEntries;
+    kaTimeReviewSheetState.pendingCount = nextEntries.length;
+  }
+  if (kaTimeReviewSheetState.open) {
+    kaTimeReviewSheetState.needsRefresh = true;
+  }
+
+  if (kaTimeEntriesCache && kaTimeEntriesCache.key) {
+    const pendingEntries = Array.isArray(kaTimeEntriesCache.pendingEntries)
+      ? kaTimeEntriesCache.pendingEntries.filter(e => Number(e.id) !== idNum)
+      : [];
+    const summaryCounts = { ...(kaTimeEntriesCache.summaryCounts || {}) };
+    summaryCounts.pending = pendingEntries.length;
+    kaSetTimeEntriesCache({
+      key: kaTimeEntriesCache.key,
+      pendingEntries,
+      summaryCounts,
+      params: kaTimeEntriesCache.params || {}
+    });
+  }
+
+  if (Number.isFinite(kaTimePendingGlobalCount)) {
+    kaTimePendingGlobalCount = Math.max(0, kaTimePendingGlobalCount - 1);
+  }
+
+  let pendingCount = null;
+  if (hasSheetEntries) {
+    pendingCount = kaTimeReviewSheetState.pendingCount;
+  } else if (kaTimeEntriesCache && Array.isArray(kaTimeEntriesCache.pendingEntries)) {
+    pendingCount = kaTimeEntriesCache.pendingEntries.length;
+  } else {
+    pendingCount = Number(kaTimeReviewSheetState.pendingCount || 0);
+  }
+  kaUpdateTimeSummary({ pending: pendingCount });
+  if (kaTimeReviewSheetState.open) {
+    kaUpdateTimeReviewSheetCounts(pendingCount);
+  }
+
+  if (kaTimeReviewSheetState.open && row) {
+    kaRemoveTimeReviewRow(row);
+  } else if (kaTimeReviewSheetState.open) {
+    kaRenderTimeReviewList(nextEntries, kaTimeReviewSheetState.params || {});
+  }
+}
+
+function kaBuildTimeReviewRow(entry) {
+  if (!entry) return null;
+  const row = document.createElement('div');
+  row.className = 'ka-time-review-row';
+  row.dataset.entryId = entry.id;
+  row._entry = entry;
+
+  const emp = entry.employee_name || '(Unknown)';
+  const proj = entry.project_name || '(No project)';
+  const dateLabel = entry.start_date || entry.end_date || '';
+  const dateDisplay = dateLabel ? kaFmtDateMDY(dateLabel) : '';
+  const startLabel = entry.start_time ? kaFormatTimeValue12(entry.start_time) : '—';
+  const endLabel = kaTimeEntryEndLabel(entry);
+  const hoursLabel = entry.hours != null ? Number(entry.hours).toFixed(2) : '0.00';
+  const issues = kaTimeReviewIssues(entry);
+  const issuesHtml = issues.length
+    ? `<div class="ka-time-review-issues">${issues.map((issue) => {
+        const label = issue && issue.label ? String(issue.label) : '';
+        const help = issue && issue.help ? String(issue.help) : '';
+        const tooltipAttr = help ? ` data-tooltip="${escapeHTML(help)}"` : '';
+        const aria = help
+          ? ` aria-label="${escapeHTML(`${label}. ${help}`)}"`
+          : ` aria-label="${escapeHTML(label)}"`;
+        return `<button type="button" class="ka-time-review-issue"${tooltipAttr}${aria} title="${escapeHTML(help || label)}">${escapeHTML(label)}</button>`;
+      }).join('')}</div>`
+    : '';
+  const statusLabel = kaTimeEntryStatusLabel(entry);
+  const noteValue = '';
+  const disabled = entry._offline || entry._open || !kaCanModifyTime() || !kaCanViewTimeReports();
+
+  row.innerHTML = `
+    <div class="ka-time-review-swipe">
+      <div class="ka-time-review-swipe-main">
+        <div class="ka-time-review-head">
+          <div class="ka-time-review-employee">${escapeHTML(emp)}</div>
+          ${statusLabel}
+        </div>
+        <div class="ka-time-review-sub">${escapeHTML(proj)}${dateDisplay ? ` • ${escapeHTML(dateDisplay)}` : ''}</div>
+        <div class="ka-time-review-meta">${escapeHTML(startLabel)} – ${escapeHTML(endLabel)} · ${escapeHTML(hoursLabel)}h</div>
+        ${issuesHtml}
+        <input type="text" class="ka-time-review-note" data-ka-time-review-note placeholder="Note (required)" value="${escapeHTML(noteValue)}" ${disabled ? 'disabled' : ''} />
+        <div class="ka-time-review-actions">
+          <button type="button" class="btn primary btn-sm" data-ka-time-review-approve ${disabled ? 'disabled' : ''}>Approve</button>
+          <button type="button" class="btn secondary btn-sm" data-ka-time-review-modify ${disabled ? 'disabled' : ''}>Modify</button>
+          <button type="button" class="btn danger btn-sm" data-ka-time-review-reject ${disabled ? 'disabled' : ''}>Reject</button>
+        </div>
+        <div class="ka-time-review-row-status" data-ka-time-review-status></div>
+      </div>
+      <button type="button" class="ka-time-review-swipe-action" data-ka-time-review-approve aria-label="Approve time entry" ${disabled ? 'disabled' : ''}>Approve</button>
+    </div>
+  `;
+
+  if (disabled) {
+    kaSetTimeReviewRowStatus(
+      row,
+      entry._offline || entry._open
+        ? 'Review actions are unavailable for in-progress or offline entries.'
+        : 'You do not have access to review time entries.',
+      'error'
+    );
+    return row;
+  }
+
+  row.querySelectorAll('[data-ka-time-review-approve]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (row.dataset.swipeJustOpened === '1') {
+        row.dataset.swipeJustOpened = '0';
+        return;
+      }
+      await kaHandleTimeReviewApprove(row);
+    });
+  });
+
+  const modifyBtn = row.querySelector('[data-ka-time-review-modify]');
+  if (modifyBtn) {
+    modifyBtn.addEventListener('click', () => {
+      kaCloseTimeReviewSwipes();
+      kaOpenTimeActionModal(entry, 'modify');
+    });
+  }
+
+  const rejectBtn = row.querySelector('[data-ka-time-review-reject]');
+  if (rejectBtn) {
+    rejectBtn.addEventListener('click', () => {
+      kaCloseTimeReviewSwipes();
+      kaOpenTimeActionModal(entry, 'reject');
+    });
+  }
+
+  kaBindTimeReviewSwipe(row);
+  return row;
+}
+
+function kaCloseTimeReviewSwipes(exceptRow = null) {
+  document.querySelectorAll('.ka-time-review-row.show-approve').forEach(row => {
+    if (exceptRow && row === exceptRow) return;
+    kaResetTimeReviewSwipe(row);
+  });
+}
+
+function kaResetTimeReviewSwipe(row) {
+  if (!row) return;
+  row.classList.remove('show-approve');
+  row.classList.remove('is-dragging');
+  const swipeMain = row.querySelector('.ka-time-review-swipe-main');
+  if (swipeMain) {
+    swipeMain.style.transform = '';
+    swipeMain.style.transition = '';
+  }
+}
+
+function kaBindTimeReviewSwipe(row) {
+  const swipe = row?.querySelector('.ka-time-review-swipe');
+  const swipeMain = row?.querySelector('.ka-time-review-swipe-main');
+  if (!row || !swipe || !swipeMain || swipe.dataset.bound) return;
+  const actionWidth = 120;
+  const dragSlop = 5;
+  const verticalCancelSlop = 12;
+  const horizontalIntentRatio = 0.8;
+  const verticalIntentRatio = 1.2;
+  const openThreshold = -actionWidth * 0.3;
+  const closeThreshold = -actionWidth * 0.6;
+  const flickThreshold = 0.25;
+  const state = {
+    tracking: false,
+    dragging: false,
+    startX: 0,
+    startY: 0,
+    startOffset: 0,
+    currentOffset: 0,
+    deltaX: 0,
+    pointerId: null,
+    lastMoveX: 0,
+    lastMoveTime: 0,
+    velocityX: 0
+  };
+
+  const canStart = (target) => {
+    if (!target) return false;
+    if (row.classList.contains('is-busy')) return false;
+    if (target.closest('button, a, input, select, textarea')) return false;
+    return true;
+  };
+
+  const setOffset = (offset) => {
+    const clamped = Math.max(-actionWidth, Math.min(0, offset));
+    state.currentOffset = clamped;
+    swipeMain.style.transform = `translate3d(${clamped}px, 0, 0)`;
+  };
+
+  const openSwipe = () => {
+    row.classList.add('show-approve');
+    setOffset(-actionWidth);
+  };
+
+  const closeSwipe = () => {
+    row.classList.remove('show-approve');
+    setOffset(0);
+  };
+
+  const onPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!canStart(e.target)) return;
+    state.tracking = true;
+    state.dragging = false;
+    swipeMain.style.transition = 'none';
+    state.pointerId = e.pointerId;
+    if (swipeMain.setPointerCapture) swipeMain.setPointerCapture(e.pointerId);
+    state.startX = e.clientX;
+    state.startY = e.clientY;
+    state.startOffset = row.classList.contains('show-approve') ? -actionWidth : 0;
+    state.currentOffset = state.startOffset;
+    state.deltaX = 0;
+    state.lastMoveX = e.clientX;
+    state.lastMoveTime = performance.now();
+    state.velocityX = 0;
+  };
+
+  const onPointerMove = (e) => {
+    if (!state.tracking || (state.pointerId !== null && e.pointerId !== state.pointerId)) return;
+    const rawDx = e.clientX - state.startX;
+    const rawDy = e.clientY - state.startY;
+    const absDx = Math.abs(rawDx);
+    const absDy = Math.abs(rawDy);
+    const now = performance.now();
+    const dt = now - state.lastMoveTime;
+    if (dt > 0) {
+      const vx = (e.clientX - state.lastMoveX) / dt;
+      state.velocityX = state.velocityX ? state.velocityX * 0.6 + vx * 0.4 : vx;
+    }
+    state.lastMoveX = e.clientX;
+    state.lastMoveTime = now;
+    if (!state.dragging) {
+      if (absDx < dragSlop && absDy < dragSlop) return;
+      const horizontalIntent = absDx >= absDy * horizontalIntentRatio;
+      const verticalIntent = absDy > verticalCancelSlop && absDy >= absDx * verticalIntentRatio;
+      if (horizontalIntent) {
+        state.dragging = true;
+        row.classList.add('is-dragging');
+        if (swipeMain.setPointerCapture) swipeMain.setPointerCapture(e.pointerId);
+        kaCloseTimeReviewSwipes(row);
+        state.startX = e.clientX;
+        state.startY = e.clientY;
+        state.startOffset = state.currentOffset;
+        state.deltaX = 0;
+      } else if (verticalIntent) {
+        state.tracking = false;
+        swipeMain.style.transition = '';
+        return;
+      } else {
+        return;
+      }
+    }
+    const dx = e.clientX - state.startX;
+    state.deltaX = dx;
+    e.preventDefault();
+    setOffset(state.startOffset + dx);
+  };
+
+  const onPointerEnd = () => {
+    if (!state.tracking) return;
+    const offset = state.currentOffset || 0;
+    let shouldOpen = row.classList.contains('show-approve');
+    if (state.dragging) {
+      if (state.velocityX < -flickThreshold) {
+        shouldOpen = true;
+      } else if (state.velocityX > flickThreshold) {
+        shouldOpen = false;
+      } else if (row.classList.contains('show-approve')) {
+        shouldOpen = offset <= closeThreshold;
+      } else {
+        shouldOpen = offset < openThreshold;
+      }
+    } else if (shouldOpen) {
+      shouldOpen = false;
+    }
+    row.classList.remove('is-dragging');
+    state.tracking = false;
+    state.dragging = false;
+    if (state.pointerId !== null && swipeMain.releasePointerCapture) {
+      try {
+        swipeMain.releasePointerCapture(state.pointerId);
+      } catch (err) {
+        // Ignore release errors for browsers that don't support capture on touch.
+      }
+    }
+    state.pointerId = null;
+    swipeMain.style.transition = '';
+    requestAnimationFrame(() => {
+      if (shouldOpen) {
+        openSwipe();
+        row.dataset.swipeJustOpened = '1';
+        window.setTimeout(() => {
+          if (row && row.dataset) row.dataset.swipeJustOpened = '0';
+        }, 220);
+      } else {
+        closeSwipe();
+      }
+    });
+  };
+
+  swipeMain.addEventListener('pointerdown', onPointerDown);
+  swipeMain.addEventListener('pointermove', onPointerMove, { passive: false });
+  swipeMain.addEventListener('pointerup', onPointerEnd);
+  swipeMain.addEventListener('pointercancel', onPointerEnd);
+
+  swipe.dataset.bound = '1';
+}
+
+async function kaSubmitTimeReview(entry, action, note, updates = {}) {
+  if (!entry) throw new Error('Missing time entry.');
+  const noteValue = (note || '').trim();
+  if (!noteValue) {
+    throw new Error('A note is required.');
+  }
+  const reviewClientId = `time_review_${entry.id}_${Date.now().toString(36)}`;
+  const punchExceptionIds = kaGetPunchExceptionIds(entry);
+  const punchAction = action === 'modify' ? 'approve' : action;
+  const payload = {
+    source: 'time_entry',
+    action,
+    note: noteValue,
+    actor_name: kaAdminDisplayName(),
+    updates,
+    client_id: reviewClientId
+  };
+  if (entry.updated_at) payload.if_match_updated_at = entry.updated_at;
+
+  if (!navigator.onLine) {
+    kaQueueTimeReview({
+      exception_id: entry.id,
+      payload,
+      queued_at: new Date().toISOString(),
+      employee_id: kaAdminAuthId() || null,
+      device_id: kaDeviceId || null,
+      device_secret: kaGetDeviceSecret() || null
+    });
+    kaQueuePunchExceptionReviews(punchExceptionIds, punchAction, noteValue);
+    return { queued: true };
+  }
+
+  try {
+    await fetchJSON(`/api/time-exceptions/${entry.id}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const punchResult = await kaReviewPunchExceptionsOnline(punchExceptionIds, punchAction, noteValue);
+    return { queued: !!(punchResult && punchResult.queued) };
+  } catch (err) {
+    if (kaIsConnectionIssue(err) || (err && (err.status === 401 || err.status === 403))) {
+      kaQueueTimeReview({
+        exception_id: entry.id,
+        payload,
+        queued_at: new Date().toISOString(),
+        employee_id: kaAdminAuthId() || null,
+        device_id: kaDeviceId || null,
+        device_secret: kaGetDeviceSecret() || null
+      });
+      kaQueuePunchExceptionReviews(punchExceptionIds, punchAction, noteValue);
+      return { queued: true };
+    }
+    throw err;
+  }
+}
+
+async function kaHandleTimeReviewApprove(row) {
+  if (!row || !row._entry) return;
+  if (row.classList.contains('is-busy')) return;
+  const entry = row._entry;
+  const noteInput = row.querySelector('[data-ka-time-review-note]');
+  let note = noteInput ? (noteInput.value || '').trim() : '';
+  if (!note) {
+    kaSetTimeReviewRowStatus(row, 'A note is required.', 'error');
+    if (noteInput) noteInput.focus();
+    return;
+  }
+  row.classList.add('is-busy');
+  kaSetTimeReviewRowStatus(row, 'Saving...');
+  kaSetTimeReviewStatus('');
+  try {
+    const result = await kaSubmitTimeReview(entry, 'approve', note, {});
+    kaApplyTimeReviewRemoval(entry.id, row);
+    kaSetTimeReviewStatus(
+      result && result.queued
+        ? 'Saved offline — will sync when back online.'
+        : 'Time entry approved.',
+      'ok'
+    );
+    kaRefreshTimePendingCount({ force: true });
+  } catch (err) {
+    const msg = err && err.message ? err.message : 'Failed to approve.';
+    kaSetTimeReviewRowStatus(row, msg, 'error');
+    row.classList.remove('is-busy');
+  }
+}
+
+function kaHandleTimeReviewResolved(entry, { queued = false } = {}) {
+  if (!entry) return;
+  const entryId = entry.id != null ? entry.id : entry;
+  if (entryId == null) return;
+  const row = kaTimeReviewSheetState.open
+    ? document.querySelector(`.ka-time-review-row[data-entry-id="${entryId}"]`)
+    : null;
+  kaApplyTimeReviewRemoval(entryId, row);
+  if (kaTimeReviewSheetState.open && queued) {
+    kaSetTimeReviewStatus('Saved offline — will sync when back online.', 'ok');
+  }
+  kaRefreshTimePendingCount({ force: true });
+}
+
+async function kaLoadTimeReviewEntries({ forceRefresh = false } = {}) {
+  const els = kaTimeReviewSheetElements();
+  if (!els) return;
+  if (!kaCanModifyTime() || !kaCanViewTimeReports()) {
+    kaRenderTimeReviewList([], {});
+    kaSetTimeReviewStatus('You do not have access to review time entries.', 'error');
+    return;
+  }
+  kaSetTimeReviewStatus('');
+
+  const employeeSelect = document.getElementById('ka-time-employee');
+  const projectSelect = document.getElementById('ka-time-project');
+
+  const employeeId = employeeSelect ? employeeSelect.value : '';
+  const projectId = projectSelect ? projectSelect.value : '';
+  const params = { scope: 'all', employeeId, projectId };
+  const cacheKey = `pending|${employeeId || ''}|${projectId || ''}`;
+
+  if (!forceRefresh && kaTimeEntriesCache && kaTimeEntriesCache.key === cacheKey) {
+    const cached = kaTimeEntriesCache.pendingEntries || [];
+    kaRenderTimeReviewList(cached, params);
+    return;
+  }
+
+  if (!navigator.onLine) {
+    if (kaTimeEntriesCache && Array.isArray(kaTimeEntriesCache.pendingEntries)) {
+      kaRenderTimeReviewList(
+        kaTimeEntriesCache.pendingEntries,
+        kaTimeEntriesCache.params || params
+      );
+      kaSetTimeReviewStatus('Offline: showing last loaded pending entries.', 'error');
+    } else {
+      kaRenderTimeReviewList([], params);
+      kaSetTimeReviewStatus('Offline: connect to load pending reviews.', 'error');
+    }
+    return;
+  }
+
+  if (els.list) {
+    els.list.innerHTML = '<div class="ka-muted">(loading pending time entries...)</div>';
+  }
+
+  try {
+    const deviceSecret = kaGetDeviceSecret();
+    const useKioskAuth = kaDeviceId && deviceSecret;
+    const search = new URLSearchParams();
+    if (employeeId) search.set('employee_id', employeeId);
+    if (projectId) search.set('project_id', projectId);
+    const endpoint = useKioskAuth
+      ? `/api/kiosk/time-entries/pending?${search.toString()}`
+      : `/api/time-entries/pending?${search.toString()}`;
+    const entries = await fetchJSON(endpoint);
+    const normalized = (entries || []).map(kaNormalizeTimeEntry);
+    const pending = normalized.filter(entry => kaTimeEntryMeta(entry).isPending);
+    kaSetTimeEntriesCache({
+      key: cacheKey,
+      pendingEntries: pending,
+      summaryCounts: { pending: pending.length },
+      params
+    });
+    kaRenderTimeReviewList(pending, params);
+  } catch (err) {
+    const msg = err && err.message ? err.message : 'Failed to load pending time entries.';
+    kaRenderTimeReviewList([], params);
+    kaSetTimeReviewStatus(msg, 'error');
+  }
+}
+
+function kaOpenTimeReviewSheet({ forceRefresh = false } = {}) {
+  const els = kaTimeReviewSheetElements();
+  if (!els) return;
+  kaTimeReviewSheetState.open = true;
+  kaTimeReviewSheetState.needsRefresh = false;
+  els.sheet.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    els.sheet.classList.add('is-open');
+  });
+  els.sheet.setAttribute('aria-hidden', 'false');
+  kaSyncModalOpenState();
+  kaLoadTimeReviewEntries({ forceRefresh });
+}
+
+function kaCloseTimeReviewSheet() {
+  const els = kaTimeReviewSheetElements();
+  if (!els) return;
+  kaTimeReviewSheetState.dragging = false;
+  kaTimeReviewSheetState.open = false;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+  kaSyncModalOpenState();
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+    }
+    kaSyncModalOpenState();
+  }, 260);
+  if (kaTimeReviewSheetState.needsRefresh && kaCurrentView === 'time' && kaTimeReportHasRun) {
+    kaLoadTimeEntries();
+    kaTimeReviewSheetState.needsRefresh = false;
+  }
+}
+
+function kaResetTimeReviewSheetPosition() {
+  const els = kaTimeReviewSheetElements();
+  if (!els) return;
+  kaTimeReviewSheetState.dragging = false;
+  els.sheet.classList.remove('dragging');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+}
+
+function kaPopulateEmployeeSheet(employee) {
+  const els = kaEmployeeSheetElements();
+  if (!els || !employee) return;
+  const displayName = employee.nickname || employee.name || 'Employee';
+  const secondaryName =
+    employee.nickname && employee.name && employee.nickname !== employee.name ? employee.name : '';
+  const nameParts = String(employee.name || '').trim().split(/\s+/).filter(Boolean);
+  const firstName = nameParts[0] || '';
+  const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
+
+  if (els.title) els.title.textContent = '';
+  if (els.sub) {
+    els.sub.textContent = '';
+  }
+
+  if (els.status) kaSetInlineStatus(els.status, '');
+  if (els.photoInitials) {
+    els.photoInitials.textContent = kaEmployeeInitials(displayName);
+    if (!employee.employee_photo_uploaded_at) {
+      els.photoInitials.classList.remove('hidden');
+    }
+  }
+  if (els.profileName) els.profileName.textContent = displayName;
+  if (els.profileState) {
+    const isInactive = employee.active === 0;
+    els.profileState.textContent = `Status: ${isInactive ? 'Inactive' : 'Active'}`;
+  }
+  if (els.profileLang) {
+    const langKey = (employee.language || 'en').toString().toLowerCase();
+    const langLabel = KA_LANGUAGE_LABELS[langKey] || 'English';
+    els.profileLang.textContent = `Language: ${langLabel}`;
+  }
+  if (els.profileStart) {
+    const startLabel = kaFmtDateLong(employee.start_date) || 'Not set';
+    els.profileStart.textContent = `Start: ${startLabel}`;
+  }
+  if (els.photoImg) {
+    const hasPhoto = !!employee.employee_photo_uploaded_at;
+    if (hasPhoto && employee.id) {
+      const base = kaEmployeeDocUrl(employee.id, 'photo');
+      const cacheBust = encodeURIComponent(employee.employee_photo_uploaded_at);
+      const src = `${base}${base.includes('?') ? '&' : '?'}v=${cacheBust}`;
+      els.photoImg.src = src;
+      els.photoImg.classList.remove('hidden');
+    } else {
+      els.photoImg.removeAttribute('src');
+      els.photoImg.classList.add('hidden');
+    }
+  }
+  kaSetEmployeeFieldValue(els.firstName, firstName);
+  kaSetEmployeeFieldValue(els.lastName, lastName);
+  kaSetEmployeeFieldValue(els.nickname, employee.nickname || '');
+  kaSetEmployeeFieldValue(els.email, employee.email || '');
+  const phoneValue = employee.phone || employee.phone_number || employee.phoneNumber || '';
+  kaSetEmployeeFieldValue(els.phone, phoneValue);
+  kaSetEmployeeDateInput(els.startDate, employee.start_date);
+  kaSetEmployeeDateInput(els.termDate, employee.termination_date);
+
+  const canRates = kaCanModifyPayRates();
+  if (els.rateField) els.rateField.classList.toggle('hidden', !canRates);
+  if (els.rateInput) {
+    const rateValue = employee.rate != null ? Number(employee.rate) : null;
+    els.rateInput.value = Number.isFinite(rateValue) ? rateValue.toFixed(2) : '';
+  }
+
+  if (els.geofenceToggle) {
+    els.geofenceToggle.checked = false;
+  }
+  if (els.reactivateBtn) {
+    const isInactive = employee.active === 0;
+    els.reactivateBtn.classList.toggle('hidden', !isInactive);
+    els.reactivateBtn.disabled = !isInactive;
+  }
+  if (els.reactivateNote) {
+    const isInactive = employee.active === 0;
+    els.reactivateNote.classList.toggle('hidden', !isInactive);
+  }
+  kaEmployeeSheetState.reactivatePending = false;
+  kaEmployeeSheetState.reactivateSnapshot = null;
+
+  if (els.language) {
+    const lang = (employee.language || 'en').toString().toLowerCase();
+    els.language.value = KA_LANGUAGE_LABELS[lang] ? lang : 'en';
+  }
+  if (els.nameChecks) {
+    els.nameChecks.value = employee.name_on_checks || employee.name || '';
+  }
+  if (els.saveStatus) kaSetInlineStatus(els.saveStatus, '');
+  if (els.docsStatus) kaSetInlineStatus(els.docsStatus, '');
+}
+
+function kaPopulateEmployeePinSheet(employee) {
+  const els = kaEmployeePinSheetElements();
+  if (!els || !employee) return;
+  const displayName = employee.nickname || employee.name || 'Employee';
+  if (els.title) els.title.textContent = 'Change PIN';
+  if (els.sub) els.sub.textContent = displayName;
+  if (els.pinInput) els.pinInput.value = '';
+  if (els.pinConfirm) els.pinConfirm.value = '';
+  if (els.pinStatus) kaSetInlineStatus(els.pinStatus, '');
+}
+
+function kaRenderEmployeeHistory(history = []) {
+  const body = document.getElementById('ka-employee-history-body');
+  if (!body) return;
+  if (!Array.isArray(history) || !history.length) {
+    body.innerHTML = '<div class="ka-ship-muted">(No prior employment history)</div>';
+    return;
+  }
+  const rows = history.map(entry => {
+    const start = kaFmtDateLong(entry.start_date) || 'Not set';
+    const term = kaFmtDateLong(entry.termination_date) || 'Not set';
+    const recorded = kaFmtDateLong(entry.recorded_at) || '';
+    return `
+      <div class="ka-employee-history-row">
+        <div>${escapeHTML(start)}</div>
+        <div>${escapeHTML(term)}</div>
+        <div>${escapeHTML(recorded)}</div>
+      </div>
+    `;
+  });
+  body.innerHTML = `
+    <div class="ka-employee-history-header">
+      <div>Start date</div>
+      <div>End date</div>
+      <div>Recorded</div>
+    </div>
+    ${rows.join('')}
+  `;
+}
+
+function kaOpenEmployeeHistoryModal() {
+  const backdrop = document.getElementById('ka-employee-history-backdrop');
+  if (!backdrop) return;
+  kaRenderEmployeeHistory(kaEmployeeSheetState.history || []);
+  backdrop.classList.remove('hidden');
+}
+
+function kaCloseEmployeeHistoryModal() {
+  const backdrop = document.getElementById('ka-employee-history-backdrop');
+  if (backdrop) backdrop.classList.add('hidden');
+}
+
+function kaEmployeesSheetElements() {
+  const sheet = document.getElementById('ka-employees-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    handle: sheet.querySelector('[data-ka-employees-sheet-handle]'),
+    header: sheet.querySelector('.ka-sheet-header'),
+    slot: sheet.querySelector('[data-ka-employees-sheet-slot]'),
+    actions: sheet.querySelector('[data-ka-employees-sheet-actions]')
+  };
+}
+
+function kaOpenEmployeesSheet() {
+  const els = kaEmployeesSheetElements();
+  const section = document.getElementById('ka-view-employees');
+  if (!els || !section) return;
+  if (kaEmployeesSheetState.open) return;
+  kaEmployeesSheetState.open = true;
+  kaEmployeesSheetState.dragging = false;
+  kaEmployeesSheetState.startY = 0;
+  kaEmployeesSheetState.currentY = 0;
+  kaEmployeesSheetState.restoreHidden = section.classList.contains('hidden');
+  if (!kaEmployeesSheetState.contentParent) {
+    kaEmployeesSheetState.contentParent = section.parentElement;
+    kaEmployeesSheetState.contentNext = section.nextSibling;
+  }
+  if (els.slot && section.parentElement !== els.slot) {
+    els.slot.appendChild(section);
+  }
+  section.classList.remove('hidden');
+
+  const addBtn = document.getElementById('ka-employee-add-cta');
+  if (addBtn) {
+    if (!kaEmployeesSheetState.addBtnParent) {
+      kaEmployeesSheetState.addBtnParent = addBtn.parentElement;
+      kaEmployeesSheetState.addBtnNext = addBtn.nextSibling;
+    }
+    kaEmployeesSheetState.addBtnWasHidden = addBtn.classList.contains('hidden');
+    addBtn.classList.remove('hidden');
+    if (els.actions && addBtn.parentElement !== els.actions) {
+      const closeBtn = els.actions.querySelector('[data-ka-employees-sheet-close]');
+      if (closeBtn) {
+        els.actions.insertBefore(addBtn, closeBtn);
+      } else {
+        els.actions.appendChild(addBtn);
+      }
+    }
+  }
+
+  kaRenderEmployeesGrid();
+  kaSetEmployeeFormVisible(kaEmployeeFormVisible, { skipScroll: true });
+  els.sheet.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    els.sheet.classList.add('is-open');
+  });
+  els.sheet.setAttribute('aria-hidden', 'false');
+  kaSyncModalOpenState();
+}
+
+function kaCloseEmployeesSheet() {
+  const els = kaEmployeesSheetElements();
+  const section = document.getElementById('ka-view-employees');
+  if (!els) return;
+  kaEmployeesSheetState.dragging = false;
+  kaEmployeesSheetState.open = false;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+
+  const addBtn = document.getElementById('ka-employee-add-cta');
+  if (addBtn && kaEmployeesSheetState.addBtnParent) {
+    const refNode =
+      kaEmployeesSheetState.addBtnNext &&
+      kaEmployeesSheetState.addBtnNext.parentNode === kaEmployeesSheetState.addBtnParent
+        ? kaEmployeesSheetState.addBtnNext
+        : null;
+    kaEmployeesSheetState.addBtnParent.insertBefore(addBtn, refNode);
+  }
+  if (addBtn && kaEmployeesSheetState.addBtnWasHidden) {
+    addBtn.classList.add('hidden');
+  }
+
+  if (section && kaEmployeesSheetState.contentParent) {
+    const refNode =
+      kaEmployeesSheetState.contentNext &&
+      kaEmployeesSheetState.contentNext.parentNode === kaEmployeesSheetState.contentParent
+        ? kaEmployeesSheetState.contentNext
+        : null;
+    kaEmployeesSheetState.contentParent.insertBefore(section, refNode);
+  }
+  if (section && kaEmployeesSheetState.restoreHidden) {
+    section.classList.add('hidden');
+  }
+
+  kaSyncModalOpenState();
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+    }
+    kaSyncModalOpenState();
+  }, 260);
+}
+
+function kaAccountSheetElements() {
+  const sheet = document.getElementById('ka-account-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    handle: sheet.querySelector('[data-ka-account-sheet-handle]'),
+    header: sheet.querySelector('.ka-sheet-header'),
+    slot: sheet.querySelector('[data-ka-account-sheet-slot]')
+  };
+}
+
+function kaOpenAccountSheet() {
+  const els = kaAccountSheetElements();
+  const section = document.getElementById('ka-view-account');
+  if (!els || !section) return;
+  if (kaAccountSheetState.open) return;
+  kaAccountSheetState.open = true;
+  kaAccountSheetState.dragging = false;
+  kaAccountSheetState.startY = 0;
+  kaAccountSheetState.currentY = 0;
+  kaAccountSheetState.restoreHidden = section.classList.contains('hidden');
+  if (!kaAccountSheetState.contentParent) {
+    kaAccountSheetState.contentParent = section.parentElement;
+    kaAccountSheetState.contentNext = section.nextSibling;
+  }
+  if (els.slot && section.parentElement !== els.slot) {
+    els.slot.appendChild(section);
+  }
+  section.classList.remove('hidden');
+
+  kaBindAccountActions();
+  kaLoadAccountInfo();
+
+  els.sheet.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    els.sheet.classList.add('is-open');
+  });
+  els.sheet.setAttribute('aria-hidden', 'false');
+  kaSyncModalOpenState();
+}
+
+function kaCloseAccountSheet() {
+  const els = kaAccountSheetElements();
+  const section = document.getElementById('ka-view-account');
+  if (!els) return;
+  kaAccountSheetState.dragging = false;
+  kaAccountSheetState.open = false;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+
+  if (section && kaAccountSheetState.contentParent) {
+    const refNode =
+      kaAccountSheetState.contentNext &&
+      kaAccountSheetState.contentNext.parentNode === kaAccountSheetState.contentParent
+        ? kaAccountSheetState.contentNext
+        : null;
+    kaAccountSheetState.contentParent.insertBefore(section, refNode);
+  }
+  if (section && kaAccountSheetState.restoreHidden) {
+    section.classList.add('hidden');
+  }
+
+  kaSyncModalOpenState();
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+    }
+    kaSyncModalOpenState();
+  }, 260);
+}
+
+function kaSettingsSheetElements() {
+  const sheet = document.getElementById('ka-settings-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    handle: sheet.querySelector('[data-ka-settings-sheet-handle]'),
+    header: sheet.querySelector('.ka-sheet-header'),
+    slot: sheet.querySelector('[data-ka-settings-sheet-slot]')
+  };
+}
+
+function kaOpenSettingsSheet() {
+  const els = kaSettingsSheetElements();
+  const section = document.getElementById('ka-view-settings');
+  if (!els || !section) return;
+  if (kaSettingsSheetState.open) return;
+  kaSettingsSheetState.open = true;
+  kaSettingsSheetState.dragging = false;
+  kaSettingsSheetState.startY = 0;
+  kaSettingsSheetState.currentY = 0;
+  kaSettingsSheetState.restoreHidden = section.classList.contains('hidden');
+  if (!kaSettingsSheetState.contentParent) {
+    kaSettingsSheetState.contentParent = section.parentElement;
+    kaSettingsSheetState.contentNext = section.nextSibling;
+  }
+  if (els.slot && section.parentElement !== els.slot) {
+    els.slot.appendChild(section);
+  }
+  section.classList.remove('hidden');
+
+  kaRenderSettingsForm();
+
+  els.sheet.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    els.sheet.classList.add('is-open');
+  });
+  els.sheet.setAttribute('aria-hidden', 'false');
+  kaSyncModalOpenState();
+}
+
+function kaCloseSettingsSheet() {
+  const els = kaSettingsSheetElements();
+  const section = document.getElementById('ka-view-settings');
+  if (!els) return;
+  kaSettingsSheetState.dragging = false;
+  kaSettingsSheetState.open = false;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+
+  if (section && kaSettingsSheetState.contentParent) {
+    const refNode =
+      kaSettingsSheetState.contentNext &&
+      kaSettingsSheetState.contentNext.parentNode === kaSettingsSheetState.contentParent
+        ? kaSettingsSheetState.contentNext
+        : null;
+    kaSettingsSheetState.contentParent.insertBefore(section, refNode);
+  }
+  if (section && kaSettingsSheetState.restoreHidden) {
+    section.classList.add('hidden');
+  }
+
+  kaSyncModalOpenState();
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+    }
+    kaSyncModalOpenState();
+  }, 260);
+}
+
+function kaOpenEmployeeSheet(employee) {
+  const els = kaEmployeeSheetElements();
+  if (!els || !employee) return;
+  kaEmployeeSheetState.employeeId = Number(employee.id) || null;
+  kaEmployeeSheetState.open = true;
+  kaPopulateEmployeeSheet(employee);
+  kaLoadEmployeeDocs(kaEmployeeSheetState.employeeId);
+  kaLoadEmployeeHistory(kaEmployeeSheetState.employeeId);
+  els.sheet.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    els.sheet.classList.add('is-open');
+  });
+  els.sheet.setAttribute('aria-hidden', 'false');
+  kaSyncModalOpenState();
+}
+
+function kaCloseEmployeeSheet() {
+  const els = kaEmployeeSheetElements();
+  if (!els) return;
+  kaEmployeeSheetState.dragging = false;
+  kaEmployeeSheetState.open = false;
+  kaEmployeeSheetState.employeeId = null;
+  kaEmployeeSheetState.history = [];
+  kaEmployeeSheetState.reactivatePending = false;
+  kaEmployeeSheetState.reactivateSnapshot = null;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+  kaSyncModalOpenState();
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+    }
+    kaSyncModalOpenState();
+  }, 260);
+}
+
+function kaOpenEmployeePinSheet(employeeId) {
+  const els = kaEmployeePinSheetElements();
+  const id = Number(employeeId) || null;
+  if (!els || !id) return;
+  const emp = kaFindEmployeeById(id);
+  if (!emp) return;
+  if (kaEmployeeSheetState.open) {
+    kaCloseEmployeeSheet();
+  }
+  kaEmployeePinSheetState.employeeId = id;
+  kaEmployeePinSheetState.open = true;
+  kaPopulateEmployeePinSheet(emp);
+  els.sheet.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    els.sheet.classList.add('is-open');
+  });
+  els.sheet.setAttribute('aria-hidden', 'false');
+  kaSyncModalOpenState();
+}
+
+function kaCloseEmployeePinSheet({ returnToDetails = true } = {}) {
+  const els = kaEmployeePinSheetElements();
+  if (!els) return;
+  const id = kaEmployeePinSheetState.employeeId;
+  kaEmployeePinSheetState.dragging = false;
+  kaEmployeePinSheetState.open = false;
+  kaEmployeePinSheetState.employeeId = null;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+  kaSyncModalOpenState();
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+    }
+    kaSyncModalOpenState();
+  }, 260);
+
+  if (returnToDetails && id) {
+    const emp = kaFindEmployeeById(id);
+    if (emp) {
+      kaOpenEmployeeSheet(emp);
+    }
+  }
 }
 
 function kaRefreshEmployeeSheet() {
@@ -4364,6 +8022,47 @@ function kaRefreshEmployeeSheet() {
   if (!id) return;
   const emp = kaFindEmployeeById(id);
   if (emp) kaPopulateEmployeeSheet(emp);
+  kaLoadEmployeeDocs(id);
+  kaLoadEmployeeHistory(id);
+}
+
+async function kaHandleEmployeePhotoUpload(file) {
+  const els = kaEmployeeSheetElements();
+  if (!els || !file) return;
+  const id = kaEmployeeSheetState.employeeId;
+  if (!id) return;
+  kaSetInlineStatus(els.photoStatus, 'Uploading photo…');
+  try {
+    const form = new FormData();
+    form.append('employee_photo', file);
+    const auth = kaEmployeeAuthMeta();
+    if (auth.admin_id) form.append('admin_id', String(auth.admin_id));
+    if (auth.device_id) form.append('device_id', String(auth.device_id));
+    if (auth.device_secret) form.append('device_secret', String(auth.device_secret));
+
+    const res = await fetch(`/api/kiosk/admin/employees/${id}/photo`, {
+      method: 'POST',
+      body: form,
+      credentials: 'include',
+      headers: kaGetCsrfHeader()
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Upload failed.');
+    }
+    const uploadedAt = new Date().toISOString();
+    kaUpdateEmployeeRecord(id, { employee_photo_uploaded_at: uploadedAt });
+    if (kaCurrentAdmin && Number(kaCurrentAdmin.id) === Number(id)) {
+      kaUpdateAccountProfile({ employee: kaCurrentAdmin });
+    }
+    if (els.photoInput) els.photoInput.value = '';
+    kaSetInlineStatus(els.photoStatus, 'Photo uploaded.', 'ok');
+    kaRefreshEmployeeSheet();
+    kaRenderEmployeesGrid();
+  } catch (err) {
+    console.error('Employee photo upload failed', err);
+    kaSetInlineStatus(els.photoStatus, err.message || 'Upload failed.', 'error');
+  }
 }
 
 function kaRenderEmployeesGrid() {
@@ -4373,19 +8072,30 @@ function kaRenderEmployeesGrid() {
   if (!grid) return;
 
   const employees = Array.isArray(kaEmployees) ? [...kaEmployees] : [];
-  employees.sort((a, b) => {
+  const query = (kaEmployeeSearchQuery || '').toString().trim().toLowerCase();
+  const statusFilter = (kaEmployeeStatusFilter || 'all').toString().toLowerCase();
+  const filtered = employees.filter(emp => {
+    if (statusFilter === 'active' && emp.active === 0) return false;
+    if (statusFilter === 'inactive' && emp.active !== 0) return false;
+    if (!query) return true;
+    const name = (emp.name || '').toString().toLowerCase();
+    const nickname = (emp.nickname || '').toString().toLowerCase();
+    const nameChecks = (emp.name_on_checks || '').toString().toLowerCase();
+    return name.includes(query) || nickname.includes(query) || nameChecks.includes(query);
+  });
+  filtered.sort((a, b) => {
     const aName = (a.nickname || a.name || '').toLowerCase();
     const bName = (b.nickname || b.name || '').toLowerCase();
     return aName.localeCompare(bName);
   });
 
   if (countTag) {
-    const total = employees.length;
+    const total = filtered.length;
     countTag.textContent = `${total} Employee${total === 1 ? '' : 's'}`;
     countTag.className = `ka-tag ${total ? 'gray' : 'orange'}`;
   }
 
-  if (!employees.length) {
+  if (!filtered.length) {
     grid.replaceChildren();
     if (empty) empty.classList.remove('hidden');
     return;
@@ -4394,7 +8104,7 @@ function kaRenderEmployeesGrid() {
   if (empty) empty.classList.add('hidden');
 
   const fragment = document.createDocumentFragment();
-  employees.forEach(emp => {
+  filtered.forEach(emp => {
     const card = document.createElement('div');
     card.className = 'ka-employee-card';
     card.setAttribute('role', 'button');
@@ -4409,22 +8119,9 @@ function kaRenderEmployeesGrid() {
     if (emp.active === 0) {
       tags.push('<span class="ka-tag red">Inactive</span>');
     }
-    if (emp.kiosk_admin_access) {
-      tags.push('<span class="ka-tag green">Kiosk Admin</span>');
-    }
-    if (emp.worker_timekeeping) {
-      tags.push('<span class="ka-tag gray">Worker</span>');
-    }
     if (emp.pin_hash) {
       tags.push('<span class="ka-tag orange">PIN set</span>');
     }
-    if (!tags.length) {
-      tags.push('<span class="ka-tag gray">Employee</span>');
-    }
-    const accessBits = [];
-    if (emp.worker_timekeeping) accessBits.push('Timekeeping');
-    if (emp.kiosk_admin_access) accessBits.push('Admin');
-    const accessLabel = accessBits.length ? accessBits.join(' • ') : '—';
     const langKey = (emp.language || 'en').toString().toLowerCase();
     const langLabel = KA_LANGUAGE_LABELS[langKey] || 'English';
 
@@ -4437,10 +8134,6 @@ function kaRenderEmployeesGrid() {
         <div class="ka-employee-tags">${tags.join('')}</div>
       </div>
       <div class="ka-employee-card-meta">
-        <div>
-          <span class="ka-employee-meta-label">Access</span>
-          ${escapeHTML(accessLabel)}
-        </div>
         <div>
           <span class="ka-employee-meta-label">Language</span>
           ${escapeHTML(langLabel)}
@@ -4494,16 +8187,36 @@ function kaShowView(view, opts = {}) {
     kaUpdateBottomNavDiamond();
   }
   kaUpdateHeaderTitle(view);
+  const startBtn = document.getElementById('ka-start-new-btn');
+  const addBtn = document.getElementById('ka-employee-add-cta');
+  if (startBtn) {
+    if (view === 'timesheets') {
+      kaUpdateActiveProjectUI();
+    } else {
+      startBtn.classList.add('hidden');
+    }
+  }
+  if (addBtn) addBtn.classList.toggle('hidden', view !== 'employees');
   if (document.body) {
     document.body.classList.toggle('ka-view-workers-active', view === 'workers');
     document.body.classList.toggle('ka-view-timesheets-active', view === 'timesheets');
     document.body.classList.toggle('ka-view-shipments-active', view === 'shipments');
+    document.body.classList.toggle('ka-view-employees-active', view === 'employees');
+    document.body.classList.toggle('ka-view-time-active', view === 'time');
   }
   kaSyncLiveCountPill();
+
 
   if (view === 'time') {
     kaBindTimeOrientationListener();
     kaSyncTimeOrientationHint();
+    kaSetTimeReportVisible(kaTimeReportHasRun);
+    kaBindTimeCalendar();
+    kaRenderTimeCalendar();
+  }
+
+  if (view === 'time' || view === 'timesheets') {
+    kaRefreshTimePendingCount();
   }
 
   if (view === 'shipments' && kaCanViewShipments()) {
@@ -4606,6 +8319,86 @@ function kaParseUtcTimestamp(ts) {
   return Number.isNaN(dt.getTime()) ? null : dt;
 }
 
+function kaIsoDateFromTimestampTZ(input) {
+  if (!input) return '';
+  const dt = input instanceof Date ? input : kaParseUtcTimestamp(String(input));
+  if (!dt || Number.isNaN(dt.getTime())) return '';
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: kaOrgTimezone || KA_DEFAULT_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    const parts = fmt.formatToParts(dt);
+    const y = parts.find(p => p.type === 'year')?.value;
+    const m = parts.find(p => p.type === 'month')?.value;
+    const d = parts.find(p => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch (err) {
+    console.warn('Falling back to UTC date for kaIsoDateFromTimestampTZ:', err);
+  }
+  return dt.toISOString().slice(0, 10);
+}
+
+function kaTimeValue24TZ(input) {
+  if (!input) return '';
+  const dt = input instanceof Date ? input : kaParseUtcTimestamp(String(input));
+  if (!dt || Number.isNaN(dt.getTime())) return '';
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: kaOrgTimezone || KA_DEFAULT_TIMEZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    });
+    const parts = fmt.formatToParts(dt);
+    const hh = parts.find(p => p.type === 'hour')?.value;
+    const mm = parts.find(p => p.type === 'minute')?.value;
+    if (hh && mm) return `${hh}:${mm}`;
+  } catch (err) {
+    console.warn('Falling back to UTC time for kaTimeValue24TZ:', err);
+  }
+  return dt.toISOString().slice(11, 16);
+}
+
+function kaFormatTimeValue12(value) {
+  if (!value) return '';
+  if (value instanceof Date) {
+    return value.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  }
+  const raw = String(value).trim();
+  if (!raw) return '';
+  if (/(^|\\s)(am|pm)\\b/i.test(raw)) return raw;
+  if (raw.includes('T') || raw.includes('-') || raw.includes('/')) {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+    }
+  }
+  const parts = raw.split(':');
+  if (parts.length >= 2) {
+    const hours = Number(parts[0]);
+    const minutes = Number(parts[1]);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return raw;
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return raw;
+    const hour12 = hours % 12 || 12;
+    const hh = String(hour12).padStart(2, '0');
+    const mm = String(minutes).padStart(2, '0');
+    const suffix = hours >= 12 ? 'PM' : 'AM';
+    return `${hh}:${mm} ${suffix}`;
+  }
+  return raw;
+}
+
 function kaFmtTimeShortTZ(input) {
   if (!input) return '';
   const dt = input instanceof Date ? input : kaParseUtcTimestamp(String(input));
@@ -4614,27 +8407,43 @@ function kaFmtTimeShortTZ(input) {
     return new Intl.DateTimeFormat(undefined, {
       timeZone: kaOrgTimezone || KA_DEFAULT_TIMEZONE,
       hour: 'numeric',
-      minute: '2-digit'
+      minute: '2-digit',
+      hour12: true
     }).format(dt);
   } catch (err) {
     console.warn('Falling back to local time for kaFmtTimeShortTZ:', err);
-    return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
   }
 }
 
 function kaSessionRowMeta(session, opts = {}) {
   const startTs = session?.first_clock_in_ts || session?.created_at;
   const startLabel = kaFmtTimeShortTZ(startTs);
-  const openCount = Number(session?.device_open_count ?? session?.open_count ?? 0);
+  const { openCount, entryCount } = kaSessionCounts(session);
+  const endedAt = session?.ended_at;
+  const isClosed = !!endedAt;
   const isOngoing =
-    typeof opts.isOngoing === 'boolean'
-      ? opts.isOngoing
-      : !!opts.isActive || openCount > 0;
+    isClosed
+      ? false
+      : typeof opts.isOngoing === 'boolean'
+        ? opts.isOngoing
+        : openCount > 0 || (!!opts.isActive && !session?.last_clock_out_ts);
   let endHtml = '';
   let statusHtml = '';
 
   if (isOngoing) {
     endHtml = '<span class="ka-session-ongoing">Ongoing</span>';
+  } else if (endedAt) {
+    endHtml = `<span class="ka-session-time">${kaFmtTimeShortTZ(endedAt)}</span>`;
+    const closedLabel = openCount === 0 && entryCount > 0 ? 'Complete & Closed' : 'Closed';
+    statusHtml =
+      '<span class="ka-session-complete">' +
+      '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+      '<circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" stroke-width="1.4"></circle>' +
+      '<path d="M6.4 10.4l2.3 2.3 4.9-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>' +
+      '</svg>' +
+      closedLabel +
+      '</span>';
   } else if (session?.last_clock_out_ts) {
     endHtml = `<span class="ka-session-time">${kaFmtTimeShortTZ(session.last_clock_out_ts)}</span>`;
     statusHtml =
@@ -4649,12 +8458,31 @@ function kaSessionRowMeta(session, opts = {}) {
 
   const rangeHtml =
     '<span class="ka-session-time-range">' +
+    '<span class="ka-session-time-group">' +
     `<span class="ka-session-time">${startLabel}</span>` +
     '<span class="ka-session-time-divider">–</span>' +
     `${endHtml}` +
+    '</span>' +
     `${statusHtml}` +
     '</span>';
   return rangeHtml;
+}
+
+async function kaLoadTimesheetAssignees({ force = false } = {}) {
+  if (!kaCanAssignTimesheets()) return [];
+  if (kaTimesheetAssigneesLoaded && !force) return kaTimesheetAssignees;
+  if (kaTimesheetAssigneesLoading) return kaTimesheetAssignees;
+  kaTimesheetAssigneesLoading = true;
+  try {
+    const res = await fetchJSON('/api/kiosk-sessions/assignees');
+    kaTimesheetAssignees = (res && res.admins) ? res.admins : [];
+  } catch (err) {
+    console.warn('Unable to load timesheet assignees', err);
+    kaTimesheetAssignees = [];
+  }
+  kaTimesheetAssigneesLoaded = true;
+  kaTimesheetAssigneesLoading = false;
+  return kaTimesheetAssignees;
 }
 
 function kaDurationLabelFromStart(startTs, endTs = new Date()) {
@@ -4682,7 +8510,8 @@ function kaTimesheetWorkersSheetElements() {
     status: sheet.querySelector('#ka-timesheet-workers-status'),
     sub: sheet.querySelector('#ka-timesheet-workers-sub'),
     title: sheet.querySelector('#ka-timesheet-workers-title'),
-    handle: sheet.querySelector('[data-ka-sheet-handle]')
+    handle: sheet.querySelector('[data-ka-sheet-handle]'),
+    header: sheet.querySelector('.ka-sheet-header')
   };
 }
 
@@ -4793,7 +8622,7 @@ function kaSortSessionsByRecency(list) {
 
 function kaExplicitActiveSession(sessions) {
   if (!Array.isArray(sessions) || !sessions.length) return null;
-  const sorted = kaSortSessionsByRecency(sessions);
+  const sorted = kaSortSessionsByRecency(sessions).filter(s => !kaIsSessionClosed(s));
   const activeProjectId =
     kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null
       ? Number(kaKiosk.project_id)
@@ -4822,7 +8651,7 @@ function kaExplicitActiveSession(sessions) {
 
 function kaComputeActiveSession(sessions) {
   if (!Array.isArray(sessions) || !sessions.length) return null;
-  const sorted = kaSortSessionsByRecency(sessions);
+  const sorted = kaSortSessionsByRecency(sessions).filter(s => !kaIsSessionClosed(s));
   const activeProjectId =
     kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null
       ? Number(kaKiosk.project_id)
@@ -4846,18 +8675,7 @@ function kaComputeActiveSession(sessions) {
     if (projectMatch) return projectMatch;
   }
 
-  return sorted[0] || null;
-}
-
-function kaHasMultipleProjectSessions() {
-  if (!Array.isArray(kaSessions)) return false;
-  const ids = new Set();
-  kaSessions.forEach(s => {
-    if (!s) return;
-    const pid = Number(s.project_id);
-    if (Number.isFinite(pid)) ids.add(pid);
-  });
-  return ids.size > 1;
+  return null;
 }
 
 function kaSessionProjectLabel(session) {
@@ -4869,23 +8687,248 @@ function kaSessionProjectLabel(session) {
   );
 }
 
-async function kaConfirmActiveSessionSwitch(targetSessionId) {
-  if (!targetSessionId) return true;
+function kaIsSessionClosed(session) {
+  return !!(session && session.ended_at);
+}
 
-  const activeSession = kaComputeActiveSession(kaSessions || []);
-  if (activeSession && Number(activeSession.id) === Number(targetSessionId)) {
-    return true;
+function kaFindOpenSessionForProjectToday(projectId) {
+  if (!projectId) return null;
+  const todayIso = kaTodayIso();
+  return (kaSessions || []).find(
+    session =>
+      Number(session?.project_id) === Number(projectId) &&
+      !kaIsSessionClosed(session) &&
+      String(session?.date || '').slice(0, 10) === todayIso
+  );
+}
+
+function kaIsSessionActive(session) {
+  if (!session) return false;
+  if (kaIsSessionClosed(session)) return false;
+  const todayIso = kaTodayIso();
+  if (String(session.date || '').slice(0, 10) !== todayIso) return false;
+  const activeId =
+    kaActiveSessionId !== undefined && kaActiveSessionId !== null
+      ? Number(kaActiveSessionId)
+      : null;
+  if (Number.isFinite(activeId)) {
+    return Number(session.id) === activeId;
+  }
+  const activeProjectId =
+    kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null
+      ? Number(kaKiosk.project_id)
+      : null;
+  if (Number.isFinite(activeProjectId)) {
+    return Number(session.project_id) === activeProjectId;
+  }
+  return false;
+}
+
+async function kaOpenTimesheetActions(sessionId, row = null) {
+  if (!sessionId) return;
+  let session = (kaSessions || []).find(s => Number(s.id) === Number(sessionId));
+  if (!session) {
+    const fallbackProjectId = row && row.dataset.projectId ? Number(row.dataset.projectId) : null;
+    session = {
+      id: sessionId,
+      project_id: Number.isFinite(fallbackProjectId) ? fallbackProjectId : null,
+      date: kaTimesheetSelectedDate() || kaTodayIso()
+    };
   }
 
-  if (!kaHasMultipleProjectSessions()) return true;
+  const backdrop = kaEnsureTimesheetActionModal();
+  const titleEl = document.getElementById('ka-timesheet-action-title');
+  const msgEl = document.getElementById('ka-timesheet-action-message');
+  const assignBtn = document.getElementById('ka-timesheet-action-assign-btn');
+  const deleteBtn = document.getElementById('ka-timesheet-action-delete');
+  const closeBtn = document.getElementById('ka-timesheet-action-close');
+  const closeSheetBtn = document.getElementById('ka-timesheet-action-close-sheet');
+  const setBtn = document.getElementById('ka-timesheet-action-set');
 
-  const targetSession = (kaSessions || []).find(s => Number(s.id) === Number(targetSessionId));
-  const projectLabel = kaSessionProjectLabel(targetSession);
+  if (!backdrop || !titleEl || !msgEl || !assignBtn || !deleteBtn || !closeBtn || !closeSheetBtn || !setBtn) {
+    kaDebugTapLog('actions modal missing elements');
+    return;
+  }
 
-  return kaShowConfirmDialog(
-    `Set ${projectLabel} from this timesheet as the active project for this kiosk?`,
-    { okLabel: 'Set active', cancelLabel: 'Cancel' }
-  );
+  const isActive = (row && row.classList.contains('is-active')) || kaIsSessionActive(session);
+  const modal = backdrop.querySelector('.ka-timesheet-action-modal');
+  if (modal) modal.classList.toggle('is-active-session', isActive);
+  kaDebugTapLog(`actions modal open id=${sessionId} active=${isActive} canAssign=${kaCanAssignTimesheets()}`);
+  const projectLabel = kaSessionProjectLabel(session);
+  titleEl.textContent = projectLabel || 'Timesheet options';
+  const { openCount, entryCount } = kaSessionCounts(session);
+  const isClosed = kaIsSessionClosed(session);
+  const canClose = !isClosed && openCount === 0;
+  const canDelete = openCount === 0 && entryCount === 0;
+  const baseMessage = isActive
+    ? 'Assign this active timesheet to an admin.'
+    : `Set ${projectLabel} from this timesheet as the active project for this kiosk.`;
+  msgEl.textContent = isClosed
+    ? (canDelete ? 'This timesheet is closed. You can delete it since it has no time entries.'
+      : 'This timesheet is closed. It cannot be changed.')
+    : openCount > 0
+      ? `${baseMessage} Close is available once all workers are clocked out.`
+      : baseMessage;
+
+  const canAssign = kaCanAssignTimesheets();
+  setBtn.hidden = isActive || isClosed;
+  assignBtn.hidden = !canAssign || isClosed;
+  if (isClosed) {
+    deleteBtn.hidden = !canDelete;
+  } else {
+    deleteBtn.hidden = canAssign || isActive || !canDelete;
+  }
+  closeSheetBtn.hidden = isClosed || !canClose;
+  closeSheetBtn.disabled = !canClose;
+  assignBtn.classList.toggle('ka-timesheet-assign-active', isActive);
+
+  const closeModal = () => {
+    backdrop.classList.add('hidden');
+    closeBtn.onclick = null;
+    setBtn.onclick = null;
+    assignBtn.onclick = null;
+    deleteBtn.onclick = null;
+    closeSheetBtn.onclick = null;
+    backdrop.onclick = null;
+  };
+
+  closeBtn.onclick = () => closeModal();
+  backdrop.onclick = (e) => {
+    if (e.target === backdrop) closeModal();
+  };
+
+  setBtn.onclick = async () => {
+    closeModal();
+    await kaSetActiveSession(sessionId);
+  };
+
+  deleteBtn.onclick = async () => {
+    closeModal();
+    await kaDeleteSession(sessionId, row);
+  };
+
+  closeSheetBtn.onclick = async () => {
+    if (!canClose) return;
+    closeModal();
+    await kaCloseSession(sessionId, row);
+  };
+
+  assignBtn.onclick = async () => {
+    closeModal();
+    await kaOpenTimesheetAssignPicker(session);
+  };
+
+  backdrop.classList.remove('hidden');
+  kaDebugTapLog('actions modal shown');
+}
+
+async function kaOpenTimesheetAssignPicker(session) {
+  if (!session || !kaCanAssignTimesheets()) return;
+  await kaLoadTimesheetAssignees();
+  const admins = Array.isArray(kaTimesheetAssignees) ? kaTimesheetAssignees : [];
+
+  const backdrop = kaEnsureTimesheetAssignModal();
+  const titleEl = document.getElementById('ka-timesheet-assign-title');
+  const msgEl = document.getElementById('ka-timesheet-assign-message');
+  const selectEl = document.getElementById('ka-timesheet-assign-select');
+  const closeBtn = document.getElementById('ka-timesheet-assign-close');
+
+  if (!backdrop || !titleEl || !msgEl || !selectEl || !closeBtn) return;
+
+  const assignedName = session.assigned_to_name || session.created_by_name || '';
+  const assignedId = session.assigned_to_employee_id || null;
+
+  titleEl.textContent = 'Assign to admin';
+  msgEl.textContent = assignedName
+    ? `Assigned to ${assignedName}.`
+    : 'Currently unassigned.';
+
+  const closeModal = () => {
+    backdrop.classList.add('hidden');
+    closeBtn.onclick = null;
+    selectEl.onchange = null;
+    backdrop.onclick = null;
+  };
+
+  const assignTo = async (nextId) => {
+    const previousValue = assignedId ? String(assignedId) : '';
+    selectEl.disabled = true;
+    try {
+      const res = await fetchJSON(`/api/kiosk-sessions/${session.id}/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assigned_to_employee_id: nextId ? Number(nextId) : null
+        })
+      });
+      session.assigned_to_employee_id = res.assigned_to_employee_id || null;
+      session.assigned_to_name = res.assigned_to_name || null;
+      kaRenderSessions();
+      closeModal();
+    } catch (err) {
+      console.error('Error updating timesheet assignee', err);
+      selectEl.disabled = false;
+      selectEl.value = previousValue;
+    }
+  };
+
+  const currentValue = assignedId ? String(assignedId) : '';
+  selectEl.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = assignedName ? `Assigned to ${assignedName}` : 'Select admin';
+  placeholder.disabled = true;
+  placeholder.selected = !currentValue;
+  selectEl.appendChild(placeholder);
+
+  let hasAssignedOption = false;
+  admins.forEach(admin => {
+    const opt = document.createElement('option');
+    opt.value = String(admin.id);
+    opt.textContent = admin.name || 'Admin';
+    if (assignedId && Number(admin.id) === Number(assignedId)) {
+      hasAssignedOption = true;
+    }
+    selectEl.appendChild(opt);
+  });
+
+  if (currentValue && !hasAssignedOption) {
+    const currentOpt = document.createElement('option');
+    currentOpt.value = currentValue;
+    currentOpt.textContent = assignedName || `Admin #${assignedId}`;
+    currentOpt.disabled = true;
+    currentOpt.selected = true;
+    selectEl.insertBefore(currentOpt, selectEl.firstChild);
+  } else if (currentValue) {
+    selectEl.value = currentValue;
+  }
+
+  selectEl.onchange = () => {
+    const nextValue = selectEl.value;
+    if (!nextValue || nextValue === currentValue) return;
+    assignTo(Number(nextValue));
+  };
+
+  closeBtn.onclick = () => closeModal();
+  backdrop.onclick = (e) => {
+    if (e.target === backdrop) closeModal();
+  };
+  backdrop.classList.remove('hidden');
+  selectEl.focus();
+}
+
+async function kaTriggerSessionRowAction(row) {
+  if (!row || !row.dataset.sessionId) return;
+  const id = Number(row.dataset.sessionId);
+  if (!id) return;
+  const session = (kaSessions || []).find(s => Number(s.id) === id);
+  const isActive = row.classList.contains('is-active') || (session ? kaIsSessionActive(session) : false);
+  const canClose = session && !kaIsSessionClosed(session) && kaSessionCounts(session).openCount === 0;
+  kaDebugTapFlash(row, isActive ? 'tap: active row' : 'tap: inactive row');
+  kaDebugTapLog(`trigger row id=${id} active=${isActive} canAssign=${kaCanAssignTimesheets()}`);
+  if (isActive && !kaCanAssignTimesheets() && !canClose) return;
+  await kaOpenTimesheetActions(id, row);
 }
 
 function kaSessionDatesBetween(start, end, maxDays = 14) {
@@ -4915,6 +8958,8 @@ function kaRenderSessions() {
   if (!list) return;
 
   const sessions = Array.isArray(kaSessions) ? kaSessions : [];
+  const todayIso = kaTodayIso();
+  const isSessionToday = (s) => String(s?.date || '').slice(0, 10) === todayIso;
   const hasSessions = sessions.length > 0;
   const activeSession = kaComputeActiveSession(sessions);
   kaUpdateTimesheetHeading(activeSession);
@@ -4930,10 +8975,12 @@ function kaRenderSessions() {
   const normalizedActiveSessionId = Number.isFinite(activeSessionId) ? activeSessionId : null;
   const normalizedActiveProjectId = Number.isFinite(activeProjectId) ? activeProjectId : null;
   const hasExplicitActive =
-    Number.isFinite(normalizedActiveSessionId) ||
-    (kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null);
+    isSessionToday(activeSession) &&
+    (Number.isFinite(normalizedActiveSessionId) ||
+      (kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null));
   const isSessionActive = (s) => {
     if (!s) return false;
+    if (!isSessionToday(s)) return false;
     if (normalizedActiveSessionId !== null) return Number(s.id) === normalizedActiveSessionId;
     if (normalizedActiveProjectId !== null) return Number(s.project_id) === normalizedActiveProjectId;
     return false;
@@ -4947,7 +8994,8 @@ function kaRenderSessions() {
         kaProjectLabelById(s.project_id) ||
         (s.project_id ? `Project ${s.project_id}` : '');
       const createdBy = s.created_by_name || '';
-      const combined = `${projectLabel} ${createdBy}`.toLowerCase();
+      const assignedTo = s.assigned_to_name || '';
+      const combined = `${projectLabel} ${createdBy} ${assignedTo}`.toLowerCase();
       return combined.includes(query);
     });
   }
@@ -4957,7 +9005,7 @@ function kaRenderSessions() {
       if (isActive) return true;
       // If no active session is configured yet, still surface sessions with open punches
       if (!hasExplicitActive) {
-        return Number(s.open_count || 0) > 0;
+        return kaSessionCounts(s).openCount > 0;
       }
       return false;
     });
@@ -4995,14 +9043,25 @@ function kaRenderSessions() {
   filtered.forEach(s => {
     const projName = s.project_name || kaProjectLabelById(s.project_id) || '(Project)';
     const isActive = isSessionActive(s);
-    const createdByName = s.created_by_name ? `Created by ${String(s.created_by_name)}` : '';
-    const openCount = Number(s.device_open_count ?? s.open_count ?? 0);
-    const entryCount = Number(s.device_entry_count ?? s.entry_count ?? 0);
-    const isOngoing = isActive || openCount > 0;
+    const assignedBaseName = s.assigned_to_name || s.created_by_name || '';
+    const assignedLabel = assignedBaseName
+      ? `Assigned to: ${String(assignedBaseName)}`
+      : 'Assigned to: —';
+    const { openCount, entryCount } = kaSessionCounts(s);
+    const isClosed = kaIsSessionClosed(s);
+    const isOngoing = isSessionToday(s) && !isClosed && (isActive || openCount > 0);
+    const assignDisplayHtml = `<div class="ka-session-owner">${assignedLabel}</div>`;
     const row = document.createElement('div');
-    row.className = `ka-session-row${isActive ? ' is-active' : ''}`;
+    row.className = `ka-session-row${isActive ? ' is-active' : ''}${isClosed ? ' is-closed' : ''}`;
     row.dataset.sessionId = s.id;
     row.dataset.projectId = Number.isFinite(Number(s.project_id)) ? String(s.project_id) : '';
+    row.addEventListener('pointerup', (event) => {
+      kaDebugTapFlash(row, `row pointerup:${event.pointerType}`);
+      kaDebugTapLog(`row pointerup row=${row.dataset.sessionId || ''} type=${event.pointerType}`);
+      if (event.pointerType === 'mouse') return;
+      if (event.target.closest('[data-ka-delete-session]')) return;
+      if (event.target.closest('[data-ka-session-actions]')) return;
+    }, { capture: true });
 
     const swipe = document.createElement('div');
     swipe.className = 'ka-session-swipe';
@@ -5016,6 +9075,7 @@ function kaRenderSessions() {
       <span>Project</span>
       <span>Open punches</span>
       <span>Total entries</span>
+      <span aria-hidden="true"></span>
     `;
     main.appendChild(columns);
 
@@ -5026,7 +9086,7 @@ function kaRenderSessions() {
         <span class="ka-session-active-icon ${isActive ? 'is-active' : ''}"></span>
         <div class="ka-session-info-text">
           <div class="ka-session-label">${projName}</div>
-          ${createdByName ? `<div class="ka-session-owner">${createdByName}</div>` : ''}
+          ${assignDisplayHtml}
         </div>
       </div>
       <div class="ka-session-meta-right">
@@ -5044,8 +9104,8 @@ function kaRenderSessions() {
     const detail = document.createElement('button');
     detail.type = 'button';
     detail.className = 'ka-session-detail-btn';
-    detail.dataset.kaSessionDetail = s.id;
-    detail.setAttribute('aria-label', 'View current workers');
+    detail.dataset.kaSessionActions = s.id;
+    detail.setAttribute('aria-label', 'Timesheet actions');
     detail.innerHTML = `
       <svg viewBox="0 0 20 20" aria-hidden="true">
         <path d="M7.5 4.5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path>
@@ -5080,6 +9140,9 @@ async function kaLoadSessions() {
   }
 
   try {
+    if (kaCanAssignTimesheets()) {
+      await kaLoadTimesheetAssignees();
+    }
     const { start, end, useServerToday } = kaSessionRangeForMode();
     const dates = useServerToday ? [''] : kaSessionDatesBetween(start, end);
     if (!dates.length) {
@@ -5106,17 +9169,48 @@ async function kaLoadSessions() {
     }
     kaSessions = allSessions;
 
-    const activeSession = kaComputeActiveSession(kaSessions);
-    kaActiveSessionId = activeSession ? activeSession.id : null;
-    if (!kaKiosk.project_id && activeSession && activeSession.project_id) {
-      kaKiosk.project_id = activeSession.project_id;
+    const isTodayView = kaTimesheetSelectedDate() === kaTodayIso();
+    const closePromptCandidates = [];
+    if (isTodayView) {
+      (kaSessions || []).forEach(session => {
+        if (!session || session.id === undefined || session.id === null) return;
+        const sessionId = Number(session.id);
+        const { openCount, entryCount } = kaSessionCounts(session);
+        const prevOpen = kaSessionOpenCountCache.get(sessionId);
+        const isToday = String(session.date || '').slice(0, 10) === kaTodayIso();
+        if (
+          isToday &&
+          openCount === 0 &&
+          entryCount > 0 &&
+          !kaIsSessionClosed(session) &&
+          !kaSessionClosePrompted.has(sessionId) &&
+          (prevOpen === undefined || prevOpen > 0)
+        ) {
+          closePromptCandidates.push(session);
+        }
+        kaSessionOpenCountCache.set(sessionId, openCount);
+      });
+    }
+    const activeSession = isTodayView ? kaComputeActiveSession(kaSessions) : null;
+    if (isTodayView) {
+      kaActiveSessionId = activeSession ? activeSession.id : null;
+      if (!kaKiosk.project_id && activeSession && activeSession.project_id) {
+        kaKiosk.project_id = activeSession.project_id;
+      }
     }
 
-  kaRenderSessions();
-  kaRenderLiveTimesheetFilter();
-  kaUpdateActiveProjectUI();
-  await kaRefreshAdminPunchStatus();
+    kaRenderSessions();
+    kaRenderLiveTimesheetFilter();
+    kaUpdateActiveProjectUI();
+    await kaRefreshAdminPunchStatus();
     await kaRefreshLiveData();
+    if (closePromptCandidates.length && kaCurrentView === 'timesheets') {
+      const activeCandidate = closePromptCandidates.find(s => kaIsSessionActive(s));
+      const promptSession = activeCandidate || closePromptCandidates[0];
+      if (promptSession && promptSession.id != null) {
+        await kaPromptCloseSession(promptSession);
+      }
+    }
     if (status) {
       status.textContent = '';
       status.className = 'ka-status';
@@ -5137,7 +9231,28 @@ async function kaAddSession(opts = {}) {
   const inlineProjectId = sel && sel.value ? Number(sel.value) : null;
   const adminId = kaCurrentAdmin && kaCurrentAdmin.id ? Number(kaCurrentAdmin.id) : null;
   const adminName = (kaCurrentAdmin && (kaCurrentAdmin.nickname || kaCurrentAdmin.name)) || 'you';
-  const dateLabel = kaFmtDateLong(kaTimesheetSelectedDate()) || kaFmtDateLongTZ(new Date());
+  const selectedDate = kaTimesheetSelectedDate();
+  const dateLabel = kaFmtDateLong(selectedDate) || kaFmtDateLongTZ(new Date());
+
+  if (selectedDate && selectedDate < kaTodayIso()) {
+    const msg = 'Cannot create timesheets for past dates.';
+    if (status) {
+      status.textContent = msg;
+      status.className = 'ka-status ka-status-error';
+    }
+    kaShowStatusMessage(msg, 'error', 6000);
+    return;
+  }
+
+  if (selectedDate && selectedDate > kaTodayIso()) {
+    const msg = 'Cannot create timesheets for future dates.';
+    if (status) {
+      status.textContent = msg;
+      status.className = 'ka-status ka-status-error';
+    }
+    kaShowStatusMessage(msg, 'error', 6000);
+    return;
+  }
 
   let adminOpen = false;
   let currentProjId = null;
@@ -5153,56 +9268,130 @@ async function kaAddSession(opts = {}) {
     }
   }
 
+  const todayIso = kaTodayIso();
+  const isToday = selectedDate === todayIso;
+  const todaySessions = isToday
+    ? (kaSessions || []).filter(s => (s.date || '').slice(0, 10) === todayIso)
+    : [];
+  const hasSessionToday = isToday && todaySessions.length > 0;
+  const activeProjectId =
+    kaKiosk && kaKiosk.project_id !== undefined && kaKiosk.project_id !== null
+      ? Number(kaKiosk.project_id)
+      : null;
+  const activeProjectLabel = Number.isFinite(activeProjectId)
+    ? (kaProjectLabelById(activeProjectId) || `Project ${activeProjectId}`)
+    : '';
+
+  const buildToggleState = (targetProjectId) => {
+    if (!targetProjectId) {
+      return {
+        active: { visible: false },
+        punch: { visible: false }
+      };
+    }
+
+    const normalizedTarget = Number(targetProjectId);
+    const activeMatches =
+      Number.isFinite(activeProjectId) && Number(activeProjectId) === normalizedTarget;
+    const hasActiveToday = isToday && Number.isFinite(activeProjectId);
+    const isFirstToday = isToday && !hasSessionToday;
+
+    let activeChecked = false;
+    if (activeMatches) {
+      activeChecked = true;
+    } else if (isToday && (isFirstToday || !hasActiveToday)) {
+      activeChecked = true;
+    }
+
+    let activeNote = '';
+    if (activeMatches) {
+      activeNote = 'Already the active project for this kiosk.';
+    } else if (!isToday) {
+      activeNote = "Active project affects today's punches on this kiosk.";
+    } else if (hasActiveToday && activeProjectLabel) {
+      activeNote = `Current active project: ${activeProjectLabel}.`;
+    } else {
+      activeNote = 'New worker punches use the active project on this kiosk.';
+    }
+
+    const activeToggle = {
+      visible: true,
+      checked: activeChecked,
+      disabled: activeMatches,
+      label: 'Set this as the active project for this kiosk',
+      note: activeNote
+    };
+
+    const punchToggle = {
+      visible: !!adminId,
+      checked: false,
+      disabled: false,
+      label: 'Clock in to this project',
+      note: ''
+    };
+
+    if (!adminId) {
+      return { active: activeToggle, punch: punchToggle };
+    }
+
+    if (adminOpen && Number(currentProjId) === normalizedTarget) {
+      punchToggle.disabled = true;
+      punchToggle.note = 'You are already clocked in on this project.';
+    } else if (kaClockInPhotoRequired) {
+      punchToggle.disabled = true;
+      punchToggle.note = 'Photo is required to clock in from the worker screen.';
+    } else if (adminOpen) {
+      punchToggle.label = 'Clock out of your current project and clock in to this project';
+      punchToggle.note = currentLabel
+        ? `You are clocked in on ${currentLabel}.`
+        : 'You are clocked in on another project.';
+    } else {
+      punchToggle.checked = true;
+      punchToggle.note = 'Clock in to this project after starting the timesheet.';
+    }
+
+    return { active: activeToggle, punch: punchToggle };
+  };
+
   const buildPrompt = (targetProjectId) => {
     if (!targetProjectId) {
       return {
         message: 'Select a project to start a timesheet.',
-        yesLabel: 'Start timesheet',
-        skipLabel: 'Cancel',
-        treatSkipAsCancel: true,
-        projectLabel: ''
+        projectLabel: '',
+        toggles: buildToggleState(targetProjectId)
       };
     }
     const projectLabel = kaProjectLabelById(targetProjectId) || `Project ${targetProjectId}`;
-    let message = '';
-    let yesLabel = 'Start timesheet';
-    let skipLabel = 'Cancel';
-    let treatSkipAsCancel = true;
-    if (adminOpen && Number(currentProjId) !== Number(targetProjectId)) {
-      message = `${adminName} is clocked in on ${currentLabel}. Start a timesheet for ${projectLabel} (${dateLabel})? Switch your clock-in to this project?`;
-      yesLabel = 'Start & switch';
-      skipLabel = 'Start only';
-      treatSkipAsCancel = false;
-    } else if (!adminOpen && !kaClockInPhotoRequired && adminId) {
-      message = `Start a timesheet for ${projectLabel} (${dateLabel}). Clock in ${adminName} as well?`;
-      yesLabel = 'Start & clock in';
-      skipLabel = 'Start only';
-      treatSkipAsCancel = false;
-    } else {
-      message = `Start a timesheet for ${projectLabel} (${dateLabel})?`;
-      if (!adminOpen && kaClockInPhotoRequired && adminId) {
-        message += ' Photo is required to clock in.';
-      }
-      yesLabel = 'Start timesheet';
-      skipLabel = 'Cancel';
-      treatSkipAsCancel = true;
-    }
-    return { message, yesLabel, skipLabel, treatSkipAsCancel, projectLabel };
+    const message = `Start a timesheet for ${projectLabel} (${dateLabel}).`;
+    return {
+      message,
+      projectLabel,
+      toggles: buildToggleState(targetProjectId)
+    };
   };
 
-    const defaultProjectId = opts.useModal ? null : inlineProjectId;
-    let projectId =
-      opts.projectId !== undefined && opts.projectId !== null
-        ? opts.projectId
-        : defaultProjectId;
-    let modalResult = { action: 'skip', projectId };
-    let treatSkipAsCancel = false;
-    let usedModal = false;
-    let projectLabel = '';
+  const duplicateSessionMessage = (targetProjectId) => {
+    if (!targetProjectId) return null;
+    const existing = kaFindOpenSessionForProjectToday(targetProjectId);
+    if (!existing) return null;
+    const label =
+      kaProjectLabelById(targetProjectId) ||
+      kaSessionProjectLabel(existing);
+    return `A timesheet for ${label} is already open on this tablet. Close it or choose another project.`;
+  };
 
-    if (opts.useModal) {
-      const projectOptions = kaActiveProjectOptions();
-      if (!projectOptions.length) {
+  const defaultProjectId = opts.useModal ? null : inlineProjectId;
+  let projectId =
+    opts.projectId !== undefined && opts.projectId !== null
+      ? opts.projectId
+      : defaultProjectId;
+  let modalResult = { action: 'yes', projectId };
+  let projectLabel = '';
+  let usedModal = false;
+
+  if (opts.useModal) {
+    const projectOptions = kaActiveProjectOptions();
+    if (!projectOptions.length) {
       if (status) {
         status.textContent = 'No active projects available.';
         status.className = 'ka-status ka-status-error';
@@ -5211,32 +9400,35 @@ async function kaAddSession(opts = {}) {
       return;
     }
     const prompt = buildPrompt(projectId);
+    usedModal = true;
     modalResult = await kaShowClockInModal({
       projectId,
       adminName,
-      titleText: 'Start timesheet?',
+      titleText: 'Start timesheet',
       message: prompt.message,
-      yesLabel: prompt.yesLabel,
-      skipLabel: prompt.skipLabel,
+      yesLabel: 'Start timesheet',
+      skipLabel: 'Cancel',
       projectOptions,
       projectLabelText: 'Project',
       allowBlankProject: true,
+      toggles: prompt.toggles,
+      onConfirm: ({ projectId: selectedId }) => {
+        const msg = duplicateSessionMessage(selectedId);
+        if (msg) return { ok: false, message: msg };
+        return { ok: true };
+      },
       onProjectChange: (nextProjectId) => {
         const nextPrompt = buildPrompt(nextProjectId);
         return {
           message: nextPrompt.message,
-          yesLabel: nextPrompt.yesLabel,
-          skipLabel: nextPrompt.skipLabel
+          toggles: nextPrompt.toggles
         };
       }
     });
-    usedModal = true;
     projectId = modalResult.projectId || projectId;
-    const finalPrompt = buildPrompt(projectId);
-    treatSkipAsCancel = finalPrompt.treatSkipAsCancel;
-    projectLabel = finalPrompt.projectLabel;
+    projectLabel = buildPrompt(projectId).projectLabel;
 
-    if (modalResult.action === 'dismiss' || (modalResult.action === 'skip' && treatSkipAsCancel)) {
+    if (modalResult.action !== 'yes') {
       if (status) {
         status.textContent = 'Timesheet not started.';
         status.className = 'ka-status ka-status-error';
@@ -5264,17 +9456,22 @@ async function kaAddSession(opts = {}) {
 
     if (adminId) {
       const prompt = buildPrompt(projectId);
-      treatSkipAsCancel = prompt.treatSkipAsCancel;
+      usedModal = true;
       modalResult = await kaShowClockInModal({
         projectId,
         adminName,
-        titleText: 'Start timesheet?',
+        titleText: 'Start timesheet',
         message: prompt.message,
-        yesLabel: prompt.yesLabel,
-        skipLabel: prompt.skipLabel
+        yesLabel: 'Start timesheet',
+        skipLabel: 'Cancel',
+        toggles: prompt.toggles,
+        onConfirm: ({ projectId: selectedId }) => {
+          const msg = duplicateSessionMessage(selectedId);
+          if (msg) return { ok: false, message: msg };
+          return { ok: true };
+        }
       });
-
-      if (modalResult.action === 'dismiss' || (modalResult.action === 'skip' && treatSkipAsCancel)) {
+      if (modalResult.action !== 'yes') {
         if (status) {
           status.textContent = 'Timesheet not started.';
           status.className = 'ka-status ka-status-error';
@@ -5282,6 +9479,32 @@ async function kaAddSession(opts = {}) {
         return;
       }
     }
+  }
+
+  if (!usedModal) {
+    const msg = duplicateSessionMessage(projectId);
+    if (msg) {
+      if (status) {
+        status.textContent = msg;
+        status.className = 'ka-status ka-status-error';
+      }
+      kaShowStatusMessage(msg, 'error', 8000);
+      return;
+    }
+  }
+
+  const toggleDefaults = buildToggleState(projectId);
+  let shouldMakeActive =
+    modalResult.makeActive !== undefined
+      ? modalResult.makeActive
+      : !!(toggleDefaults.active && toggleDefaults.active.checked);
+  const shouldMovePunch =
+    modalResult.movePunch !== undefined
+      ? modalResult.movePunch
+      : !!(toggleDefaults.punch && toggleDefaults.punch.checked);
+  const forcedActiveForPunch = shouldMovePunch && !shouldMakeActive;
+  if (forcedActiveForPunch) {
+    shouldMakeActive = true;
   }
 
   if (status) {
@@ -5293,16 +9516,16 @@ async function kaAddSession(opts = {}) {
     const pos = await kaGetPosition();
     const wantsSwitch =
       adminOpen &&
-      Number(currentProjId) !== Number(projectId) &&
-      modalResult.action === 'yes';
+      shouldMovePunch &&
+      Number(currentProjId) !== Number(projectId);
     const wantsClockIn =
       !adminOpen &&
-      modalResult.action === 'yes' &&
+      shouldMovePunch &&
       !kaClockInPhotoRequired &&
       !!adminId;
     const resp = await kaCreateSessionWithGeo({
       projectId,
-      makeActive: true,
+      makeActive: shouldMakeActive,
       adminId,
       lat: pos?.lat ?? null,
       lng: pos?.lng ?? null,
@@ -5326,14 +9549,19 @@ async function kaAddSession(opts = {}) {
     }
 
     let isFirstToday = !!(resp && resp.first_session_today);
-    if (resp && resp.session && resp.session.id) {
-      kaActiveSessionId = resp.session.id;
-    }
-
-    if (resp && resp.active_project_id) {
-      kaKiosk.project_id = resp.active_project_id;
-    } else {
-      kaKiosk.project_id = projectId;
+    let activeSetOk = !shouldMakeActive;
+    if (shouldMakeActive) {
+      if (resp && resp.session && resp.session.id) {
+        if (resp && resp.active_project_id) {
+          kaActiveSessionId = resp.session.id;
+          kaKiosk.project_id = resp.active_project_id;
+          activeSetOk = true;
+        } else {
+          activeSetOk = await kaSetActiveSession(resp.session.id, { silent: true });
+        }
+      } else {
+        activeSetOk = false;
+      }
     }
     kaLiveProjectOverride = null;
     kaNewSessionVisible = false;
@@ -5365,40 +9593,6 @@ async function kaAddSession(opts = {}) {
             'error',
             8000
           );
-          if (!usedModal) {
-            kaShowClockInPrompt({
-              projectId,
-              adminId,
-              adminName,
-              message: `${adminName} is not clocked in. Clock in to a timesheet for today?`
-            });
-          }
-        }
-      } else if (wantsSwitch) {
-        try {
-          await kaSwitchAdminProject(currentProjId, projectId);
-          kaShowStatusMessage(
-            `Switched from ${currentLabel} to ${projectLabel} for ${adminName}.`,
-            'ok',
-            10000
-          );
-        } catch (err) {
-          console.error('Error switching admin project:', err);
-          kaShowStatusMessage(
-            'Switch failed. Please try again or clock out/in manually.',
-            'error',
-            8000
-          );
-        }
-      } else if (!adminOpen) {
-        if (kaClockInPhotoRequired) {
-          kaShowStatusMessage(
-            'Photo is required to clock in. Please clock in from the worker screen.',
-            'error',
-            8000
-          );
-        }
-        if (!usedModal) {
           kaShowClockInPrompt({
             projectId,
             adminId,
@@ -5406,20 +9600,57 @@ async function kaAddSession(opts = {}) {
             message: `${adminName} is not clocked in. Clock in to a timesheet for today?`
           });
         }
+      } else if (wantsSwitch) {
+        if (shouldMakeActive && !activeSetOk) {
+          kaShowStatusMessage(
+            'Timesheet started, but the active project did not update. Please tap Set Active on the timesheet before switching your punch.',
+            'error',
+            9000
+          );
+        } else {
+          try {
+            await kaSwitchAdminProject(currentProjId, projectId, {
+              inSessionId: resp && resp.session ? resp.session.id : null
+            });
+            if (shouldMakeActive) {
+              activeSetOk = true;
+            }
+            kaShowStatusMessage(
+              `Switched from ${currentLabel} to ${projectLabel} for ${adminName}.`,
+              'ok',
+              10000
+            );
+          } catch (err) {
+            console.error('Error switching admin project:', err);
+            const msg = err && err.message
+              ? err.message
+              : 'Switch failed. Please try again or clock out/in manually.';
+            kaShowStatusMessage(msg, 'error', 8000);
+          }
+        }
       }
     }
 
     if (status) {
-      status.textContent = 'Timesheet started and set active.';
-      status.className = 'ka-status ka-status-ok';
+      if (shouldMakeActive && !activeSetOk) {
+        status.textContent = 'Timesheet started, but active project did not update.';
+        status.className = 'ka-status ka-status-error';
+      } else {
+        status.textContent = shouldMakeActive
+          ? 'Timesheet started and set active.'
+          : 'Timesheet started.';
+        status.className = 'ka-status ka-status-ok';
+      }
     }
     kaRenderProjectsSelect();
     kaUpdateActiveProjectUI();
     await kaRefreshLiveData();
-    kaMarkDayStarted();
+    if (shouldMakeActive && activeSetOk) {
+      kaMarkDayStarted();
+    }
 
     // First active project of the day → offer to return to clock-in
-    if (!kaFirstActiveSetShown && isKioskDayStarted() === false) {
+    if (shouldMakeActive && activeSetOk && !kaFirstActiveSetShown && isKioskDayStarted() === false) {
       kaFirstActiveSetShown = true;
       kaShowReturnPrompt('Project set for today. Lock it in and return to clock-in?');
     }
@@ -5432,10 +9663,11 @@ async function kaAddSession(opts = {}) {
   }
 }
 
-async function kaSetActiveSession(sessionId) {
-  if (!kaKiosk || !kaKiosk.id || !sessionId) return;
+async function kaSetActiveSession(sessionId, opts = {}) {
+  if (!kaKiosk || !kaKiosk.id || !sessionId) return false;
+  const { silent = false } = opts || {};
   const status = document.getElementById('ka-session-status');
-  if (status) {
+  if (!silent && status) {
     status.textContent = 'Setting active timesheet…';
     status.className = 'ka-status';
   }
@@ -5456,16 +9688,18 @@ async function kaSetActiveSession(sessionId) {
     kaUpdateActiveProjectUI();
     kaMarkDayStarted();
     await kaRefreshLiveData();
-    if (status) {
+    if (!silent && status) {
       status.textContent = 'Active project updated for this kiosk.';
       status.className = 'ka-status ka-status-ok';
     }
+    return true;
   } catch (err) {
     console.error('Error setting active session:', err);
-    if (status) {
+    if (!silent && status) {
       status.textContent = err && err.message ? err.message : 'Error setting active session.';
       status.className = 'ka-status ka-status-error';
     }
+    return false;
   }
 }
 
@@ -5485,7 +9719,7 @@ function kaShowClockInPrompt({ projectId, adminId, adminName, message, projectOp
   if (!prompt || !text || !yesBtn || !skipBtn) return;
 
   const projectLabel = projectId ? (kaProjectLabelById(projectId) || 'this project') : 'this project';
-  const dateLabel = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const dateLabel = kaFmtDateMDY(new Date());
   text.textContent =
     message ||
     `Timesheet created for ${projectLabel} (${dateLabel}). Clock in ${adminName} as well?`;
@@ -5591,8 +9825,10 @@ function kaShowClockInModal({
   yesLabel,
   skipLabel,
   projectLabelText,
+  toggles,
   onProjectChange,
-  allowBlankProject
+  allowBlankProject,
+  onConfirm
 }) {
   const backdrop = document.getElementById('ka-clockin-modal-backdrop');
   const text = document.getElementById('ka-clockin-modal-text');
@@ -5600,20 +9836,78 @@ function kaShowClockInModal({
   const closeBtn = document.getElementById('ka-clockin-modal-close');
   const yesBtn = document.getElementById('ka-clockin-modal-yes');
   const skipBtn = document.getElementById('ka-clockin-modal-skip');
+  const errorEl = document.getElementById('ka-clockin-modal-error');
   const projWrap = document.getElementById('ka-clockin-modal-project-wrap');
   const projSel = document.getElementById('ka-clockin-modal-project');
   const projLabel = document.getElementById('ka-clockin-modal-project-label');
+  const togglesWrap = document.getElementById('ka-clockin-modal-toggles');
+  const activeToggle = document.getElementById('ka-clockin-modal-active');
+  const activeLabel = document.getElementById('ka-clockin-modal-active-label');
+  const activeNote = document.getElementById('ka-clockin-modal-active-note');
+  const punchToggle = document.getElementById('ka-clockin-modal-punch');
+  const punchLabel = document.getElementById('ka-clockin-modal-punch-label');
+  const punchNote = document.getElementById('ka-clockin-modal-punch-note');
   if (!backdrop || !text || !title || !closeBtn || !yesBtn || !skipBtn) {
     return Promise.resolve({ action: 'dismiss', projectId });
   }
 
   const projectLabel = projectId ? (kaProjectLabelById(projectId) || 'this project') : 'this project';
-  const dateLabel = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const dateLabel = kaFmtDateMDY(new Date());
   title.textContent = titleText || 'Clock in?';
   text.textContent =
     message || `Timesheet created for ${projectLabel} (${dateLabel}). Clock in ${adminName} as well?`;
   yesBtn.textContent = yesLabel || 'Clock in';
   skipBtn.textContent = skipLabel || 'Skip';
+
+  const setError = (msg) => {
+    if (!errorEl) return;
+    if (!msg) {
+      errorEl.textContent = '';
+      errorEl.classList.add('hidden');
+      return;
+    }
+    errorEl.textContent = msg;
+    errorEl.classList.remove('hidden');
+  };
+  setError('');
+
+  const applyToggle = (inputEl, labelEl, noteEl, cfg = {}) => {
+    if (!inputEl || !labelEl || !noteEl) return false;
+    const visible = cfg.visible !== false;
+    labelEl.style.display = visible ? '' : 'none';
+    inputEl.dataset.visible = visible ? '1' : '0';
+    if (!visible) {
+      inputEl.checked = false;
+      inputEl.disabled = true;
+      noteEl.style.display = 'none';
+      noteEl.textContent = '';
+      return false;
+    }
+    if (cfg.label) {
+      const span = labelEl.querySelector('span');
+      if (span) span.textContent = cfg.label;
+    }
+    if (cfg.checked !== undefined) {
+      inputEl.checked = !!cfg.checked;
+    }
+    inputEl.disabled = !!cfg.disabled;
+    labelEl.classList.toggle('ka-toggle-disabled', !!cfg.disabled);
+    const noteText = cfg.note || '';
+    noteEl.textContent = noteText;
+    noteEl.style.display = noteText ? 'block' : 'none';
+    return true;
+  };
+
+  const applyToggleState = (state) => {
+    if (!togglesWrap) return;
+    const activeState = state && state.active ? state.active : { visible: false };
+    const punchState = state && state.punch ? state.punch : { visible: false };
+    const activeVisible = applyToggle(activeToggle, activeLabel, activeNote, activeState);
+    const punchVisible = applyToggle(punchToggle, punchLabel, punchNote, punchState);
+    togglesWrap.classList.toggle('hidden', !(activeVisible || punchVisible));
+  };
+
+  applyToggleState(toggles);
 
   if (projSel && projWrap) {
     projSel.innerHTML = '';
@@ -5660,6 +9954,7 @@ function kaShowClockInModal({
     };
 
     const applyUpdates = (selectedId) => {
+      setError('');
       if (allowBlankProject) {
         const hasSelection = !!selectedId;
         yesBtn.disabled = !hasSelection;
@@ -5671,6 +9966,7 @@ function kaShowClockInModal({
       if (updates.message !== undefined) text.textContent = updates.message || '';
       if (updates.yesLabel !== undefined) yesBtn.textContent = updates.yesLabel || '';
       if (updates.skipLabel !== undefined) skipBtn.textContent = updates.skipLabel || '';
+      if (updates.toggles !== undefined) applyToggleState(updates.toggles);
     };
 
     if (projSel && projWrap && projWrap.style.display !== 'none') {
@@ -5692,24 +9988,88 @@ function kaShowClockInModal({
       resolve(result);
     };
 
-    yesBtn.onclick = () => {
-      cleanup({ action: 'yes', projectId: currentProjectId() });
+    const readToggleState = () => {
+      const state = {};
+      if (activeToggle && activeToggle.dataset.visible === '1') {
+        state.makeActive = !!activeToggle.checked;
+      }
+      if (punchToggle && punchToggle.dataset.visible === '1') {
+        state.movePunch = !!punchToggle.checked;
+      }
+      return state;
     };
-    skipBtn.onclick = () => cleanup({ action: 'skip', projectId: currentProjectId() });
-    closeBtn.onclick = () => cleanup({ action: 'dismiss', projectId: currentProjectId() });
+
+    yesBtn.onclick = async () => {
+      setError('');
+      const payload = { action: 'yes', projectId: currentProjectId(), ...readToggleState() };
+      if (typeof onConfirm === 'function') {
+        const wasDisabled = yesBtn.disabled;
+        yesBtn.disabled = true;
+        let validation = null;
+        try {
+          validation = await onConfirm(payload);
+        } catch (err) {
+          validation = { ok: false, message: err && err.message ? err.message : 'Unable to start timesheet.' };
+        }
+        yesBtn.disabled = wasDisabled;
+        if (validation === false) {
+          setError('Unable to start timesheet.');
+          return;
+        }
+        if (typeof validation === 'string') {
+          setError(validation);
+          return;
+        }
+        if (validation && typeof validation === 'object' && validation.ok === false) {
+          setError(validation.message || validation.error || 'Unable to start timesheet.');
+          return;
+        }
+      }
+      cleanup(payload);
+    };
+    skipBtn.onclick = () => cleanup({ action: 'skip', projectId: currentProjectId(), ...readToggleState() });
+    closeBtn.onclick = () => cleanup({ action: 'dismiss', projectId: currentProjectId(), ...readToggleState() });
     backdrop.onclick = (e) => {
-      if (e.target === backdrop) cleanup({ action: 'dismiss', projectId: currentProjectId() });
+      if (e.target === backdrop) {
+        cleanup({ action: 'dismiss', projectId: currentProjectId(), ...readToggleState() });
+      }
     };
   });
 }
 
-async function kaSwitchAdminProject(fromProjectId, toProjectId) {
+async function kaEnsureActiveProject(projectId, { sessionId = null } = {}) {
+  if (!projectId) return false;
+  const normalizedProjectId = Number(projectId);
+  if (!Number.isFinite(normalizedProjectId)) return false;
+  if (kaKiosk && Number(kaKiosk.project_id) === normalizedProjectId) {
+    return true;
+  }
+  let targetSessionId = sessionId != null ? Number(sessionId) : null;
+  if (!Number.isFinite(targetSessionId)) {
+    targetSessionId = null;
+  }
+  if (!targetSessionId) {
+    const session = kaFindOpenSessionForProjectToday(normalizedProjectId);
+    if (session && session.id != null) {
+      targetSessionId = Number(session.id);
+    }
+  }
+  if (!targetSessionId) return false;
+  const ok = await kaSetActiveSession(targetSessionId, { silent: true });
+  return !!ok && !!(kaKiosk && Number(kaKiosk.project_id) === normalizedProjectId);
+}
+
+async function kaSwitchAdminProject(fromProjectId, toProjectId, opts = {}) {
   if (!kaCurrentAdmin || !kaCurrentAdmin.id || !toProjectId) return;
   const adminId = Number(kaCurrentAdmin.id);
   const targetProjectId = Number(toProjectId);
   const sourceProjectId =
     fromProjectId !== undefined && fromProjectId !== null
       ? Number(fromProjectId)
+      : null;
+  const inSessionId =
+    opts && opts.inSessionId !== undefined && opts.inSessionId !== null
+      ? Number(opts.inSessionId)
       : null;
 
   // 1) Refresh current status
@@ -5719,6 +10079,7 @@ async function kaSwitchAdminProject(fromProjectId, toProjectId) {
 
   // If already on target, just refresh UI
   if (open && Number(open.project_id) === targetProjectId) {
+    await kaEnsureActiveProject(targetProjectId, { sessionId: inSessionId });
     await kaRefreshSessionsAndLive();
     return;
   }
@@ -5729,6 +10090,12 @@ async function kaSwitchAdminProject(fromProjectId, toProjectId) {
   if (open) {
     const outProjectId =
       sourceProjectId !== null ? sourceProjectId : open.project_id;
+    const outActiveOk = await kaEnsureActiveProject(outProjectId);
+    if (!outActiveOk) {
+      throw new Error(
+        'Active project must match your current punch before clocking out. Set it active first.'
+      );
+    }
     await fetchJSON('/api/kiosk/punch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -5757,6 +10124,10 @@ async function kaSwitchAdminProject(fromProjectId, toProjectId) {
   // 3) Clock in to the target project
   if (kaClockInPhotoRequired) {
     throw new Error('Photo is required to clock in. Please clock in from the worker screen.');
+  }
+  const inActiveOk = await kaEnsureActiveProject(targetProjectId, { sessionId: inSessionId });
+  if (!inActiveOk) {
+    throw new Error('Unable to set the active project for clock-in. Set it active first.');
   }
   await fetchJSON('/api/kiosk/punch', {
     method: 'POST',
@@ -5787,10 +10158,9 @@ async function kaDeleteSession(sessionId, row = null) {
   const status = document.getElementById('ka-session-status');
   const session = kaSessions.find(s => Number(s.id) === Number(sessionId));
   const { openCount, entryCount } = kaSessionCounts(session);
-  let pin = '';
 
   if (openCount > 0) {
-    kaNotifySessionDeleteBlocked('Cannot delete this timesheet while workers are clocked in. Clock them out first.', row);
+    kaNotifySessionDeleteBlocked('Cannot delete a timesheet that has time entries.', row);
     return;
   }
 
@@ -5799,11 +10169,58 @@ async function kaDeleteSession(sessionId, row = null) {
     return;
   }
 
-  const confirmed = await kaShowConfirmDialog(
-    'Are you sure you want to delete this timesheet?',
-    { okLabel: 'Delete', cancelLabel: 'Cancel', title: 'Delete timesheet' }
-  );
-  if (!confirmed) return;
+  const isActive = session ? kaIsSessionActive(session) : false;
+  let replacementSessionId = null;
+  if (isActive) {
+    const today = kaTodayIso();
+    const replacementCandidates = kaSortSessionsByRecency(kaSessions || []).filter(s => {
+      if (!s || Number(s.id) === Number(sessionId)) return false;
+      if (kaIsSessionClosed(s)) return false;
+      return String(s.date || '').slice(0, 10) === today;
+    });
+
+    if (replacementCandidates.length) {
+      replacementSessionId = await kaShowActiveReplacementModal({
+        session,
+        options: replacementCandidates
+      });
+      if (!replacementSessionId) {
+        kaHideSessionDelete(row);
+        return;
+      }
+    } else {
+      const projectLabel = kaSessionProjectLabel(session);
+      const dateLabel = kaFmtDateLong(session?.date || today);
+      const confirmMsg =
+        `Delete the active timesheet for ${projectLabel} (${dateLabel})? ` +
+        'This will clear the active project for this kiosk, so workers will see "No active timesheet" until you set a new one.';
+      const confirmed = await kaShowConfirmDialog(confirmMsg, {
+        title: 'Delete active timesheet?',
+        okLabel: 'Delete timesheet',
+        cancelLabel: 'Cancel'
+      });
+      if (!confirmed) return;
+    }
+  }
+
+  const storedHash = kaCurrentAdmin ? (kaCurrentAdmin.pin_hash || '') : '';
+  const pin = await kaPromptAdminPin({
+    title: 'Enter PIN to confirm delete',
+    message: ' ',
+    confirmLabel: 'Continue',
+    validatePin: (enteredPin) => {
+      if (storedHash && !kaVerifyPinHash(enteredPin, storedHash)) {
+        return 'Incorrect PIN.';
+      }
+      return null;
+    }
+  });
+  if (!pin) return;
+
+  if (replacementSessionId) {
+    const setOk = await kaSetActiveSession(replacementSessionId);
+    if (!setOk) return;
+  }
 
   if (status) {
     status.textContent = 'Deleting timesheet…';
@@ -5825,6 +10242,8 @@ async function kaDeleteSession(sessionId, row = null) {
     }
     kaRenderProjectsSelect();
     kaRenderSessions();
+    kaRenderLiveTimesheetFilter();
+    kaUpdateActiveProjectUI();
     await kaRefreshLiveData();
     if (status) {
       status.textContent = 'Timesheet deleted.';
@@ -5833,6 +10252,9 @@ async function kaDeleteSession(sessionId, row = null) {
   } catch (err) {
     console.error('Error deleting timesheet:', err);
     const message = err && err.message ? err.message : 'Error deleting timesheet.';
+    if (/pin/i.test(message)) {
+      kaRegisterPinFailure('admin');
+    }
     if (status) {
       status.textContent = message;
       status.className = 'ka-status ka-status-error';
@@ -5841,12 +10263,125 @@ async function kaDeleteSession(sessionId, row = null) {
   }
 }
 
+async function kaPromptCloseSession(session, row = null) {
+  if (!session || session.id === undefined || session.id === null) return;
+  const sessionId = Number(session.id);
+  if (!Number.isFinite(sessionId)) return;
+  if (kaSessionClosePrompted.has(sessionId)) return;
+  if (kaIsSessionClosed(session)) return;
+  const { openCount, entryCount } = kaSessionCounts(session);
+  if (openCount > 0 || entryCount <= 0) return;
+  const isToday = String(session.date || '').slice(0, 10) === kaTodayIso();
+  if (!isToday) return;
+
+  const projectLabel = kaSessionProjectLabel(session);
+  const dateLabel = kaFmtDateLong(session?.date || kaTodayIso());
+  const confirmMsg =
+    `Close ${projectLabel} for ${dateLabel}? ` +
+    'You cannot reopen it. Start a new timesheet to keep working on this project.';
+  const confirmed = await kaShowConfirmDialog(confirmMsg, {
+    title: 'Close timesheet?',
+    okLabel: 'Close timesheet',
+    cancelLabel: 'Cancel'
+  });
+  kaSessionClosePrompted.add(sessionId);
+  if (!confirmed) return;
+  await kaCloseSession(sessionId, row, { skipConfirm: true });
+}
+
+async function kaCloseSession(sessionId, row = null, { skipConfirm = false } = {}) {
+  if (!kaKiosk || !sessionId) return;
+  const status = document.getElementById('ka-session-status');
+  const session = (kaSessions || []).find(s => Number(s.id) === Number(sessionId));
+  if (!session) return;
+
+  if (kaIsSessionClosed(session)) {
+    if (status) {
+      status.textContent = 'Timesheet is already closed.';
+      status.className = 'ka-status';
+    }
+    return;
+  }
+
+  const { openCount } = kaSessionCounts(session);
+  if (openCount > 0) {
+    const msg = 'Cannot close this timesheet while workers are clocked in.';
+    if (status) {
+      status.textContent = msg;
+      status.className = 'ka-status ka-status-error';
+    }
+    kaShowStatusMessage(msg, 'error', 5000);
+    return;
+  }
+
+  if (!skipConfirm) {
+    const projectLabel = kaSessionProjectLabel(session);
+    const dateLabel = kaFmtDateLong(session?.date || kaTodayIso());
+    const confirmMsg =
+      `Close ${projectLabel} for ${dateLabel}? ` +
+      'You cannot reopen it. Start a new timesheet to keep working on this project.';
+    const confirmed = await kaShowConfirmDialog(confirmMsg, {
+      title: 'Close timesheet?',
+      okLabel: 'Close timesheet',
+      cancelLabel: 'Cancel'
+    });
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  if (status) {
+    status.textContent = 'Closing timesheet…';
+    status.className = 'ka-status';
+  }
+
+  try {
+    const resp = await fetchJSON(`/api/kiosk-sessions/${sessionId}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_id: kaCurrentAdmin?.id })
+    });
+
+    session.ended_at = resp && resp.ended_at ? resp.ended_at : new Date().toISOString();
+    kaSessionClosePrompted.add(sessionId);
+    kaSessionOpenCountCache.set(sessionId, 0);
+
+    if (kaActiveSessionId && Number(kaActiveSessionId) === Number(sessionId)) {
+      kaActiveSessionId = null;
+    }
+    if (kaKiosk && kaKiosk.project_id && Number(session.project_id) === Number(kaKiosk.project_id)) {
+      kaKiosk.project_id = null;
+    }
+
+    kaRenderProjectsSelect();
+    kaRenderSessions();
+    kaRenderLiveTimesheetFilter();
+    kaUpdateActiveProjectUI();
+    await kaRefreshLiveData();
+
+    if (status) {
+      status.textContent = 'Timesheet closed.';
+      status.className = 'ka-status ka-status-ok';
+    }
+  } catch (err) {
+    console.error('Error closing timesheet:', err);
+    const message = err && err.message ? err.message : 'Error closing timesheet.';
+    if (status) {
+      status.textContent = message;
+      status.className = 'ka-status ka-status-error';
+    }
+    kaShowStatusMessage(message, 'error', 5000);
+  }
+}
+
 function kaHandleSessionTouchStart(e) {
   const row = e.target.closest('.ka-session-row');
   if (!row || !e.touches || !e.touches.length) return;
+  kaDebugTapFlash(row, 'touchstart');
+  kaDebugTapLog(`touchstart row=${row.dataset.sessionId || ''}`);
   row.dataset.touchStartX = String(e.touches[0].clientX);
   const target = e.target.closest('[data-ka-delete-session]') ? 'delete'
-    : e.target.closest('[data-ka-session-detail]') ? 'detail'
+    : e.target.closest('[data-ka-session-actions]') ? 'detail'
     : 'row';
   row.dataset.touchStartTarget = target;
 }
@@ -5854,6 +10389,8 @@ function kaHandleSessionTouchStart(e) {
 function kaHandleSessionTouchEnd(e) {
   const row = e.target.closest('.ka-session-row');
   if (!row) return;
+  kaDebugTapFlash(row, 'touchend');
+  kaDebugTapLog(`touchend row=${row.dataset.sessionId || ''} target=${row.dataset.touchStartTarget || ''}`);
   const startX = Number(row.dataset.touchStartX || 0);
   const endX = e.changedTouches && e.changedTouches.length ? e.changedTouches[0].clientX : startX;
   const delta = endX - startX;
@@ -5863,7 +10400,7 @@ function kaHandleSessionTouchEnd(e) {
   } else if (delta > 40) {
     kaHideSessionDelete(row);
   } else if (Math.abs(delta) < 10) {
-    // For taps: only auto-hide if the tap wasn't on the delete/workers buttons
+    // For taps: only auto-hide if the tap wasn't on the delete/actions buttons
     if (startTarget === 'row') {
       kaHideSessionDelete(row);
     }
@@ -5878,6 +10415,13 @@ async function kaInit() {
   kaStartMode = params.get('start') === '1';
   kaStartEmployeeId = params.get('employee_id');
   kaOrgTimezone = kaLoadOrgTimezone();
+
+  kaSetViewportHeightVar();
+  window.addEventListener('resize', kaSetViewportHeightVar);
+  window.addEventListener('orientationchange', kaSetViewportHeightVar);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', kaSetViewportHeightVar);
+  }
 
   kaHardenPinInputs();
   if (window.AVIAN_STORE && typeof window.AVIAN_STORE.init === 'function') {
@@ -5914,13 +10458,18 @@ async function kaInit() {
   kaUpdateTimesheetSectionLabel();
 
   // Header menu (settings)
-  const menuToggle = document.getElementById('ka-header-menu-toggle');
+  const menuToggles = Array.from(document.querySelectorAll('.ka-header-menu-toggle'));
   const menuPanel = document.getElementById('ka-header-menu-panel');
   const menuBackdrop = document.getElementById('ka-sidebar-backdrop');
-  if (menuToggle && menuPanel) {
+  if (menuToggles.length && menuPanel) {
+    const setExpanded = (isOpen) => {
+      menuToggles.forEach((toggle) => {
+        toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      });
+    };
     const closeMenu = () => {
       menuPanel.classList.remove('is-open');
-      menuToggle.setAttribute('aria-expanded', 'false');
+      setExpanded(false);
       menuPanel.setAttribute('aria-hidden', 'true');
       if (menuBackdrop) menuBackdrop.classList.add('hidden');
       document.body.classList.remove('ka-modal-open');
@@ -5934,7 +10483,7 @@ async function kaInit() {
     const openMenu = () => {
       menuPanel.classList.remove('hidden');
       if (menuBackdrop) menuBackdrop.classList.remove('hidden');
-      menuToggle.setAttribute('aria-expanded', 'true');
+      setExpanded(true);
       menuPanel.setAttribute('aria-hidden', 'false');
       document.body.classList.add('ka-modal-open');
       document.documentElement.classList.add('ka-modal-open');
@@ -5942,15 +10491,17 @@ async function kaInit() {
         menuPanel.classList.add('is-open');
       });
     };
-    menuToggle.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const isOpen = menuPanel.classList.contains('is-open');
-      if (isOpen) {
-        closeMenu();
-      } else {
-        openMenu();
-      }
+    menuToggles.forEach((toggle) => {
+      toggle.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const isOpen = menuPanel.classList.contains('is-open');
+        if (isOpen) {
+          closeMenu();
+        } else {
+          openMenu();
+        }
+      });
     });
     menuPanel.addEventListener('click', (e) => {
       const item = e.target.closest('[data-ka-menu], [data-ka-view], [data-ka-action]');
@@ -5969,6 +10520,10 @@ async function kaInit() {
       }
       if (navAction === 'help') {
         closeMenu();
+        if (typeof window.kaOpenHelpModal === 'function') {
+          window.kaOpenHelpModal();
+          return;
+        }
         const helpBackdrop = document.getElementById('ka-help-backdrop');
         if (helpBackdrop) {
           helpBackdrop.classList.remove('hidden');
@@ -5977,12 +10532,23 @@ async function kaInit() {
         }
         return;
       }
+      if (view === 'employees') {
+        closeMenu();
+        kaOpenEmployeesSheet();
+        return;
+      }
+      if (action === 'account') {
+        closeMenu();
+        kaOpenAccountSheet();
+        return;
+      }
+      if (action === 'settings') {
+        closeMenu();
+        kaOpenSettingsSheet();
+        return;
+      }
       if (view && KA_VIEWS.includes(view)) {
         kaShowView(view);
-      } else if (action === 'account') {
-        kaShowView('account');
-      } else if (action === 'settings') {
-        kaShowView('settings');
       }
       closeMenu();
     });
@@ -5994,31 +10560,55 @@ async function kaInit() {
     });
   }
 
-  const helpButtons = Array.from(
-    document.querySelectorAll('[data-ka-help="timesheets"]')
-  );
-  if (!helpButtons.length) {
-    const fallbackHelp = document.getElementById('ka-timesheet-help');
-    if (fallbackHelp) helpButtons.push(fallbackHelp);
+  const helpButtons = Array.from(document.querySelectorAll('[data-ka-help]'));
+  const fallbackHelp = document.getElementById('ka-timesheet-help');
+  if (fallbackHelp && !helpButtons.includes(fallbackHelp)) {
+    if (!fallbackHelp.dataset.kaHelp) fallbackHelp.dataset.kaHelp = 'timesheets';
+    helpButtons.push(fallbackHelp);
   }
   const helpBackdrop = document.getElementById('ka-help-backdrop');
   const helpClose = document.getElementById('ka-help-close');
-  if (helpButtons.length && helpBackdrop) {
+  const helpModal = helpBackdrop
+    ? helpBackdrop.querySelector('.ka-help-modal') || helpBackdrop.querySelector('.ka-modal')
+    : null;
+  const helpSectionMap = {
+    timesheets: 'ka-help-timesheets',
+    'time-entries': 'ka-help-time-entries'
+  };
+  if (helpBackdrop) {
     const closeHelp = () => {
       helpBackdrop.classList.add('hidden');
       document.body.classList.remove('ka-modal-open');
       document.documentElement.classList.remove('ka-modal-open');
     };
-    const openHelp = () => {
+    const scrollHelpToSection = (target) => {
+      if (!target) {
+        if (helpModal) helpModal.scrollTop = 0;
+        return;
+      }
+      const sectionId = helpSectionMap[target] || target;
+      const section = document.getElementById(sectionId);
+      if (!section) return;
+      if (!helpModal) {
+        section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+      const modalRect = helpModal.getBoundingClientRect();
+      const sectionRect = section.getBoundingClientRect();
+      helpModal.scrollTop += sectionRect.top - modalRect.top - 12;
+    };
+    const openHelp = (target = null) => {
       helpBackdrop.classList.remove('hidden');
       document.body.classList.add('ka-modal-open');
       document.documentElement.classList.add('ka-modal-open');
+      requestAnimationFrame(() => scrollHelpToSection(target));
     };
+    window.kaOpenHelpModal = openHelp;
     helpButtons.forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        openHelp();
+        openHelp(btn.dataset.kaHelp || null);
       });
     });
     helpClose?.addEventListener('click', (e) => {
@@ -6032,6 +10622,38 @@ async function kaInit() {
       if (e.key === 'Escape') closeHelp();
     });
   }
+
+  document.addEventListener('click', (e) => {
+    const pill = e.target.closest('.ka-time-review-issue[data-tooltip]');
+    if (!pill) {
+      kaCloseTimeReviewIssueTips();
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    const isOpen = pill.classList.contains('is-tip-open');
+    kaCloseTimeReviewIssueTips();
+    if (!isOpen) {
+      pill.classList.add('is-tip-open');
+      pill.focus();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      kaCloseTimeReviewIssueTips();
+      return;
+    }
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const pill = e.target.closest('.ka-time-review-issue[data-tooltip]');
+    if (!pill) return;
+    e.preventDefault();
+    const isOpen = pill.classList.contains('is-tip-open');
+    kaCloseTimeReviewIssueTips();
+    if (!isOpen) {
+      pill.classList.add('is-tip-open');
+    }
+  });
 
   let closeFilterPanel = null;
   const filterToggle = document.getElementById('ka-session-filter-toggle');
@@ -6162,27 +10784,98 @@ async function kaInit() {
     .getElementById('ka-helper-submit')
     ?.addEventListener('click', kaHandleHelperAdd);
   document
-    .getElementById('ka-employee-add-toggle')
+    .getElementById('ka-employee-add-cta')
     ?.addEventListener('click', () => kaSetEmployeeFormVisible(!kaEmployeeFormVisible));
   document
     .getElementById('ka-employee-add-cancel')
     ?.addEventListener('click', () => kaSetEmployeeFormVisible(false));
+  const employeeSearch = document.getElementById('ka-employee-search');
+  if (employeeSearch) {
+    employeeSearch.addEventListener('input', () => {
+      kaEmployeeSearchQuery = employeeSearch.value || '';
+      kaRenderEmployeesGrid();
+    });
+    employeeSearch.addEventListener('search', () => {
+      kaEmployeeSearchQuery = employeeSearch.value || '';
+      kaRenderEmployeesGrid();
+    });
+  }
   document
-    .getElementById('ka-employee-detail-language-save')
-    ?.addEventListener('click', kaHandleEmployeeSheetLanguageSave);
+    .getElementById('ka-employee-status-filter')
+    ?.addEventListener('change', (e) => {
+      kaEmployeeStatusFilter = e.target && e.target.value ? e.target.value : 'all';
+      kaRenderEmployeesGrid();
+    });
   document
-    .getElementById('ka-employee-detail-namechecks-save')
-    ?.addEventListener('click', kaHandleEmployeeSheetNameChecksSave);
+    .getElementById('ka-employee-detail-save')
+    ?.addEventListener('click', kaHandleEmployeeSheetSave);
   document
-    .getElementById('ka-employee-detail-pin-save')
-    ?.addEventListener('click', kaHandleEmployeeSheetPinSave);
+    .getElementById('ka-employee-detail-reactivate')
+    ?.addEventListener('click', () => {
+      const id = kaEmployeeSheetState.employeeId;
+      if (!id) return;
+      const emp = kaFindEmployeeById(id);
+      if (!emp || emp.active !== 0) return;
+      kaEmployeeSheetState.reactivatePending = true;
+      kaEmployeeSheetState.reactivateSnapshot = {
+        start_date: emp.start_date || null,
+        termination_date: emp.termination_date || null
+      };
+      const els = kaEmployeeSheetElements();
+      if (els && els.saveStatus) {
+        kaSetInlineStatus(
+          els.saveStatus,
+          'Reactivation selected. Enter a new start date, then Save & Close.',
+          'ok'
+        );
+      }
+    });
   document
-    .getElementById('ka-employee-detail-photo-delete')
-    ?.addEventListener('click', kaHandleEmployeeSheetPhotoDelete);
+    .getElementById('ka-employee-detail-history-open')
+    ?.addEventListener('click', () => kaOpenEmployeeHistoryModal());
+  document
+    .getElementById('ka-employee-detail-pin-open')
+    ?.addEventListener('click', () => kaOpenEmployeePinSheet(kaEmployeeSheetState.employeeId));
+  document
+    .getElementById('ka-employee-pin-save')
+    ?.addEventListener('click', kaHandleEmployeePinSave);
+  document
+    .getElementById('ka-employee-detail-photo-btn')
+    ?.addEventListener('click', () => {
+      const input = document.getElementById('ka-employee-detail-photo-input');
+      if (input) input.click();
+    });
+  document
+    .getElementById('ka-employee-detail-photo-input')
+    ?.addEventListener('change', (e) => {
+      const file = e.target && e.target.files ? e.target.files[0] : null;
+      if (file) kaHandleEmployeePhotoUpload(file);
+    });
+  const photoImg = document.getElementById('ka-employee-detail-photo');
+  if (photoImg && !photoImg.dataset.bound) {
+    const initials = document.getElementById('ka-employee-detail-initials');
+    photoImg.addEventListener('load', () => {
+      photoImg.classList.remove('hidden');
+      if (initials) initials.classList.add('hidden');
+    });
+    photoImg.addEventListener('error', () => {
+      photoImg.classList.add('hidden');
+      if (initials) initials.classList.remove('hidden');
+    });
+    photoImg.dataset.bound = '1';
+  }
+  kaBindEmployeeDocsUploader();
+  kaBindEmployeeDocsViewer();
   window.addEventListener('online', () => {
     kaSyncOfflineData('online');
     kaStartOfflineSyncLoop();
     kaUpdateOfflineIndicator();
+    kaSyncNotificationPrefsQueue().catch(err => {
+      console.warn('Notification prefs sync failed:', err);
+    });
+    kaSyncShipmentNotifyPrefsQueue().catch(err => {
+      console.warn('Shipment notification prefs sync failed:', err);
+    });
   });
   window.addEventListener('offline', () => {
     kaUpdateOfflineIndicator();
@@ -6258,6 +10951,7 @@ async function kaInit() {
   }
 
   kaBindDocViewerModal();
+  kaBindEmployeeHistoryModal();
 
   // Overview upload handlers (bound on render too)
   kaBindOverviewUpload();
@@ -6299,63 +10993,33 @@ async function kaInit() {
     endInput.value = today;
   }
 
+  const runReport = () => {
+    kaTimeReportHasRun = true;
+    kaSetTimeReportVisible(true);
+    if (kaTimeViewMode !== 'view') {
+      kaSetTimeViewMode('view', { skipLoad: true });
+    }
+    kaOpenTimeReportSheet();
+    kaLoadTimeEntries();
+  };
+  const runReview = () => {
+    kaTimeReportHasRun = true;
+    kaSetTimeReportVisible(true);
+    kaOpenTimeReviewSheet({ forceRefresh: true });
+  };
   document
     .getElementById('ka-time-refresh')
     ?.addEventListener('click', () => {
       kaSetTimeRange('custom');
-      kaLoadTimeEntries();
+      runReport();
     });
   document
     .getElementById('ka-time-run')
-    ?.addEventListener('click', () => kaLoadTimeEntries());
+    ?.addEventListener('click', runReport);
   document
-    .getElementById('ka-time-hide-resolved')
-    ?.addEventListener('change', () => kaLoadTimeEntries());
-  document
-    .getElementById('ka-time-employee')
-    ?.addEventListener('change', () => kaLoadTimeEntries());
-  document
-    .getElementById('ka-time-project')
-    ?.addEventListener('change', () => kaLoadTimeEntries());
-  const payToggle = document.getElementById('ka-time-show-pay');
-  const approvalsToggle = document.getElementById('ka-time-show-approvals');
-  const hideResolvedLabel = document.querySelector('.ka-hide-resolved');
-  if (payToggle) {
-    const saved = localStorage.getItem('ka_show_pay_ui');
-    if (saved !== null) kaShowPayUI = saved === '1';
-    payToggle.checked = kaShowPayUI;
-    payToggle.addEventListener('change', () => {
-      kaShowPayUI = !!payToggle.checked;
-      localStorage.setItem('ka_show_pay_ui', kaShowPayUI ? '1' : '0');
-      kaLoadTimeEntries();
-    });
-  }
-  if (approvalsToggle) {
-    const saved = localStorage.getItem('ka_show_approvals_ui');
-    if (saved !== null) kaShowApprovalsUI = saved === '1';
-    approvalsToggle.checked = kaShowApprovalsUI;
-    approvalsToggle.addEventListener('change', () => {
-      kaShowApprovalsUI = !!approvalsToggle.checked;
-      localStorage.setItem('ka_show_approvals_ui', kaShowApprovalsUI ? '1' : '0');
-      if (hideResolvedLabel) {
-        hideResolvedLabel.style.display = kaShowApprovalsUI ? 'inline-flex' : 'none';
-      }
-      kaLoadTimeEntries();
-    });
-  }
-
-  // Show/hide the toggles based on permissions
-  if (payToggle) {
-    payToggle.closest('label').style.display = kaCanViewPayroll() ? 'inline-flex' : 'none';
-  }
-  if (approvalsToggle) {
-    approvalsToggle.closest('label').style.display = kaCanModifyTime() ? 'inline-flex' : 'none';
-  }
-  if (hideResolvedLabel) {
-    hideResolvedLabel.style.display = kaShowApprovalsUI && kaCanModifyTime() ? 'inline-flex' : 'none';
-    const hideResolved = document.getElementById('ka-time-hide-resolved');
-    if (hideResolved) hideResolved.checked = false;
-  }
+    .getElementById('ka-time-review-banner')
+    ?.addEventListener('click', runReview);
+  kaShowApprovalsUI = true;
 
   // Rate unlock modal buttons
   document.getElementById('ka-rate-cancel')?.addEventListener('click', kaCloseRateModal);
@@ -6367,9 +11031,6 @@ async function kaInit() {
     ?.addEventListener('change', (e) => {
       const mode = e.target.value || 'today';
       kaSetTimeRange(mode);
-      if (mode !== 'custom') {
-        kaLoadTimeEntries();
-      }
     });
 
   document
@@ -6377,15 +11038,53 @@ async function kaInit() {
     ?.addEventListener('click', () => kaVerifyAllTimeEntriesVisible());
 
   kaSetTimeRange('today');
+  kaSetTimeViewMode('view', { skipLoad: true });
+  kaBindTimeCalendar();
+  kaRenderTimeCalendar();
 
   document
     .getElementById('ka-time-action-cancel')
     ?.addEventListener('click', () => {
+      kaBlurActiveElement();
       document.getElementById('ka-time-action-backdrop')?.classList.add('hidden');
+      kaSyncModalOpenState();
+      kaForceViewportSync();
+      kaResetTimeDetailSheetPosition();
+      kaResetTimeReviewSheetPosition();
+      kaResetTimeCalendarSheetPosition();
+      kaResetTimeReportSheetPosition();
+    });
+  document
+    .getElementById('ka-time-action-close')
+    ?.addEventListener('click', () => {
+      kaBlurActiveElement();
+      document.getElementById('ka-time-action-backdrop')?.classList.add('hidden');
+      kaSyncModalOpenState();
+      kaForceViewportSync();
+      kaResetTimeDetailSheetPosition();
+      kaResetTimeReviewSheetPosition();
+      kaResetTimeCalendarSheetPosition();
+      kaResetTimeReportSheetPosition();
     });
   document
     .getElementById('ka-time-action-submit')
-    ?.addEventListener('click', () => kaHandleTimeActionSubmit());
+    ?.addEventListener('click', () => {
+      const isModify = kaTimeActionMode === 'modify';
+      kaHandleTimeActionSubmit({ resolveAfterModify: isModify ? false : null });
+    });
+  document
+    .getElementById('ka-time-action-submit-approve')
+    ?.addEventListener('click', () => kaHandleTimeActionSubmit({ resolveAfterModify: true }));
+
+  const timeActionStart = document.getElementById('ka-time-action-start');
+  const timeActionEnd = document.getElementById('ka-time-action-end');
+  const timeActionDate = document.getElementById('ka-time-action-date');
+  const timeActionProject = document.getElementById('ka-time-action-project');
+  [timeActionStart, timeActionEnd, timeActionDate, timeActionProject].forEach((el) => {
+    if (!el) return;
+    el.addEventListener('input', () => kaUpdateTimeActionHours());
+    el.addEventListener('change', () => kaUpdateTimeActionHours());
+  });
 
   // 🔹 Shipments tab: refresh list
   document
@@ -6395,7 +11094,10 @@ async function kaInit() {
   // 🔹 Shipments filter: change mode (ready vs all)
   const shipmentsStatusSelect = document.getElementById('ka-shipments-filter');
   if (shipmentsStatusSelect) {
-    shipmentsStatusSelect.addEventListener('change', () => kaLoadShipments({ forceFresh: true }));
+    shipmentsStatusSelect.addEventListener('change', () => {
+      kaUpdateHeaderTitle('shipments');
+      kaLoadShipments({ forceFresh: true });
+    });
     kaBindExpandableSelect(shipmentsStatusSelect);
   }
   document
@@ -6428,15 +11130,18 @@ async function kaInit() {
     });
 
     const handle = sheetEls.handle;
-    if (handle) {
+    const header = sheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
       const onPointerDown = (e) => {
         if (!sheetEls.sheet.classList.contains('is-open')) return;
         if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
         kaTimesheetWorkersSheetState.dragging = true;
         kaTimesheetWorkersSheetState.startY = e.clientY;
         kaTimesheetWorkersSheetState.currentY = e.clientY;
         sheetEls.sheet.classList.add('dragging');
-        handle.setPointerCapture(e.pointerId);
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
       };
       const onPointerMove = (e) => {
         if (!kaTimesheetWorkersSheetState.dragging) return;
@@ -6460,10 +11165,220 @@ async function kaInit() {
           sheetEls.panel.style.transform = '';
         }
       };
-      handle.addEventListener('pointerdown', onPointerDown);
-      handle.addEventListener('pointermove', onPointerMove);
-      handle.addEventListener('pointerup', onPointerUp);
-      handle.addEventListener('pointercancel', onPointerUp);
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
+    }
+  }
+
+  const customerSheetEls = kaCustomerSheetElements();
+  if (customerSheetEls && !customerSheetEls.sheet.dataset.bound) {
+    customerSheetEls.sheet.dataset.bound = '1';
+    customerSheetEls.sheet.querySelectorAll('[data-ka-customer-sheet-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseCustomerSheet());
+    });
+
+    const handle = customerSheetEls.handle;
+    const header = customerSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
+      const onPointerDown = (e) => {
+        if (!customerSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        kaCustomerSheetState.dragging = true;
+        kaCustomerSheetState.startY = e.clientY;
+        kaCustomerSheetState.currentY = e.clientY;
+        customerSheetEls.sheet.classList.add('dragging');
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaCustomerSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaCustomerSheetState.startY);
+        kaCustomerSheetState.currentY = e.clientY;
+        if (customerSheetEls.panel) {
+          customerSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaCustomerSheetState.dragging) return;
+        kaCustomerSheetState.dragging = false;
+        customerSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaCustomerSheetState.currentY - kaCustomerSheetState.startY);
+        const threshold = customerSheetEls.panel
+          ? Math.min(180, customerSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseCustomerSheet();
+        } else if (customerSheetEls.panel) {
+          customerSheetEls.panel.style.transform = '';
+        }
+      };
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
+    }
+  }
+
+  const employeesSheetEls = kaEmployeesSheetElements();
+  if (employeesSheetEls && !employeesSheetEls.sheet.dataset.bound) {
+    employeesSheetEls.sheet.dataset.bound = '1';
+    employeesSheetEls.sheet.querySelectorAll('[data-ka-employees-sheet-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseEmployeesSheet());
+    });
+
+    const handle = employeesSheetEls.handle;
+    const header = employeesSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
+      const onPointerDown = (e) => {
+        if (!employeesSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        kaEmployeesSheetState.dragging = true;
+        kaEmployeesSheetState.startY = e.clientY;
+        kaEmployeesSheetState.currentY = e.clientY;
+        employeesSheetEls.sheet.classList.add('dragging');
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaEmployeesSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaEmployeesSheetState.startY);
+        kaEmployeesSheetState.currentY = e.clientY;
+        if (employeesSheetEls.panel) {
+          employeesSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaEmployeesSheetState.dragging) return;
+        kaEmployeesSheetState.dragging = false;
+        employeesSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaEmployeesSheetState.currentY - kaEmployeesSheetState.startY);
+        const threshold = employeesSheetEls.panel
+          ? Math.min(180, employeesSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseEmployeesSheet();
+        } else if (employeesSheetEls.panel) {
+          employeesSheetEls.panel.style.transform = '';
+        }
+      };
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
+    }
+  }
+
+  const accountSheetEls = kaAccountSheetElements();
+  if (accountSheetEls && !accountSheetEls.sheet.dataset.bound) {
+    accountSheetEls.sheet.dataset.bound = '1';
+    accountSheetEls.sheet.querySelectorAll('[data-ka-account-sheet-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseAccountSheet());
+    });
+
+    const handle = accountSheetEls.handle;
+    const header = accountSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
+      const onPointerDown = (e) => {
+        if (!accountSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        kaAccountSheetState.dragging = true;
+        kaAccountSheetState.startY = e.clientY;
+        kaAccountSheetState.currentY = e.clientY;
+        accountSheetEls.sheet.classList.add('dragging');
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaAccountSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaAccountSheetState.startY);
+        kaAccountSheetState.currentY = e.clientY;
+        if (accountSheetEls.panel) {
+          accountSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaAccountSheetState.dragging) return;
+        kaAccountSheetState.dragging = false;
+        accountSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaAccountSheetState.currentY - kaAccountSheetState.startY);
+        const threshold = accountSheetEls.panel
+          ? Math.min(180, accountSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseAccountSheet();
+        } else if (accountSheetEls.panel) {
+          accountSheetEls.panel.style.transform = '';
+        }
+      };
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
+    }
+  }
+
+  const settingsSheetEls = kaSettingsSheetElements();
+  if (settingsSheetEls && !settingsSheetEls.sheet.dataset.bound) {
+    settingsSheetEls.sheet.dataset.bound = '1';
+    settingsSheetEls.sheet.querySelectorAll('[data-ka-settings-sheet-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseSettingsSheet());
+    });
+
+    const handle = settingsSheetEls.handle;
+    const header = settingsSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
+      const onPointerDown = (e) => {
+        if (!settingsSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        kaSettingsSheetState.dragging = true;
+        kaSettingsSheetState.startY = e.clientY;
+        kaSettingsSheetState.currentY = e.clientY;
+        settingsSheetEls.sheet.classList.add('dragging');
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaSettingsSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaSettingsSheetState.startY);
+        kaSettingsSheetState.currentY = e.clientY;
+        if (settingsSheetEls.panel) {
+          settingsSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaSettingsSheetState.dragging) return;
+        kaSettingsSheetState.dragging = false;
+        settingsSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaSettingsSheetState.currentY - kaSettingsSheetState.startY);
+        const threshold = settingsSheetEls.panel
+          ? Math.min(180, settingsSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseSettingsSheet();
+        } else if (settingsSheetEls.panel) {
+          settingsSheetEls.panel.style.transform = '';
+        }
+      };
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
     }
   }
 
@@ -6475,15 +11390,18 @@ async function kaInit() {
     });
 
     const handle = employeeSheetEls.handle;
-    if (handle) {
+    const header = employeeSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
       const onPointerDown = (e) => {
         if (!employeeSheetEls.sheet.classList.contains('is-open')) return;
         if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
         kaEmployeeSheetState.dragging = true;
         kaEmployeeSheetState.startY = e.clientY;
         kaEmployeeSheetState.currentY = e.clientY;
         employeeSheetEls.sheet.classList.add('dragging');
-        handle.setPointerCapture(e.pointerId);
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
       };
       const onPointerMove = (e) => {
         if (!kaEmployeeSheetState.dragging) return;
@@ -6507,10 +11425,283 @@ async function kaInit() {
           employeeSheetEls.panel.style.transform = '';
         }
       };
-      handle.addEventListener('pointerdown', onPointerDown);
-      handle.addEventListener('pointermove', onPointerMove);
-      handle.addEventListener('pointerup', onPointerUp);
-      handle.addEventListener('pointercancel', onPointerUp);
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
+    }
+  }
+
+  const employeePinSheetEls = kaEmployeePinSheetElements();
+  if (employeePinSheetEls && !employeePinSheetEls.sheet.dataset.bound) {
+    employeePinSheetEls.sheet.dataset.bound = '1';
+    employeePinSheetEls.sheet.querySelectorAll('[data-ka-employee-pin-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseEmployeePinSheet());
+    });
+
+    const handle = employeePinSheetEls.handle;
+    const header = employeePinSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
+      const onPointerDown = (e) => {
+        if (!employeePinSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        kaEmployeePinSheetState.dragging = true;
+        kaEmployeePinSheetState.startY = e.clientY;
+        kaEmployeePinSheetState.currentY = e.clientY;
+        employeePinSheetEls.sheet.classList.add('dragging');
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaEmployeePinSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaEmployeePinSheetState.startY);
+        kaEmployeePinSheetState.currentY = e.clientY;
+        if (employeePinSheetEls.panel) {
+          employeePinSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaEmployeePinSheetState.dragging) return;
+        kaEmployeePinSheetState.dragging = false;
+        employeePinSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaEmployeePinSheetState.currentY - kaEmployeePinSheetState.startY);
+        const threshold = employeePinSheetEls.panel
+          ? Math.min(180, employeePinSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseEmployeePinSheet();
+        } else if (employeePinSheetEls.panel) {
+          employeePinSheetEls.panel.style.transform = '';
+        }
+      };
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
+    }
+  }
+
+  const timeDetailSheetEls = kaTimeDetailSheetElements();
+  if (timeDetailSheetEls && !timeDetailSheetEls.sheet.dataset.bound) {
+    timeDetailSheetEls.sheet.dataset.bound = '1';
+    timeDetailSheetEls.sheet.querySelectorAll('[data-ka-time-detail-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseTimeDetailSheet());
+    });
+    timeDetailSheetEls.sheet.querySelectorAll('[data-ka-time-flag-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaHideTimeFlagBanner());
+    });
+    timeDetailSheetEls.sheet.addEventListener('click', (e) => {
+      const actionBtn = e.target.closest('[data-ka-time-detail-action]');
+      if (!actionBtn) return;
+      const action = actionBtn.getAttribute('data-ka-time-detail-action');
+      const entry = kaTimeDetailSheetState.entry;
+      if (!action || !entry) return;
+      kaOpenTimeActionModal(entry, action);
+    });
+
+    const handle = timeDetailSheetEls.handle;
+    const header = timeDetailSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
+      const onPointerDown = (e) => {
+        if (!timeDetailSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea, [data-ka-time-detail-action]')) return;
+        kaTimeDetailSheetState.dragging = true;
+        kaTimeDetailSheetState.startY = e.clientY;
+        kaTimeDetailSheetState.currentY = e.clientY;
+        timeDetailSheetEls.sheet.classList.add('dragging');
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaTimeDetailSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaTimeDetailSheetState.startY);
+        kaTimeDetailSheetState.currentY = e.clientY;
+        if (timeDetailSheetEls.panel) {
+          timeDetailSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaTimeDetailSheetState.dragging) return;
+        kaTimeDetailSheetState.dragging = false;
+        timeDetailSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaTimeDetailSheetState.currentY - kaTimeDetailSheetState.startY);
+        const threshold = timeDetailSheetEls.panel
+          ? Math.min(180, timeDetailSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseTimeDetailSheet();
+        } else if (timeDetailSheetEls.panel) {
+          timeDetailSheetEls.panel.style.transform = '';
+        }
+      };
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
+    }
+  }
+
+  const timeReportSheetEls = kaTimeReportSheetElements();
+  if (timeReportSheetEls && !timeReportSheetEls.sheet.dataset.bound) {
+    timeReportSheetEls.sheet.dataset.bound = '1';
+    timeReportSheetEls.sheet.querySelectorAll('[data-ka-time-report-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseTimeReportSheet());
+    });
+
+    const handle = timeReportSheetEls.handle;
+    const header = timeReportSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
+      const onPointerDown = (e) => {
+        if (!timeReportSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        kaTimeReportSheetState.dragging = true;
+        kaTimeReportSheetState.startY = e.clientY;
+        kaTimeReportSheetState.currentY = e.clientY;
+        timeReportSheetEls.sheet.classList.add('dragging');
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaTimeReportSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaTimeReportSheetState.startY);
+        kaTimeReportSheetState.currentY = e.clientY;
+        if (timeReportSheetEls.panel) {
+          timeReportSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaTimeReportSheetState.dragging) return;
+        kaTimeReportSheetState.dragging = false;
+        timeReportSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaTimeReportSheetState.currentY - kaTimeReportSheetState.startY);
+        const threshold = timeReportSheetEls.panel
+          ? Math.min(180, timeReportSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseTimeReportSheet();
+        } else if (timeReportSheetEls.panel) {
+          timeReportSheetEls.panel.style.transform = '';
+        }
+      };
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
+    }
+  }
+
+  const timeCalendarSheetEls = kaTimeCalendarSheetElements();
+  if (timeCalendarSheetEls && !timeCalendarSheetEls.sheet.dataset.bound) {
+    timeCalendarSheetEls.sheet.dataset.bound = '1';
+    timeCalendarSheetEls.sheet.querySelectorAll('[data-ka-time-calendar-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseTimeCalendarSheet());
+    });
+
+    const handle = timeCalendarSheetEls.handle;
+    const header = timeCalendarSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
+      const onPointerDown = (e) => {
+        if (!timeCalendarSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        kaTimeCalendarSheetState.dragging = true;
+        kaTimeCalendarSheetState.startY = e.clientY;
+        kaTimeCalendarSheetState.currentY = e.clientY;
+        timeCalendarSheetEls.sheet.classList.add('dragging');
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaTimeCalendarSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaTimeCalendarSheetState.startY);
+        kaTimeCalendarSheetState.currentY = e.clientY;
+        if (timeCalendarSheetEls.panel) {
+          timeCalendarSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaTimeCalendarSheetState.dragging) return;
+        kaTimeCalendarSheetState.dragging = false;
+        timeCalendarSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaTimeCalendarSheetState.currentY - kaTimeCalendarSheetState.startY);
+        const threshold = timeCalendarSheetEls.panel
+          ? Math.min(180, timeCalendarSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseTimeCalendarSheet();
+        } else if (timeCalendarSheetEls.panel) {
+          timeCalendarSheetEls.panel.style.transform = '';
+        }
+      };
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
+    }
+  }
+
+  const timeReviewSheetEls = kaTimeReviewSheetElements();
+  if (timeReviewSheetEls && !timeReviewSheetEls.sheet.dataset.bound) {
+    timeReviewSheetEls.sheet.dataset.bound = '1';
+    timeReviewSheetEls.sheet.querySelectorAll('[data-ka-time-review-close]').forEach((btn) => {
+      btn.addEventListener('click', () => kaCloseTimeReviewSheet());
+    });
+
+    const handle = timeReviewSheetEls.handle;
+    const header = timeReviewSheetEls.header;
+    const dragTargets = [handle, header].filter(Boolean);
+    if (dragTargets.length) {
+      const onPointerDown = (e) => {
+        if (!timeReviewSheetEls.sheet.classList.contains('is-open')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        kaTimeReviewSheetState.dragging = true;
+        kaTimeReviewSheetState.startY = e.clientY;
+        kaTimeReviewSheetState.currentY = e.clientY;
+        timeReviewSheetEls.sheet.classList.add('dragging');
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (!kaTimeReviewSheetState.dragging) return;
+        const delta = Math.max(0, e.clientY - kaTimeReviewSheetState.startY);
+        kaTimeReviewSheetState.currentY = e.clientY;
+        if (timeReviewSheetEls.panel) {
+          timeReviewSheetEls.panel.style.transform = `translateY(${delta}px)`;
+        }
+      };
+      const onPointerUp = () => {
+        if (!kaTimeReviewSheetState.dragging) return;
+        kaTimeReviewSheetState.dragging = false;
+        timeReviewSheetEls.sheet.classList.remove('dragging');
+        const delta = Math.max(0, kaTimeReviewSheetState.currentY - kaTimeReviewSheetState.startY);
+        const threshold = timeReviewSheetEls.panel
+          ? Math.min(180, timeReviewSheetEls.panel.offsetHeight * 0.3)
+          : 120;
+        if (delta > threshold) {
+          kaCloseTimeReviewSheet();
+        } else if (timeReviewSheetEls.panel) {
+          timeReviewSheetEls.panel.style.transform = '';
+        }
+      };
+      dragTargets.forEach((target) => {
+        target.addEventListener('pointerdown', onPointerDown);
+        target.addEventListener('pointermove', onPointerMove);
+        target.addEventListener('pointerup', onPointerUp);
+        target.addEventListener('pointercancel', onPointerUp);
+      });
     }
   }
 
@@ -6557,6 +11748,8 @@ async function kaInit() {
   const sessionList = document.getElementById('ka-session-list');
   if (sessionList) {
     sessionList.addEventListener('click', async (e) => {
+      kaDebugTapFlash(e.target, 'click list');
+      kaDebugTapLog('click list');
       const deleteBtn = e.target.closest('[data-ka-delete-session]');
       if (deleteBtn) {
         e.stopPropagation();
@@ -6568,28 +11761,24 @@ async function kaInit() {
         }
         return;
       }
-      const detailBtn = e.target.closest('[data-ka-session-detail]');
-      if (detailBtn) {
+      const actionsBtn = e.target.closest('[data-ka-session-actions]');
+      if (actionsBtn) {
         e.stopPropagation();
         e.preventDefault();
-        const sessionId = Number(detailBtn.dataset.kaSessionDetail);
-        const session = (kaSessions || []).find(s => Number(s.id) === sessionId);
-        const projectId =
-          session && session.project_id !== undefined && session.project_id !== null
-            ? Number(session.project_id)
-            : null;
-        kaShowView('workers', { projectOverride: projectId, preserveLiveProject: true });
+        const sessionId = Number(actionsBtn.dataset.kaSessionActions);
+        if (sessionId) {
+          const row = actionsBtn.closest('.ka-session-row');
+          await kaOpenTimesheetActions(sessionId, row);
+        }
         return;
       }
-      const row = e.target.closest('.ka-session-row');
-      if (row && row.dataset.sessionId) {
-        const id = Number(row.dataset.sessionId);
-        if (id) {
-          const confirmed = await kaConfirmActiveSessionSwitch(id);
-          if (!confirmed) return;
-          await kaSetActiveSession(id);
-        }
-      }
+    });
+    sessionList.addEventListener('pointerup', async (e) => {
+      kaDebugTapFlash(e.target, `pointerup:${e.pointerType}`);
+      kaDebugTapLog(`list pointerup type=${e.pointerType}`);
+      if (e.pointerType === 'mouse') return;
+      if (e.target.closest('[data-ka-session-actions]')) return;
+      if (e.target.closest('[data-ka-delete-session]')) return;
     });
     sessionList.addEventListener('touchstart', kaHandleSessionTouchStart, { passive: true });
     sessionList.addEventListener('touchend', kaHandleSessionTouchEnd);
@@ -6608,6 +11797,7 @@ async function kaInit() {
       p => p.active === undefined || p.active === null || Number(p.active) === 1
     );
     kaEmployees = kaNormalizeEmployees(employees || []);
+    kaRefreshNotifyProjectSelect();
 
     // Figure out which employee is running kiosk-admin (from URL ?employee_id=)
     if (kaStartEmployeeId) {
@@ -6632,7 +11822,7 @@ async function kaInit() {
     }
 
     // Load shipment notification UI now that we know which admin is logged in
-    kaInitNotifyPanel();
+    await kaInitNotifyPanel();
 
     await kaLoadAccessPerms();
     kaRenderTimeFilters();
@@ -6769,7 +11959,8 @@ async function kaCloseItemsModal(opts = {}) {
     );
     if (choice === 'cancel') return false;
     if (choice === 'ok' && shipmentId) {
-      await kaSaveShipmentVerificationFor(shipmentId, { silent: true });
+      const ok = await kaSaveShipmentVerificationFor(shipmentId, { silent: true });
+      if (!ok) return false;
     }
   }
 
@@ -6791,6 +11982,7 @@ async function kaCloseItemsModal(opts = {}) {
   kaItemsModalShipmentId = null;
   kaShipmentDetailDocs = [];
   kaExpandedItems.clear();
+  kaAutoExpandedItems.clear();
   kaSavedItemStatuses.clear();
   kaRecentlySavedItems.forEach(timer => clearTimeout(timer));
   kaRecentlySavedItems.clear();
@@ -6872,6 +12064,7 @@ function kaForceCloseAllModals() {
     'ka-return-backdrop',
     'ka-time-action-backdrop',
     'ka-confirm-backdrop',
+    'ka-admin-pin-backdrop',
     'ka-docs-backdrop',
     'ka-doc-view-backdrop'
   ];
@@ -6881,6 +12074,41 @@ function kaForceCloseAllModals() {
   });
   kaCloseItemsModal({ force: true });
   kaCloseDocViewer();
+}
+
+function kaBlurActiveElement() {
+  const active = document.activeElement;
+  if (active && typeof active.blur === 'function') active.blur();
+}
+
+function kaSetViewportHeightVar() {
+  const height = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+  if (!height || !Number.isFinite(height)) return;
+  document.documentElement.style.setProperty('--ka-vh', `${height * 0.01}px`);
+}
+
+function kaForceViewportSync() {
+  window.setTimeout(() => {
+    kaSetViewportHeightVar();
+    try {
+      window.dispatchEvent(new Event('resize'));
+    } catch {
+      // ignore
+    }
+    kaUpdateBottomNavDiamond();
+  }, 0);
+}
+
+function kaSyncModalOpenState() {
+  const hasBackdrop = Array.from(document.querySelectorAll('.ka-modal-backdrop'))
+    .some(el => !el.classList.contains('hidden'));
+  const hasSheet = Array.from(document.querySelectorAll('.ka-sheet'))
+    .some(el => !el.classList.contains('hidden'));
+  const itemsModal = document.getElementById('ka-items-modal');
+  const itemsOpen = !!(itemsModal && !itemsModal.classList.contains('hidden'));
+  const shouldLock = hasBackdrop || hasSheet || itemsOpen;
+  document.body.classList.toggle('ka-modal-open', shouldLock);
+  document.documentElement.classList.toggle('ka-modal-open', shouldLock);
 }
 
 function kaSetItemsTab(tab) {
@@ -6943,7 +12171,10 @@ function kaRefreshShipmentProgress(shipmentId) {
     );
     kaBindOverviewUpload();
     kaBindOverviewPaymentDocs();
+    kaBindOverviewPaidByLinks();
+    kaBindOverviewDocViewer();
     kaBindPickupControls(kaShipmentDetail.shipment || {});
+    kaLoadPaymentLedgerForOverview(shipmentId);
   }
 
   // Update list cache + re-render shipments list
@@ -7019,6 +12250,51 @@ function kaNormalizeItemStatus(status) {
   return (status || '').toLowerCase().trim();
 }
 
+function kaCanVerifyShipmentItems(shipment) {
+  const raw = shipment && shipment.status ? String(shipment.status).toLowerCase().trim() : '';
+  if (!raw) return false;
+  if (raw.includes('archived')) return true;
+  return raw.includes('picked') && raw.includes('up');
+}
+
+function kaNormalizeItemNotes(value) {
+  return String(value || '').trim();
+}
+
+function kaStatusRequiresNotes(status) {
+  const normalized = kaNormalizeItemStatus(status);
+  if (!normalized || normalized === 'unverified' || normalized === 'verified') return false;
+  return true;
+}
+
+function kaVerificationNotesValue(verification) {
+  if (!verification || typeof verification !== 'object') return '';
+  const notes = verification.notes ?? '';
+  const storage = verification.storage_override ?? verification.storage ?? '';
+  const raw = notes || storage || '';
+  return kaNormalizeItemNotes(raw);
+}
+
+function kaSetSavedItemNotes(itemId, notes) {
+  const idNum = Number(itemId);
+  if (!Number.isFinite(idNum)) return;
+  kaSavedItemNotes.set(idNum, kaNormalizeItemNotes(notes));
+}
+
+function kaGetSavedItemNotes(itemId, fallback = '') {
+  const idNum = Number(itemId);
+  if (kaSavedItemNotes.has(idNum)) {
+    return kaSavedItemNotes.get(idNum);
+  }
+  return kaNormalizeItemNotes(fallback);
+}
+
+function kaNotesMeetRequirement(itemId, status, notesValue) {
+  if (!kaStatusRequiresNotes(status)) return true;
+  const current = kaNormalizeItemNotes(notesValue);
+  return !!current;
+}
+
 function kaSetSavedItemStatus(itemId, status) {
   const normalized = kaNormalizeItemStatus(status);
   const idNum = Number(itemId);
@@ -7059,9 +12335,12 @@ function kaGetSavedItemStatus(itemId, fallback = '') {
 
 function kaSeedSavedItemStatuses(items = []) {
   kaSavedItemStatuses.clear();
+  kaSavedItemNotes.clear();
   kaExpandedItems.clear();
+  kaAutoExpandedItems.clear();
   (items || []).forEach(it => {
     kaSetSavedItemStatus(it.id, it?.verification?.status || '');
+    kaSetSavedItemNotes(it.id, kaVerificationNotesValue(it?.verification || {}));
   });
 }
 
@@ -7281,6 +12560,28 @@ async function kaPrefetchDocsForOffline(docs = []) {
   }
 }
 
+async function kaPrefetchEmployeeDocsForOffline(docs = []) {
+  if (!navigator.onLine || !Array.isArray(docs) || !docs.length) return;
+  const cache = await kaGetDocCache();
+  if (!cache) return;
+  for (const doc of docs) {
+    const rawUrl = doc?.url || doc?.file_path;
+    if (!rawUrl) continue;
+    const url = kaDocNormalizeUrl(kaAppendEmployeeAuth(rawUrl));
+    if (!url) continue;
+    try {
+      const cached = await cache.match(url);
+      if (cached) continue;
+      const resp = await fetch(url, { credentials: 'same-origin' });
+      if (resp && resp.ok) {
+        await cache.put(url, resp.clone());
+      }
+    } catch {
+      // ignore prefetch failures
+    }
+  }
+}
+
 function kaBindDocViewerModal() {
   const backdrop = document.getElementById('ka-doc-view-backdrop');
   if (!backdrop || backdrop.dataset.bound) return;
@@ -7347,14 +12648,105 @@ function kaDocMatchesVendor(doc) {
   );
 }
 
+function kaPaymentLedgerContainer() {
+  return document.getElementById('ka-payment-ledger');
+}
+
+function kaFormatPaymentLedgerType(type = '') {
+  const key = String(type || '').toLowerCase();
+  if (key === 'shipper') return 'Freight Forwarder';
+  if (key === 'customs') return 'Customs/Clearing';
+  if (key === 'vendor') return 'Vendor';
+  if (key === 'other') return 'Other';
+  return key ? key[0].toUpperCase() + key.slice(1) : 'Other';
+}
+
+function kaRenderPaymentLedger(rows = []) {
+  if (!Array.isArray(rows) || !rows.length) return '';
+
+  const items = rows.map(row => {
+    const typeLabel = kaFormatPaymentLedgerType(row.type);
+    const amount = kaFmtCurrency(row.amount);
+    const status = row.status || 'Pending';
+    const due = row.due_date ? kaFmtDateMMDDYYYY(row.due_date) : '—';
+    const paid = row.paid_date ? kaFmtDateMMDDYYYY(row.paid_date) : '—';
+    const invoice = row.invoice_number || '—';
+    const notes = row.notes ? escapeHTML(row.notes) : '';
+
+    return `
+      <div class="ka-ledger-row">
+        <div class="ka-ledger-main">
+          <strong>${escapeHTML(typeLabel)}</strong>
+          <span class="ka-ledger-amount">${amount}</span>
+          <span class="ka-ledger-status">${escapeHTML(status)}</span>
+        </div>
+        <div class="ka-ledger-meta">Due ${escapeHTML(due)} · Paid ${escapeHTML(paid)} · Invoice ${escapeHTML(invoice)}</div>
+        ${notes ? `<div class="ka-ledger-notes">${notes}</div>` : ''}
+      </div>
+    `;
+  });
+
+  return `
+    <div class="ka-ledger-title">Payment Ledger</div>
+    <div class="ka-ledger-list">
+      ${items.join('')}
+    </div>
+  `;
+}
+
+async function kaLoadPaymentLedgerForOverview(shipmentId, { force = false } = {}) {
+  const container = kaPaymentLedgerContainer();
+  if (!container || !shipmentId) return;
+  if (!kaCanViewPayroll()) return;
+  if (!navigator.onLine) return;
+
+  const cached =
+    !force &&
+    kaShipmentDetail &&
+    kaShipmentDetail.shipment &&
+    Number(kaShipmentDetail.shipment.id) === Number(shipmentId) &&
+    kaShipmentDetail.payment_ledger_loaded;
+
+  if (cached) {
+    const html = kaRenderPaymentLedger(kaShipmentDetail.payment_ledger || []);
+    if (html) {
+      container.innerHTML = html;
+      container.classList.remove('hidden');
+    } else {
+      container.innerHTML = '';
+      container.classList.add('hidden');
+    }
+    return;
+  }
+
+  try {
+    const resp = await fetchJSON(`/api/shipments/${shipmentId}/payments`);
+    const rows = Array.isArray(resp?.payments) ? resp.payments : [];
+    if (kaShipmentDetail && kaShipmentDetail.shipment) {
+      kaShipmentDetail.payment_ledger = rows;
+      kaShipmentDetail.payment_ledger_loaded = true;
+    }
+    const html = kaRenderPaymentLedger(rows);
+    if (html) {
+      container.innerHTML = html;
+      container.classList.remove('hidden');
+    } else {
+      container.innerHTML = '';
+      container.classList.add('hidden');
+    }
+  } catch (err) {
+    console.warn('Failed to load payment ledger for kiosk overview', err);
+  }
+}
+
 function kaRenderDocsList(docs) {
   const list = kaFilterDocsForPermissions(docs);
   if (!Array.isArray(list) || !list.length) {
     return '<div class="ka-ship-muted">(No documents uploaded)</div>';
   }
   const items = list.map(doc => {
-    const rawHref = doc.url || doc.file_path || '#';
-    const href = kaAppendShipmentAuth(rawHref);
+    const viewHref = kaAppendShipmentAuth(doc.view_url || doc.url || doc.file_path || '#');
+    const downloadHref = kaAppendShipmentAuth(doc.download_url || doc.url || doc.file_path || '#');
     const label =
       doc.filename || doc.title || doc.label || doc.doc_label || 'Document';
     const downloadName =
@@ -7364,10 +12756,10 @@ function kaRenderDocsList(docs) {
     return `
       <li class="ka-doc-row">
         <div class="ka-doc-line">
-          <a class="ka-doc-name" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>
+          <a class="ka-doc-name" href="${viewHref}" target="_blank" rel="noopener noreferrer">${label}</a>
           ${extra}
         </div>
-        <a class="ka-doc-download" href="${href}" target="_blank" rel="noopener noreferrer" download="${downloadName}" aria-label="Download document">
+        <a class="ka-doc-download" href="${downloadHref}" target="_blank" rel="noopener noreferrer" download="${downloadName}" aria-label="Download document">
           <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M12 3a1 1 0 0 0-1 1v9.586l-2.293-2.293a1 1 0 1 0-1.414 1.414l4 4a1 1 0 0 0 1.414 0l4-4a1 1 0 0 0-1.414-1.414L13 13.586V4a1 1 0 0 0-1-1Zm-7 14a1 1 0 0 0 0 2h14a1 1 0 1 0 0-2H5Z"/>
           </svg>
@@ -7514,8 +12906,10 @@ async function kaReloadDocsForOverview(shipmentId) {
         overviewEl.innerHTML = kaRenderShipmentOverview(shipment, documents, items);
         kaBindOverviewUpload();
         kaBindOverviewPaymentDocs();
+        kaBindOverviewPaidByLinks();
         kaBindNotesControls(shipment);
         kaBindPickupControls(shipment);
+        kaLoadPaymentLedgerForOverview(shipmentId);
       }
     }
   } catch (err) {
@@ -7550,6 +12944,7 @@ function kaBindPickupControls(shipment) {
   const currentDate = shipment && shipment.picked_up_date ? shipment.picked_up_date : '';
   const lastBy = shipment && shipment.picked_up_updated_by ? shipment.picked_up_updated_by : '';
   const lastAt = shipment && shipment.picked_up_updated_at ? shipment.picked_up_updated_at : '';
+  const matchedAdmin = admins.find(a => a.label === currentName);
 
   // Populate select
   select.innerHTML = '<option value="">Select admin</option>';
@@ -7559,20 +12954,27 @@ function kaBindPickupControls(shipment) {
     opt.textContent = a.label;
     select.appendChild(opt);
   });
+  if (currentName && !matchedAdmin) {
+    const savedOpt = document.createElement('option');
+    savedOpt.value = '__other_saved__';
+    savedOpt.textContent = currentName;
+    savedOpt.dataset.otherName = currentName;
+    select.appendChild(savedOpt);
+  }
   const otherOpt = document.createElement('option');
   otherOpt.value = '__other__';
   otherOpt.textContent = 'Other';
   select.appendChild(otherOpt);
 
-  const matchedAdmin = admins.find(a => a.label === currentName);
   if (matchedAdmin) {
     select.value = String(matchedAdmin.id);
   } else if (currentName) {
-    select.value = '__other__';
+    select.value = '__other_saved__';
     if (otherInput) otherInput.value = currentName;
   } else {
     select.value = '';
   }
+  select.dataset.kaPickupCurrentOther = currentName || '';
 
   if (dateInput && currentDate) {
     dateInput.value = currentDate.slice(0, 10);
@@ -7580,7 +12982,16 @@ function kaBindPickupControls(shipment) {
 
   const toggleOther = () => {
     if (otherRow) {
-      otherRow.classList.toggle('hidden', select.value !== '__other__');
+      const isOther = select.value === '__other__';
+      otherRow.classList.toggle('hidden', !isOther);
+      if (otherInput) {
+        otherInput.required = isOther;
+        otherInput.setAttribute('aria-required', isOther ? 'true' : 'false');
+        if (isOther && !otherInput.value) {
+          const currentOther = select.dataset.kaPickupCurrentOther || '';
+          if (currentOther) otherInput.value = currentOther;
+        }
+      }
     }
   };
   toggleOther();
@@ -7591,15 +13002,19 @@ function kaBindPickupControls(shipment) {
 
   saveBtn.onclick = async () => {
     const adminId = kaAdminAuthId();
-    const pickedVal =
-      select.value === '__other__'
-        ? (otherInput?.value || '').trim()
+    const isOther = select.value === '__other__';
+    const isSavedOther = select.value === '__other_saved__';
+    const selectedOption = select.selectedOptions ? select.selectedOptions[0] : null;
+    const pickedVal = isOther
+      ? (otherInput?.value || '').trim()
+      : isSavedOther
+        ? (selectedOption?.dataset.otherName || selectedOption?.textContent || '').trim()
         : (admins.find(a => String(a.id) === select.value)?.label || '');
     const pickedDate = dateInput.value || '';
 
     if (!pickedVal) {
       if (statusEl) {
-        statusEl.textContent = 'Choose or enter a pickup name.';
+        statusEl.textContent = isOther ? 'Enter a pickup name for Other.' : 'Choose a pickup name.';
         statusEl.className = 'ka-status ka-status-error';
       }
       return;
@@ -7640,11 +13055,15 @@ function kaBindPickupControls(shipment) {
         }
       );
       const saved = resp && resp.shipment ? resp.shipment : resp;
+      const nextStatus = saved && saved.status ? saved.status : (shipment && shipment.status ? shipment.status : '');
       if (kaShipmentDetail && kaShipmentDetail.shipment) {
         kaShipmentDetail.shipment.picked_up_by = saved.picked_up_by || pickedVal;
         kaShipmentDetail.shipment.picked_up_date = saved.picked_up_date || pickedDate;
         kaShipmentDetail.shipment.picked_up_updated_by = saved.picked_up_updated_by || updaterName || '';
         kaShipmentDetail.shipment.picked_up_updated_at = saved.picked_up_updated_at || '';
+        if (nextStatus) {
+          kaShipmentDetail.shipment.status = nextStatus;
+        }
       }
       if (statusEl) {
         statusEl.textContent = 'Pickup saved.';
@@ -7654,6 +13073,21 @@ function kaBindPickupControls(shipment) {
         metaEl.textContent = `Last updated by ${kaShipmentDetail.shipment.picked_up_updated_by || updaterName || '—'}${kaShipmentDetail.shipment.picked_up_updated_at ? ` on ${kaShipmentDetail.shipment.picked_up_updated_at}` : ''}`;
       }
       kaShowModalToast('Pickup updated successfully.', 'ok');
+      if (Array.isArray(kaShipments)) {
+        const idx = kaShipments.findIndex(s => Number(s.id) === Number(shipment.id));
+        if (idx !== -1) {
+          kaShipments[idx] = {
+            ...kaShipments[idx],
+            picked_up_by: saved.picked_up_by || pickedVal,
+            picked_up_date: saved.picked_up_date || pickedDate,
+            picked_up_updated_by: saved.picked_up_updated_by || updaterName || '',
+            picked_up_updated_at: saved.picked_up_updated_at || '',
+            status: nextStatus || kaShipments[idx].status
+          };
+          kaSaveShipmentsCache(kaShipments);
+          kaRenderShipmentsList(kaShipments);
+        }
+      }
       // Refresh overview to reflect updates
       const overviewEl = document.getElementById('ka-items-overview');
       if (overviewEl && kaShipmentDetail) {
@@ -7664,8 +13098,18 @@ function kaBindPickupControls(shipment) {
         );
         kaBindOverviewUpload();
         kaBindOverviewPaymentDocs();
+        kaBindOverviewPaidByLinks();
         kaBindNotesControls(kaShipmentDetail.shipment);
         kaBindPickupControls(kaShipmentDetail.shipment);
+        kaLoadPaymentLedgerForOverview(shipment.id);
+      }
+      if (kaItemsModalShipmentId === shipment.id) {
+        kaRenderItemsList(shipment.id);
+        const lockNoteEl = document.getElementById('ka-items-locked-note');
+        const allowVerification = kaCanVerifyShipmentItems(kaShipmentDetail.shipment || {});
+        if (lockNoteEl) {
+          lockNoteEl.classList.toggle('hidden', allowVerification);
+        }
       }
     } catch (err) {
       console.error('Pickup save failed', err);
@@ -7813,6 +13257,19 @@ function kaShowModalToast(message, variant = 'ok', duration = 2500) {
   }, duration + 300);
 }
 
+function kaIsItemsModalOpen() {
+  const modal = document.getElementById('ka-items-modal');
+  return !!(modal && !modal.classList.contains('hidden'));
+}
+
+function kaShowItemsModalAlert(message, variant = 'error', duration = 6000) {
+  if (kaIsItemsModalOpen()) {
+    kaShowModalToast(message, variant, duration);
+  } else {
+    kaShowInlineAlert(message, variant, duration);
+  }
+}
+
 function kaShowDocsEmptyModal(mode = 'all') {
   const backdrop = document.getElementById('ka-docs-backdrop');
   const body = document.getElementById('ka-docs-body');
@@ -7869,6 +13326,126 @@ async function kaOpenDocsModal(shipmentId, mode = 'all') {
   }
 }
 
+function kaNormalizeCustomerLabel(project) {
+  if (!project) return '';
+  const raw = project.customer_name;
+  return raw ? String(raw).trim() : '';
+}
+
+function kaFindCustomerProjects(name) {
+  const target = String(name || '').trim().toLowerCase();
+  if (!target) return [];
+  const projects = Array.isArray(kaProjects) ? kaProjects : [];
+  return projects.filter(p => {
+    const label = kaNormalizeCustomerLabel(p);
+    return label && label.toLowerCase() === target;
+  });
+}
+
+function kaIsCustomerName(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return false;
+  if (/^company$/i.test(raw)) return false;
+  if (/^other:/i.test(raw)) return false;
+  return kaFindCustomerProjects(raw).length > 0;
+}
+
+function kaCustomerSheetElements() {
+  const sheet = document.getElementById('ka-customer-sheet');
+  if (!sheet) return null;
+  return {
+    sheet,
+    panel: sheet.querySelector('.ka-sheet-panel'),
+    handle: sheet.querySelector('[data-ka-customer-sheet-handle]'),
+    header: sheet.querySelector('.ka-sheet-header'),
+    title: sheet.querySelector('#ka-customer-sheet-title'),
+    sub: sheet.querySelector('#ka-customer-sheet-sub'),
+    body: sheet.querySelector('#ka-customer-sheet-body')
+  };
+}
+
+function kaRenderCustomerSheetBody(name, projects = []) {
+  const safeName = escapeHTML(name);
+  const countLabel = projects.length
+    ? `${projects.length} project${projects.length === 1 ? '' : 's'}`
+    : 'No linked projects';
+  const list = projects.length
+    ? `<ul class="ka-customer-projects">${projects.map(p => {
+        const projName = escapeHTML(p.name || '(Unnamed project)');
+        const activeFlag =
+          p.active === undefined || p.active === null || Number(p.active) === 1;
+        const status = activeFlag ? 'Active' : 'Inactive';
+        const tz = p.project_timezone ? escapeHTML(p.project_timezone) : '';
+        const meta = [status, tz].filter(Boolean).join(' · ');
+        return `
+          <li class="ka-customer-project">
+            <div class="ka-customer-project-name">${projName}</div>
+            <div class="ka-customer-project-meta">${meta || '—'}</div>
+          </li>
+        `;
+      }).join('')}</ul>`
+    : '<div class="ka-ship-muted">(No projects found for this customer.)</div>';
+
+  return `
+    <div class="ka-customer-summary">
+      <div class="ka-customer-label">Customer</div>
+      <div class="ka-customer-name">${safeName}</div>
+      <div class="ka-customer-meta">${countLabel}</div>
+    </div>
+    <div class="ka-customer-section">
+      <div class="ka-customer-section-title">Projects</div>
+      ${list}
+    </div>
+  `;
+}
+
+function kaOpenCustomerSheet(name) {
+  const els = kaCustomerSheetElements();
+  const label = String(name || '').trim();
+  if (!els || !label) return;
+  const projects = kaFindCustomerProjects(label);
+  if (els.title) els.title.textContent = label;
+  if (els.sub) {
+    els.sub.textContent = projects.length
+      ? `${projects.length} project${projects.length === 1 ? '' : 's'}`
+      : 'Customer details';
+  }
+  if (els.body) {
+    els.body.innerHTML = kaRenderCustomerSheetBody(label, projects);
+  }
+
+  if (!kaCustomerSheetState.open) {
+    kaCustomerSheetState.open = true;
+    kaCustomerSheetState.dragging = false;
+    kaCustomerSheetState.startY = 0;
+    kaCustomerSheetState.currentY = 0;
+    els.sheet.classList.remove('hidden');
+    requestAnimationFrame(() => {
+      els.sheet.classList.add('is-open');
+    });
+    els.sheet.setAttribute('aria-hidden', 'false');
+    kaSyncModalOpenState();
+  }
+}
+
+function kaCloseCustomerSheet() {
+  const els = kaCustomerSheetElements();
+  if (!els) return;
+  kaCustomerSheetState.open = false;
+  kaCustomerSheetState.dragging = false;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  els.sheet.classList.remove('dragging');
+  if (els.panel) els.panel.style.transform = '';
+  kaSyncModalOpenState();
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+    }
+    kaSyncModalOpenState();
+  }, 260);
+}
+
 function kaRenderShipmentOverview(shipment, docs = [], items = []) {
   if (!shipment) {
     return '<div class="ka-ship-muted">(No shipment details)</div>';
@@ -7894,44 +13471,92 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
   const storageDue = kaFmtDateMMDDYYYY(shipment.storage_due_date) || '—';
   const paidShipper = Number(shipment.shipper_paid) === 1 ? 'Paid' : 'Unpaid';
   const paidCustoms = Number(shipment.customs_paid) === 1 ? 'Paid' : 'Unpaid';
+  const paidStorage = Number(shipment.storage_paid) === 1 ? 'Paid' : 'Unpaid';
   const amountShipper = kaFmtCurrency(shipment.shipper_paid_amount);
   const amountCustoms = kaFmtCurrency(shipment.customs_paid_amount);
-  const totalPaid = kaFmtCurrency(
-    (Number(shipment.shipper_paid_amount) || 0) +
-    (Number(shipment.customs_paid_amount) || 0)
-  );
+  const amountStorage = kaFmtCurrency(shipment.storage_paid_amount);
+  const paidByShipper = shipment.shipper_paid_by || '';
+  const paidByCustoms = shipment.customs_paid_by || '';
+  const hasStorageFees =
+    (shipment.storage_paid_amount != null && Number(shipment.storage_paid_amount) > 0) ||
+    Number(shipment.storage_paid) === 1;
+  const totalPaidRaw = shipment.total_paid != null
+    ? Number(shipment.total_paid)
+    : (Number(shipment.shipper_paid) === 1 ? Number(shipment.shipper_paid_amount) || 0 : 0) +
+      (Number(shipment.customs_paid) === 1 ? Number(shipment.customs_paid_amount) || 0 : 0) +
+      (Number(shipment.storage_paid) === 1 ? Number(shipment.storage_paid_amount) || 0 : 0);
+  const totalPaid = kaFmtCurrency(totalPaidRaw);
 
   const verify = kaShipVerificationInfo(shipment);
   const normalizedDocs = kaFilterDocsForPermissions(kaNormalizeDocs(docs));
   const shipperDocs = normalizedDocs.filter(kaDocMatchesShipper);
   const clearingDocs = normalizedDocs.filter(kaDocMatchesClearing);
   const paymentRows = [
-    { label: 'Freight Forwarder Paid', status: paidShipper, amount: amountShipper, mode: 'shipper', hasDocs: shipperDocs.length > 0 },
-    { label: 'Customs Paid', status: paidCustoms, amount: amountCustoms, mode: 'clearing', hasDocs: clearingDocs.length > 0 }
+    { title: 'Freight Forwarder', status: paidShipper, amount: amountShipper, mode: 'shipper', hasDocs: shipperDocs.length > 0, paidBy: paidByShipper },
+    { title: 'Customs/Clearing', status: paidCustoms, amount: amountCustoms, mode: 'clearing', hasDocs: clearingDocs.length > 0, paidBy: paidByCustoms }
   ];
   const paymentTotalsRow = canViewPayments
     ? `<div class="ka-items-overview-pair ka-pay-total"><span>Total Paid</span><strong>${totalPaid}</strong></div>`
     : '';
+  const paymentLedgerSlot = canViewPayments
+    ? `<div class="ka-payment-ledger hidden" id="ka-payment-ledger"></div>`
+    : '';
   const shipmentId = shipment.id || kaItemsModalShipmentId || '';
-  const paymentsHtml = paymentRows
-    .map(row => {
-      const amountPart =
-        canViewPayments && row.amount !== '—'
-          ? row.status === 'Paid'
-            ? ` (<button type="button" class="ka-pay-doc-link" data-ka-pay-docs="${row.mode}" data-ka-pay-docs-has="${row.hasDocs ? 1 : 0}" data-ka-pay-docs-id="${shipmentId}">${row.amount}</button>)`
-            : ` (${row.amount})`
-          : '';
-      return `<div class="ka-items-overview-pair"><span>${row.label}</span><strong>${row.status}${amountPart}</strong></div>`;
-    })
-    .join('');
+  const renderAmountValue = (row) => {
+    if (!canViewPayments) return '—';
+    if (!row.amount || row.amount === '—') return '—';
+    if (row.status === 'Paid' && row.hasDocs) {
+      return `<button type="button" class="ka-pay-doc-link" data-ka-pay-docs="${row.mode}" data-ka-pay-docs-has="${row.hasDocs ? 1 : 0}" data-ka-pay-docs-id="${shipmentId}">${row.amount}</button>`;
+    }
+    return row.amount;
+  };
+  const renderPaidByValue = (row) => {
+    if (!canViewPayments || row.status !== 'Paid' || !row.paidBy) return '—';
+    const safeName = escapeHTML(row.paidBy);
+    if (kaIsCustomerName(row.paidBy)) {
+      return `<button type="button" class="ka-pay-paidby-link" data-ka-customer="${safeName}">${safeName}</button>`;
+    }
+    return safeName;
+  };
+  const renderPaymentCard = (row) => {
+    const statusValue = row.status === 'Paid'
+      ? '<span class="ka-payment-status is-paid">Paid</span>'
+      : '<span class="ka-payment-status is-unpaid">Unpaid</span>';
+    return `
+      <div class="ka-payment-card">
+        <div class="ka-payment-card-title">${row.title}</div>
+        <div class="ka-payment-card-row"><span>Status</span>${statusValue}</div>
+        <div class="ka-payment-card-row"><span>Amount</span><strong>${renderAmountValue(row)}</strong></div>
+        <div class="ka-payment-card-row"><span>Paid by</span><strong>${renderPaidByValue(row)}</strong></div>
+      </div>
+    `;
+  };
+  const paymentsHtml = `
+    <div class="ka-payments-grid">
+      ${paymentRows.map(renderPaymentCard).join('')}
+    </div>
+  `;
+  const storageRowHtml = hasStorageFees
+    ? `
+      <div class="ka-payment-inline">
+        <span class="ka-payment-inline-label">Storage fees</span>
+        <div class="ka-payment-inline-meta">
+          <span class="ka-payment-status ${paidStorage === 'Paid' ? 'is-paid' : 'is-unpaid'}">${paidStorage}</span>
+          <strong class="ka-payment-inline-amount">${canViewPayments ? amountStorage : '—'}</strong>
+        </div>
+      </div>
+    `
+    : '';
   const bolDoc = kaFindDocByType(normalizedDocs, 'bol');
-  const bolHref = bolDoc ? kaAppendShipmentAuth(bolDoc.url || bolDoc.file_path || null) : null;
+  const bolHref = bolDoc
+    ? kaAppendShipmentAuth(bolDoc.view_url || bolDoc.url || bolDoc.file_path || null)
+    : null;
   const otherDocs = normalizedDocs.filter(d => !bolDoc || d !== bolDoc);
 
   const docItems = [];
   const pushDocCard = (doc, fallbackType) => {
     if (!doc) return;
-    const href = kaAppendShipmentAuth(doc.url || doc.file_path || '#');
+    const href = kaAppendShipmentAuth(doc.view_url || doc.url || doc.file_path || '#');
     const label = doc.filename || doc.title || doc.label || doc.doc_label || 'Document';
     const typeLabel = doc.doc_label || doc.doc_type || fallbackType || 'Document';
     docItems.push(`
@@ -7992,7 +13617,7 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
         </div>
         <div class="ka-pickup-row hidden" id="ka-pickup-other-row">
           <label for="ka-pickup-other">Other name</label>
-          <input type="text" id="ka-pickup-other" placeholder="Enter name" />
+          <input type="text" id="ka-pickup-other" placeholder="Enter name" aria-required="false" />
         </div>
         <div class="ka-pickup-row">
           <label for="ka-pickup-date">Pickup Date</label>
@@ -8012,7 +13637,9 @@ function kaRenderShipmentOverview(shipment, docs = [], items = []) {
       <div class="ka-items-overview-card">
         <div class="ka-items-overview-label">Payments</div>
         ${paymentsHtml}
+        ${storageRowHtml}
         ${paymentTotalsRow}
+        ${paymentLedgerSlot}
       </div>
 
     </div>
@@ -8090,6 +13717,20 @@ function kaBindOverviewPaymentDocs() {
   });
 }
 
+function kaBindOverviewPaidByLinks() {
+  const wrap = document.getElementById('ka-items-overview');
+  if (!wrap) return;
+  wrap.querySelectorAll('[data-ka-customer]').forEach(btn => {
+    if (btn.dataset.bound) return;
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.kaCustomer || '';
+      if (!name) return;
+      kaOpenCustomerSheet(name);
+    });
+    btn.dataset.bound = '1';
+  });
+}
+
 function kaBindOverviewDocViewer() {
   const wrap = document.getElementById('ka-items-overview');
   if (!wrap || wrap.dataset.docViewBound) return;
@@ -8134,10 +13775,12 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
   kaShipmentItemsDirty.clear();
   kaClearItemAutoSaves();
   kaItemsModalShipmentId = shipmentId;
+  kaItemsFilterTerm = '';
   kaItemsStatusFilter = 'all';
   kaSetItemsTab(tab);
   kaShipmentDetailDocs = [];
   kaExpandedItems.clear();
+  kaAutoExpandedItems.clear();
 
   if (!modal.dataset.tabsBound) {
     const tabBtns = modal.querySelectorAll('[data-ka-items-tab]');
@@ -8202,12 +13845,18 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
   overviewEl.innerHTML = kaRenderShipmentOverview(shipment, documents, items);
   kaBindOverviewUpload();
   kaBindOverviewPaymentDocs();
+  kaBindOverviewPaidByLinks();
   kaBindOverviewDocViewer();
   kaBindNotesControls(shipment);
   kaBindPickupControls(shipment);
   kaPrefetchDocsForOffline(documents);
+  kaLoadPaymentLedgerForOverview(shipmentId);
 
   const hasItems = Array.isArray(items) && items.length > 0;
+  const allowVerification = kaCanVerifyShipmentItems(shipment);
+  const lockNote = allowVerification
+    ? ''
+    : '<div id="ka-items-locked-note" class="ka-items-locked-note ka-ship-muted">Items can be reviewed after pickup is recorded.</div>';
 
   body.innerHTML = `
     <div class="ka-items-toolbar">
@@ -8215,13 +13864,13 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
         <label class="ka-items-filter">
           <span>View</span>
           <select id="ka-items-status-filter">
+            <option value="all" ${kaItemsStatusFilter === 'all' ? 'selected' : ''}>All</option>
             <option value="unverified" ${kaItemsStatusFilter === 'unverified' ? 'selected' : ''}>Not Reviewed</option>
             <option value="verified" ${kaItemsStatusFilter === 'verified' ? 'selected' : ''}>Verified</option>
             <option value="issues" ${kaItemsStatusFilter === 'issues' ? 'selected' : ''}>Issues</option>
             <option value="missing" ${kaItemsStatusFilter === 'missing' ? 'selected' : ''}>Missing</option>
             <option value="damaged" ${kaItemsStatusFilter === 'damaged' ? 'selected' : ''}>Damaged</option>
             <option value="wrong_item" ${kaItemsStatusFilter === 'wrong_item' ? 'selected' : ''}>Wrong item</option>
-            <option value="all" ${kaItemsStatusFilter === 'all' ? 'selected' : ''}>All</option>
           </select>
         </label>
         <div class="ka-search-field">
@@ -8233,6 +13882,8 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
         </div>
       </div>
     </div>
+
+    ${lockNote}
 
     <div id="ka-items-list" class="ka-items-list">
       ${hasItems ? '' : '<div class="ka-ship-muted">(No items on this shipment)</div>'}
@@ -8298,6 +13949,7 @@ function kaRenderItemsList(shipmentId) {
   if (!listEl || !kaShipmentDetail) return;
 
   const baseItems = Array.isArray(kaShipmentDetail.items) ? [...kaShipmentDetail.items] : [];
+  const allowVerification = kaCanVerifyShipmentItems(kaShipmentDetail.shipment || {});
   if (!baseItems.length) {
     listEl.innerHTML = '<div class="ka-ship-muted">(No items on this shipment)</div>';
     return;
@@ -8355,29 +14007,30 @@ function kaRenderItemsList(shipmentId) {
   }
 
   items.forEach(item => {
-    const row = kaRenderItemRow(item, shipmentId);
+    const row = kaRenderItemRow(item, shipmentId, allowVerification);
     if (row) listEl.appendChild(row);
   });
 
   kaUpdateItemsSummaryUI();
 }
 
-function kaRenderItemRow(item, shipmentId) {
+function kaRenderItemRow(item, shipmentId, allowVerification = true) {
   if (!item) return null;
   const verification = item.verification || {};
+  const itemIdNum = Number(item.id);
   const status = (verification.status || '').toLowerCase();
   const notes = verification.notes || '';
   const storage = verification.storage_override || '';
   const combinedNotes = notes || storage || '';
-  const isExpanded = kaExpandedItems.has(Number(item.id));
-  const chevronGlyph = isExpanded ? '⌄' : '›';
+  const isExpanded = kaExpandedItems.has(itemIdNum);
+  const chevronGlyph = isExpanded ? '▾' : '▸';
   const lastBy = verification.verified_by || '';
   const lastAt = verification.verified_at ? verification.verified_at.slice(0, 10) : '';
   const qty = item.quantity !== undefined ? item.quantity : '';
   const unit = item.unit || '';
   const sku = item.sku || '';
   const vendorName = item.vendor_name || '';
-  const recentlySaved = kaRecentlySavedItems.has(Number(item.id));
+  const recentlySaved = kaRecentlySavedItems.has(itemIdNum);
   const qtyText = `${qty}${unit ? ` ${unit}` : ''}`.trim();
   const metaParts = [];
   if (qtyText !== '') {
@@ -8412,7 +14065,7 @@ function kaRenderItemRow(item, shipmentId) {
   row.className = 'ka-item-row';
   row.dataset.itemId = item.id;
   row.classList.add(status ? `status-${status}` : 'status-unverified');
-  if (kaShipmentItemsDirty.has(Number(item.id))) row.classList.add('is-unsaved');
+  if (kaShipmentItemsDirty.has(itemIdNum)) row.classList.add('is-unsaved');
 
   const statuses = [
     { val: '', label: 'Not Reviewed' },
@@ -8428,11 +14081,14 @@ function kaRenderItemRow(item, shipmentId) {
       <div class="ka-item-swipe-main">
         <div class="ka-item-row-head">
           <div class="ka-item-head-left">
-            <div class="ka-item-title">${item.description || '(No description)'}</div>
-        <div class="ka-item-meta-line">
-          ${metaHtml}
-        </div>
-      </div>
+            <button type="button" class="ka-item-collapse" data-ka-collapse="${item.id}" aria-label="${isExpanded ? 'Collapse item' : 'Expand item'}">${chevronGlyph}</button>
+            <div class="ka-item-head-text">
+              <div class="ka-item-title">${item.description || '(No description)'}</div>
+              <div class="ka-item-meta-line">
+                ${metaHtml}
+              </div>
+            </div>
+          </div>
           <div class="ka-item-head-right">
             <div class="ka-status-select">
               <select class="ka-item-status" data-ka-item-status-select="${item.id}">
@@ -8443,7 +14099,6 @@ function kaRenderItemRow(item, shipmentId) {
                   .join('')}
               </select>
             </div>
-            <button type="button" class="ka-item-collapse" data-ka-collapse="${item.id}" aria-label="${isExpanded ? 'Collapse item' : 'Expand item'}">${chevronGlyph}</button>
           </div>
         </div>
         <div class="ka-item-body">
@@ -8458,7 +14113,7 @@ function kaRenderItemRow(item, shipmentId) {
 
           <div class="ka-item-row-footer">
             <div class="ka-item-last">
-              <span class="ka-item-unsaved-dot ${kaShipmentItemsDirty.has(Number(item.id)) ? '' : 'hidden'}" aria-hidden="true">●</span>
+              <span class="ka-item-unsaved-dot ${kaShipmentItemsDirty.has(itemIdNum) ? '' : 'hidden'}" aria-hidden="true">●</span>
               <span class="ka-item-last-meta">${
                 lastBy || lastAt ? `${lastBy || ''}${lastAt ? ` · ${lastAt}` : ''}` : ''
               }</span>
@@ -8486,6 +14141,74 @@ function kaRenderItemRow(item, shipmentId) {
   const unsavedDot = row.querySelector('.ka-item-unsaved-dot');
   const lastMeta = row.querySelector('.ka-item-last-meta');
   const saveStatus = row.querySelector('[data-ka-item-save-status]');
+  const notesWrap = row.querySelector(`[data-ka-notes="${item.id}"]`);
+  const swipeAction = row.querySelector('[data-ka-item-swipe-save]');
+
+  if (!allowVerification) {
+    row.classList.add('ka-item-locked');
+    if (statusSelect) statusSelect.disabled = true;
+    if (notesEl) {
+      notesEl.disabled = true;
+      notesEl.required = false;
+    }
+    if (saveBtn) saveBtn.disabled = true;
+    if (swipeAction) swipeAction.disabled = true;
+  }
+
+  const setNotesErrorState = (show) => {
+    if (!notesEl) return;
+    notesEl.classList.toggle('field-error', !!show);
+    if (show) {
+      notesEl.setAttribute('aria-invalid', 'true');
+    } else {
+      notesEl.removeAttribute('aria-invalid');
+    }
+  };
+
+  const setNotesRequiredState = (required) => {
+    if (!notesEl) return;
+    notesEl.required = !!required;
+    notesEl.setAttribute('aria-required', required ? 'true' : 'false');
+    if (!required) setNotesErrorState(false);
+    if (notesWrap) notesWrap.classList.toggle('is-required', !!required);
+  };
+
+  const updateCollapseButton = (collapsed) => {
+    if (!collapseBtn) return;
+    collapseBtn.textContent = collapsed ? '▸' : '▾';
+    collapseBtn.setAttribute('aria-label', collapsed ? 'Expand item' : 'Collapse item');
+  };
+
+  const expandRowForNotes = (autoExpand) => {
+    if (!row.classList.contains('collapsed')) return;
+    row.classList.remove('collapsed');
+    kaExpandedItems.add(itemIdNum);
+    if (autoExpand) kaAutoExpandedItems.add(itemIdNum);
+    updateCollapseButton(false);
+  };
+
+  const updateNotesRequirement = (statusVal, { autoExpand = false, showError = false } = {}) => {
+    const needsNotes = kaStatusRequiresNotes(statusVal);
+    setNotesRequiredState(needsNotes);
+    if (!needsNotes) {
+      kaAutoExpandedItems.delete(itemIdNum);
+      setNotesErrorState(false);
+      return;
+    }
+    if (autoExpand) {
+      expandRowForNotes(true);
+    }
+    const meetsRequirement = kaNotesMeetRequirement(
+      itemIdNum,
+      statusVal,
+      notesEl ? notesEl.value : ''
+    );
+    if (showError) {
+      setNotesErrorState(!meetsRequirement);
+    } else if (meetsRequirement) {
+      setNotesErrorState(false);
+    }
+  };
 
   const applyStatusStyle = (val) => {
     const allStatuses = ['verified', 'missing', 'damaged', 'wrong_item', 'unverified'];
@@ -8539,7 +14262,6 @@ function kaRenderItemRow(item, shipmentId) {
   };
 
   const scheduleAutoSave = () => {
-    const itemIdNum = Number(item.id);
     const existing = kaItemAutoSaveTimers.get(itemIdNum);
     if (existing) clearTimeout(existing);
     kaItemAutoSaveTimers.set(
@@ -8552,7 +14274,6 @@ function kaRenderItemRow(item, shipmentId) {
 
   const markDirty = (statusOverride = null, { skipAuto = false } = {}) => {
     const payload = buildPayload(statusOverride);
-    const itemIdNum = Number(item.id);
     kaClearItemSavedStatus(itemIdNum);
     const existingTimer = kaItemAutoSaveTimers.get(itemIdNum);
     if (existingTimer) {
@@ -8580,23 +14301,28 @@ function kaRenderItemRow(item, shipmentId) {
 
   const currentStatusValue = () => {
     const active = statusSelect ? statusSelect.value || '' : '';
-    const saved = kaGetSavedItemStatus(item.id, status);
+    const saved = kaGetSavedItemStatus(itemIdNum, status);
     return kaNormalizeItemStatus(active || saved);
   };
 
-  if (statusSelect) {
+  if (allowVerification && statusSelect) {
     statusSelect.addEventListener('change', () => {
       const val = statusSelect.value || '';
       setActiveStatus(val);
+      updateNotesRequirement(val, { autoExpand: true, showError: true });
       markDirty(val, { skipAuto: true });
     });
   }
 
-  notesEl?.addEventListener('blur', () => markDirty(null));
+  if (allowVerification && notesEl) {
+    notesEl.addEventListener('input', () => {
+      markDirty(null);
+      updateNotesRequirement(statusSelect ? statusSelect.value || '' : '', { showError: true });
+    });
+  }
 
-  if (saveBtn) {
+  if (allowVerification && saveBtn) {
     saveBtn.addEventListener('click', async () => {
-      const itemIdNum = Number(item.id);
       markDirty(null, { skipAuto: true });
       const ok = await kaSaveShipmentVerificationFor(shipmentId, { onlyItemId: itemIdNum });
       if (ok) {
@@ -8605,11 +14331,9 @@ function kaRenderItemRow(item, shipmentId) {
     });
   }
 
-  const swipeAction = row.querySelector('[data-ka-item-swipe-save]');
-  if (swipeAction) {
+  if (allowVerification && swipeAction) {
     swipeAction.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const itemIdNum = Number(item.id);
       markDirty(null, { skipAuto: true });
       const ok = await kaSaveShipmentVerificationFor(shipmentId, { onlyItemId: itemIdNum });
       if (ok) {
@@ -8623,18 +14347,24 @@ function kaRenderItemRow(item, shipmentId) {
     collapseBtn.addEventListener('click', () => {
       const collapsed = row.classList.toggle('collapsed');
       if (collapsed) {
-        kaExpandedItems.delete(Number(item.id));
+        kaExpandedItems.delete(itemIdNum);
       } else {
-        kaExpandedItems.add(Number(item.id));
+        kaExpandedItems.add(itemIdNum);
       }
-      collapseBtn.textContent = collapsed ? '›' : '⌄';
-      collapseBtn.setAttribute('aria-label', collapsed ? 'Expand item' : 'Collapse item');
+      kaAutoExpandedItems.delete(itemIdNum);
+      updateCollapseButton(collapsed);
     });
   }
 
   row.classList.toggle('collapsed', !isExpanded);
 
-  setActiveStatus(currentStatusValue());
+  const initialStatus = currentStatusValue();
+  setActiveStatus(initialStatus);
+  if (allowVerification) {
+    updateNotesRequirement(initialStatus);
+  } else {
+    setNotesRequiredState(false);
+  }
   kaBindItemSwipe(row);
 
   return row;
@@ -8652,7 +14382,10 @@ function kaResetItemSwipe(row) {
   row.classList.remove('show-save');
   row.classList.remove('is-dragging');
   const swipeMain = row.querySelector('.ka-item-swipe-main');
-  if (swipeMain) swipeMain.style.transform = '';
+  if (swipeMain) {
+    swipeMain.style.transform = '';
+    swipeMain.style.transition = '';
+  }
 }
 
 function kaBindItemSwipe(row) {
@@ -8660,6 +14393,13 @@ function kaBindItemSwipe(row) {
   const swipeMain = row?.querySelector('.ka-item-swipe-main');
   if (!row || !swipe || !swipeMain || swipe.dataset.bound) return;
   const actionWidth = 110;
+  const dragSlop = 8;
+  const verticalCancelSlop = 14;
+  const horizontalIntentRatio = 1.1;
+  const verticalIntentRatio = 1.1;
+  const openThreshold = -actionWidth * 0.3;
+  const closeThreshold = -actionWidth * 0.6;
+  const flickThreshold = 0.25;
   const itemIdNum = Number(row.dataset.itemId);
   const state = {
     tracking: false,
@@ -8669,7 +14409,12 @@ function kaBindItemSwipe(row) {
     startOffset: 0,
     currentOffset: 0,
     deltaX: 0,
-    pointerId: null
+    pointerId: null,
+    lastMoveX: 0,
+    lastMoveTime: 0,
+    velocityX: 0,
+    rafId: 0,
+    pendingOffset: 0
   };
 
   const canStart = (target) => {
@@ -8680,20 +14425,33 @@ function kaBindItemSwipe(row) {
     return true;
   };
 
-  const setOffset = (offset) => {
+  const clampOffset = (offset) => Math.max(-actionWidth, Math.min(0, offset));
+
+  const applyOffset = (offset) => {
+    const clamped = clampOffset(offset);
+    state.currentOffset = clamped;
+    swipeMain.style.transform = `translate3d(${clamped}px, 0, 0)`;
+  };
+
+  const queueOffset = (offset) => {
     const clamped = Math.max(-actionWidth, Math.min(0, offset));
     state.currentOffset = clamped;
-    swipeMain.style.transform = `translateX(${clamped}px)`;
+    state.pendingOffset = clamped;
+    if (state.rafId) return;
+    state.rafId = requestAnimationFrame(() => {
+      state.rafId = 0;
+      swipeMain.style.transform = `translate3d(${state.pendingOffset}px, 0, 0)`;
+    });
   };
 
   const openSwipe = () => {
     row.classList.add('show-save');
-    setOffset(-actionWidth);
+    applyOffset(-actionWidth);
   };
 
   const closeSwipe = () => {
     row.classList.remove('show-save');
-    swipeMain.style.transform = '';
+    applyOffset(0);
   };
 
   const onPointerDown = (e) => {
@@ -8701,61 +14459,107 @@ function kaBindItemSwipe(row) {
     if (!canStart(e.target)) return;
     state.tracking = true;
     state.dragging = false;
+    swipeMain.style.transition = 'none';
     state.pointerId = e.pointerId;
+    if (swipeMain.setPointerCapture) swipeMain.setPointerCapture(e.pointerId);
     state.startX = e.clientX;
     state.startY = e.clientY;
     state.startOffset = row.classList.contains('show-save') ? -actionWidth : 0;
     state.currentOffset = state.startOffset;
     state.deltaX = 0;
+    state.lastMoveX = e.clientX;
+    state.lastMoveTime = performance.now();
+    state.velocityX = 0;
   };
 
   const onPointerMove = (e) => {
     if (!state.tracking || (state.pointerId !== null && e.pointerId !== state.pointerId)) return;
-    const dx = e.clientX - state.startX;
-    const dy = e.clientY - state.startY;
-    state.deltaX = dx;
+    const rawDx = e.clientX - state.startX;
+    const rawDy = e.clientY - state.startY;
+    const absDx = Math.abs(rawDx);
+    const absDy = Math.abs(rawDy);
+    const now = performance.now();
+    const dt = now - state.lastMoveTime;
+    if (dt > 0) {
+      const vx = (e.clientX - state.lastMoveX) / dt;
+      state.velocityX = state.velocityX ? state.velocityX * 0.6 + vx * 0.4 : vx;
+    }
+    state.lastMoveX = e.clientX;
+    state.lastMoveTime = now;
     if (!state.dragging) {
-      if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+      if (absDx < dragSlop && absDy < dragSlop) return;
+      const horizontalIntent = absDx >= absDy * horizontalIntentRatio;
+      const verticalIntent = absDy > verticalCancelSlop && absDy >= absDx * verticalIntentRatio;
+      if (horizontalIntent) {
         state.dragging = true;
         row.classList.add('is-dragging');
         if (swipeMain.setPointerCapture) swipeMain.setPointerCapture(e.pointerId);
         kaCloseItemSwipes(row);
-      } else if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
+        state.startX = e.clientX;
+        state.startY = e.clientY;
+        state.startOffset = state.currentOffset;
+        state.deltaX = 0;
+      } else if (verticalIntent) {
         state.tracking = false;
+        swipeMain.style.transition = '';
         return;
       } else {
         return;
       }
     }
+    const dx = e.clientX - state.startX;
+    state.deltaX = dx;
     e.preventDefault();
-    setOffset(state.startOffset + dx);
+    queueOffset(state.startOffset + dx);
   };
 
   const onPointerEnd = () => {
     if (!state.tracking) return;
     const offset = state.currentOffset || 0;
+    if (state.rafId) {
+      cancelAnimationFrame(state.rafId);
+      state.rafId = 0;
+    }
+    let shouldOpen = row.classList.contains('show-save');
     if (state.dragging) {
-      const openThreshold = -actionWidth * 0.2;
-      if (row.classList.contains('show-save')) {
-        if (state.deltaX > 12 || offset > openThreshold) {
-          closeSwipe();
+      const isOpen = row.classList.contains('show-save');
+      if (state.velocityX < -flickThreshold) {
+        shouldOpen = true;
+      } else if (state.velocityX > flickThreshold) {
+        shouldOpen = false;
+      } else if (isOpen) {
+        if (offset > closeThreshold) {
+          shouldOpen = false;
         } else {
-          openSwipe();
+          shouldOpen = true;
         }
+      } else if (offset < openThreshold) {
+        shouldOpen = true;
       } else {
-        if (offset < openThreshold) {
-          openSwipe();
-        } else {
-          closeSwipe();
-        }
+        shouldOpen = false;
       }
-    } else if (row.classList.contains('show-save')) {
-      closeSwipe();
+    } else if (shouldOpen) {
+      shouldOpen = false;
     }
     row.classList.remove('is-dragging');
     state.tracking = false;
     state.dragging = false;
+    if (state.pointerId !== null && swipeMain.releasePointerCapture) {
+      try {
+        swipeMain.releasePointerCapture(state.pointerId);
+      } catch (err) {
+        // Ignore release errors for browsers that don't support capture on touch.
+      }
+    }
     state.pointerId = null;
+    swipeMain.style.transition = '';
+    requestAnimationFrame(() => {
+      if (shouldOpen) {
+        openSwipe();
+      } else {
+        closeSwipe();
+      }
+    });
   };
 
   swipeMain.addEventListener('pointerdown', onPointerDown);
@@ -8805,6 +14609,45 @@ async function kaSaveShipmentVerificationFor(shipmentId, opts = {}) {
   });
 
   if (!items.length) return true;
+
+  const invalidItems = items.filter(row => {
+    const verification = row.verification || {};
+    const notesValue = kaVerificationNotesValue(verification);
+    return !kaNotesMeetRequirement(row.shipment_item_id, verification.status, notesValue);
+  });
+
+  if (invalidItems.length) {
+    invalidItems.forEach(row => {
+      const idNum = Number(row.shipment_item_id);
+      if (!Number.isFinite(idNum)) return;
+      kaExpandedItems.add(idNum);
+      kaAutoExpandedItems.add(idNum);
+      const rowEl = document.querySelector(`.ka-item-row[data-item-id="${idNum}"]`);
+      if (rowEl) {
+        rowEl.classList.remove('collapsed');
+        const collapseBtn = rowEl.querySelector(`[data-ka-collapse="${idNum}"]`);
+        if (collapseBtn) {
+          collapseBtn.textContent = '▾';
+          collapseBtn.setAttribute('aria-label', 'Collapse item');
+        }
+        const notesEl = rowEl.querySelector(`textarea[data-ship-item-notes-id="${idNum}"]`);
+        if (notesEl) {
+          notesEl.classList.add('field-error');
+          notesEl.setAttribute('aria-invalid', 'true');
+          notesEl.setAttribute('aria-required', 'true');
+        }
+        kaResetItemSwipe(rowEl);
+      }
+    });
+    if (!silent || onlyItemId === null) {
+      kaShowItemsModalAlert(
+        'Notes are required for missing, damaged, or wrong-item statuses. Update the note before saving.',
+        'error',
+        6000
+      );
+    }
+    return false;
+  }
 
   const auth = kaShipmentAuthMeta();
   const clientId = `verify_${shipmentId}_${Date.now().toString(36)}`;
@@ -8872,26 +14715,43 @@ async function kaSaveShipmentVerificationFor(shipmentId, opts = {}) {
       }
 
       if (!silent) {
-        kaShowInlineAlert('Offline: verification saved locally and will sync when online.', 'error', 6000);
+        kaShowItemsModalAlert('Offline: verification saved locally and will sync when online.', 'error', 6000);
       }
       return true;
     }
 
     if (!silent) {
       const msg = err && err.message ? err.message : 'Failed to save verification.';
-      kaShowInlineAlert(msg, 'error', 8000);
+      kaShowItemsModalAlert(msg, 'error', 8000);
     }
     return false;
   }
 }
 
 function kaSetItemSavedUI(itemId) {
+  const itemIdNum = Number(itemId);
   const row = document.querySelector(`.ka-item-row[data-item-id="${itemId}"]`);
   const item = kaFindShipmentItem(itemId);
   const current = kaCurrentItemState(item);
   const status = current && current.verification ? (current.verification.status || '').toLowerCase() : '';
-  kaSetSavedItemStatus(itemId, status);
-  kaMarkItemRecentlySaved(itemId);
+  kaSetSavedItemStatus(itemIdNum, status);
+  if (current && current.verification) {
+    kaSetSavedItemNotes(itemIdNum, kaVerificationNotesValue(current.verification));
+  }
+  kaMarkItemRecentlySaved(itemIdNum);
+
+  if (kaAutoExpandedItems.has(itemIdNum)) {
+    kaAutoExpandedItems.delete(itemIdNum);
+    kaExpandedItems.delete(itemIdNum);
+    if (row) {
+      row.classList.add('collapsed');
+      const collapseBtn = row.querySelector(`[data-ka-collapse="${itemIdNum}"]`);
+      if (collapseBtn) {
+        collapseBtn.textContent = '▸';
+        collapseBtn.setAttribute('aria-label', 'Expand item');
+      }
+    }
+  }
 
   if (row) {
     row.classList.remove('is-unsaved');
@@ -9482,7 +15342,6 @@ function kaRenderPinStatus() {
   if (!tbody) return;
 
   const needingPin = (kaEmployees || []).filter(e => {
-    if (e.uses_timekeeping === 0) return false;
     if (e.active === 0) return false;
     const hasPin = !!e.pin_hash || !!(e.pin || '').trim();
     return !hasPin;
@@ -9492,7 +15351,7 @@ function kaRenderPinStatus() {
 
   if (!needingPin.length) {
     tbody.innerHTML =
-      '<tr><td colspan="2" class="ka-muted">(all active timekeeping employees have a PIN)</td></tr>';
+      '<tr><td colspan="2" class="ka-muted">(all active employees have a PIN)</td></tr>';
     return;
   }
 
@@ -9675,7 +15534,6 @@ async function kaHandleLanguageChange() {
         nickname: emp.nickname || null,
         name_on_checks: emp.name_on_checks || emp.name || null,
         is_admin: emp.is_admin ? 1 : 0,
-        uses_timekeeping: emp.uses_timekeeping ? 1 : 0,
         kiosk_can_view_shipments: emp.kiosk_can_view_shipments ? 1 : 0,
         language: lang
       };
@@ -9757,7 +15615,7 @@ async function kaHandleNameOnChecksSave() {
       status.className = 'ka-status';
     }
     const deviceSecret = kaGetDeviceSecret();
-    const res = await fetchJSON(`/api/employees/${id}/name-on-checks`, {
+    await fetchJSON(`/api/employees/${id}/name-on-checks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -9768,11 +15626,8 @@ async function kaHandleNameOnChecksSave() {
     });
     emp.name_on_checks = value || null;
     if (status) {
-      const warning = res && res.qbo_warning;
-      status.textContent = warning
-        ? `Updated locally. QuickBooks warning: ${warning}`
-        : 'Name on checks updated.';
-      status.classList.add(warning ? 'ka-status-error' : 'ka-status-ok');
+      status.textContent = 'Name on checks updated.';
+      status.classList.add('ka-status-ok');
     }
   } catch (err) {
     console.error('Error updating name on checks', err);
@@ -9783,75 +15638,221 @@ async function kaHandleNameOnChecksSave() {
   }
 }
 
-async function kaHandleEmployeeSheetLanguageSave() {
-  const els = kaEmployeeSheetElements();
-  if (!els || !els.language || !els.languageStatus) return;
-  const id = kaEmployeeSheetState.employeeId;
-  if (!id) {
-    kaSetInlineStatus(els.languageStatus, 'Employee not selected.', 'error');
-    return;
-  }
-  const lang = els.language.value || 'en';
-  kaSetInlineStatus(els.languageStatus, 'Saving language…');
-  try {
-    const auth = kaEmployeeAuthMeta();
-    await fetchJSON(`/api/employees/${id}/language`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ language: lang, ...auth })
-    });
-    kaUpdateEmployeeRecord(id, { language: lang });
-    kaSetInlineStatus(els.languageStatus, 'Language updated.', 'ok');
-    kaRenderEmployeesGrid();
-    kaRenderSettingsForm();
-    kaRefreshEmployeeSheet();
-  } catch (err) {
-    console.error('Error updating language (sheet)', err);
-    kaSetInlineStatus(els.languageStatus, err.message || 'Error updating language.', 'error');
-  }
+function kaAppendEmployeeHistoryEntry(employeeId, entry) {
+  if (!employeeId || !entry) return;
+  if (!entry.start_date && !entry.termination_date) return;
+  const history = kaLoadCachedEmployeeHistory(employeeId);
+  history.unshift({
+    start_date: entry.start_date || null,
+    termination_date: entry.termination_date || null,
+    recorded_at: entry.recorded_at || new Date().toISOString()
+  });
+  kaCacheEmployeeHistory(employeeId, history);
+  kaEmployeeSheetState.history = history;
+  kaUpdateEmployeeHistoryButton(history);
 }
 
-async function kaHandleEmployeeSheetNameChecksSave() {
-  const els = kaEmployeeSheetElements();
-  if (!els || !els.nameChecks || !els.nameChecksStatus) return;
-  const id = kaEmployeeSheetState.employeeId;
-  if (!id) {
-    kaSetInlineStatus(els.nameChecksStatus, 'Employee not selected.', 'error');
-    return;
-  }
-  const value = (els.nameChecks.value || '').trim();
-  kaSetInlineStatus(els.nameChecksStatus, 'Saving name on checks…');
-  try {
-    const auth = kaEmployeeAuthMeta();
-    const res = await fetchJSON(`/api/employees/${id}/name-on-checks`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name_on_checks: value || null, ...auth })
-    });
-    kaUpdateEmployeeRecord(id, { name_on_checks: value || null });
-    const warning = res && res.qbo_warning;
-    if (warning) {
-      kaSetInlineStatus(
-        els.nameChecksStatus,
-        `Updated locally. QuickBooks warning: ${warning}`,
-        'error'
-      );
-    } else {
-      kaSetInlineStatus(els.nameChecksStatus, 'Name on checks updated.', 'ok');
+function kaApplyEmployeeUpdateLocal(employeeId, action, payload = {}) {
+  if (!employeeId) return;
+  switch (action) {
+    case 'name':
+      kaUpdateEmployeeRecord(employeeId, { name: payload.name });
+      break;
+    case 'phone':
+      kaUpdateEmployeeRecord(employeeId, { phone: payload.phone || null });
+      break;
+    case 'language':
+      kaUpdateEmployeeRecord(employeeId, { language: payload.language });
+      break;
+    case 'name_on_checks':
+      kaUpdateEmployeeRecord(employeeId, { name_on_checks: payload.name_on_checks || null });
+      break;
+    case 'employment_dates': {
+      const updates = {
+        start_date: payload.start_date || null,
+        termination_date: payload.termination_date || null
+      };
+      if (payload.termination_date) updates.active = 0;
+      kaUpdateEmployeeRecord(employeeId, updates);
+      break;
     }
-    kaRenderEmployeesGrid();
-    kaRenderSettingsForm();
-    kaRefreshEmployeeSheet();
-  } catch (err) {
-    console.error('Error updating name on checks (sheet)', err);
-    kaSetInlineStatus(els.nameChecksStatus, 'Error updating name on checks.', 'error');
+    case 'reactivate':
+      kaUpdateEmployeeRecord(employeeId, {
+        start_date: payload.start_date || null,
+        termination_date: null,
+        active: 1
+      });
+      if (payload.prior_start_date || payload.prior_termination_date) {
+        kaAppendEmployeeHistoryEntry(employeeId, {
+          start_date: payload.prior_start_date || null,
+          termination_date: payload.prior_termination_date || null
+        });
+      }
+      break;
+    case 'rate':
+      kaUpdateEmployeeRecord(employeeId, { rate: payload.rate });
+      break;
+    default:
+      break;
   }
 }
 
-async function kaHandleEmployeeSheetPinSave() {
+async function kaHandleEmployeeSheetSave() {
   const els = kaEmployeeSheetElements();
-  if (!els || !els.pinInput || !els.pinConfirm || !els.pinStatus) return;
+  if (!els || !els.firstName || !els.lastName || !els.saveStatus) return;
   const id = kaEmployeeSheetState.employeeId;
+  if (!id) {
+    kaSetInlineStatus(els.saveStatus, 'Employee not selected.', 'error');
+    return;
+  }
+
+  const first = (els.firstName.value || '').trim();
+  const last = (els.lastName.value || '').trim();
+  const fullName = [first, last].filter(Boolean).join(' ').trim();
+  if (!fullName) {
+    kaSetInlineStatus(els.saveStatus, 'Enter a first or last name.', 'error');
+    return;
+  }
+
+  const phone = (els.phone && els.phone.value ? els.phone.value : '').trim();
+  const lang = els.language && els.language.value ? els.language.value : 'en';
+  const nameChecks = els.nameChecks && els.nameChecks.value ? els.nameChecks.value : '';
+  const nameChecksValue = nameChecks.trim();
+  const canRates = kaCanModifyPayRates();
+  const rateInputValue = els.rateInput && els.rateInput.value !== undefined
+    ? String(els.rateInput.value || '').trim()
+    : '';
+  const rateValue = rateInputValue === '' ? null : Number(rateInputValue);
+  if (canRates && rateInputValue !== '' && Number.isNaN(rateValue)) {
+    kaSetInlineStatus(els.saveStatus, 'Hourly rate must be a number.', 'error');
+    return;
+  }
+  const startDate = els.startDate && els.startDate.value ? els.startDate.value.trim() : '';
+  const termDate = els.termDate && els.termDate.value ? els.termDate.value.trim() : '';
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+  if (startDate && !datePattern.test(startDate)) {
+    kaSetInlineStatus(els.saveStatus, 'Start date must be YYYY-MM-DD.', 'error');
+    return;
+  }
+  if (termDate && !datePattern.test(termDate)) {
+    kaSetInlineStatus(els.saveStatus, 'Termination date must be YYYY-MM-DD.', 'error');
+    return;
+  }
+
+  const emp = kaFindEmployeeById(id);
+  const norm = (val) => (val || '').toString().trim();
+  const nameChanged = norm(emp?.name) !== fullName;
+  const phoneChanged = norm(emp?.phone) !== phone;
+  const langChanged = norm(emp?.language || 'en') !== norm(lang);
+  const nameChecksChanged = norm(emp?.name_on_checks || '') !== nameChecksValue;
+  const startChanged = norm(emp?.start_date) !== startDate;
+  const termChanged = norm(emp?.termination_date) !== termDate;
+  const currentRate = emp && emp.rate != null ? Number(emp.rate) : null;
+  const rateChanged = canRates && rateInputValue !== ''
+    ? (currentRate === null || !Number.isFinite(currentRate) || Math.abs(currentRate - rateValue) > 0.0001)
+    : false;
+  const reactivatePending = !!kaEmployeeSheetState.reactivatePending;
+  const reactivateSnapshot = kaEmployeeSheetState.reactivateSnapshot || {
+    start_date: emp?.start_date || null,
+    termination_date: emp?.termination_date || null
+  };
+
+  if (reactivatePending && !startDate) {
+    kaSetInlineStatus(els.saveStatus, 'Enter a new start date to reactivate.', 'error');
+    return;
+  }
+
+  const updates = [];
+  if (nameChanged) updates.push({ action: 'name', payload: { name: fullName } });
+  if (phoneChanged) updates.push({ action: 'phone', payload: { phone: phone || null } });
+  if (langChanged) updates.push({ action: 'language', payload: { language: lang } });
+  if (nameChecksChanged) {
+    updates.push({ action: 'name_on_checks', payload: { name_on_checks: nameChecksValue || null } });
+  }
+  if (reactivatePending) {
+    updates.push({
+      action: 'reactivate',
+      payload: {
+        start_date: startDate,
+        prior_start_date: reactivateSnapshot.start_date || null,
+        prior_termination_date: reactivateSnapshot.termination_date || null
+      }
+    });
+  } else if (startChanged || termChanged) {
+    updates.push({
+      action: 'employment_dates',
+      payload: { start_date: startDate || null, termination_date: termDate || null }
+    });
+  }
+  if (rateChanged) updates.push({ action: 'rate', payload: { rate: rateValue } });
+
+  if (!updates.length) {
+    kaSetInlineStatus(els.saveStatus, 'No changes to save.', 'ok');
+    kaCloseEmployeeSheet();
+    return;
+  }
+
+  kaSetInlineStatus(els.saveStatus, 'Saving changes…');
+  const auth = kaEmployeeAuthMeta();
+  const entries = updates.map(update => ({
+    employee_id: id,
+    action: update.action,
+    payload: update.payload,
+    auth
+  }));
+
+  if (!navigator.onLine) {
+    kaQueueEmployeeUpdates(entries);
+    entries.forEach(entry => kaApplyEmployeeUpdateLocal(id, entry.action, entry.payload));
+    kaEmployeeSheetState.reactivatePending = false;
+    kaEmployeeSheetState.reactivateSnapshot = null;
+    kaSetInlineStatus(els.saveStatus, 'Saved offline. Will sync when online.', 'ok');
+    kaRenderEmployeesGrid();
+    kaRenderSettingsForm();
+    kaCloseEmployeeSheet();
+    return;
+  }
+
+  try {
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      try {
+        await kaDispatchEmployeeUpdate(entry);
+        kaApplyEmployeeUpdateLocal(id, entry.action, entry.payload);
+      } catch (err) {
+        if (kaIsConnectionIssue(err)) {
+          const remaining = entries.slice(i);
+          kaQueueEmployeeUpdates(remaining);
+          remaining.forEach(rem => kaApplyEmployeeUpdateLocal(id, rem.action, rem.payload));
+          kaEmployeeSheetState.reactivatePending = false;
+          kaEmployeeSheetState.reactivateSnapshot = null;
+          kaSetInlineStatus(els.saveStatus, 'Saved offline. Will sync when online.', 'ok');
+          kaRenderEmployeesGrid();
+          kaRenderSettingsForm();
+          kaCloseEmployeeSheet();
+          return;
+        }
+        throw err;
+      }
+    }
+
+    kaEmployeeSheetState.reactivatePending = false;
+    kaEmployeeSheetState.reactivateSnapshot = null;
+    kaSetInlineStatus(els.saveStatus, 'Changes saved.', 'ok');
+    kaRenderEmployeesGrid();
+    kaRenderSettingsForm();
+    kaCloseEmployeeSheet();
+  } catch (err) {
+    console.error('Error saving employee sheet', err);
+    kaSetInlineStatus(els.saveStatus, err.message || 'Error saving changes.', 'error');
+  }
+}
+
+async function kaHandleEmployeePinSave() {
+  const els = kaEmployeePinSheetElements();
+  if (!els || !els.pinInput || !els.pinConfirm || !els.pinStatus) return;
+  const id = kaEmployeePinSheetState.employeeId;
   if (!id) {
     kaSetInlineStatus(els.pinStatus, 'Employee not selected.', 'error');
     return;
@@ -9876,34 +15877,6 @@ async function kaHandleEmployeeSheetPinSave() {
     kaRenderEmployeesGrid();
     kaRenderPinStatus();
     kaRefreshEmployeeSheet();
-  }
-}
-
-async function kaHandleEmployeeSheetPhotoDelete() {
-  const els = kaEmployeeSheetElements();
-  if (!els || !els.status) return;
-  const id = kaEmployeeSheetState.employeeId;
-  if (!id) {
-    kaSetInlineStatus(els.status, 'Employee not selected.', 'error');
-    return;
-  }
-  const confirmed = window.confirm('Delete this employee photo?');
-  if (!confirmed) return;
-
-  kaSetInlineStatus(els.status, 'Deleting photo…');
-  try {
-    await fetchJSON(`/api/kiosk/admin/employees/${id}/photo`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...kaEmployeeAuthMeta() })
-    });
-    kaUpdateEmployeeRecord(id, { employee_photo_uploaded_at: null });
-    kaSetInlineStatus(els.status, 'Photo deleted.', 'ok');
-    kaRenderEmployeesGrid();
-    kaRefreshEmployeeSheet();
-  } catch (err) {
-    console.error('Error deleting employee photo (sheet)', err);
-    kaSetInlineStatus(els.status, err.message || 'Failed to delete photo.', 'error');
   }
 }
 
@@ -9990,7 +15963,7 @@ async function kaHandleHelperAdd() {
       throw new Error(data.error || 'Failed to add employee.');
     }
 
-    statusEl.textContent = 'Employee added. QuickBooks linking is pending.';
+    statusEl.textContent = 'Employee added.';
     statusEl.className = 'ka-status ka-status-ok';
 
     nameInput.value = '';
@@ -10241,6 +16214,290 @@ async function kaHandleRateSaveClick(evt) {
 
 // --- Time entries (approvals + editing) ---
 
+function kaParseIsoDateParts(dateStr) {
+  if (!dateStr) return null;
+  const match = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if ([year, month, day].some(Number.isNaN)) return null;
+  return { year, month, day };
+}
+
+function kaIsoDateFromParts(year, month, day) {
+  const yy = String(year).padStart(4, '0');
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+function kaDateAtNoonUtc(year, month, day) {
+  return new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+}
+
+function kaDaysInMonth(year, month) {
+  const dt = new Date(Date.UTC(year, month, 0));
+  return dt.getUTCDate();
+}
+
+function kaWeekdayIndex(year, month, day) {
+  const dt = kaDateAtNoonUtc(year, month, day);
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: kaOrgTimezone || KA_DEFAULT_TIMEZONE,
+      weekday: 'short'
+    }).formatToParts(dt);
+    const weekday = parts.find(p => p.type === 'weekday')?.value || '';
+    const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    return map[weekday] ?? dt.getUTCDay();
+  } catch {
+    return dt.getUTCDay();
+  }
+}
+
+function kaFormatMonthYearLabel(year, month) {
+  const dt = kaDateAtNoonUtc(year, month, 1);
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: kaOrgTimezone || KA_DEFAULT_TIMEZONE,
+      month: 'long',
+      year: 'numeric'
+    }).format(dt);
+  } catch {
+    const fallback = dt.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    return fallback || `${month}/${year}`;
+  }
+}
+
+function kaTimeCalendarMonthLabel(month) {
+  const dt = kaDateAtNoonUtc(2024, month, 1);
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: kaOrgTimezone || KA_DEFAULT_TIMEZONE,
+      month: 'long'
+    }).format(dt);
+  } catch {
+    const names = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+    return names[month - 1] || String(month);
+  }
+}
+
+function kaTimeCalendarYearRange(baseYear) {
+  const currentYear = new Date().getFullYear();
+  let min = currentYear - 50;
+  let max = currentYear + 5;
+  if (baseYear) {
+    if (baseYear < min) min = baseYear - 5;
+    if (baseYear > max) max = baseYear + 5;
+  }
+  return { min, max };
+}
+
+function kaEnsureTimeCalendarMonthOptions(selectEl) {
+  if (!selectEl || selectEl.dataset.built) return;
+  const fragment = document.createDocumentFragment();
+  for (let month = 1; month <= 12; month += 1) {
+    const opt = document.createElement('option');
+    opt.value = String(month);
+    opt.textContent = kaTimeCalendarMonthLabel(month);
+    fragment.appendChild(opt);
+  }
+  selectEl.replaceChildren(fragment);
+  selectEl.dataset.built = '1';
+}
+
+function kaEnsureTimeCalendarYearOptions(selectEl, baseYear) {
+  if (!selectEl) return;
+  const { min, max } = kaTimeCalendarYearRange(baseYear);
+  const rangeKey = `${min}:${max}`;
+  if (selectEl.dataset.range === rangeKey && selectEl.options.length) return;
+  const fragment = document.createDocumentFragment();
+  for (let year = min; year <= max; year += 1) {
+    const opt = document.createElement('option');
+    opt.value = String(year);
+    opt.textContent = String(year);
+    fragment.appendChild(opt);
+  }
+  selectEl.replaceChildren(fragment);
+  selectEl.dataset.range = rangeKey;
+}
+
+function kaSyncTimeCalendarPicker(els) {
+  if (!els || !els.monthSelect || !els.yearSelect) return;
+  kaInitTimeCalendarState();
+  const year = kaTimeCalendarState.year || new Date().getFullYear();
+  const month = kaTimeCalendarState.month || 1;
+  kaEnsureTimeCalendarMonthOptions(els.monthSelect);
+  kaEnsureTimeCalendarYearOptions(els.yearSelect, year);
+  els.monthSelect.value = String(month);
+  els.yearSelect.value = String(year);
+}
+
+function kaSetTimeCalendarPickerOpen(open, { focusTitle = false } = {}) {
+  const els = kaTimeCalendarElements();
+  if (!els || !els.picker || !els.title) return;
+  if (open) {
+    kaSyncTimeCalendarPicker(els);
+    els.picker.classList.remove('hidden');
+    els.title.setAttribute('aria-expanded', 'true');
+    els.monthSelect?.focus();
+  } else {
+    els.picker.classList.add('hidden');
+    els.title.setAttribute('aria-expanded', 'false');
+    if (focusTitle) els.title.focus();
+  }
+}
+
+function kaTimeCalendarElements() {
+  const root = document.getElementById('ka-time-calendar');
+  if (!root) return null;
+  return {
+    root,
+    title: root.querySelector('#ka-time-calendar-title'),
+    grid: root.querySelector('#ka-time-calendar-grid'),
+    picker: root.querySelector('#ka-time-calendar-picker'),
+    monthSelect: root.querySelector('#ka-time-calendar-month'),
+    yearSelect: root.querySelector('#ka-time-calendar-year')
+  };
+}
+
+function kaInitTimeCalendarState() {
+  if (kaTimeCalendarState.year && kaTimeCalendarState.month) return;
+  const today = kaTodayIso();
+  const parts = kaParseIsoDateParts(today);
+  if (!parts) return;
+  kaTimeCalendarState.year = parts.year;
+  kaTimeCalendarState.month = parts.month;
+  kaTimeCalendarState.selectedDate = today;
+}
+
+function kaRenderTimeCalendar() {
+  const els = kaTimeCalendarElements();
+  if (!els) return;
+  kaInitTimeCalendarState();
+  const year = kaTimeCalendarState.year;
+  const month = kaTimeCalendarState.month;
+  if (!year || !month) return;
+  if (els.title) {
+    els.title.textContent = kaFormatMonthYearLabel(year, month);
+  }
+  kaSyncTimeCalendarPicker(els);
+  if (!els.grid) return;
+  const todayIso = kaTodayIso();
+  const selected = kaTimeCalendarState.selectedDate;
+  const firstWeekday = kaWeekdayIndex(year, month, 1);
+  const daysInMonth = kaDaysInMonth(year, month);
+  const totalCells = firstWeekday + daysInMonth;
+  const trailing = (7 - (totalCells % 7)) % 7;
+
+  const fragment = document.createDocumentFragment();
+  const addEmptyCell = () => {
+    const cell = document.createElement('div');
+    cell.className = 'ka-time-calendar-day is-empty';
+    cell.setAttribute('aria-hidden', 'true');
+    fragment.appendChild(cell);
+  };
+
+  for (let i = 0; i < firstWeekday; i += 1) {
+    addEmptyCell();
+  }
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const dateStr = kaIsoDateFromParts(year, month, day);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ka-time-calendar-day';
+    btn.textContent = String(day);
+    btn.dataset.kaTimeCalDate = dateStr;
+    btn.setAttribute('role', 'gridcell');
+    if (dateStr === todayIso) btn.classList.add('is-today');
+    if (selected && dateStr === selected) {
+      btn.classList.add('is-selected');
+    }
+    fragment.appendChild(btn);
+  }
+
+  for (let i = 0; i < trailing; i += 1) {
+    addEmptyCell();
+  }
+
+  els.grid.replaceChildren(fragment);
+}
+
+function kaShiftTimeCalendarMonth(delta) {
+  kaInitTimeCalendarState();
+  let year = kaTimeCalendarState.year || 0;
+  let month = kaTimeCalendarState.month || 1;
+  month += delta;
+  if (month < 1) {
+    month = 12;
+    year -= 1;
+  } else if (month > 12) {
+    month = 1;
+    year += 1;
+  }
+  kaTimeCalendarState.year = year;
+  kaTimeCalendarState.month = month;
+  kaRenderTimeCalendar();
+}
+
+function kaBindTimeCalendar() {
+  const els = kaTimeCalendarElements();
+  if (!els || els.root.dataset.bound) return;
+  els.root.dataset.bound = '1';
+  const handlePickerChange = () => {
+    const month = Number(els.monthSelect?.value);
+    const year = Number(els.yearSelect?.value);
+    if (!month || !year) return;
+    if (kaTimeCalendarState.month === month && kaTimeCalendarState.year === year) return;
+    kaTimeCalendarState.month = month;
+    kaTimeCalendarState.year = year;
+    kaRenderTimeCalendar();
+  };
+  els.monthSelect?.addEventListener('change', handlePickerChange);
+  els.yearSelect?.addEventListener('change', handlePickerChange);
+  els.root.addEventListener('click', (e) => {
+    const titleBtn = e.target.closest('[data-ka-time-cal-title]');
+    if (titleBtn) {
+      const isOpen = !els.picker?.classList.contains('hidden');
+      kaSetTimeCalendarPickerOpen(!isOpen);
+      return;
+    }
+    if (els.picker && !els.picker.classList.contains('hidden') && els.picker.contains(e.target)) {
+      return;
+    }
+    const navBtn = e.target.closest('[data-ka-time-cal-nav]');
+    if (navBtn) {
+      const dir = navBtn.getAttribute('data-ka-time-cal-nav');
+      kaSetTimeCalendarPickerOpen(false);
+      if (dir === 'prev') kaShiftTimeCalendarMonth(-1);
+      if (dir === 'next') kaShiftTimeCalendarMonth(1);
+      return;
+    }
+    const dayBtn = e.target.closest('[data-ka-time-cal-date]');
+    if (dayBtn) {
+      const dateStr = dayBtn.getAttribute('data-ka-time-cal-date');
+      if (!dateStr) return;
+      kaSetTimeCalendarPickerOpen(false);
+      kaTimeCalendarState.selectedDate = dateStr;
+      kaRenderTimeCalendar();
+      kaOpenTimeCalendarSheet(dateStr);
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!els.picker || els.picker.classList.contains('hidden')) return;
+    if (els.picker.contains(e.target) || els.title?.contains(e.target)) return;
+    kaSetTimeCalendarPickerOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') kaSetTimeCalendarPickerOpen(false);
+  });
+}
+
 function kaRangeForMode(mode = 'today') {
   const todayIso = kaTodayIso();
   const toIso = (dt) => {
@@ -10282,26 +16539,69 @@ function kaSetTimeRange(mode) {
   if (customWrap) {
     customWrap.classList.toggle('hidden', mode !== 'custom');
   }
+  const filters = document.querySelector('#ka-view-time .ka-time-filters');
+  if (filters) {
+    filters.classList.toggle('ka-custom-open', mode === 'custom');
+  }
 }
 
 function kaEntryStatusBadges(entry) {
-  const flagged = entry.has_geo_violation || entry.has_auto_clock_out;
-  if (flagged) {
-    return '<span class="ka-tag orange">Pending review</span>';
-  }
-  return '<span class="ka-tag green">Approved as-is</span>';
+  return kaTimeEntryStatusLabel(entry);
 }
 
-function kaEntryDetailMeta(entry) {
+function kaFormatAutoClockoutReason(reason) {
+  const raw = String(reason || '').trim().toLowerCase();
+  if (!raw) return '';
+  const map = {
+    midnight_auto: 'Midnight auto-close',
+    catch_up_auto: 'Catch-up auto-close',
+    daily_max: 'Daily max hours',
+    weekly_max: 'Weekly max hours'
+  };
+  return map[raw] || reason;
+}
+
+function kaAutoClockOutHelpText(reasonLabel = '') {
+  const raw = String(reasonLabel || '').toLowerCase();
+  if (raw.includes('midnight')) {
+    return 'Midnight: closed at org midnight for a prior-day open punch.';
+  }
+  if (raw.includes('catch-up')) {
+    return 'Catch-up: hourly job closed a prior-day open punch if midnight was missed.';
+  }
+  if (raw.includes('daily')) {
+    return 'Daily max: closed when daily hours limit was exceeded.';
+  }
+  if (raw.includes('weekly')) {
+    return 'Weekly max: closed when weekly hours limit was exceeded.';
+  }
+  if (raw.includes('flag')) {
+    return 'Auto clock-out recorded; reason was not captured.';
+  }
+  return 'Auto clock-out recorded; reason was not captured.';
+}
+
+function kaAutoClockOutHelpLabel(reasonLabel = '') {
+  const help = kaAutoClockOutHelpText(reasonLabel).replace(/"/g, '&quot;');
+  return `Auto clock-out <span class="ka-info-tip" tabindex="0" role="note" aria-label="${help}" data-tooltip="${help}">?</span>`;
+}
+
+function kaReviewStatusDisplay(status) {
+  const raw = String(status || '').trim().toLowerCase();
+  if (!raw || raw === 'open') return '';
+  if (raw === 'rejected') return 'Voided';
+  if (raw === 'approved') return 'Approved';
+  if (raw === 'modified') return 'Modified';
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+function kaEntryDetailMetaList(entry) {
   const meta = [];
-  if (entry.has_geo_violation) meta.push('Geofence flag');
-  if (entry.has_auto_clock_out) meta.push('Auto clock-out flag');
+  const metaState = kaTimeEntryMeta(entry);
+  const flags = kaTimeEntryFlagLabels(entry, { includeFallback: metaState.isPending });
+  meta.push(`Flags: ${flags.length ? flags.join(', ') : 'None'}`);
 
   const resolvedStatus = String(entry.resolved_status || '').toLowerCase();
-  if (resolvedStatus && resolvedStatus !== 'open') {
-    meta.push(`Review: ${resolvedStatus}`);
-  }
-
   if (entry.resolved_note) {
     meta.push(`Note: ${entry.resolved_note}`);
   }
@@ -10310,13 +16610,190 @@ function kaEntryDetailMeta(entry) {
   const reviewedAt = entry.resolved_at;
   if (reviewedBy || reviewedAt) {
     meta.push(
-      `Reviewed by ${reviewedBy || 'admin'}${reviewedAt ? ` on ${new Date(reviewedAt).toLocaleString()}` : ''}`
+      `Field reviewed by ${reviewedBy || 'admin'}${reviewedAt ? ` on ${kaFmtDateTimeMDY(reviewedAt)}` : ''}`
     );
   }
 
+  return meta;
+}
+
+function kaEntryDetailMeta(entry) {
+  const meta = kaEntryDetailMetaList(entry);
   return meta.length
     ? `<div class="ka-detail-row">${meta.join(' • ')}</div>`
     : '';
+}
+
+function kaShowTimeFlagBanner(entry) {
+  const banner = document.getElementById('ka-time-detail-flag-banner');
+  const textEl = document.getElementById('ka-time-detail-flag-text');
+  if (!banner || !textEl || !entry) return;
+  const meta = kaTimeEntryMeta(entry);
+  const issues = kaTimeReviewIssues(entry, { includeFallback: meta.isPending });
+  if (!issues.length) {
+    banner.classList.add('hidden');
+    textEl.innerHTML = '';
+    return;
+  }
+  const rows = issues.map((issue) => {
+    const label = escapeHTML(issue.label || 'Flag');
+    const help = escapeHTML(issue.help || 'Please review this entry.');
+    return `
+      <div class="ka-time-flag-banner-row">
+        <div class="ka-time-flag-banner-label">${label}</div>
+        <div class="ka-time-flag-banner-help">${help}</div>
+      </div>
+    `;
+  });
+  textEl.innerHTML = rows.join('');
+  banner.classList.remove('hidden');
+}
+
+function kaHideTimeFlagBanner() {
+  const banner = document.getElementById('ka-time-detail-flag-banner');
+  const textEl = document.getElementById('ka-time-detail-flag-text');
+  if (!banner) return;
+  banner.classList.add('hidden');
+  if (textEl) textEl.innerHTML = '';
+}
+
+function kaTimeEntryStatusLabel(entry) {
+  const meta = kaTimeEntryMeta(entry);
+  if (meta.isOpen) return '<span class="ka-tag gray">In progress</span>';
+  if (meta.isRejected) return '<span class="ka-tag orange">Voided</span>';
+  if (meta.isModified) return '<span class="ka-tag green">Modified</span>';
+  if (meta.isApproved && meta.flaggedEver) return '<span class="ka-tag green">Approved</span>';
+  if (meta.isApproved && !meta.flaggedEver) return '<span class="ka-tag green">Approved as-is</span>';
+  if (meta.isPending && meta.flagged) return '<span class="ka-tag orange">Pending review + flagged</span>';
+  if (meta.isPending) return '<span class="ka-tag orange">Pending review</span>';
+  return '<span class="ka-tag green">Approved as-is</span>';
+}
+
+function kaTimeEntryStatusText(entry) {
+  const meta = kaTimeEntryMeta(entry);
+  if (meta.isOpen) return 'In progress';
+  if (meta.isRejected) return 'Voided';
+  if (meta.isModified) return 'Modified';
+  if (meta.isApproved && meta.flaggedEver) return 'Approved';
+  if (meta.isApproved && !meta.flaggedEver) return 'Approved as-is';
+  if (meta.isPending && meta.flagged) return 'Pending review + flagged';
+  if (meta.isPending) return 'Pending review';
+  return 'Approved as-is';
+}
+
+function kaTimeEntryEndLabel(entry) {
+  if (!entry) return '—';
+  if (entry._open) return 'In progress';
+  return entry.end_time ? kaFormatTimeValue12(entry.end_time) : '—';
+}
+
+function kaTimeEntryMeta(entry) {
+  const isOpen = !!entry._open;
+  const resolvedStatus = String(entry.resolved_status || '').toLowerCase();
+  const isResolved = !!entry.resolved || (resolvedStatus && resolvedStatus !== 'open');
+  const isRejected = resolvedStatus === 'rejected';
+  const isModified = resolvedStatus === 'modified';
+  const isApproved = resolvedStatus === 'approved' || isModified;
+  const punchCount = Number(entry.punch_count || 0);
+  const punchHours = Number(entry.punch_hours || 0);
+  const entryHours = Number(entry.hours || 0);
+  const punchExceptionRaw = entry.punch_exception_unresolved;
+  const hasPunchExceptionField = punchExceptionRaw !== undefined && punchExceptionRaw !== null;
+  const punchExceptionUnresolved = Number(punchExceptionRaw || 0);
+  const punchExceptionResolved = Number(entry.punch_exception_resolved || 0);
+  const hasFlags = !!entry.has_geo_violation || !!entry.has_auto_clock_out;
+  const entryMismatch = !isOpen &&
+    (punchCount === 0 ||
+      (Number.isFinite(entryHours) && Math.abs(punchHours - entryHours) >= 0.1));
+  const hasPendingNote = !isOpen && resolvedStatus === 'open' && !!entry.resolved_note;
+  const flagged = !!entryMismatch ||
+    (hasPunchExceptionField ? punchExceptionUnresolved > 0 : hasFlags) ||
+    hasPendingNote;
+  const flaggedEver = flagged || hasFlags || punchExceptionResolved > 0;
+  const isPending = !isOpen && !isResolved;
+  return {
+    isOpen,
+    isResolved,
+    isRejected,
+    isModified,
+    isApproved,
+    flagged,
+    flaggedEver,
+    isPending,
+    resolvedStatus
+  };
+}
+
+function kaTimeReviewIssues(entry, opts = {}) {
+  if (!entry) return [];
+  const issues = [];
+  const includeFallback = opts.includeFallback !== false;
+  const addIssue = (label, help) => {
+    if (!label) return;
+    issues.push({ label, help: help || '' });
+  };
+  const punchExceptionDetails = () => {
+    const details = [];
+    if (entry.has_geo_violation) details.push('Geofence flag');
+    if (entry.has_auto_clock_out) {
+      const reason = kaFormatAutoClockoutReason(entry.auto_clock_out_reason);
+      details.push(reason ? `Auto clock-out: ${reason}` : 'Auto clock-out');
+    }
+    return details;
+  };
+  const isOpen = !!entry._open;
+  const punchCount = Number(entry.punch_count || 0);
+  const punchHours = Number(entry.punch_hours || 0);
+  const entryHours = Number(entry.hours || 0);
+  const punchExceptionRaw = entry.punch_exception_unresolved;
+  const punchExceptionUnresolved = Number(punchExceptionRaw || 0);
+
+  if (!isOpen) {
+    if (punchCount === 0) {
+      addIssue(
+        'Missing punches',
+        'No punch records were captured for this time entry.'
+      );
+    } else if (Number.isFinite(entryHours) && Math.abs(punchHours - entryHours) >= 0.1) {
+      addIssue(
+        `Hours mismatch (${punchHours.toFixed(2)}h vs ${entryHours.toFixed(2)}h)`,
+        'Punch hours do not match the entry hours.'
+      );
+    }
+  }
+
+  if (entry.has_geo_violation) {
+    addIssue(
+      'Geofence flag',
+      'A punch or kiosk session was recorded outside the geofence (advisory only).'
+    );
+  }
+  if (entry.has_auto_clock_out) {
+    const reason = kaFormatAutoClockoutReason(entry.auto_clock_out_reason);
+    const label = reason ? `Auto clock-out: ${reason}` : 'Auto clock-out';
+    addIssue(label, kaAutoClockOutHelpText(reason));
+  }
+
+  if (!issues.length && includeFallback) {
+    addIssue(
+      'Needs review',
+      'This entry is pending review even though no specific issue was detected.'
+    );
+  }
+  return issues;
+}
+
+function kaTimeEntryFlagLabels(entry, opts = {}) {
+  const includeFallback = opts.includeFallback === true;
+  const issues = kaTimeReviewIssues(entry, { includeFallback });
+  return issues.map(issue => issue.label);
+}
+
+function kaCloseTimeReviewIssueTips(except = null) {
+  document.querySelectorAll('.ka-time-review-issue.is-tip-open').forEach((pill) => {
+    if (except && pill === except) return;
+    pill.classList.remove('is-tip-open');
+  });
 }
 
 function kaReviewerName(raw) {
@@ -10329,7 +16806,85 @@ function kaReviewerName(raw) {
   return name || '—';
 }
 
+function kaSetTimeViewMode(mode, { skipLoad = false } = {}) {
+  kaTimeViewMode = mode === 'review' ? 'review' : 'view';
+  const viewEl = document.getElementById('ka-view-time');
+  if (viewEl) {
+    viewEl.classList.toggle('ka-time-mode-review', kaTimeViewMode === 'review');
+  }
+  const reportSheet = document.getElementById('ka-time-report-sheet');
+  if (reportSheet) {
+    reportSheet.classList.toggle('ka-time-mode-review', kaTimeViewMode === 'review');
+  }
+  const viewBtn = document.getElementById('ka-time-mode-view');
+  const reviewBtn = document.getElementById('ka-time-mode-review');
+  const toggleWrap = document.querySelector('.ka-time-mode-toggle');
+  if (viewBtn) {
+    viewBtn.classList.toggle('is-active', kaTimeViewMode === 'view');
+    viewBtn.setAttribute('aria-selected', kaTimeViewMode === 'view' ? 'true' : 'false');
+  }
+  if (reviewBtn) {
+    reviewBtn.classList.toggle('is-active', kaTimeViewMode === 'review');
+    reviewBtn.setAttribute('aria-selected', kaTimeViewMode === 'review' ? 'true' : 'false');
+  }
+  if (toggleWrap) {
+    toggleWrap.classList.toggle('is-review', kaTimeViewMode === 'review');
+  }
+
+  const includeOpen = document.getElementById('ka-time-include-open');
+  if (kaTimeViewMode === 'review') {
+    if (includeOpen) {
+      kaTimeViewLastIncludeOpen = includeOpen.checked;
+      includeOpen.checked = false;
+      includeOpen.disabled = true;
+    }
+  } else {
+    if (includeOpen) {
+      includeOpen.disabled = false;
+      includeOpen.checked = kaTimeViewLastIncludeOpen;
+    }
+  }
+
+  if (!skipLoad && kaTimeReportHasRun) {
+    kaLoadTimeEntries();
+  }
+}
+
+function kaUpdateTimeSummary(counts = {}) {
+  const pendingEl = document.getElementById('ka-time-summary-pending');
+  const safe = (val) => (val == null ? '0' : String(val));
+  if (pendingEl) pendingEl.textContent = safe(counts.pending);
+  const banner = document.getElementById('ka-time-review-banner');
+  const bannerCount = document.getElementById('ka-time-review-count');
+  const bannerPrefix = document.getElementById('ka-time-review-prefix');
+  const bannerSuffix = document.getElementById('ka-time-review-suffix');
+  const bannerValue = Number.isFinite(kaTimePendingGlobalCount)
+    ? kaTimePendingGlobalCount
+    : counts.pending;
+  if (bannerCount) bannerCount.textContent = safe(bannerValue);
+  if (banner) {
+    const show = Number(bannerValue || 0) > 0;
+    banner.classList.toggle('is-zero', !show);
+    const bannerIcon = banner.querySelector('.ka-review-banner-icon');
+    if (bannerIcon) bannerIcon.hidden = !show;
+    if (bannerPrefix) {
+      bannerPrefix.textContent = '';
+      bannerPrefix.hidden = true;
+    }
+    if (bannerSuffix) {
+      bannerSuffix.textContent = 'Pending Review';
+      bannerSuffix.hidden = false;
+    }
+    banner.classList.remove('hidden');
+    if (!show && kaTimeViewMode === 'review') {
+      kaSetTimeViewMode('view', { skipLoad: true });
+    }
+  }
+}
+
 let kaRateUnlockTarget = null;
+let kaTimeViewMode = 'view';
+let kaTimeViewLastIncludeOpen = true;
 
 function kaOpenRateModal(entryId) {
   kaRateUnlockTarget = entryId;
@@ -10410,15 +16965,99 @@ function kaPopulateTimeActionProjects(selectedId) {
   }
 }
 
+function kaGetPunchExceptionIds(entry) {
+  if (!entry) return [];
+  if (Array.isArray(entry.punch_exception_ids)) {
+    return entry.punch_exception_ids
+      .map(id => Number(id))
+      .filter(id => Number.isFinite(id) && id > 0);
+  }
+  if (typeof entry.punch_exception_ids === 'string' && entry.punch_exception_ids.trim()) {
+    return entry.punch_exception_ids
+      .split(',')
+      .map(id => Number(id))
+      .filter(id => Number.isFinite(id) && id > 0);
+  }
+  return [];
+}
+
+function kaGetOpenPunchId(entry) {
+  if (!entry) return null;
+  const direct = Number(entry.punch_id);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  if (typeof entry.id === 'string' && entry.id.startsWith('open-')) {
+    const parsed = Number(entry.id.slice(5));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  const fallback = Number(entry.id);
+  if (Number.isFinite(fallback) && fallback > 0) return fallback;
+  return null;
+}
+
+function kaQueuePunchExceptionReviews(ids, action, note) {
+  if (!Array.isArray(ids) || !ids.length) return;
+  ids.forEach((id) => {
+    const clientId = `punch_review_${id}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+    kaQueueTimeReview({
+      exception_id: id,
+      payload: {
+        source: 'punch',
+        action,
+        note,
+        actor_name: kaAdminDisplayName(),
+        updates: {},
+        client_id: clientId
+      },
+      queued_at: new Date().toISOString(),
+      employee_id: kaAdminAuthId() || null,
+      device_id: kaDeviceId || null,
+      device_secret: kaGetDeviceSecret() || null
+    });
+  });
+}
+
+async function kaReviewPunchExceptionsOnline(ids, action, note) {
+  if (!Array.isArray(ids) || !ids.length) return { queued: false };
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    const clientId = `punch_review_${id}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+    const payload = {
+      source: 'punch',
+      action,
+      note,
+      actor_name: kaAdminDisplayName(),
+      updates: {},
+      client_id: clientId
+    };
+    try {
+      await fetchJSON(`/api/time-exceptions/${id}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    } catch (err) {
+      if (kaIsConnectionIssue(err) || (err && (err.status === 401 || err.status === 403))) {
+        kaQueuePunchExceptionReviews(ids.slice(i), action, note);
+        return { queued: true };
+      }
+      throw err;
+    }
+  }
+  return { queued: false };
+}
+
 function kaOpenTimeActionModal(entry, action) {
   if (!entry) return;
   kaTimeActionEntry = entry;
   kaTimeActionMode = action;
+  const isOpen = !!entry._open;
+  const isSendBack = action === 'send_back';
 
   const backdrop = document.getElementById('ka-time-action-backdrop');
   const title = document.getElementById('ka-time-action-title');
   const sub = document.getElementById('ka-time-action-sub');
   const origDate = document.getElementById('ka-time-action-orig-date');
+  const origHours = document.getElementById('ka-time-action-orig-hours');
   const newDate = document.getElementById('ka-time-action-date');
   const origProject = document.getElementById('ka-time-action-orig-project');
   const projectSelect = document.getElementById('ka-time-action-project');
@@ -10430,11 +17069,18 @@ function kaOpenTimeActionModal(entry, action) {
   const hoursWrap = document.getElementById('ka-time-action-hours-wrap');
   const hoursInput = document.getElementById('ka-time-action-hours');
   const status = document.getElementById('ka-time-action-status');
+  const warning = document.getElementById('ka-time-action-warning');
+  const changesSection = document.getElementById('ka-time-action-changes-section');
+  const submitBtn = document.getElementById('ka-time-action-submit');
+  const approveBtn = document.getElementById('ka-time-action-submit-approve');
 
   if (status) {
     status.textContent = '';
     status.className = 'ka-status';
   }
+
+  const meta = kaTimeEntryMeta(entry);
+  const undoReject = action === 'approve' && meta.isRejected;
 
   if (title) {
     title.textContent =
@@ -10442,41 +17088,151 @@ function kaOpenTimeActionModal(entry, action) {
         ? 'Modify Time Entry'
         : action === 'reject'
           ? 'Reject Time Entry'
-          : 'Approve Time Entry';
+          : isSendBack
+            ? 'Send Back to Field Review'
+            : undoReject
+            ? 'Reactivate Time Entry'
+            : 'Approve Time Entry';
+    if (isOpen && action === 'modify') {
+      title.textContent = 'Edit In-Progress Entry';
+    }
   }
-  if (sub) {
-    sub.textContent = entry.employee_name ? `Employee: ${entry.employee_name}` : '';
+  const showApprove = action === 'modify' && !isOpen;
+  if (submitBtn) {
+    submitBtn.textContent = action === 'modify'
+      ? (showApprove ? 'Save (Pending)' : 'Save')
+      : action === 'reject'
+        ? 'Delete entry'
+        : isSendBack
+          ? 'Send back for review'
+          : undoReject
+          ? 'Reactivate entry'
+          : 'Approve entry';
+    submitBtn.classList.toggle('secondary', showApprove);
+    submitBtn.classList.toggle('primary', !showApprove);
   }
-
+  if (approveBtn) {
+    approveBtn.textContent = 'Save + Approve';
+    approveBtn.classList.toggle('hidden', !showApprove);
+  }
   const entryDate = entry.start_date || entry.end_date || '';
-  if (origDate) origDate.textContent = entryDate || '—';
+  const entryDateLabel = entryDate ? kaFmtDateMDY(entryDate) : '';
+  if (sub) {
+    const subParts = [];
+    if (entry.employee_name) subParts.push(entry.employee_name);
+    if (entry.project_name) subParts.push(entry.project_name);
+    if (entryDateLabel) subParts.push(entryDateLabel);
+    sub.textContent = subParts.join(' • ');
+  }
+  if (origDate) origDate.textContent = entryDateLabel || '—';
+  if (origHours) {
+    const hoursLabel = entry.hours != null ? Number(entry.hours).toFixed(2) : '—';
+    origHours.textContent = hoursLabel;
+  }
   if (newDate) newDate.value = entryDate || '';
   if (origProject) origProject.textContent = entry.project_name || '(No project)';
   kaPopulateTimeActionProjects(entry.project_id);
   if (projectSelect) projectSelect.value = '';
 
-  if (origStart) origStart.textContent = entry.start_time || '—';
-  if (origEnd) origEnd.textContent = entry.end_time || '—';
+  if (origStart) origStart.textContent = entry.start_time ? kaFormatTimeValue12(entry.start_time) : '—';
+  if (origEnd) {
+    origEnd.textContent = isOpen
+      ? 'In progress'
+      : (entry.end_time ? kaFormatTimeValue12(entry.end_time) : '—');
+  }
   if (newStart) newStart.value = '';
   if (newEnd) newEnd.value = '';
   if (noteInput) noteInput.value = '';
   if (hoursInput) hoursInput.value = '';
 
   const isModify = action === 'modify';
-  [projectSelect, newStart, newEnd, hoursInput].forEach(el => {
+  if (changesSection) {
+    changesSection.classList.toggle('hidden', !isModify);
+  }
+  [newDate, projectSelect, newStart, hoursInput].forEach(el => {
     if (el) el.disabled = !isModify;
   });
+  if (newEnd) newEnd.disabled = !isModify || isOpen;
   if (hoursWrap) {
-    hoursWrap.classList.toggle('hidden', !isModify);
+    hoursWrap.classList.toggle('hidden', !isModify || isOpen);
+  }
+  kaUpdateTimeActionHours();
+
+  if (warning) {
+    if (action === 'reject') {
+      warning.textContent =
+        'This will delete this time entry. Are you sure you want to delete it? ' +
+        'You can still reactivate it if needed.';
+      warning.classList.remove('hidden');
+    } else if (isSendBack) {
+      warning.textContent =
+        'This will clear payroll approval and return the entry to field review.';
+      warning.classList.remove('hidden');
+    } else {
+      warning.textContent = '';
+      warning.classList.add('hidden');
+    }
   }
 
   if (backdrop) backdrop.classList.remove('hidden');
+  kaSyncModalOpenState();
 }
 
-async function kaHandleTimeActionSubmit() {
+function kaParseTimeToMinutes(value) {
+  const parts = String(value || '').split(':');
+  if (parts.length < 2) return null;
+  const hours = Number(parts[0]);
+  const minutes = Number(parts[1]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function kaComputeTimeHours(startVal, endVal) {
+  const startMin = kaParseTimeToMinutes(startVal);
+  const endMin = kaParseTimeToMinutes(endVal);
+  if (startMin == null || endMin == null) return null;
+  const diff = endMin - startMin;
+  if (diff < 0) return null;
+  return diff / 60;
+}
+
+function kaUpdateTimeActionHours() {
+  const entry = kaTimeActionEntry;
+  const hoursInput = document.getElementById('ka-time-action-hours');
+  if (!hoursInput) return;
+  if (!entry) {
+    hoursInput.value = '';
+    return;
+  }
+  if (entry._open) {
+    const entryHours = Number(entry.hours);
+    hoursInput.value = Number.isFinite(entryHours) ? entryHours.toFixed(2) : '';
+    return;
+  }
+  const startInput = document.getElementById('ka-time-action-start');
+  const endInput = document.getElementById('ka-time-action-end');
+  const startVal = startInput?.value || '';
+  const endVal = endInput?.value || '';
+  const hasTimeChange = !!startVal || !!endVal;
+  if (!hasTimeChange) {
+    const entryHours = Number(entry.hours);
+    hoursInput.value = Number.isFinite(entryHours) ? entryHours.toFixed(2) : '';
+    return;
+  }
+  const calcStart = startVal || entry.start_time || '';
+  const calcEnd = endVal || entry.end_time || '';
+  const hours = kaComputeTimeHours(calcStart, calcEnd);
+  hoursInput.value = hours != null ? hours.toFixed(2) : '';
+}
+
+async function kaHandleTimeActionSubmit({ resolveAfterModify = null } = {}) {
   const entry = kaTimeActionEntry;
   const action = kaTimeActionMode;
   if (!entry || !action) return;
+  const isOpen = !!entry._open;
+  const isSendBack = action === 'send_back';
+  const shouldResolve = action !== 'modify' ? true : resolveAfterModify === true;
 
   const status = document.getElementById('ka-time-action-status');
   const projectSelect = document.getElementById('ka-time-action-project');
@@ -10484,7 +17240,10 @@ async function kaHandleTimeActionSubmit() {
   const newEnd = document.getElementById('ka-time-action-end');
   const noteInput = document.getElementById('ka-time-action-note');
   const hoursInput = document.getElementById('ka-time-action-hours');
-  const baseDate = document.getElementById('ka-time-action-date')?.value || entry.start_date || entry.end_date;
+  const dateInput = document.getElementById('ka-time-action-date');
+  const entryDate = entry.start_date || entry.end_date || '';
+  const dateVal = dateInput?.value || entryDate || '';
+  const baseDate = dateVal || entryDate;
 
   const note = noteInput ? noteInput.value.trim() : '';
   if (!note) {
@@ -10495,22 +17254,110 @@ async function kaHandleTimeActionSubmit() {
     return;
   }
 
+  if (isSendBack) {
+    if (isOpen) {
+      if (status) {
+        status.textContent = 'In-progress entries cannot be sent back.';
+        status.className = 'ka-status ka-status-error';
+      }
+      return;
+    }
+    if (!navigator.onLine) {
+      if (status) {
+      status.textContent = 'Send back for review requires an online connection.';
+        status.className = 'ka-status ka-status-error';
+      }
+      return;
+    }
+    try {
+      if (status) {
+        status.textContent = 'Sending back...';
+        status.className = 'ka-status';
+      }
+      const payload = { note };
+      if (entry.updated_at) payload.if_match_updated_at = entry.updated_at;
+      await fetchJSON(`/api/time-entries/${encodeURIComponent(entry.id)}/send-back`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const backdrop = document.getElementById('ka-time-action-backdrop');
+      if (backdrop) backdrop.classList.add('hidden');
+      kaSyncModalOpenState();
+      kaBlurActiveElement();
+      kaForceViewportSync();
+      kaCloseTimeDetailSheet();
+      kaTimeActionEntry = null;
+      kaTimeActionMode = null;
+
+      await kaLoadTimeEntries();
+      kaRefreshTimePendingCount({ force: true });
+    } catch (err) {
+      if (status) {
+        status.textContent = err.message || 'Failed to send back time entry.';
+        status.className = 'ka-status ka-status-error';
+      }
+    }
+    return;
+  }
+
+  if (isOpen && action !== 'modify') {
+    if (status) {
+      status.textContent = 'In-progress entries can only be modified.';
+      status.className = 'ka-status ka-status-error';
+    }
+    return;
+  }
+
+  const targetId = isOpen ? kaGetOpenPunchId(entry) : entry.id;
+  if (!targetId) {
+    if (status) {
+      status.textContent = 'Missing punch ID for this in-progress entry.';
+      status.className = 'ka-status ka-status-error';
+    }
+    return;
+  }
+
   const updates = {};
   if (action === 'modify') {
     const startVal = newStart?.value || '';
     const endVal = newEnd?.value || '';
-    if (startVal) {
-      updates.start_date = baseDate;
-      updates.start_time = startVal;
-    }
-    if (endVal) {
-      updates.end_date = baseDate;
-      updates.end_time = endVal;
-    }
-    if (hoursInput && hoursInput.value) {
-      const hoursVal = Number(hoursInput.value);
-      if (!Number.isNaN(hoursVal)) {
-        updates.hours = hoursVal;
+    if (isOpen) {
+      if (dateVal && dateVal !== entryDate) {
+        updates.start_date = dateVal;
+      }
+      if (startVal) {
+        updates.start_time = startVal;
+      }
+      if (endVal) {
+        if (status) {
+          status.textContent = 'Clock-out cannot be set while the entry is in progress.';
+          status.className = 'ka-status ka-status-error';
+        }
+        return;
+      }
+    } else {
+      const hasTimeChange = !!startVal || !!endVal;
+      if (dateVal && dateVal !== entryDate) {
+        updates.start_date = dateVal;
+        updates.end_date = dateVal;
+      }
+      if (startVal) {
+        updates.start_date = baseDate;
+        updates.start_time = startVal;
+      }
+      if (endVal) {
+        updates.end_date = baseDate;
+        updates.end_time = endVal;
+      }
+      if (hasTimeChange) {
+        const calcStart = startVal || entry.start_time || '';
+        const calcEnd = endVal || entry.end_time || '';
+        const calcHours = kaComputeTimeHours(calcStart, calcEnd);
+        if (calcHours != null) {
+          updates.hours = calcHours;
+        }
       }
     }
     if (projectSelect && projectSelect.value) {
@@ -10525,84 +17372,132 @@ async function kaHandleTimeActionSubmit() {
     }
   }
 
+  const reviewClientId = `${isOpen ? 'punch' : 'time_review'}_${targetId}_${Date.now().toString(36)}`;
+  const punchExceptionIds = kaGetPunchExceptionIds(entry);
+  const punchAction = action === 'modify' ? (shouldResolve ? 'approve' : null) : action;
+  const shouldReviewPunches = !!punchAction;
+
   try {
     if (status) {
       status.textContent = 'Saving...';
       status.className = 'ka-status';
     }
 
-    const reviewClientId = `time_review_${entry.id}_${Date.now().toString(36)}`;
     const payload = {
-      source: 'time_entry',
+      source: isOpen ? 'punch' : 'time_entry',
       action,
       note,
       actor_name: kaAdminDisplayName(),
       updates,
       client_id: reviewClientId
     };
-    if (entry.updated_at) {
+    if (action === 'modify') {
+      payload.resolve = shouldResolve;
+    }
+    if (entry.updated_at && !isOpen) {
       payload.if_match_updated_at = entry.updated_at;
     }
 
     if (!navigator.onLine) {
       kaQueueTimeReview({
-        exception_id: entry.id,
+        exception_id: targetId,
         payload,
         queued_at: new Date().toISOString(),
         employee_id: kaAdminAuthId() || null,
         device_id: kaDeviceId || null,
         device_secret: kaGetDeviceSecret() || null
       });
-      if (status) {
-        status.textContent = 'Saved offline — will sync when back online.';
-        status.className = 'ka-status ka-status-ok';
+      if (shouldReviewPunches) {
+        kaQueuePunchExceptionReviews(punchExceptionIds, punchAction, note);
       }
-      const backdrop = document.getElementById('ka-time-action-backdrop');
-      if (backdrop) backdrop.classList.add('hidden');
-      kaTimeActionEntry = null;
-      kaTimeActionMode = null;
-      return;
+    if (status) {
+      status.textContent = 'Saved offline — will sync when back online.';
+      status.className = 'ka-status ka-status-ok';
+    }
+    const backdrop = document.getElementById('ka-time-action-backdrop');
+    if (backdrop) backdrop.classList.add('hidden');
+    kaSyncModalOpenState();
+    kaBlurActiveElement();
+    kaForceViewportSync();
+    kaCloseTimeDetailSheet();
+    if (shouldResolve) {
+      kaHandleTimeReviewResolved(entry, { queued: true });
+    } else {
+      kaRefreshTimePendingCount({ force: true });
+    }
+    kaTimeActionEntry = null;
+    kaTimeActionMode = null;
+    return;
     }
 
-    await fetchJSON(`/api/time-exceptions/${entry.id}/review`, {
+    await fetchJSON(`/api/time-exceptions/${targetId}/review`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
 
-    const backdrop = document.getElementById('ka-time-action-backdrop');
-    if (backdrop) backdrop.classList.add('hidden');
-    kaTimeActionEntry = null;
-    kaTimeActionMode = null;
+  const punchResult = shouldReviewPunches
+    ? await kaReviewPunchExceptionsOnline(punchExceptionIds, punchAction, note)
+    : { queued: false };
+  const backdrop = document.getElementById('ka-time-action-backdrop');
+  if (backdrop) backdrop.classList.add('hidden');
+  kaSyncModalOpenState();
+  kaBlurActiveElement();
+  kaForceViewportSync();
+  kaCloseTimeDetailSheet();
+  kaTimeActionEntry = null;
+  kaTimeActionMode = null;
 
     await kaLoadTimeEntries();
+    if (shouldResolve) {
+      kaHandleTimeReviewResolved(entry, { queued: !!(punchResult && punchResult.queued) });
+    } else {
+      kaRefreshTimePendingCount({ force: true });
+    }
+    if (punchResult && punchResult.queued && status) {
+      status.textContent = 'Saved offline — will sync when back online.';
+      status.className = 'ka-status ka-status-ok';
+    }
   } catch (err) {
     if (kaIsConnectionIssue(err) || (err && (err.status === 401 || err.status === 403))) {
       kaQueueTimeReview({
-        exception_id: entry.id,
+        exception_id: targetId,
         payload: {
-          source: 'time_entry',
+          source: isOpen ? 'punch' : 'time_entry',
           action,
           note,
           actor_name: kaAdminDisplayName(),
           updates,
           client_id: reviewClientId,
-          ...(entry.updated_at ? { if_match_updated_at: entry.updated_at } : {})
+          ...(action === 'modify' ? { resolve: shouldResolve } : {}),
+          ...((entry.updated_at && !isOpen) ? { if_match_updated_at: entry.updated_at } : {})
         },
         queued_at: new Date().toISOString(),
         employee_id: kaAdminAuthId() || null,
         device_id: kaDeviceId || null,
         device_secret: kaGetDeviceSecret() || null
       });
-      if (status) {
-        status.textContent = 'Saved offline — will sync when back online.';
-        status.className = 'ka-status ka-status-ok';
+      if (shouldReviewPunches) {
+        kaQueuePunchExceptionReviews(punchExceptionIds, punchAction, note);
       }
-      const backdrop = document.getElementById('ka-time-action-backdrop');
-      if (backdrop) backdrop.classList.add('hidden');
-      kaTimeActionEntry = null;
-      kaTimeActionMode = null;
-      return;
+    if (status) {
+      status.textContent = 'Saved offline — will sync when back online.';
+      status.className = 'ka-status ka-status-ok';
+    }
+    const backdrop = document.getElementById('ka-time-action-backdrop');
+    if (backdrop) backdrop.classList.add('hidden');
+    kaSyncModalOpenState();
+    kaBlurActiveElement();
+    kaForceViewportSync();
+    kaCloseTimeDetailSheet();
+    if (shouldResolve) {
+      kaHandleTimeReviewResolved(entry, { queued: true });
+    } else {
+      kaRefreshTimePendingCount({ force: true });
+    }
+    kaTimeActionEntry = null;
+    kaTimeActionMode = null;
+    return;
     }
     if (status) {
       status.textContent = err.message || 'Failed to update time entry.';
@@ -10611,25 +17506,283 @@ async function kaHandleTimeActionSubmit() {
   }
 }
 
+function kaNormalizeTimeEntry(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const rawIds = entry.punch_exception_ids;
+  if (Array.isArray(rawIds)) {
+    entry.punch_exception_ids = rawIds
+      .map(id => Number(id))
+      .filter(id => Number.isFinite(id));
+  } else if (typeof rawIds === 'string' && rawIds.trim()) {
+    entry.punch_exception_ids = rawIds
+      .split(',')
+      .map(id => Number(id))
+      .filter(id => Number.isFinite(id));
+  } else {
+    entry.punch_exception_ids = [];
+  }
+  entry.punch_exception_unresolved = Number(entry.punch_exception_unresolved || 0);
+  entry.punch_exception_resolved = Number(entry.punch_exception_resolved || 0);
+  return entry;
+}
+
+async function kaFetchTimeEntriesForRange({ start, end, employeeId, projectId, includeOpen }) {
+  const params = new URLSearchParams();
+  params.set('start', start);
+  params.set('end', end);
+  if (employeeId) params.set('employee_id', employeeId);
+  if (projectId) params.set('project_id', projectId);
+
+  const deviceSecret = kaGetDeviceSecret();
+  const useKioskAuth = kaDeviceId && deviceSecret;
+  const endpoint = useKioskAuth
+    ? `/api/kiosk/time-entries?${params.toString()}`
+    : `/api/time-entries?${params.toString()}`;
+
+  const entries = await fetchJSON(endpoint);
+  const baseEntries = (entries || []).map(kaNormalizeTimeEntry);
+
+  const combinedMap = new Map();
+  baseEntries.forEach(e => {
+    const key = e.id ? `srv-${e.id}` : JSON.stringify(e);
+    combinedMap.set(key, e);
+  });
+
+  const offlinePunches = kaLoadOfflinePunches().filter(p => {
+    const d = p.device_timestamp ? p.device_timestamp.slice(0, 10) : '';
+    if (!d || d < start || d > end) return false;
+    if (employeeId && String(p.employee_id) !== String(employeeId)) return false;
+    if (projectId && String(p.project_id) !== String(projectId)) return false;
+    return true;
+  });
+  const offlineEntries = offlinePunches.map(kaOfflinePunchToEntry);
+  offlineEntries.forEach(e => {
+    const key = e.client_id ? `off-${e.client_id}` : e.id;
+    if (!combinedMap.has(key)) combinedMap.set(key, e);
+  });
+
+  if (includeOpen && kaKiosk && kaKiosk.id) {
+    try {
+      const openPunches = await fetchJSON(`/api/kiosks/${kaKiosk.id}/open-punches`);
+      const openEntries = (openPunches || []).filter(p => {
+        const d = p.clock_in_ts ? kaIsoDateFromTimestampTZ(p.clock_in_ts) : '';
+        if (!d || d < start || d > end) return false;
+        if (employeeId && String(p.employee_id) !== String(employeeId)) return false;
+        if (projectId && String(p.project_id) !== String(projectId)) return false;
+        return true;
+      }).map(p => {
+        const startIso = p.clock_in_ts;
+        const startDt = startIso ? kaParseUtcTimestamp(startIso) : null;
+        const startDate = startDt ? kaIsoDateFromTimestampTZ(startDt) : '';
+        const startTime = startDt ? kaTimeValue24TZ(startDt) : '';
+        const hours = startDt ? Math.max(0, (Date.now() - startDt.getTime()) / 3600000) : 0;
+        return {
+          _open: true,
+          id: `open-${p.id}`,
+          punch_id: p.id,
+          clock_in_ts: startIso || null,
+          employee_id: p.employee_id,
+          employee_name: p.employee_name || '(Unknown)',
+          project_id: p.project_id,
+          project_name: p.project_name || '(No project)',
+          start_date: startDate,
+          end_date: startDate,
+          start_time: startTime,
+          end_time: '',
+          hours,
+          total_pay: null,
+          paid: false,
+          verified: false,
+          resolved: false,
+          has_geo_violation: false,
+          has_auto_clock_out: false,
+          punch_exception_unresolved: 0,
+          punch_exception_resolved: 0,
+          punch_exception_ids: []
+        };
+      });
+
+      openEntries.forEach(e => {
+        const key = e.id ? `open-${e.id}` : JSON.stringify(e);
+        if (!combinedMap.has(key)) combinedMap.set(key, e);
+      });
+    } catch (err) {
+      console.warn('Could not load open punches for calendar view', err);
+    }
+  }
+
+  return Array.from(combinedMap.values());
+}
+
+function kaRenderTimeEntryCards(entries, container) {
+  if (!container) return;
+  const fragment = document.createDocumentFragment();
+  (entries || []).forEach(entry => {
+    const emp = entry.employee_name || '(Unknown)';
+    const proj = entry.project_name || '(No project)';
+    const dateLabel = entry.start_date || entry.end_date || '';
+    const dateDisplay = dateLabel ? kaFmtDateMDY(dateLabel) : '';
+    const startLabel = entry.start_time ? kaFormatTimeValue12(entry.start_time) : '—';
+    const endLabel = kaTimeEntryEndLabel(entry);
+    const hours = entry.hours != null ? Number(entry.hours).toFixed(2) : '0.00';
+    const statusLabel = kaTimeEntryStatusLabel(entry);
+
+    const card = document.createElement('div');
+    card.className = 'ka-time-card ka-time-card-compact';
+    card.dataset.entryId = entry.id || '';
+    card.dataset.kaTimeEntry = '1';
+    card._entry = entry;
+    card.innerHTML = `
+      <div class="ka-time-card-heading">
+        <div class="ka-time-card-name-row">
+          <div class="ka-time-card-employee">${emp}</div>
+          <div class="ka-time-card-status">${statusLabel}</div>
+        </div>
+        <div class="ka-time-card-project">Project: ${proj}</div>
+      </div>
+      <div class="ka-time-card-meta">
+        <div class="ka-time-card-meta-item">
+          <span class="ka-time-card-label">Date</span>
+          <span>${dateDisplay || '—'}</span>
+        </div>
+        <div class="ka-time-card-meta-item">
+          <span class="ka-time-card-label">Clock</span>
+          <span>${startLabel} - ${endLabel}</span>
+        </div>
+        <div class="ka-time-card-meta-item ka-time-card-hours">
+          <span class="ka-time-card-label">Hours</span>
+          <span>${hours}</span>
+        </div>
+      </div>
+    `;
+    card.addEventListener('click', () => kaOpenTimeDetailSheet(entry));
+    fragment.appendChild(card);
+  });
+  container.replaceChildren(fragment);
+}
+
+async function kaLoadTimeCalendarEntries(dateStr) {
+  const els = kaTimeCalendarSheetElements();
+  if (!els) return;
+  if (els.status) {
+    els.status.textContent = 'Loading time entries…';
+    els.status.className = 'ka-status';
+  }
+  if (els.empty) els.empty.classList.add('hidden');
+  if (els.cards) els.cards.innerHTML = '';
+
+  if (!kaCanViewTimeReports()) {
+    if (els.status) {
+      els.status.textContent = 'You do not have access to Time Entries.';
+      els.status.className = 'ka-status ka-status-error';
+    }
+    return;
+  }
+
+  try {
+    const entries = await kaFetchTimeEntriesForRange({
+      start: dateStr,
+      end: dateStr,
+      employeeId: '',
+      projectId: '',
+      includeOpen: true
+    });
+    kaTimeCalendarSheetState.entries = entries || [];
+    if (!entries || !entries.length) {
+      if (els.empty) els.empty.classList.remove('hidden');
+      if (els.status) {
+        els.status.textContent = '';
+        els.status.className = 'ka-status';
+      }
+      return;
+    }
+    if (els.cards) kaRenderTimeEntryCards(entries, els.cards);
+    if (els.status) {
+      els.status.textContent = '';
+      els.status.className = 'ka-status';
+    }
+  } catch (err) {
+    if (els.status) {
+      els.status.textContent = err.message || 'Failed to load time entries.';
+      els.status.className = 'ka-status ka-status-error';
+    }
+  }
+}
+
+function kaOpenTimeCalendarSheet(dateStr) {
+  const els = kaTimeCalendarSheetElements();
+  if (!els || !dateStr) return;
+  kaTimeCalendarSheetState.open = true;
+  kaTimeCalendarSheetState.date = dateStr;
+  if (els.title) els.title.textContent = 'Time entries';
+  if (els.sub) {
+    els.sub.textContent = kaFmtDateLong(dateStr);
+  }
+  kaTimeCalendarSheetState.entries = [];
+  kaLoadTimeCalendarEntries(dateStr);
+  els.sheet.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    els.sheet.classList.add('is-open');
+  });
+  els.sheet.setAttribute('aria-hidden', 'false');
+  kaSyncModalOpenState();
+}
+
+function kaCloseTimeCalendarSheet() {
+  const els = kaTimeCalendarSheetElements();
+  if (!els) return;
+  kaTimeCalendarSheetState.dragging = false;
+  kaTimeCalendarSheetState.open = false;
+  kaTimeCalendarSheetState.date = null;
+  els.sheet.classList.remove('is-open');
+  els.sheet.setAttribute('aria-hidden', 'true');
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+  window.setTimeout(() => {
+    if (!els.sheet.classList.contains('is-open')) {
+      els.sheet.classList.add('hidden');
+      kaSyncModalOpenState();
+    }
+  }, 260);
+}
+
+function kaResetTimeCalendarSheetPosition() {
+  const els = kaTimeCalendarSheetElements();
+  if (!els) return;
+  kaTimeCalendarSheetState.dragging = false;
+  if (els.panel) {
+    els.panel.style.transform = '';
+  }
+  els.sheet.classList.remove('dragging');
+}
+
 async function kaLoadTimeEntries() {
   const tbody = document.getElementById('ka-time-body');
+  const cards = document.getElementById('ka-time-cards');
+  const report = document.getElementById('ka-time-report');
   const status = document.getElementById('ka-time-status');
   const startInput = document.getElementById('ka-time-start');
   const endInput = document.getElementById('ka-time-end');
-  const hideResolvedEl = document.getElementById('ka-time-hide-resolved');
   const empFilter = document.getElementById('ka-time-employee');
   const projFilter = document.getElementById('ka-time-project');
-  const showPay = kaCanViewPayroll();
+  const includeOpenToggle = document.getElementById('ka-time-include-open');
+  const showPay = false;
   const showActions = kaCanModifyTime();
   const showApproved = showActions;
-  const payEnabled = showPay && kaShowPayUI;
-  const actionsEnabled = showActions && kaShowApprovalsUI;
+  const payEnabled = false;
+  const actionsEnabled = showActions && kaShowApprovalsUI && kaTimeViewMode !== 'view';
+  const isViewMode = kaTimeViewMode === 'view';
   const colCount = 6 + (actionsEnabled ? 2 : 0);
   const hasContent = tbody && tbody.dataset.hasContent === '1';
 
-  if (!payEnabled) {
-    kaOpenDetailEntries.clear();
+  if (!kaTimeReportHasRun) {
+    if (report) report.classList.add('hidden');
+    return;
   }
+  if (report) report.classList.remove('hidden');
+  if (kaCurrentView !== 'time') return;
 
   if (!tbody || !startInput || !endInput) return;
 
@@ -10638,10 +17791,18 @@ async function kaLoadTimeEntries() {
   if (viewTime) {
     viewTime.classList.toggle('ka-hide-approvals', !actionsEnabled);
   }
+  const reportSheet = document.getElementById('ka-time-report-sheet');
+  if (reportSheet) {
+    reportSheet.classList.toggle('ka-hide-approvals', !actionsEnabled);
+  }
 
   if (!kaCanViewTimeReports()) {
     tbody.innerHTML =
       `<tr data-ka-placeholder="1"><td colspan="${colCount}" class="ka-muted">(no access to time entries)</td></tr>`;
+    if (cards) {
+      cards.innerHTML = '<div class="ka-time-card ka-time-card-empty">(no access to time entries)</div>';
+    }
+    kaUpdateTimeSummary({ total: 0, pending: 0, inProgress: 0, resolved: 0 });
     if (status) {
       status.textContent = 'You do not have access to Time Entries.';
       status.className = 'ka-status ka-status-error';
@@ -10654,10 +17815,14 @@ async function kaLoadTimeEntries() {
   const end = endInput.value || start;
   const employeeId = empFilter ? empFilter.value : '';
   const projectId = projFilter ? projFilter.value : '';
+  const cacheKey = kaTimeEntriesCacheKey({ start, end, employeeId, projectId });
 
   if (!hasContent) {
     tbody.innerHTML =
-      `<tr data-ka-placeholder="1"><td colspan="${colCount}" class="ka-muted">(loading time entries…)</td></tr>`;
+      `<tr data-ka-placeholder="1"><td colspan="${colCount}" class="ka-muted">(loading time entries...)</td></tr>`;
+    if (cards) {
+      cards.innerHTML = '<div class="ka-time-card ka-time-card-empty">(loading time entries...)</div>';
+    }
   }
   if (status) {
     status.textContent = hasContent ? status.textContent : '';
@@ -10674,10 +17839,6 @@ async function kaLoadTimeEntries() {
 
     const deviceSecret = kaGetDeviceSecret();
     const useKioskAuth = kaDeviceId && deviceSecret;
-    if (useKioskAuth) {
-      params.set('device_id', kaDeviceId);
-      params.set('device_secret', deviceSecret);
-    }
 
     const endpoint = useKioskAuth
       ? `/api/kiosk/time-entries?${params.toString()}`
@@ -10695,13 +17856,7 @@ async function kaLoadTimeEntries() {
       }
     }
 
-    const hideResolved = hideResolvedEl && hideResolvedEl.checked;
-    const filtered = (entries || []).filter(t => {
-      if (!hideResolved) return true;
-      const status = String(t.resolved_status || '').toLowerCase();
-      const isResolved = t.resolved || (status && status !== 'open');
-      return !isResolved;
-    });
+    const baseEntries = (entries || []).map(kaNormalizeTimeEntry);
 
     // Merge in offline punches (deduped by client_id)
     const offlinePunches = kaLoadOfflinePunches().filter(p => {
@@ -10715,40 +17870,45 @@ async function kaLoadTimeEntries() {
 
     // Merge in open punches for this kiosk as "in progress" rows
     const openEntries = (openPunches || []).filter(p => {
-      const d = p.clock_in_ts ? p.clock_in_ts.slice(0, 10) : '';
+      const d = p.clock_in_ts ? kaIsoDateFromTimestampTZ(p.clock_in_ts) : '';
       if (!d || d < start || d > end) return false;
       if (employeeId && String(p.employee_id) !== String(employeeId)) return false;
       if (projectId && String(p.project_id) !== String(projectId)) return false;
       return true;
     }).map(p => {
       const startIso = p.clock_in_ts;
-      const startDt = startIso ? new Date(startIso) : null;
+      const startDt = startIso ? kaParseUtcTimestamp(startIso) : null;
+      const startDate = startDt ? kaIsoDateFromTimestampTZ(startDt) : '';
+      const startTime = startDt ? kaTimeValue24TZ(startDt) : '';
       const hours = startDt ? Math.max(0, (Date.now() - startDt.getTime()) / 3600000) : 0;
       return {
         _open: true,
         id: `open-${p.id}`,
+        punch_id: p.id,
+        clock_in_ts: startIso || null,
         employee_id: p.employee_id,
         employee_name: p.employee_name || '(Unknown)',
         project_id: p.project_id,
         project_name: p.project_name || '(No project)',
-        start_date: startIso ? startIso.slice(0, 10) : '',
-        end_date: startIso ? startIso.slice(0, 10) : '',
-        start_time: startDt
-          ? startDt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          : '—',
-        end_time: 'In progress',
+        start_date: startDate,
+        end_date: startDate,
+        start_time: startTime,
+        end_time: '',
         hours,
         total_pay: null,
         paid: false,
         verified: false,
         resolved: false,
         has_geo_violation: false,
-        has_auto_clock_out: false
+        has_auto_clock_out: false,
+        punch_exception_unresolved: 0,
+        punch_exception_resolved: 0,
+        punch_exception_ids: []
       };
     });
 
     const combinedMap = new Map();
-    filtered.forEach(e => {
+    baseEntries.forEach(e => {
       const key = e.id ? `srv-${e.id}` : JSON.stringify(e);
       combinedMap.set(key, e);
     });
@@ -10763,27 +17923,53 @@ async function kaLoadTimeEntries() {
     });
 
     const combined = Array.from(combinedMap.values());
+    const includeOpen = includeOpenToggle ? includeOpenToggle.checked : true;
+    const statusMode = 'all';
+    const filteredCombined = combined.filter(entry => {
+      const meta = kaTimeEntryMeta(entry);
+      if (meta.isOpen) {
+        if (!includeOpen) return false;
+        return statusMode === 'all';
+      }
+      if (statusMode === 'pending') return meta.isPending;
+      if (statusMode === 'resolved') return meta.isResolved;
+      return true;
+    });
     const fragment = document.createDocumentFragment();
+    const cardFragment = document.createDocumentFragment();
     const seenKeys = new Set();
+    const summaryCounts = { total: filteredCombined.length, pending: 0, inProgress: 0, resolved: 0 };
+    const pendingEntries = [];
 
-    if (!combined.length) {
+    if (!filteredCombined.length) {
       const emptyRow = document.createElement('tr');
       emptyRow.dataset.kaPlaceholder = '1';
       emptyRow.innerHTML =
         `<td colspan="${colCount || 8}" class="ka-muted">(no time entries for this date range)</td>`;
       fragment.appendChild(emptyRow);
       tbody.replaceChildren(fragment);
+      if (cards) {
+        cards.innerHTML = '<div class="ka-time-card ka-time-card-empty">(no time entries for this date range)</div>';
+      }
+      kaUpdateTimeSummary({ total: 0, pending: 0, inProgress: 0, resolved: 0 });
+      kaSetTimeEntriesCache({
+        key: cacheKey,
+        pendingEntries: [],
+        summaryCounts: { total: 0, pending: 0, inProgress: 0, resolved: 0 },
+        params: { start, end, employeeId, projectId }
+      });
       tbody.dataset.hasContent = '1';
       return;
     }
 
-    combined.forEach((t, idx) => {
+    filteredCombined.forEach((t, idx) => {
       const isOffline = !!t._offline;
       const isOpen = !!t._open;
       const tr = document.createElement('tr');
       tr.dataset.entryId = t.id;
       tr.dataset.verified = t.verified ? '1' : '0';
       tr.dataset.updatedAt = t.updated_at || '';
+      tr.dataset.kaTimeEntry = '1';
       tr._entry = t; // stash full row for actions
       const rowKey = tr.dataset.entryId ? String(tr.dataset.entryId) : `row-${idx}`;
       seenKeys.add(rowKey);
@@ -10791,97 +17977,49 @@ async function kaLoadTimeEntries() {
       const emp = t.employee_name || '(Unknown)';
       const proj = t.project_name || '(No project)';
       const dateLabel = t.start_date || t.end_date || '';
-      const startLabel = t.start_time || '—';
-      const endLabel = t.end_time || '—';
+      const dateDisplay = dateLabel ? kaFmtDateMDY(dateLabel) : '';
+      const startLabel = t.start_time ? kaFormatTimeValue12(t.start_time) : '—';
+      const endLabel = kaTimeEntryEndLabel(t);
       const hours = t.hours != null ? Number(t.hours).toFixed(2) : '0.00';
-      const rawRate = (() => {
-        if (t.rate != null) return Number(t.rate);
-        if (t.hourly_rate != null) return Number(t.hourly_rate);
-        if (t.pay_rate != null) return Number(t.pay_rate);
-        if (t.employee_rate != null) return Number(t.employee_rate);
-        const hrsNum = Number(t.hours);
-        const payNum = Number(t.total_pay);
-        if (!Number.isNaN(hrsNum) && hrsNum > 0 && !Number.isNaN(payNum)) {
-          return payNum / hrsNum;
-        }
-        return null;
-      })();
-      const rateDisplay = payEnabled
-        ? (kaRatesUnlockedAll || kaUnlockedRates.has(t.id)
-            ? (rawRate != null ? `$${rawRate.toFixed(2)}` : '—')
-            : '••••')
-        : '';
-      let payVal = t.total_pay != null ? Number(t.total_pay) : null;
-      if (payVal == null && rawRate != null && !Number.isNaN(Number(hours))) {
-        payVal = rawRate * Number(hours);
+      const detailMeta = !isViewMode ? kaEntryDetailMeta(t) : '';
+      const meta = kaTimeEntryMeta(t);
+      const flagged = meta.flagged;
+      const isResolved = meta.isResolved;
+      const isRejected = meta.isRejected;
+      const isModified = meta.isModified;
+      const isApproved = meta.isApproved;
+      if (isOpen) {
+        summaryCounts.inProgress += 1;
+      } else if (isResolved) {
+        summaryCounts.resolved += 1;
+      } else {
+        summaryCounts.pending += 1;
       }
-      const pay = payVal != null && !Number.isNaN(payVal) ? payVal.toFixed(2) : (isOpen ? '—' : '0.00');
-      const detailMeta = kaEntryDetailMeta(t);
-      const payDetail = payEnabled
-        ? `
-        <div class="ka-pay-inline">
-          <div class="ka-pay-col ka-pay-left">
-            <span class="ka-pay-label">Rate:</span>
-            <span class="ka-pay-value"><span class="ka-rate-chip" data-rate-entry="${t.id}">${rateDisplay || '••••'}</span></span>
-          </div>
-          <div class="ka-pay-col ka-pay-right">
-            <span class="ka-pay-label">Total Pay:</span>
-            <span class="ka-pay-value">$${pay}</span>
-          </div>
-        </div>
-      `
-        : '';
-      const punchCount = Number(t.punch_count || 0);
-      const punchHours = Number(t.punch_hours || 0);
-      const entryHours = Number(t.hours || 0);
-      const entryMismatch =
-        punchCount === 0 ||
-        (Number.isFinite(entryHours) && Math.abs(punchHours - entryHours) >= 0.1);
-      const flagged = !!entryMismatch;
-      const resolvedStatus = String(t.resolved_status || '').toLowerCase();
-      const isResolved = !!t.resolved || (resolvedStatus && resolvedStatus !== 'open');
-      const isRejected = resolvedStatus === 'rejected';
-      const isModified = resolvedStatus === 'modified';
-      const isApproved = resolvedStatus === 'approved' || isModified;
-      const statusLabel = (() => {
-        if (isOpen) return '<span class="ka-tag gray">In progress</span>';
-        if (isRejected) return '<span class="ka-tag orange">Rejected</span>';
-        if (isModified) return '<span class="ka-tag green">Modified</span>';
-        if (isApproved && flagged) return '<span class="ka-tag green">Approved</span>';
-        if (isApproved && !flagged) return '<span class="ka-tag green">Approved as-is</span>';
-        if (flagged) return '<span class="ka-tag orange">Pending review</span>';
-        return '<span class="ka-tag gray">Approved as-is</span>';
+      if (meta.isPending) pendingEntries.push(t);
+      const statusLabel = kaTimeEntryStatusLabel(t);
+      const statusSelectValue = (() => {
+        if (isRejected) return 'reject';
+        if (isModified) return 'modify';
+        if (meta.isPending) return 'pending_review';
+        return 'approve_as_is';
       })();
+      const rejectLabel = isRejected ? 'Voided' : 'Reject';
+      const approveLabel = isRejected ? 'Reactivate' : 'Approve as-is';
       const approvedBy = kaReviewerName(
         t.resolved_by || t.approved_by_name || t.approved_by_employee_id
       );
-      let actionLabel = 'Actions ▾';
-      let actionClass = '';
-      if (isRejected) {
-        actionLabel = 'Rejected ▾';
-        actionClass = 'rejected';
-      } else if (isApproved && flagged) {
-        actionLabel = 'Approved ▾';
-        actionClass = 'approved';
-      } else if (isApproved && !flagged) {
-        actionLabel = 'Approved as-is ▾';
-        actionClass = 'approved-asis';
-      }
-      const actionsCell = (() => {
-        const showReviewActions = showActions && (flagged || isResolved);
-        // Always show status; add a small menu trigger when allowed and not offline/open.
-        if (isOffline || isOpen || !showReviewActions) return statusLabel;
+      const statusControl = (() => {
+        const canShowDropdown = actionsEnabled && !isOpen;
+        if (!canShowDropdown) return statusLabel;
         return `
-        <div class="ka-status-actions">
-          ${statusLabel}
-          <div class="ka-time-row-actions dropdown">
-            <button class="btn secondary btn-icon ka-actions-toggle ${actionClass || (!flagged ? 'ka-muted' : '')}" data-ka-time-menu aria-label="More actions">&#8942;</button>
-            <div class="ka-actions-menu hidden">
-              <button class="ka-actions-item" data-ka-time-action="approve">Approve</button>
-              <button class="ka-actions-item" data-ka-time-action="modify">Modify</button>
-              <button class="ka-actions-item" data-ka-time-action="reject">Reject</button>
-            </div>
-          </div>
+        <div class="ka-status-actions ka-status-actions-select">
+          <select class="ka-time-status-select ka-select-arrow status-${statusSelectValue}" data-ka-time-action-select data-ka-time-status-current="${statusSelectValue}" ${isOffline || isOpen ? 'disabled' : ''}>
+            <option value="pending_review" ${statusSelectValue === 'pending_review' ? 'selected' : ''}>Pending review</option>
+            <option value="approve_as_is" ${statusSelectValue === 'approve_as_is' ? 'selected' : ''}>${approveLabel}</option>
+            <option value="send_back">Send back for review</option>
+            <option value="modify" ${statusSelectValue === 'modify' ? 'selected' : ''}>Modify</option>
+            <option value="reject" ${statusSelectValue === 'reject' ? 'selected' : ''}>${rejectLabel}</option>
+          </select>
         </div>
       `;
       })();
@@ -10889,98 +18027,234 @@ async function kaLoadTimeEntries() {
       let rowHtml = `
       <td>${emp}</td>
       <td>${proj}</td>
-      <td>${dateLabel}</td>
+      <td>${dateDisplay || '—'}</td>
       <td>${startLabel}</td>
       <td>${endLabel}</td>
       <td class="ka-right">${hours}</td>
     `;
-      rowHtml += `
-      <td class="ka-actions-cell ka-actions-col">${actionsCell}</td>
+      if (!isViewMode) {
+        rowHtml += `
+      <td class="ka-actions-cell ka-actions-col">${statusControl}</td>
       <td class="ka-approve-col">${approvedBy}</td>
     `;
+      }
 
       tr.innerHTML = rowHtml;
       fragment.appendChild(tr);
 
       // Detail row (hidden until the main row is clicked)
-      const detailTr = document.createElement('tr');
-      detailTr.className = 'ka-time-detail-row hidden';
-      detailTr.innerHTML = `
-        <td colspan="${colCount}" class="ka-time-detail">
-          <div class="ka-time-detail-grid">
-            ${detailMeta}
-            ${payDetail}
-          </div>
-        </td>
-      `;
-      if (payEnabled && kaOpenDetailEntries.has(rowKey)) {
-        detailTr.classList.remove('hidden');
+      const hasDetail = !!detailMeta;
+      if (!hasDetail) {
+        kaOpenDetailEntries.delete(rowKey);
       }
-      fragment.appendChild(detailTr);
+      if (hasDetail) {
+        const detailTr = document.createElement('tr');
+        detailTr.className = 'ka-time-detail-row hidden';
+        detailTr.innerHTML = `
+          <td colspan="${colCount}" class="ka-time-detail">
+            <div class="ka-time-detail-grid">
+              ${detailMeta}
+            </div>
+          </td>
+        `;
+        if (kaOpenDetailEntries.has(rowKey)) {
+          detailTr.classList.remove('hidden');
+        }
+        fragment.appendChild(detailTr);
+      }
 
-      if (payEnabled) {
-        detailTr.querySelectorAll('[data-rate-entry]').forEach(cell => {
-          cell.style.cursor = 'pointer';
-          cell.addEventListener('click', () => {
-            if (tr._entry && tr._entry._open) return;
-            const id = Number(cell.getAttribute('data-rate-entry'));
-            if (Number.isNaN(id)) return;
-            kaOpenRateModal(id);
-          });
-        });
+      if (cards) {
+        const card = document.createElement('div');
+        card.className = isViewMode ? 'ka-time-card ka-time-card-compact' : 'ka-time-card';
+        card.dataset.entryId = t.id;
+        card.dataset.entryKey = rowKey;
+        card.dataset.kaTimeEntry = '1';
+        card._entry = t;
+        if (isViewMode) {
+          card.innerHTML = `
+            <div class="ka-time-card-heading">
+              <div class="ka-time-card-name-row">
+                <div class="ka-time-card-employee">${emp}</div>
+                <div class="ka-time-card-status">${statusLabel}</div>
+              </div>
+              <div class="ka-time-card-project">Project: ${proj}</div>
+            </div>
+            <div class="ka-time-card-meta">
+              <div class="ka-time-card-meta-item">
+                <span class="ka-time-card-label">Date</span>
+                <span>${dateDisplay || '—'}</span>
+              </div>
+              <div class="ka-time-card-meta-item">
+                <span class="ka-time-card-label">Clock</span>
+                <span>${startLabel} - ${endLabel}</span>
+              </div>
+              <div class="ka-time-card-meta-item ka-time-card-hours">
+                <span class="ka-time-card-label">Hours</span>
+                <span>${hours}</span>
+              </div>
+            </div>
+          `;
+        } else {
+          card.innerHTML = `
+            <div class="ka-time-card-top">
+              <div class="ka-time-card-heading">
+                <div class="ka-time-card-name-row">
+                  <div class="ka-time-card-employee">${emp}</div>
+                  <div class="ka-time-card-status">${statusControl}</div>
+                </div>
+                <div class="ka-time-card-project">Project: ${proj}</div>
+              </div>
+            </div>
+            <div class="ka-time-card-meta">
+              <div class="ka-time-card-meta-item">
+                <span class="ka-time-card-label">Date</span>
+                <span>${dateDisplay || '—'}</span>
+              </div>
+              <div class="ka-time-card-meta-item">
+                <span class="ka-time-card-label">Clock</span>
+                <span>${startLabel} - ${endLabel}</span>
+              </div>
+              <div class="ka-time-card-meta-item ka-time-card-hours">
+                <span class="ka-time-card-label">Hours</span>
+                <span>${hours}</span>
+              </div>
+            </div>
+            <div class="ka-time-card-footer">
+              <div class="ka-time-card-review ka-approve-meta">Field reviewed by ${approvedBy}</div>
+              ${hasDetail ? '<button class="btn secondary btn-sm" type="button" data-ka-time-detail-toggle>Details</button>' : ''}
+            </div>
+            ${hasDetail ? `
+              <div class="ka-time-card-detail ka-time-detail ${kaOpenDetailEntries.has(rowKey) ? '' : 'hidden'}">
+                <div class="ka-time-detail-grid">
+                  ${detailMeta}
+                </div>
+              </div>
+            ` : ''}
+          `;
+        }
+        cardFragment.appendChild(card);
       }
     });
 
     tbody.replaceChildren(fragment);
     tbody.dataset.hasContent = '1';
+    if (cards) {
+      cards.replaceChildren(cardFragment);
+    }
+    kaUpdateTimeSummary(summaryCounts);
+    kaSetTimeEntriesCache({
+      key: cacheKey,
+      pendingEntries,
+      summaryCounts,
+      params: { start, end, employeeId, projectId }
+    });
 
-    // Wire up per-row actions
-    tbody.querySelectorAll('[data-ka-time-action]').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        const action = btn.getAttribute('data-ka-time-action');
-        const row = e.target.closest('tr');
-        if (!row || !row._entry) return;
-        e.stopPropagation();
-        if (row._entry._offline) return; // skip actions for offline pending
-        kaOpenTimeActionModal(row._entry, action);
-        // Close menu after click
-        const menu = btn.closest('.ka-actions-menu');
-        if (menu) menu.classList.add('hidden');
+    const bindActions = (root) => {
+      if (!root) return;
+      root.querySelectorAll('[data-ka-time-action]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const action = btn.getAttribute('data-ka-time-action');
+          const row = e.target.closest('[data-ka-time-entry]');
+          if (!row || !row._entry) return;
+          e.stopPropagation();
+          if (row._entry._offline) return; // skip actions for offline pending
+          kaOpenTimeActionModal(row._entry, action);
+          // Close menu after click
+          const menu = btn.closest('.ka-actions-menu');
+          if (menu) menu.classList.add('hidden');
+        });
       });
-    });
-    tbody.querySelectorAll('[data-ka-time-menu]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const menu = btn.parentElement?.querySelector('.ka-actions-menu');
-        if (menu) menu.classList.toggle('hidden');
+      root.querySelectorAll('[data-ka-time-action-select]').forEach(select => {
+        select.addEventListener('change', (e) => {
+          const action = select.value || '';
+          const current = select.getAttribute('data-ka-time-status-current') || '';
+          if (!action || action === current) return;
+          const row = e.target.closest('[data-ka-time-entry]') || e.target.closest('.ka-time-card');
+          if (!row || !row._entry) return;
+          if (row._entry._offline) {
+            select.value = current || 'pending_review';
+            return;
+          }
+          if (action === 'pending_review') {
+            select.value = current || 'pending_review';
+            return;
+          }
+          const actionMap = {
+            approve_as_is: 'approve',
+            send_back: 'send_back',
+            modify: 'modify',
+            reject: 'reject'
+          };
+          const mapped = actionMap[action];
+          if (!mapped) {
+            select.value = current || 'pending_review';
+            return;
+          }
+          kaOpenTimeActionModal(row._entry, mapped);
+          select.value = current || 'pending_review';
+        });
+        select.addEventListener('focus', () => {
+          select.classList.add('is-open');
+        });
+        select.addEventListener('blur', () => {
+          select.classList.remove('is-open');
+        });
       });
-    });
-    // Row click to toggle details
+    };
+
+    bindActions(tbody);
+    if (cards) bindActions(cards);
     const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => !r.classList.contains('ka-time-detail-row'));
-    rows.forEach((row, idx) => {
-      const key = row.dataset.entryId ? String(row.dataset.entryId) : `row-${idx}`;
-      row.addEventListener('click', (e) => {
-        if (e.target.closest('.ka-actions-toggle') || e.target.closest('.ka-actions-menu')) return;
-        if (!payEnabled) return;
-        const detail = tbody.querySelectorAll('.ka-time-detail-row')[idx];
-        if (detail) detail.classList.toggle('hidden');
-        if (detail) {
+    if (isViewMode) {
+      rows.forEach((row) => {
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.ka-actions-toggle') || e.target.closest('.ka-actions-menu')) return;
+          if (!row._entry) return;
+          kaOpenTimeDetailSheet(row._entry);
+        });
+      });
+    } else {
+      // Row click to toggle details
+      rows.forEach((row, idx) => {
+        const key = row.dataset.entryId ? String(row.dataset.entryId) : `row-${idx}`;
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.ka-actions-toggle') || e.target.closest('.ka-actions-menu')) return;
+          const detail = row.nextElementSibling;
+          if (!detail || !detail.classList.contains('ka-time-detail-row')) return;
+          detail.classList.toggle('hidden');
           if (detail.classList.contains('hidden')) {
             kaOpenDetailEntries.delete(key);
           } else {
             kaOpenDetailEntries.add(key);
           }
-        }
+        });
       });
-    });
-    // Close any open menus when clicking outside table
-    if (!tbody._kaOutsideClickBound) {
-      document.addEventListener('click', (e) => {
-        if (!tbody.contains(e.target)) {
-          tbody.querySelectorAll('.ka-actions-menu').forEach(m => m.classList.add('hidden'));
-        }
-      });
-      tbody._kaOutsideClickBound = true;
+    }
+    if (cards) {
+      if (isViewMode) {
+        cards.querySelectorAll('.ka-time-card').forEach(card => {
+          card.addEventListener('click', () => {
+            if (!card._entry) return;
+            kaOpenTimeDetailSheet(card._entry);
+          });
+        });
+      } else {
+        cards.querySelectorAll('[data-ka-time-detail-toggle]').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const card = btn.closest('.ka-time-card');
+            const detail = card?.querySelector('.ka-time-card-detail');
+            if (!detail) return;
+            detail.classList.toggle('hidden');
+            const key = card.dataset.entryKey || card.dataset.entryId || '';
+            if (detail.classList.contains('hidden')) {
+              kaOpenDetailEntries.delete(key);
+            } else {
+              kaOpenDetailEntries.add(key);
+            }
+          });
+        });
+      }
     }
 
     // Prune any stale open-detail keys
@@ -10993,6 +18267,10 @@ async function kaLoadTimeEntries() {
       tbody.innerHTML =
         `<tr data-ka-placeholder="1"><td colspan="${colCount}" class="ka-muted">(error loading time entries)</td></tr>`;
       tbody.dataset.hasContent = '1';
+      if (cards) {
+        cards.innerHTML = '<div class="ka-time-card ka-time-card-empty">(error loading time entries)</div>';
+      }
+      kaUpdateTimeSummary({ total: 0, pending: 0, inProgress: 0, resolved: 0 });
     }
     if (status) {
       status.textContent = 'Error loading time entries.';
