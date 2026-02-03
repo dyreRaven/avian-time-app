@@ -5,6 +5,7 @@
 console.log('[App] app.js loaded');
 let payrollTabInitialized = false;
 let timeEntriesInitialized = false;
+let timeEntriesReportInitialized = false;
 let dashboardSnapshotLoading = false;
 let dashboardSnapshotLast = 0;
 const timeEntryApprovalSelection = new Set();
@@ -15,6 +16,9 @@ let timeEntryFormOriginalNextSibling = null;
 let timeEntryCurrentPage = 1;
 const timeEntryPageSize = 25;
 let timeEntryLastFilters = {};
+let timeEntriesReportCurrentPage = 1;
+const timeEntriesReportPageSize = 50;
+let timeEntriesReportLastFilters = {};
 window.CURRENT_ACCESS_PERMS = window.CURRENT_ACCESS_PERMS || {};
 window.ONBOARDING_SHOW_QB = window.ONBOARDING_SHOW_QB || false;
 
@@ -78,6 +82,10 @@ function navigateToSection(sectionKey, { force = false } = {}) {
 
   if (sectionKey === 'time-entries') {
     initTimeEntriesIfNeeded();
+  }
+
+  if (sectionKey === 'time-entries-report') {
+    initTimeEntriesReportIfNeeded();
   }
 
   if (sectionKey === 'my-account' || sectionKey === 'settings' || sectionKey === 'notifications') {
@@ -1110,6 +1118,149 @@ async function loadTimeEntriesTable(filters = {}) {
   }
 }
 
+function resetTimeEntriesReportPagination() {
+  timeEntriesReportCurrentPage = 1;
+}
+
+function getTimeEntriesReportFiltersFromUi() {
+  const empFilter   = document.getElementById('ter-filter-employee');
+  const projFilter  = document.getElementById('ter-filter-project');
+  const startFilter = document.getElementById('ter-filter-start');
+  const endFilter   = document.getElementById('ter-filter-end');
+
+  return {
+    employee_id: empFilter && empFilter.value ? empFilter.value : '',
+    project_id:  projFilter && projFilter.value ? projFilter.value : '',
+    start:       startFilter && startFilter.value ? startFilter.value : '',
+    end:         endFilter && endFilter.value ? endFilter.value : ''
+  };
+}
+
+function hasActiveTimeEntriesReportFilters(filters = {}) {
+  return !!(
+    (filters.employee_id && String(filters.employee_id).trim()) ||
+    (filters.project_id && String(filters.project_id).trim())  ||
+    (filters.start && String(filters.start).trim())            ||
+    (filters.end && String(filters.end).trim())
+  );
+}
+
+async function loadTimeEntriesReportTable(filters = {}) {
+  const tbody   = document.getElementById('time-entries-report-body');
+  const head    = document.getElementById('time-entries-report-head');
+  const heading = document.getElementById('time-entries-report-heading');
+  const msgEl   = document.getElementById('time-entries-report-message');
+  if (!tbody) return;
+
+  const canViewPayroll = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.view_payroll);
+  const colCount = canViewPayroll ? 9 : 6;
+
+  if (head) {
+    head.innerHTML = `
+      <tr>
+        <th>Employee</th>
+        <th>Project</th>
+        <th>Date</th>
+        <th>Clock in</th>
+        <th>Clock out</th>
+        <th>Hours</th>
+        ${
+          canViewPayroll
+            ? '<th>Total Pay</th><th>Paid?</th><th>Date Paid</th>'
+            : ''
+        }
+      </tr>
+    `;
+  }
+
+  tbody.innerHTML = `<tr><td colspan="${colCount}">Loading...</td></tr>`;
+  if (msgEl) msgEl.textContent = '';
+
+  const hasFilters = hasActiveTimeEntriesReportFilters(filters);
+  if (heading) {
+    heading.textContent = hasFilters ? 'Selected Entries' : "Today's Entries";
+  }
+
+  const page = Number(filters.page || timeEntriesReportCurrentPage || 1);
+  const pageSize = Number(filters.page_size || timeEntriesReportPageSize || 50);
+  timeEntriesReportCurrentPage = Number.isFinite(page) && page > 0 ? page : 1;
+  timeEntriesReportLastFilters = { ...filters, page: timeEntriesReportCurrentPage, page_size: pageSize };
+
+  const params = new URLSearchParams();
+  if (filters.start)       params.set('start', filters.start);
+  if (filters.end)         params.set('end', filters.end);
+  if (filters.employee_id) params.set('employee_id', filters.employee_id);
+  if (filters.project_id)  params.set('project_id', filters.project_id);
+  params.set('limit', String(pageSize));
+  params.set('offset', String((timeEntriesReportCurrentPage - 1) * pageSize));
+
+  const pageStatus = document.getElementById('ter-page-status');
+  const prevBtn = document.getElementById('ter-page-prev');
+  const nextBtn = document.getElementById('ter-page-next');
+
+  try {
+    const data = await fetchJSONWithTimeout(`/api/time-entries?${params.toString()}`, {}, 12000);
+    const entries = Array.isArray(data) ? data : (data && data.rows) ? data.rows : [];
+    const total = !Array.isArray(data) && data && Number.isFinite(Number(data.total))
+      ? Number(data.total)
+      : entries.length;
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (pageStatus) pageStatus.textContent = `Page ${timeEntriesReportCurrentPage} of ${totalPages}`;
+    if (prevBtn) prevBtn.disabled = timeEntriesReportCurrentPage <= 1;
+    if (nextBtn) nextBtn.disabled = timeEntriesReportCurrentPage >= totalPages;
+
+    if (!entries.length) {
+      tbody.innerHTML = `<tr><td colspan="${colCount}">(no time entries for this selection)</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = '';
+    entries.forEach(entry => {
+      let dateLabel = '';
+      if (entry.start_date && entry.end_date) {
+        dateLabel = entry.start_date === entry.end_date
+          ? formatDateUS(entry.start_date)
+          : `${formatDateUS(entry.start_date)} → ${formatDateUS(entry.end_date)}`;
+      } else if (entry.start_date) {
+        dateLabel = formatDateUS(entry.start_date);
+      } else if (entry.end_date) {
+        dateLabel = formatDateUS(entry.end_date);
+      }
+
+      const clockInLabel = formatTime12(entry.start_time);
+      const clockOutLabel = formatTime12(entry.end_time);
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${entry.employee_name || ''}</td>
+        <td>${entry.project_name || ''}</td>
+        <td>${dateLabel}</td>
+        <td>${clockInLabel}</td>
+        <td>${clockOutLabel}</td>
+        <td>${Number(entry.hours || 0).toFixed(2)}</td>
+        ${
+          canViewPayroll
+            ? `
+              <td>${formatMoney(Number(entry.total_pay || 0))}</td>
+              <td>${entry.paid ? 'Yes' : 'No'}</td>
+              <td>${entry.paid_date ? formatDateUS(entry.paid_date) : '—'}</td>
+            `
+            : ''
+        }
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (err) {
+    console.error('Error loading time entries report:', err?.message || err);
+    tbody.innerHTML = `<tr><td colspan="${colCount}">Error loading time entries</td></tr>`;
+    if (msgEl) {
+      msgEl.textContent = err?.message || 'Error loading time entries.';
+      msgEl.style.color = 'crimson';
+    }
+  }
+}
+
 function entryRequiresNote(row) {
   if (!row) return false;
   const flagsCell = row.querySelector('.te-flags-cell');
@@ -1320,16 +1471,24 @@ async function loadTimeEntryPunches(entryId) {
 
     grid.innerHTML = `
       <div class="time-entry-punches-header">Clock in</div>
+      <div class="time-entry-punches-header">Clock-in device</div>
       <div class="time-entry-punches-header">Clock out</div>
-      <div class="time-entry-punches-header">Device ID</div>
+      <div class="time-entry-punches-header">Clock-out device</div>
       ${rows.map(row => {
         const clockIn = formatPunchDateTime(row.clock_in_ts);
         const clockOut = row.clock_out_ts ? formatPunchDateTime(row.clock_out_ts) : 'Open';
-        const deviceId = row.device_id ? escapeHTML(String(row.device_id)) : '—';
+        const clockInDevice = row.device_id ? escapeHTML(String(row.device_id)) : '—';
+        const outDeviceRaw = row.clock_out_device_id
+          ? String(row.clock_out_device_id)
+          : row.clock_out_ts && row.device_id
+            ? String(row.device_id)
+            : '';
+        const clockOutDevice = outDeviceRaw ? escapeHTML(outDeviceRaw) : '—';
         return `
           <div class="time-entry-punches-cell">${escapeHTML(clockIn)}</div>
+          <div class="time-entry-punches-cell">${clockInDevice}</div>
           <div class="time-entry-punches-cell">${escapeHTML(clockOut)}</div>
-          <div class="time-entry-punches-cell">${deviceId}</div>
+          <div class="time-entry-punches-cell">${clockOutDevice}</div>
         `;
       }).join('')}
     `;
@@ -2458,6 +2617,23 @@ function initTimeEntriesIfNeeded() {
   }
 }
 
+function initTimeEntriesReportIfNeeded() {
+  if (timeEntriesReportInitialized) return;
+  timeEntriesReportInitialized = true;
+
+  if (typeof loadEmployeesForSelect === 'function') {
+    loadEmployeesForSelect();
+  }
+  if (typeof loadProjectsForTimeEntries === 'function') {
+    loadProjectsForTimeEntries();
+  }
+
+  if (typeof loadTimeEntriesReportTable === 'function') {
+    resetTimeEntriesReportPagination();
+    loadTimeEntriesReportTable(getTimeEntriesReportFiltersFromUi());
+  }
+}
+
 
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -2930,7 +3106,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupDashboardQuickLinks();
   applyDashboardLinkVisibility();
 
-  // Time Exceptions nav has been replaced by Approve Time Entries.
+  // Time Exceptions nav has been replaced by Review Time Entries.
 
   // 4) Shipments verification report wiring
   if (typeof initShipmentsReportUI === 'function') {
@@ -3090,11 +3266,6 @@ if (connectBtn) {
   const adminUserPasswordConfirm = document.getElementById('settings-admin-user-password-confirm');
   const adminUserCreateBtn = document.getElementById('settings-admin-user-create');
   const adminUserStatus = document.getElementById('settings-admin-user-status');
-  const adminUserKioskToggle = document.getElementById('settings-admin-user-kiosk-access');
-  const adminUserPinFields = document.getElementById('settings-admin-user-pin-fields');
-  const adminUserPin = document.getElementById('settings-admin-user-pin');
-  const adminUserPinConfirm = document.getElementById('settings-admin-user-pin-confirm');
-  const adminUserKioskStatus = document.getElementById('settings-admin-user-kiosk-status');
   const roleTemplatesCard = document.getElementById('settings-role-templates-card');
   const roleTemplatesBody = document.getElementById('settings-role-templates-body');
   const templateNameInput = document.getElementById('settings-template-name');
@@ -3120,6 +3291,7 @@ if (connectBtn) {
   let permissionTemplates = [];
   let adminUserEmployeesCache = [];
   const adminUserEmployeeMap = new Map();
+  let adminUsersCache = [];
 
   let postBootstrapPollTimer = null;
   let postBootstrapCheckInFlight = false;
@@ -4071,12 +4243,6 @@ if (connectBtn) {
     adminUserStatus.style.color = color || '';
   }
 
-  function setAdminUserKioskStatus(text, color) {
-    if (!adminUserKioskStatus) return;
-    adminUserKioskStatus.textContent = text || '';
-    adminUserKioskStatus.style.color = color || '';
-  }
-
   function setKioskStatus(text, color) {
     if (!kioskStatus) return;
     kioskStatus.textContent = text || '';
@@ -4136,51 +4302,29 @@ if (connectBtn) {
     return adminUserEmployeeMap.get(Number(id)) || null;
   }
 
-  function getSelectedAdminUserEmployee() {
-    const id = adminUserEmployee ? Number(adminUserEmployee.value) : 0;
-    if (!id) return null;
-    return getAdminUserEmployeeById(id);
+  function setAdminUsersCache(list = []) {
+    adminUsersCache = Array.isArray(list) ? list : [];
+    window.ADMIN_USERS_CACHE = adminUsersCache;
   }
 
-  function clearAdminUserPinInputs() {
-    if (adminUserPin) adminUserPin.value = '';
-    if (adminUserPinConfirm) adminUserPinConfirm.value = '';
+  function getAdminUserByEmployeeId(employeeId) {
+    if (!employeeId) return null;
+    return adminUsersCache.find(user => Number(user.employee_id) === Number(employeeId)) || null;
   }
 
-  function syncAdminUserKioskUI({ applyDefaults = false, resetPins = true } = {}) {
-    if (!adminUserKioskToggle) return;
-    const employee = getSelectedAdminUserEmployee();
-
-    if (!employee) {
-      adminUserKioskToggle.checked = false;
-      adminUserKioskToggle.disabled = true;
-      if (adminUserPinFields) adminUserPinFields.classList.add('hidden');
-      if (resetPins) clearAdminUserPinInputs();
-      setAdminUserKioskStatus('Select an employee to enable kiosk admin access.', '#6b7280');
-      return;
+  async function refreshAdminUsersCache({ render = false } = {}) {
+    if (!window.CURRENT_IS_SUPER_ADMIN) return adminUsersCache;
+    const data = await fetchJSON('/api/auth/users');
+    const list = (data && data.users) || [];
+    setAdminUsersCache(list);
+    if (render && adminUsersBody) {
+      renderAdminUsers(adminUsersCache);
     }
-
-    adminUserKioskToggle.disabled = false;
-    if (applyDefaults) {
-      adminUserKioskToggle.checked = !!employee.kiosk_admin_access;
-    }
-
-    const kioskOn = !!employee.kiosk_admin_access;
-    const pinSet = !!employee.has_pin;
-    setAdminUserKioskStatus(
-      `Current: Kiosk access ${kioskOn ? 'On' : 'Off'} | PIN ${pinSet ? 'Set' : 'Not set'}`,
-      '#6b7280'
-    );
-
-    const wantsKiosk = !!adminUserKioskToggle.checked;
-    const showPinFields = wantsKiosk && !pinSet;
-    if (adminUserPinFields) {
-      adminUserPinFields.classList.toggle('hidden', !showPinFields);
-    }
-    if (!showPinFields && resetPins) {
-      clearAdminUserPinInputs();
-    }
+    return adminUsersCache;
   }
+
+  window.getAdminUserByEmployeeId = getAdminUserByEmployeeId;
+  window.refreshAdminUsersCache = refreshAdminUsersCache;
 
   function applyBackupCardVisibility() {
     if (!backupCard) return;
@@ -4286,8 +4430,8 @@ if (connectBtn) {
 
   const RECOMMENDED_TEMPLATES = [
     {
-      name: 'Overlord',
-      role_title: 'Overlord',
+      name: 'Super Admin',
+      role_title: 'Super Admin',
       access: { worker_timekeeping: true, desktop_access: true, kiosk_admin_access: true },
       permissions: {
         see_shipments: true,
@@ -4484,6 +4628,7 @@ if (connectBtn) {
     const employeeActive = !!user.employee_active;
     const desktopAccess = !!user.desktop_access;
     if (!enabled) return 'Disabled';
+    if (user.password_setup_pending) return 'Setup pending';
     if (!user.is_super_admin) return 'Blocked (not super admin)';
     if (!employeeActive) return 'Blocked (inactive employee)';
     if (!desktopAccess) return 'Blocked (no desktop access)';
@@ -4526,13 +4671,7 @@ if (connectBtn) {
       pinCell.textContent = linkedEmployee ? (hasPin ? 'Set' : 'Not set') : '—';
 
       const actionsCell = document.createElement('td');
-      const resetBtn = document.createElement('button');
-      resetBtn.type = 'button';
-      resetBtn.className = 'btn secondary btn-sm';
-      resetBtn.textContent = 'Reset password';
-      resetBtn.dataset.userId = user.user_id;
-      resetBtn.dataset.userEmail = emailText;
-      resetBtn.dataset.userAction = 'reset';
+      actionsCell.classList.add('admin-accounts-actions-cell');
 
       const toggleBtn = document.createElement('button');
       toggleBtn.type = 'button';
@@ -4546,8 +4685,6 @@ if (connectBtn) {
         toggleBtn.title = 'Employee must be active with desktop access to enable login.';
       }
 
-      actionsCell.appendChild(resetBtn);
-      actionsCell.appendChild(document.createTextNode(' '));
       actionsCell.appendChild(toggleBtn);
 
       tr.appendChild(emailCell);
@@ -4563,10 +4700,10 @@ if (connectBtn) {
   async function loadAdminUsers() {
     if (!adminUsersBody || !window.CURRENT_IS_SUPER_ADMIN) return;
     try {
-      const data = await fetchJSON('/api/auth/users');
-      renderAdminUsers((data && data.users) || []);
+      await refreshAdminUsersCache({ render: true });
     } catch (err) {
       console.error('Error loading admin accounts', err);
+      setAdminUsersCache([]);
       adminUsersBody.innerHTML = '<tr><td colspan="6">(error loading accounts)</td></tr>';
     }
   }
@@ -4587,29 +4724,7 @@ if (connectBtn) {
     button.disabled = true;
 
     try {
-      if (action === 'reset') {
-        const next = window.prompt(
-          `Enter a new password for ${userEmail} (min 8 characters):`,
-          ''
-        );
-        if (next === null) return;
-        const confirm = window.prompt(`Confirm the new password for ${userEmail}:`, '');
-        if (confirm === null) return;
-        if (next !== confirm) {
-          setAdminUserStatus('Passwords do not match.', 'crimson');
-          return;
-        }
-        if (next.length < 8) {
-          setAdminUserStatus('Password must be at least 8 characters.', '#b45309');
-          return;
-        }
-        await fetchJSON(`/api/auth/users/${userId}/reset-password`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ new_password: next })
-        });
-        setAdminUserStatus(`Password reset for ${userEmail}.`, 'green');
-      } else if (action === 'disable') {
+      if (action === 'disable') {
         const ok = window.confirm(
           `Disable login for ${userEmail}? They will no longer be able to sign in.`
         );
@@ -4637,18 +4752,6 @@ if (connectBtn) {
 
   if (adminUsersBody) {
     adminUsersBody.addEventListener('click', handleAdminUserAction);
-  }
-
-  if (adminUserEmployee) {
-    adminUserEmployee.addEventListener('change', () => {
-      syncAdminUserKioskUI({ applyDefaults: true, resetPins: true });
-    });
-  }
-
-  if (adminUserKioskToggle) {
-    adminUserKioskToggle.addEventListener('change', () => {
-      syncAdminUserKioskUI({ applyDefaults: false, resetPins: true });
-    });
   }
 
   if (postBootstrapEmployeesBtn && !postBootstrapEmployeesBtn.dataset.bound) {
@@ -4841,7 +4944,6 @@ if (connectBtn) {
         option.textContent = `${emp.name || '(Unnamed)'}${emp.email ? ` — ${emp.email}` : ''}`;
         adminUserEmployee.appendChild(option);
       });
-      syncAdminUserKioskUI({ applyDefaults: true, resetPins: true });
       await loadAdminUsers();
     } catch (err) {
       console.error('Error loading employee list for admin accounts', err);
@@ -5214,6 +5316,9 @@ if (connectBtn) {
           updateDashboardHero();
           updateDashboardQboBadge();
           refreshDashboardSnapshot();
+          if (typeof initAuditReports === 'function') {
+            initAuditReports();
+          }
           if (window.CURRENT_IS_SUPER_ADMIN) {
             await loadAdminUserEmployees();
             await loadRoleTemplates({ force: true });
@@ -5509,18 +5614,22 @@ if (connectBtn) {
     backupBtn.addEventListener('click', runManualBackup);
   }
 
+  function updateAdminLoginActionLabel() {
+    if (!adminUserCreateBtn) return;
+    const hasPassword = !!(
+      (adminUserPassword && adminUserPassword.value) ||
+      (adminUserPasswordConfirm && adminUserPasswordConfirm.value)
+    );
+    adminUserCreateBtn.textContent = hasPassword ? 'Save admin login' : 'Send setup link';
+  }
+
   async function createAdminUser() {
     if (!adminUserCreateBtn) return;
     const employeeId = adminUserEmployee ? Number(adminUserEmployee.value) : null;
     const email = adminUserEmail ? String(adminUserEmail.value || '').trim() : '';
     const password = adminUserPassword ? String(adminUserPassword.value || '') : '';
     const confirm = adminUserPasswordConfirm ? String(adminUserPasswordConfirm.value || '') : '';
-    const wantsKioskAccess = adminUserKioskToggle ? adminUserKioskToggle.checked : false;
-    const pin = adminUserPin ? adminUserPin.value.trim() : '';
-    const pinConfirm = adminUserPinConfirm ? adminUserPinConfirm.value.trim() : '';
-    const selectedEmployee = getSelectedAdminUserEmployee();
-    const hasExistingPin = selectedEmployee ? !!selectedEmployee.has_pin : false;
-    const hasExistingKioskAccess = selectedEmployee ? !!selectedEmployee.kiosk_admin_access : false;
+    const sendInvite = !password && !confirm;
 
     if (!employeeId) {
       setAdminUserStatus('Select an employee to link.', '#b45309');
@@ -5530,7 +5639,7 @@ if (connectBtn) {
       setAdminUserStatus('Login email is required.', '#b45309');
       return;
     }
-    if (password || confirm) {
+    if (!sendInvite && (password || confirm)) {
       if (password !== confirm) {
         setAdminUserStatus('Passwords do not match.', 'crimson');
         return;
@@ -5541,38 +5650,15 @@ if (connectBtn) {
       }
     }
 
-    if (wantsKioskAccess) {
-      if (!selectedEmployee) {
-        setAdminUserStatus('Select an employee to enable kiosk admin access.', '#b45309');
-        return;
-      }
-      if (!hasExistingPin) {
-        if (!pin || !pinConfirm) {
-          setAdminUserStatus('Enter a 4-digit PIN to enable kiosk access.', '#b45309');
-          return;
-        }
-        if (pin !== pinConfirm) {
-          setAdminUserStatus('PIN entries do not match.', 'crimson');
-          return;
-        }
-        if (!/^\d{4}$/.test(pin)) {
-          setAdminUserStatus('PIN must be exactly 4 digits.', '#b45309');
-          return;
-        }
-      } else if (pin || pinConfirm) {
-        setAdminUserStatus('PIN already set for this employee. Update it in Employee Details.', '#b45309');
-        return;
-      }
-    }
-
     adminUserCreateBtn.disabled = true;
-    setAdminUserStatus('Saving account…', '');
+    setAdminUserStatus(sendInvite ? 'Sending setup link…' : 'Saving account…', '');
 
     const payload = {
       email,
       employee_id: employeeId
     };
     if (password) payload.password = password;
+    if (sendInvite) payload.send_invite = true;
 
     try {
       await fetchJSON('/api/auth/users', {
@@ -5580,27 +5666,14 @@ if (connectBtn) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      if (wantsKioskAccess) {
-        if (!hasExistingKioskAccess) {
-          await fetchJSON('/api/employees', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: employeeId, kiosk_admin_access: 1 })
-          });
-        }
-        if (!hasExistingPin) {
-          await fetchJSON(`/api/employees/${employeeId}/pin`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pin })
-          });
-        }
+      if (sendInvite) {
+        setAdminUserStatus('Setup link sent.', 'green');
+      } else {
+        setAdminUserStatus('Admin login saved.', 'green');
       }
-      setAdminUserStatus('Admin login saved.', 'green');
       if (adminUserPassword) adminUserPassword.value = '';
       if (adminUserPasswordConfirm) adminUserPasswordConfirm.value = '';
-      if (adminUserKioskToggle) adminUserKioskToggle.checked = false;
-      clearAdminUserPinInputs();
+      updateAdminLoginActionLabel();
       await loadAdminUserEmployees();
     } catch (err) {
       console.error('Error saving admin login', err);
@@ -5613,6 +5686,13 @@ if (connectBtn) {
   if (adminUserCreateBtn) {
     adminUserCreateBtn.addEventListener('click', createAdminUser);
   }
+  if (adminUserPassword) {
+    adminUserPassword.addEventListener('input', updateAdminLoginActionLabel);
+  }
+  if (adminUserPasswordConfirm) {
+    adminUserPasswordConfirm.addEventListener('input', updateAdminLoginActionLabel);
+  }
+  updateAdminLoginActionLabel();
 
 
     // ───────── Time Entries (table + manual entry auto-hours) ─────────
@@ -5811,6 +5891,56 @@ if (connectBtn) {
     approveSelectedBtn.addEventListener('click', approveSelectedTimeEntries);
     const canApprove = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
     approveSelectedBtn.style.display = canApprove ? 'inline-flex' : 'none';
+  }
+
+  // ───────── Time Entries Report (view-only) ─────────
+  const reportApplyBtn = document.getElementById('ter-filter-apply');
+  const reportClearBtn = document.getElementById('ter-filter-clear');
+  const reportEmployee = document.getElementById('ter-filter-employee');
+  const reportProject  = document.getElementById('ter-filter-project');
+  const reportStart    = document.getElementById('ter-filter-start');
+  const reportEnd      = document.getElementById('ter-filter-end');
+  const reportPrevBtn  = document.getElementById('ter-page-prev');
+  const reportNextBtn  = document.getElementById('ter-page-next');
+
+  if (reportApplyBtn) {
+    reportApplyBtn.addEventListener('click', () => {
+      resetTimeEntriesReportPagination();
+      loadTimeEntriesReportTable(getTimeEntriesReportFiltersFromUi());
+    });
+  }
+
+  if (reportClearBtn) {
+    reportClearBtn.addEventListener('click', () => {
+      if (reportEmployee) reportEmployee.value = '';
+      if (reportProject) reportProject.value = '';
+      if (reportStart) reportStart.value = '';
+      if (reportEnd) reportEnd.value = '';
+
+      resetTimeEntriesReportPagination();
+      loadTimeEntriesReportTable(getTimeEntriesReportFiltersFromUi());
+    });
+  }
+
+  if (reportPrevBtn) {
+    reportPrevBtn.addEventListener('click', () => {
+      if (timeEntriesReportCurrentPage <= 1) return;
+      timeEntriesReportCurrentPage -= 1;
+      loadTimeEntriesReportTable({
+        ...timeEntriesReportLastFilters,
+        page: timeEntriesReportCurrentPage
+      });
+    });
+  }
+
+  if (reportNextBtn) {
+    reportNextBtn.addEventListener('click', () => {
+      timeEntriesReportCurrentPage += 1;
+      loadTimeEntriesReportTable({
+        ...timeEntriesReportLastFilters,
+        page: timeEntriesReportCurrentPage
+      });
+    });
   }
 
   const detailCloseBtn = document.getElementById('time-entry-detail-close');
@@ -6132,9 +6262,6 @@ if (connectBtn) {
   }
   if (typeof loadPayrollAuditLog === 'function') {
     loadPayrollAuditLog();
-  }
-  if (typeof initAuditReport === 'function') {
-    initAuditReport();
   }
   if (typeof setupReportsDownload === 'function') {
     setupReportsDownload();

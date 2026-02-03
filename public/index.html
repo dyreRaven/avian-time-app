@@ -66,9 +66,10 @@
           <img src="/icons/kiosks.svg" class="nav-icon" alt="" aria-hidden="true" />
           <span>Timesheets</span>
         </button>
-        <button class="nav-item" data-section="time-exceptions">
-          <img src="/icons/alerts.svg" class="nav-icon" alt="" aria-hidden="true" />
-          <span>Time Exceptions</span>
+
+        <button class="nav-item" data-section="time-entries">
+          <img src="/icons/clock.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Review Time Entries</span>
         </button>
 
         <button class="nav-item" data-section="payroll">
@@ -76,34 +77,49 @@
           <span>Payroll</span>
         </button>
 
-<!-- REPORTS -->
-<div class="nav-section-label">Reports</div>
+        <!-- REPORTS -->
+        <div class="nav-section-label">Reports</div>
 
-<button class="nav-item" data-section="time-entries">
-  <img src="/icons/clock.svg" class="nav-icon" alt="" aria-hidden="true" />
-  <span>Time Entry Report</span>
-</button>
+        <button class="nav-item" data-section="time-entries-report">
+          <img src="/icons/clock.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Time Entries Report</span>
+        </button>
 
 <button class="nav-item" data-section="shipments-report">
   <img src="/icons/verification.svg" class="nav-icon" alt="" aria-hidden="true" />
   <span>Shipment Verification Report</span>
 </button>
 
-<button class="nav-item" data-section="reports">
-  <img src="/icons/reports.svg" class="nav-icon" alt="" aria-hidden="true" />
-  <span>Audit Trails</span>
+<button class="nav-item" data-section="audit-time-report" data-requires="view_time_reports">
+  <img src="/icons/clock.svg" class="nav-icon" alt="" aria-hidden="true" />
+  <span>Time Audit Report</span>
 </button>
 
-<!-- SETTINGS -->
-<div class="nav-section-label">Settings</div>
-<button class="nav-item" data-section="my-account">
-  <img src="/icons/employee.svg" class="nav-icon" alt="" aria-hidden="true" />
-  <span>My Account</span>
+<button class="nav-item" data-section="audit-payroll-report" data-requires="view_payroll">
+  <img src="/icons/payroll.svg" class="nav-icon" alt="" aria-hidden="true" />
+  <span>Payroll Audit Report</span>
 </button>
-<button class="nav-item" data-section="settings">
-  <img src="/icons/settings.svg" class="nav-icon" alt="" aria-hidden="true" />
-  <span>Organization Settings</span>
+
+<button class="nav-item" data-section="audit-ops-report" data-requires="see_shipments">
+  <img src="/icons/shipments.svg" class="nav-icon" alt="" aria-hidden="true" />
+  <span>Operations Audit Report</span>
 </button>
+
+<button class="nav-item" data-section="audit-security-report" data-requires="super_admin">
+  <img src="/icons/alerts.svg" class="nav-icon" alt="" aria-hidden="true" />
+  <span>Security Audit Report</span>
+</button>
+
+        <!-- SETTINGS -->
+        <div class="nav-section-label">Settings</div>
+        <button class="nav-item" data-section="my-account">
+          <img src="/icons/employee.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>My Account</span>
+        </button>
+        <button class="nav-item" data-section="settings">
+          <img src="/icons/settings.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Organization Settings</span>
+        </button>
 
 
       </nav>
@@ -501,8 +517,11 @@
             <button class="btn secondary btn-sm" type="button" data-dashboard-link="shipments-report">
               Shipment verification
             </button>
-            <button class="btn secondary btn-sm" type="button" data-dashboard-link="reports">
-              Audit trails
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="audit-time-report">
+              Time audits
+            </button>
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="audit-ops-report">
+              Ops audits
             </button>
           </div>
         </div>
@@ -924,96 +943,6 @@
           </div>
         </section>
 
-        <!-- TIME EXCEPTIONS REPORT -->
-        <section id="section-time-exceptions" class="section">
-          <div class="card">
-            <div class="card-header">
-              <div>
-                <h1 class="report-title">Time Exceptions</h1>
-              </div>
-            </div>
-
-            <div class="card-body">
-              <!-- FILTER BAR -->
-              <div class="time-report-form">
-                <div class="form-row time-report-row">
-                  <label>
-                    Employee
-                    <select id="te-ex-filter-employee">
-                      <option value="">All employees</option>
-                    </select>
-                  </label>
-
-                  <label>
-                    Project
-                    <select id="te-ex-filter-project">
-                      <option value="">All projects</option>
-                    </select>
-                  </label>
-
-                  <label>
-                    Category
-                    <select id="te-ex-filter-category">
-                      <option value="">All categories</option>
-                      <option value="time">Time discrepancies</option>
-                      <option value="geo">Geofence discrepancies</option>
-                      <option value="auto">Auto clock-outs</option>
-                    </select>
-                  </label>
-
-                  <label>
-                    Start date
-                    <input type="date" id="te-ex-filter-start" />
-                  </label>
-
-                  <label>
-                    End date
-                    <input type="date" id="te-ex-filter-end" />
-                  </label>
-
-                  <label class="checkbox-inline">
-                    Hide resolved
-                    <input type="checkbox" id="te-ex-hide-resolved" checked />
-                  </label>
-                </div>
-
-                <div class="form-actions time-report-actions">
-                  <button id="te-ex-apply" class="btn">
-                    Run Report
-                  </button>
-                </div>
-              </div>
-
-              <!-- TABLE -->
-              <div class="table-wrapper">
-                <table class="table clickable-rows">
-                  <thead>
-                    <tr>
-                      <th>Entry ID</th>
-                      <th>Employee</th>
-                      <th>Project</th>
-                      <th>Clock in</th>
-                      <th>Clock out</th>
-                      <th>Duration</th>
-                      <th>Category</th>
-                      <th>Flags</th>
-                      <th>Resolve</th>
-                    </tr>
-                  </thead>
-
-                  <tbody id="time-exceptions-body">
-                    <tr>
-                      <td colspan="9">(no data – pick a date range)</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <p id="time-exceptions-message" class="message"></p>
-            </div>
-          </div>
-        </section>
-
         <!-- MY ACCOUNT -->
         <section id="section-my-account" class="section">
           <div class="card">
@@ -1330,7 +1259,7 @@
                 <summary class="settings-accordion-summary">
                   <div class="settings-accordion-head">
                     <h2>Admin Accounts</h2>
-                    <p class="card-sub">Create logins for super admins only.</p>
+                    <p class="card-sub">Manage super admin logins and kiosk access.</p>
                   </div>
                   <div class="settings-accordion-right">
                     <div class="settings-accordion-meta">
@@ -1342,79 +1271,69 @@
                 </summary>
                 <div class="settings-accordion-body">
                   <div class="card-body">
-                    <p class="card-sub">Super admins can use both: email on desktop, PIN on kiosks.</p>
-                    <div class="table-wrapper">
-                      <table class="access-table">
-                        <thead>
-                          <tr>
-                            <th>Login email</th>
-                            <th>Employee</th>
-                            <th>Status</th>
-                            <th>Kiosk</th>
-                            <th>PIN</th>
-                            <th>Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody id="settings-admin-users-body">
-                          <tr><td colspan="6">(loading...)</td></tr>
-                        </tbody>
-                      </table>
-                    </div>
-                    <div class="form-grid">
-                      <label>
-                        Link employee
-                        <select id="settings-admin-user-employee"></select>
-                      </label>
-                      <label>
-                        Login email
-                        <input type="email" id="settings-admin-user-email" />
-                      </label>
-                      <label>
-                        Password (optional)
-                        <input type="password" id="settings-admin-user-password" />
-                      </label>
-                      <label>
-                        Confirm password
-                        <input type="password" id="settings-admin-user-password-confirm" />
-                      </label>
-                    </div>
-                    <p class="card-sub">
-                      Password is required for a new email. If the email already exists, providing a password will reset it.
-                    </p>
-                    <div class="admin-login-kiosk">
-                      <label class="checkbox-inline">
-                        <input type="checkbox" id="settings-admin-user-kiosk-access" />
-                        Also allow kiosk admin PIN access
-                      </label>
-                      <div id="settings-admin-user-pin-fields" class="form-grid admin-login-pin-grid hidden">
-                        <label>
-                          PIN (4 digits)
-                          <input
-                            type="password"
-                            id="settings-admin-user-pin"
-                            inputmode="numeric"
-                            pattern="[0-9]*"
-                            maxlength="4"
-                            autocomplete="off"
-                          />
-                        </label>
-                        <label>
-                          Confirm PIN
-                          <input
-                            type="password"
-                            id="settings-admin-user-pin-confirm"
-                            inputmode="numeric"
-                            pattern="[0-9]*"
-                            maxlength="4"
-                            autocomplete="off"
-                          />
-                        </label>
+                    <p class="card-sub">Manage super admin logins and kiosk PIN access.</p>
+                    <div class="admin-accounts-stack">
+                      <div class="admin-accounts-section">
+                        <div class="admin-accounts-head">
+                          <div>
+                            <h3>Existing logins</h3>
+                            <p class="card-sub">Super admins can sign in with email on desktop and PIN on kiosks.</p>
+                          </div>
+                        </div>
+                        <div class="table-wrapper">
+                          <table class="access-table admin-accounts-table">
+                            <thead>
+                              <tr>
+                                <th>Login email</th>
+                                <th>Employee</th>
+                                <th>Status</th>
+                                <th>Kiosk</th>
+                                <th>PIN</th>
+                                <th>Login access</th>
+                              </tr>
+                            </thead>
+                            <tbody id="settings-admin-users-body">
+                              <tr><td colspan="6">(loading...)</td></tr>
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                      <p id="settings-admin-user-kiosk-status" class="message"></p>
-                    </div>
-                    <div class="settings-actions">
-                      <button type="button" id="settings-admin-user-create" class="btn secondary">Create login</button>
-                      <span id="settings-admin-user-status" class="message"></span>
+
+                      <div class="admin-accounts-divider"></div>
+
+                      <div class="admin-accounts-section">
+                        <div class="admin-accounts-head">
+                          <div>
+                            <h3>Create or update a login</h3>
+                            <p class="card-sub">
+                              Leave passwords blank to email a setup link (requires email configuration). Entering a password sets it immediately.
+                            </p>
+                          </div>
+                        </div>
+                        <div class="form-grid admin-login-form-grid">
+                          <label>
+                            Employee
+                            <select id="settings-admin-user-employee"></select>
+                          </label>
+                          <label>
+                            Login email
+                            <input type="email" id="settings-admin-user-email" />
+                          </label>
+                          <label>
+                            Password (optional)
+                            <input type="password" id="settings-admin-user-password" />
+                          </label>
+                          <label>
+                            Confirm password
+                            <input type="password" id="settings-admin-user-password-confirm" />
+                          </label>
+                        </div>
+                        <p class="card-sub">Kiosk admin access and PINs are managed in Employee Details.</p>
+                        <div class="settings-actions admin-accounts-actions">
+                          <button type="button" id="settings-admin-user-create" class="btn secondary">Send setup link</button>
+                          <span id="settings-admin-user-status" class="message"></span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1530,7 +1449,7 @@
                       <h3>Recommended templates</h3>
                       <p class="card-sub">Create common roles for faster setup. You can edit them afterward.</p>
                       <ul class="template-preset-list">
-                        <li>Overlord (all access + all permissions)</li>
+                        <li>Super Admin (all access + all permissions)</li>
                         <li>Payroll Manager (full payroll + time visibility)</li>
                         <li>Payroll Approver (view payroll, approve time, no payroll edits)</li>
                         <li>Time Reviewer (time entry review + edits, no payroll)</li>
@@ -1939,7 +1858,7 @@
             <!-- CARD HEADER -->
             <div class="card-header">
               <div>
-                <h1 class="report-title">Time Entry Report</h1>
+                <h1 class="report-title">Review Time Entries</h1>
               </div>
 
               <div class="card-header-actions" id="time-entry-toggle-container-report">
@@ -1980,11 +1899,8 @@
                 </div>
 
                 <div class="form-actions time-report-actions">
-                  <button type="button" id="time-filter-apply" class="btn">
+                  <button type="button" id="time-filter-apply" class="btn primary">
                     Run Report
-                  </button>
-                  <button type="button" id="te-approve-all" class="btn secondary">
-                    Approve all clean entries
                   </button>
                 </div>
               </div>
@@ -1992,7 +1908,7 @@
               <!-- TABLE WRAPPER -->
               <div class="export-bar">
                 <div class="export-dropdown">
-                  <button type="button" class="icon-button export-toggle" id="te-export-toggle" aria-label="Export time entries">⤓</button>
+                  <button type="button" class="export-toggle" id="te-export-toggle" aria-label="Export time entries">Export ⤓</button>
                   <div class="export-menu hidden" id="te-export-menu">
                     <button type="button" class="export-menu-item" id="te-export-csv">Export CSV</button>
                     <button type="button" class="export-menu-item" id="te-export-pdf">Export PDF</button>
@@ -2240,7 +2156,7 @@
           </div>
         </section>
 
-<!-- REPORTS SECTION (PAYROLL + AUDITS) -->
+<!-- REPORTS SECTION (PAYROLL RUNS) -->
 <section id="section-reports" class="section">
   <div class="card">
     <div class="card-header">
@@ -2326,68 +2242,43 @@
       </table>
     </div>
   </div>
+</section>
 
-  <div class="card" id="audit-report-card">
+<!-- AUDIT REPORT: TIME ENTRIES -->
+<section id="section-audit-time-report" class="section">
+  <div class="card">
     <div class="card-header">
       <div>
-        <h2>Audit Trails</h2>
-        <p class="card-sub">
-          Review audit history by domain (time, payroll, shipments, access, and more).
-        </p>
+        <h2>Time Entry Audit Report</h2>
+        <p class="card-sub">Full history of time entry changes and approvals.</p>
       </div>
     </div>
-
     <div class="card-body">
-      <form id="audit-report-form" class="time-report-form audit-report-form">
+      <form id="audit-time-form" class="time-report-form audit-report-form">
         <div class="form-row time-report-row">
           <label>
-            Domain
-            <select id="audit-report-domain">
-              <option value="time_entries" data-requires="view_time_reports">Time entry changes</option>
-              <option value="payroll_runs" data-requires="view_payroll">Payroll run audit</option>
-              <option value="payroll" data-requires="view_payroll">Payroll actions</option>
-              <option value="shipments" data-requires="see_shipments">Shipments</option>
-              <option value="kiosks" data-requires="view_payroll">Kiosks &amp; timesheets</option>
-              <option value="employees" data-requires="view_payroll">Employees</option>
-              <option value="access" data-requires="super_admin">Access &amp; security</option>
-              <option value="settings" data-requires="view_payroll">Settings &amp; rules</option>
-              <option value="notifications" data-requires="view_payroll">Notifications</option>
-              <option value="quickbooks" data-requires="super_admin">QuickBooks</option>
-              <option value="projects" data-requires="view_payroll">Projects &amp; vendors</option>
-              <option value="reports" data-requires="view_payroll">Reports &amp; exports</option>
-              <option value="all" data-requires="super_admin">All audits</option>
-            </select>
-          </label>
-
-          <label>
             Start date
-            <input type="date" id="audit-report-start" />
+            <input type="date" id="audit-time-start" />
           </label>
-
           <label>
             End date
-            <input type="date" id="audit-report-end" />
+            <input type="date" id="audit-time-end" />
           </label>
-
           <label>
             Actor (name or ID)
-            <input type="text" id="audit-report-actor" placeholder="Jane or 12" />
+            <input type="text" id="audit-time-actor" placeholder="Jane or 12" />
           </label>
-
           <label>
-            Entity ID
-            <input type="text" id="audit-report-entity-id" placeholder="Optional" />
+            Entry ID
+            <input type="text" id="audit-time-entity-id" placeholder="Optional" />
           </label>
         </div>
-
         <div class="form-actions time-report-actions">
-          <button type="button" id="audit-report-run" class="btn">Run report</button>
-          <button type="button" id="audit-report-reset" class="btn secondary">Reset</button>
+          <button type="button" id="audit-time-run" class="btn">Run report</button>
+          <button type="button" id="audit-time-reset" class="btn secondary">Reset</button>
         </div>
       </form>
-
-      <p class="message" id="audit-report-message"></p>
-
+      <p class="message" id="audit-time-message"></p>
       <div class="table-wrapper">
         <table>
           <thead>
@@ -2400,13 +2291,287 @@
               <th>Details</th>
             </tr>
           </thead>
-          <tbody id="audit-report-body">
+          <tbody id="audit-time-body">
             <tr>
               <td colspan="6">(run the report to view audit trails)</td>
             </tr>
           </tbody>
         </table>
       </div>
+    </div>
+  </div>
+</section>
+
+<!-- AUDIT REPORT: PAYROLL -->
+<section id="section-audit-payroll-report" class="section">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2>Payroll Audit Report</h2>
+        <p class="card-sub">Payroll run and payroll action history.</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <form id="audit-payroll-form" class="time-report-form audit-report-form">
+        <div class="form-row time-report-row">
+          <label>
+            Start date
+            <input type="date" id="audit-payroll-start" />
+          </label>
+          <label>
+            End date
+            <input type="date" id="audit-payroll-end" />
+          </label>
+          <label>
+            Actor (name or ID)
+            <input type="text" id="audit-payroll-actor" placeholder="Jane or 12" />
+          </label>
+          <label>
+            Run ID
+            <input type="text" id="audit-payroll-entity-id" placeholder="Optional" />
+          </label>
+        </div>
+        <div class="form-actions time-report-actions">
+          <button type="button" id="audit-payroll-run" class="btn">Run report</button>
+          <button type="button" id="audit-payroll-reset" class="btn secondary">Reset</button>
+        </div>
+      </form>
+      <p class="message" id="audit-payroll-message"></p>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Target</th>
+              <th>Note</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="audit-payroll-body">
+            <tr>
+              <td colspan="6">(run the report to view audit trails)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- AUDIT REPORT: OPERATIONS -->
+<section id="section-audit-ops-report" class="section">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2>Operations Audit Report</h2>
+        <p class="card-sub">Shipments, kiosks, settings, and operational changes.</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <form id="audit-ops-form" class="time-report-form audit-report-form">
+        <div class="form-row time-report-row">
+          <label>
+            Area
+            <select id="audit-ops-domain">
+              <option value="shipments">Shipments</option>
+              <option value="kiosks">Kiosks &amp; timesheets</option>
+              <option value="settings">Settings &amp; rules</option>
+              <option value="notifications">Notifications</option>
+              <option value="projects">Projects &amp; vendors</option>
+              <option value="reports">Reports &amp; exports</option>
+            </select>
+          </label>
+          <label>
+            Start date
+            <input type="date" id="audit-ops-start" />
+          </label>
+          <label>
+            End date
+            <input type="date" id="audit-ops-end" />
+          </label>
+          <label>
+            Actor (name or ID)
+            <input type="text" id="audit-ops-actor" placeholder="Jane or 12" />
+          </label>
+          <label>
+            Entity ID
+            <input type="text" id="audit-ops-entity-id" placeholder="Optional" />
+          </label>
+        </div>
+        <div class="form-actions time-report-actions">
+          <button type="button" id="audit-ops-run" class="btn">Run report</button>
+          <button type="button" id="audit-ops-reset" class="btn secondary">Reset</button>
+        </div>
+      </form>
+      <p class="message" id="audit-ops-message"></p>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Target</th>
+              <th>Note</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="audit-ops-body">
+            <tr>
+              <td colspan="6">(run the report to view audit trails)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- AUDIT REPORT: SECURITY & ACCESS -->
+<section id="section-audit-security-report" class="section">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2>Security &amp; Access Audit Report</h2>
+        <p class="card-sub">Authentication, access changes, and QuickBooks actions.</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <form id="audit-security-form" class="time-report-form audit-report-form">
+        <div class="form-row time-report-row">
+          <label>
+            Area
+            <select id="audit-security-domain">
+              <option value="access">Access &amp; security</option>
+              <option value="quickbooks">QuickBooks</option>
+              <option value="all">All audits</option>
+            </select>
+          </label>
+          <label>
+            Start date
+            <input type="date" id="audit-security-start" />
+          </label>
+          <label>
+            End date
+            <input type="date" id="audit-security-end" />
+          </label>
+          <label>
+            Actor (name or ID)
+            <input type="text" id="audit-security-actor" placeholder="Jane or 12" />
+          </label>
+          <label>
+            Entity ID
+            <input type="text" id="audit-security-entity-id" placeholder="Optional" />
+          </label>
+        </div>
+        <div class="form-actions time-report-actions">
+          <button type="button" id="audit-security-run" class="btn">Run report</button>
+          <button type="button" id="audit-security-reset" class="btn secondary">Reset</button>
+        </div>
+      </form>
+      <p class="message" id="audit-security-message"></p>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Target</th>
+              <th>Note</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="audit-security-body">
+            <tr>
+              <td colspan="6">(run the report to view audit trails)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TIME ENTRIES REPORT SECTION -->
+<section id="section-time-entries-report" class="section">
+  <div class="card">
+    <div class="card-header">
+      <h1 class="report-title">Time Entries Report</h1>
+      <p class="card-sub">
+        View time entries using filters only (no edits or approvals).
+      </p>
+    </div>
+
+    <div class="card-body">
+      <div class="time-report-form">
+        <div class="form-row time-report-row">
+          <label>
+            Employee
+            <select id="ter-filter-employee">
+              <option value="">All employees</option>
+            </select>
+          </label>
+
+          <label>
+            Project
+            <select id="ter-filter-project">
+              <option value="">All projects</option>
+            </select>
+          </label>
+
+          <label>
+            Start date
+            <input type="date" id="ter-filter-start" />
+          </label>
+
+          <label>
+            End date
+            <input type="date" id="ter-filter-end" />
+          </label>
+        </div>
+
+        <div class="form-actions time-report-actions">
+          <button type="button" id="ter-filter-apply" class="btn">
+            Run Report
+          </button>
+          <button type="button" id="ter-filter-clear" class="btn secondary">
+            Clear
+          </button>
+        </div>
+      </div>
+
+      <h3 id="time-entries-report-heading">Today's Entries</h3>
+
+      <div class="time-entry-pagination">
+        <button type="button" id="ter-page-prev" class="btn secondary btn-sm">Prev</button>
+        <span id="ter-page-status" class="time-entry-pagination-status">Page 1 of 1</span>
+        <button type="button" id="ter-page-next" class="btn secondary btn-sm">Next</button>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead id="time-entries-report-head">
+            <tr>
+              <th>Employee</th>
+              <th>Project</th>
+              <th>Date</th>
+              <th>Clock in</th>
+              <th>Clock out</th>
+              <th>Hours</th>
+            </tr>
+          </thead>
+          <tbody id="time-entries-report-body">
+            <tr>
+              <td colspan="6">(run the report to view time entries)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p id="time-entries-report-message" class="message"></p>
     </div>
   </div>
 </section>

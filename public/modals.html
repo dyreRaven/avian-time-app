@@ -94,6 +94,39 @@
       </div>
     </div>
 
+    <!-- ADMIN LOGIN -->
+    <div class="modal-section employee-admin-login-section" id="employee-admin-login-section">
+      <h2>Admin login</h2>
+      <p class="card-sub">Create or enable a super admin login for this employee.</p>
+      <div class="employee-admin-login-card">
+        <div class="employee-admin-login-status">
+          <span class="label">Status</span>
+          <span id="employee-admin-login-status" class="value" data-status="none">No admin login yet.</span>
+        </div>
+        <div class="form-grid employee-admin-login-grid">
+          <div class="form-field">
+            <label for="employee-admin-login-email">Login email</label>
+            <input type="email" id="employee-admin-login-email" />
+          </div>
+          <div class="form-field">
+            <label for="employee-admin-login-password">Password (optional)</label>
+            <input type="password" id="employee-admin-login-password" />
+          </div>
+          <div class="form-field">
+            <label for="employee-admin-login-password-confirm">Confirm password</label>
+            <input type="password" id="employee-admin-login-password-confirm" />
+          </div>
+        </div>
+        <p class="field-help">
+          Leave passwords blank to email a setup link (requires email configuration). Entering a password sets it immediately.
+        </p>
+        <div class="settings-actions">
+          <button type="button" id="employee-admin-login-save" class="btn secondary">Send setup link</button>
+          <span id="employee-admin-login-message" class="message"></span>
+        </div>
+      </div>
+    </div>
+
     <!-- PERMISSIONS -->
     <div class="modal-section">
       <h2>Permissions</h2>

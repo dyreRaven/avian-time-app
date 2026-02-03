@@ -115,11 +115,11 @@
 - Home: Admin Home.
 - Default landing: Admin Home (if disabled, fall back to first permitted section).
 - Operations: Employees, Vendors, Projects, Shipments.
-- Time & Pay: Timesheets, Time Exceptions, Payroll.
-- Reports: Time Entry Report, Payroll Reports, Shipment Verification Report.
+- Time & Pay: Timesheets, Review Time Entries, Payroll.
+- Reports: Time Entries Report, Payroll Reports, Shipment Verification Report.
 - Settings: Settings.
 - Nav items are visible but disabled when the user lacks permissions; tooltips explain required access.
-- Gating: Employees/Vendors/Projects/Payroll/Payroll Reports require view_payroll; Payroll actions (create checks, unpay, retries) require modify_payroll; Time Exceptions + Time Entry Report require view_time_reports or view_payroll; Shipments + Shipment Verification Report require see_shipments; Settings requires view_payroll; Access-control panel inside Settings requires is_super_admin.
+- Gating: Employees/Vendors/Projects/Payroll/Payroll Reports require view_payroll; Payroll actions (create checks, unpay, retries) require modify_payroll; Review Time Entries + Time Entries Report require view_time_reports or view_payroll; Shipments + Shipment Verification Report require see_shipments; Settings requires view_payroll; Access-control panel inside Settings requires is_super_admin.
 - Timesheets: super admins, view_payroll, and view_all_timesheets can see all timesheets; other admins only see timesheets they created or are assigned/shared to.
 - Admin Home is available to any desktop_access user, but cards/actions hide or disable if the user lacks the underlying permission.
 
@@ -147,7 +147,7 @@
 - Notifications feed (in-app).
 
 #### Dashboard Tiles
-- Time Exceptions: count of open/unreviewed exceptions; links to Time Exceptions report; visible with view_time_reports or view_payroll.
+- Time Exceptions: count of open/unreviewed exceptions; links to Review Time Entries; visible with view_time_reports or view_payroll.
 - Missing QBO Links: count of employees/vendors/projects missing QBO IDs or flagged needs_qbo_sync; links to the relevant list; visible with view_payroll.
 - Shipments Ready for Pickup: count of shipments in status "Cleared - Ready for Pickup"; links to Shipments board filtered; visible with see_shipments.
 - Payroll Run Due: shows current pay period end date and count of unpaid entries; links to Payroll; visible with view_payroll.
@@ -224,8 +224,8 @@
 - Templates optional.
 
 ### Time Exceptions
-- Filters by employee, project, category, date range.
-- List is grouped by category (auto clock-out, geofence, time discrepancies including time vs punch); category filter narrows the groups shown.
+- Exceptions surface as flags inside Review Time Entries; there is no standalone exceptions report.
+- Categories include auto clock-out, geofence, and time discrepancies (including time vs punch).
 - Review modal for approve/modify/reject (modify_time required); this is the field-review step. Payroll approval is separate and requires approve_time (payroll permissions). Approve requires a note when the entry has discrepancies or was manually modified; modify/reject always require a note.
 - All review actions recorded in an audit trail (who/when/what changed).
 - Exceptions include punch-based flags and time-entry vs punch discrepancies.
@@ -235,7 +235,7 @@
 - Payroll eligibility: all time entries require field review (resolved_status != open or resolved=1); entries with exceptions require approved/modified review. Payroll approval still requires approve_time (payroll permissions). Verify does not affect payroll eligibility.
 - Audit trail storage: time_exception_actions with source_type `punch` or `time_entry`, action (approve/modify/reject/resolve), actor, note, and before/after snapshots; retained for 1 year.
 
-### Time Entry Report
+### Review Time Entries
 - Filters by employee, project, date range.
 - Manual time entry create (single-day; start/end times required; hours computed from times) requires a change note.
 - Manual time entry edit requires a change note; edits recalc total_pay using the current employee rate.
@@ -247,17 +247,22 @@
 - Link entries to punches and show verification state.
 - Show field review status (pending/approved/modified/rejected) with reviewer + reviewed_at, plus payroll approval status (pending/approved) with approver + approved_at in the report.
 - Weekly approval required: after field review, a user with approve_time must approve all entries in the pay period before payroll can run.
-- Approval actions live in the Time Entry Report with per-row approve and "Approve all" for clean entries (only after field review).
-- Bulk approve skips entries that require a note or are still awaiting field review; those must be approved individually.
+- Approval actions live in Review Time Entries with per-row approve (only after field review).
 - Approving clean entries requires no note; approving entries with discrepancies or manual edits requires a note.
 - Any edit to a time entry (manual edit or exception modify) resets field review and payroll approval to pending and logs an audit record.
 - All edits recorded in an audit trail with before/after snapshots.
 - Paid entries are locked from edits; corrections require a new manual adjustment entry.
 - Verification (accuracy check) is separate from exception resolution.
 - Verify marks accuracy only (no note required); unverify requires a note and does not change hours or payroll eligibility.
-- Resolve/unresolve require a note; they mark entry exceptions as resolved without editing times. Use Time Exceptions review for approve/modify/reject workflows.
+- Resolve/unresolve require a note; they mark entry exceptions as resolved without editing times. Use Review Time Entries for approve/modify/reject workflows.
 - Note requirements and note fields apply only to users with modify_time; view-only users cannot edit/verify/resolve or submit notes.
 - Audit trail storage: time_exception_actions with source_type `time_entry`, action (create/modify/verify/unverify/resolve/unresolve), actor, note, and before/after snapshots; retained for 1 year.
+
+### Time Entries Report
+- Read-only report for viewing time entries using filters (employee, project, date range).
+- No edit, approve, verify, or resolve actions.
+- Pay fields (Total Pay/Paid/Paid Date) are omitted unless view_payroll is granted.
+- Uses the same time-entry visibility rules as Review Time Entries.
 
 ### Payroll
 - Settings: bank/expense accounts, memo/line templates.
@@ -757,8 +762,8 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Projects.
 - Kiosks (device list/detail; detail shows kiosk ID/device_id for super admins).
 - Shipments Board.
-- Time Exceptions Report.
-- Time Entry Report.
+- Review Time Entries.
+- Time Entries Report.
 - Timesheets (kiosk admin view).
 - Payroll.
 - Payroll Reports.

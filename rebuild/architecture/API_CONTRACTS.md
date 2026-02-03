@@ -18,11 +18,13 @@
 - POST `/api/auth/ui-mode`
 - POST `/api/auth/change-password`
 - POST `/api/auth/change-email`
+- GET  `/api/auth/password-setup` (public setup link validation)
+- POST `/api/auth/password-setup` (public setup link completion)
 - GET  `/api/kiosk/admin/account` [kiosk admin]
 - POST `/api/kiosk/admin/account/email` [kiosk admin]
 - POST `/api/kiosk/admin/account/password` [kiosk admin]
 - GET  `/api/auth/users` [super admin]
-- POST `/api/auth/users` [super admin] (create user)
+- POST `/api/auth/users` [super admin] (create user / send setup link)
 - POST `/api/auth/users/:id/reset-password` [super admin]
 - POST `/api/auth/users/:id/disable` [super admin]
 - POST `/api/auth/users/:id/enable` [super admin]
@@ -165,6 +167,7 @@
 - GET  `/api/shipments/:id/timeline` [see_shipments]
 - GET  `/api/shipments/:id/comment-threads` [see_shipments]
 - POST `/api/shipments/:id/comment-threads` [see_shipments]
+- PATCH `/api/shipments/:id/comment-threads/:threadId` [see_shipments]
 - GET  `/api/shipments/:id/comments` [see_shipments]
 - POST `/api/shipments/:id/comments` [see_shipments]
 - DELETE `/api/shipments/:id/comments/:commentId` [see_shipments]

@@ -30,6 +30,7 @@ let lastTimeEntriesContext = null;
 let payrollReportRuns = [];
 let payrollReportDetailsCache = {};
 let currentPayrollReportRunId = null;
+let auditReportsInitialized = false;
 
 function collectPayrollWarnings(results) {
   if (!Array.isArray(results)) return [];
@@ -2147,8 +2148,8 @@ function formatAuditDetails(row, domain) {
   return summarizeAuditChanges(row.before, row.after);
 }
 
-function renderAuditReportRows(rows, domain) {
-  const tbody = document.getElementById('audit-report-body');
+function renderAuditReportRows({ rows, domain, tbodyId }) {
+  const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   const list = Array.isArray(rows) ? rows : [];
   if (!list.length) {
@@ -2176,69 +2177,81 @@ function renderAuditReportRows(rows, domain) {
   });
 }
 
-function applyAuditReportAccess() {
-  const select = document.getElementById('audit-report-domain');
-  if (!select) return false;
+function hasAuditAccess(requirement) {
   const perms = window.CURRENT_ACCESS_PERMS || {};
   const isSuperAdmin = window.CURRENT_IS_SUPER_ADMIN === true;
-
-  const options = Array.from(select.options);
-  let firstAllowed = null;
-  options.forEach(opt => {
-    const requirement = opt.dataset.requires || '';
-    let allowed = true;
-    if (requirement === 'super_admin') {
-      allowed = isSuperAdmin;
-    } else if (requirement === 'view_payroll') {
-      allowed = perms.view_payroll === true || perms.view_payroll === 'true';
-    } else if (requirement === 'see_shipments') {
-      allowed = perms.see_shipments === true || perms.see_shipments === 'true';
-    } else if (requirement === 'view_time_reports') {
-      allowed =
-        perms.view_time_reports === true ||
-        perms.view_time_reports === 'true' ||
-        perms.view_payroll === true ||
-        perms.view_payroll === 'true';
-    }
-    opt.disabled = !allowed;
-    opt.hidden = !allowed;
-    if (allowed && !firstAllowed) {
-      firstAllowed = opt.value;
-    }
-  });
-
-  if (firstAllowed && select.value !== firstAllowed && select.options[select.selectedIndex]?.disabled) {
-    select.value = firstAllowed;
+  if (!requirement) return true;
+  if (requirement === 'super_admin') return isSuperAdmin;
+  if (requirement === 'view_payroll') {
+    return perms.view_payroll === true || perms.view_payroll === 'true';
   }
-
-  if (!firstAllowed) {
-    select.disabled = true;
-    const msgEl = document.getElementById('audit-report-message');
-    if (msgEl) {
-      msgEl.textContent = 'You do not have access to audit trails.';
-      msgEl.style.color = '#b91c1c';
-    }
-    return false;
+  if (requirement === 'see_shipments') {
+    return perms.see_shipments === true || perms.see_shipments === 'true';
+  }
+  if (requirement === 'view_time_reports') {
+    return (
+      perms.view_time_reports === true ||
+      perms.view_time_reports === 'true' ||
+      perms.view_payroll === true ||
+      perms.view_payroll === 'true'
+    );
   }
   return true;
 }
 
-async function runAuditReport() {
-  const select = document.getElementById('audit-report-domain');
-  const startInput = document.getElementById('audit-report-start');
-  const endInput = document.getElementById('audit-report-end');
-  const actorInput = document.getElementById('audit-report-actor');
-  const entityInput = document.getElementById('audit-report-entity-id');
-  const msgEl = document.getElementById('audit-report-message');
-  if (!select) return;
+function applyAuditSectionAccess({ sectionKey, requirement, messageId }) {
+  const allowed = hasAuditAccess(requirement);
+  const navItem = document.querySelector(`.nav-item[data-section="${sectionKey}"]`);
+  const section = document.getElementById(`section-${sectionKey}`);
+  const dashboardButtons = document.querySelectorAll(
+    `[data-dashboard-link="${sectionKey}"]`
+  );
+  if (!allowed) {
+    if (navItem) navItem.remove();
+    dashboardButtons.forEach(btn => btn.remove());
+    if (section && section.classList.contains('active')) {
+      section.classList.remove('active');
+    }
+    if (section) section.remove();
+    return false;
+  }
+  dashboardButtons.forEach(btn => btn.classList.remove('hidden'));
+  if (messageId) {
+    const msgEl = document.getElementById(messageId);
+    if (msgEl) {
+      msgEl.textContent = '';
+      msgEl.style.color = '';
+    }
+  }
+  return true;
+}
 
-  if (msgEl) msgEl.textContent = 'Loading audit log...';
+async function runAuditReport(config) {
+  const {
+    domain,
+    startId,
+    endId,
+    actorId,
+    entityId,
+    messageId,
+    tbodyId,
+    domainSelectId,
+    domainOverrides
+  } = config;
 
-  const domain = select.value || 'time_entries';
-  const start = startInput?.value || '';
-  const end = endInput?.value || '';
-  const actor = actorInput?.value?.trim() || '';
-  const entityId = entityInput?.value?.trim() || '';
+  const msgEl = document.getElementById(messageId);
+  if (msgEl) {
+    msgEl.textContent = 'Loading audit log...';
+    msgEl.style.color = '';
+  }
+
+  const start = document.getElementById(startId)?.value || '';
+  const end = document.getElementById(endId)?.value || '';
+  const actor = document.getElementById(actorId)?.value?.trim() || '';
+  const entity = document.getElementById(entityId)?.value?.trim() || '';
+  const domainSelect = domainSelectId ? document.getElementById(domainSelectId) : null;
+  const resolvedDomain = domainSelect ? domainSelect.value : domain;
+  const domainKey = domainOverrides?.[resolvedDomain] || resolvedDomain;
 
   const params = new URLSearchParams();
   if (start) params.set('start', start);
@@ -2246,14 +2259,15 @@ async function runAuditReport() {
   if (actor) params.set('actor', actor);
 
   let url = '';
-  if (domain === 'time_entries') {
-    if (entityId) params.set('entry_id', entityId);
+  let renderDomain = domainKey;
+  if (domainKey === 'time_entries') {
+    if (entity) params.set('entry_id', entity);
     url = `/api/reports/time-entry-audit?${params.toString()}`;
-  } else if (domain === 'payroll_runs') {
+  } else if (domainKey === 'payroll_runs') {
     url = `/api/reports/payroll-audit?${params.toString()}`;
   } else {
-    params.set('domain', domain);
-    if (entityId) params.set('entity_id', entityId);
+    params.set('domain', domainKey);
+    if (entity) params.set('entity_id', entity);
     url = `/api/reports/audit-log?${params.toString()}`;
   }
 
@@ -2262,7 +2276,7 @@ async function runAuditReport() {
     const rows = Array.isArray(data)
       ? data
       : (data && Array.isArray(data.rows) ? data.rows : []);
-    renderAuditReportRows(rows, domain);
+    renderAuditReportRows({ rows, domain: renderDomain, tbodyId });
     if (msgEl) {
       msgEl.textContent = '';
       msgEl.style.color = '';
@@ -2272,51 +2286,136 @@ async function runAuditReport() {
       msgEl.textContent = `Failed to load audit log: ${err.message || err}`;
       msgEl.style.color = '#b91c1c';
     }
-    const tbody = document.getElementById('audit-report-body');
+    const tbody = document.getElementById(tbodyId);
     if (tbody) {
       tbody.innerHTML = '<tr><td colspan="6">(error loading audit log)</td></tr>';
     }
   }
 }
 
-function initAuditReport() {
-  const form = document.getElementById('audit-report-form');
+function initAuditReport(config) {
+  const form = document.getElementById(config.formId);
   if (!form || form.dataset.bound) return;
   form.dataset.bound = '1';
-  const runBtn = document.getElementById('audit-report-run');
-  const resetBtn = document.getElementById('audit-report-reset');
-  const select = document.getElementById('audit-report-domain');
 
-  const accessOk = applyAuditReportAccess();
-  if (!accessOk) return;
+  const runBtn = document.getElementById(config.runId);
+  const resetBtn = document.getElementById(config.resetId);
+  const domainSelect = config.domainSelectId
+    ? document.getElementById(config.domainSelectId)
+    : null;
 
-  if (runBtn) {
-    runBtn.addEventListener('click', () => runAuditReport());
-  }
-  if (form) {
-    form.addEventListener('submit', evt => {
-      evt.preventDefault();
-      runAuditReport();
-    });
-  }
+  const run = () => runAuditReport(config);
+
+  if (runBtn) runBtn.addEventListener('click', run);
+  form.addEventListener('submit', evt => {
+    evt.preventDefault();
+    run();
+  });
   if (resetBtn) {
     resetBtn.addEventListener('click', () => {
-      const startInput = document.getElementById('audit-report-start');
-      const endInput = document.getElementById('audit-report-end');
-      const actorInput = document.getElementById('audit-report-actor');
-      const entityInput = document.getElementById('audit-report-entity-id');
+      const startInput = document.getElementById(config.startId);
+      const endInput = document.getElementById(config.endId);
+      const actorInput = document.getElementById(config.actorId);
+      const entityInput = document.getElementById(config.entityId);
       if (startInput) startInput.value = '';
       if (endInput) endInput.value = '';
       if (actorInput) actorInput.value = '';
       if (entityInput) entityInput.value = '';
-      runAuditReport();
+      run();
     });
   }
-  if (select) {
-    select.addEventListener('change', () => runAuditReport());
+  if (domainSelect) {
+    domainSelect.addEventListener('change', run);
   }
 
-  runAuditReport();
+  run();
+}
+
+function initAuditReports() {
+  if (auditReportsInitialized) return;
+  auditReportsInitialized = true;
+  applyAuditSectionAccess({
+    sectionKey: 'audit-time-report',
+    requirement: 'view_time_reports',
+    messageId: 'audit-time-message'
+  });
+  applyAuditSectionAccess({
+    sectionKey: 'audit-payroll-report',
+    requirement: 'view_payroll',
+    messageId: 'audit-payroll-message'
+  });
+  applyAuditSectionAccess({
+    sectionKey: 'audit-ops-report',
+    requirement: 'see_shipments',
+    messageId: 'audit-ops-message'
+  });
+  applyAuditSectionAccess({
+    sectionKey: 'audit-security-report',
+    requirement: 'super_admin',
+    messageId: 'audit-security-message'
+  });
+
+  initAuditReport({
+    sectionKey: 'audit-time-report',
+    requirement: 'view_time_reports',
+    formId: 'audit-time-form',
+    runId: 'audit-time-run',
+    resetId: 'audit-time-reset',
+    startId: 'audit-time-start',
+    endId: 'audit-time-end',
+    actorId: 'audit-time-actor',
+    entityId: 'audit-time-entity-id',
+    messageId: 'audit-time-message',
+    tbodyId: 'audit-time-body',
+    domain: 'time_entries'
+  });
+
+  initAuditReport({
+    sectionKey: 'audit-payroll-report',
+    requirement: 'view_payroll',
+    formId: 'audit-payroll-form',
+    runId: 'audit-payroll-run',
+    resetId: 'audit-payroll-reset',
+    startId: 'audit-payroll-start',
+    endId: 'audit-payroll-end',
+    actorId: 'audit-payroll-actor',
+    entityId: 'audit-payroll-entity-id',
+    messageId: 'audit-payroll-message',
+    tbodyId: 'audit-payroll-body',
+    domain: 'payroll_runs'
+  });
+
+  initAuditReport({
+    sectionKey: 'audit-ops-report',
+    requirement: 'see_shipments',
+    formId: 'audit-ops-form',
+    runId: 'audit-ops-run',
+    resetId: 'audit-ops-reset',
+    startId: 'audit-ops-start',
+    endId: 'audit-ops-end',
+    actorId: 'audit-ops-actor',
+    entityId: 'audit-ops-entity-id',
+    messageId: 'audit-ops-message',
+    tbodyId: 'audit-ops-body',
+    domainSelectId: 'audit-ops-domain',
+    domain: 'shipments'
+  });
+
+  initAuditReport({
+    sectionKey: 'audit-security-report',
+    requirement: 'super_admin',
+    formId: 'audit-security-form',
+    runId: 'audit-security-run',
+    resetId: 'audit-security-reset',
+    startId: 'audit-security-start',
+    endId: 'audit-security-end',
+    actorId: 'audit-security-actor',
+    entityId: 'audit-security-entity-id',
+    messageId: 'audit-security-message',
+    tbodyId: 'audit-security-body',
+    domainSelectId: 'audit-security-domain',
+    domain: 'access'
+  });
 }
 
 function csvEscape(value) {

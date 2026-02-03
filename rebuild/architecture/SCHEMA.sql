@@ -23,6 +23,12 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT NOT NULL,
   password_hash TEXT NOT NULL,
+  password_reset_token_hash TEXT,
+  password_reset_token_expires_at TEXT,
+  password_reset_token_used_at TEXT,
+  password_reset_token_created_at TEXT,
+  password_reset_token_created_by INTEGER,
+  password_reset_org_id INTEGER,
   created_at TEXT DEFAULT (datetime('now')),
   UNIQUE (email)
 );
@@ -246,6 +252,7 @@ CREATE TABLE IF NOT EXISTS time_punches (
   geo_violation INTEGER NOT NULL DEFAULT 0,
   clock_in_photo_path TEXT,
   device_id TEXT,
+  clock_out_device_id TEXT,
   kiosk_session_id INTEGER,
   foreman_employee_id INTEGER,
   auto_clock_out INTEGER NOT NULL DEFAULT 0,

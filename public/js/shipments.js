@@ -2882,6 +2882,7 @@ const SHIPMENTS_CACHE_KEY = 'avian_shipments_board_cache';
 const SHIPMENTS_ARCHIVED_PREVIEW_CACHE_KEY = 'avian_shipments_archived_preview_cache';
 const SHIPMENTS_QUEUE_KEY = 'avian_shipments_update_queue';
 const SHIPMENTS_COMMENTS_QUEUE_KEY = 'avian_kiosk_shipment_comment_queue_v1';
+const SHIPMENT_COMMENT_UNDO_WINDOW_MS = 5 * 60 * 1000;
 const SHIPMENTS_THREAD_CATEGORIES = [
   { value: 'General', label: 'General' },
   { value: 'Payments', label: 'Payments' },
@@ -7181,15 +7182,12 @@ function renderShipmentThreadList(threads = [], activeThreadId, pendingCounts = 
     );
     const preview = thread.last_comment_body || 'No messages yet.';
     const isActive = Number(thread.id) === Number(activeThreadId);
-    const categoryTag = thread.category
-      ? `<span class="ship-detail-tag">${escapeHTML(thread.category)}</span>`
-      : '';
     const pendingCount = pendingCounts[thread.id] || 0;
     const pendingTag = pendingCount
       ? `<span class="ship-detail-thread-count">${pendingCount}</span>`
       : '';
-    const lastBy = thread.last_comment_by_name
-      ? `by ${thread.last_comment_by_name}`
+    const metaRow = pendingTag
+      ? `<div class="ship-detail-thread-item-meta">${pendingTag}</div>`
       : '';
     return `
       <button
@@ -7202,18 +7200,39 @@ function renderShipmentThreadList(threads = [], activeThreadId, pendingCounts = 
           <span class="ship-detail-thread-item-time">${escapeHTML(when || '')}</span>
         </div>
         <div class="ship-detail-thread-item-preview">${escapeHTML(preview)}</div>
-        <div class="ship-detail-thread-item-meta">
-          ${categoryTag}
-          ${lastBy ? `<span>${escapeHTML(lastBy)}</span>` : ''}
-          ${pendingTag}
-        </div>
+        ${metaRow}
       </button>
     `;
   }).join('');
 }
 
+function getShipmentCommentTimeMs(row) {
+  if (!row) return Number.NaN;
+  const direct = row.created_at_ms;
+  let ms = Number(direct);
+  if (Number.isFinite(ms)) {
+    if (ms > 0 && ms < 1000000000000) {
+      ms = ms * 1000;
+    }
+    return ms;
+  }
+  const raw = row.created_at;
+  if (!raw) return Number.NaN;
+  if (typeof raw === 'number') return raw;
+  const text = String(raw).trim();
+  if (!text) return Number.NaN;
+  if (/^\d{4}-\d{2}-\d{2} /.test(text)) {
+    const normalized = text.replace(' ', 'T') + 'Z';
+    const parsed = Date.parse(normalized);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
 function renderShipmentThreadMessages(comments = [], queued = [], activeThread = null, threads = []) {
   const { id: currentEmpId, name: currentEmpName } = getCurrentVerifierInfo();
+  const isSuperAdmin = window.CURRENT_IS_SUPER_ADMIN === true;
   const generalThreadId = getGeneralThreadId(threads);
   const pendingRows = queued.filter(entry => {
     if (!activeThread) return false;
@@ -7224,17 +7243,21 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
       return generalThreadId && Number(activeThread.id) === Number(generalThreadId);
     }
     return !entry.thread_id;
-  }).map(entry => ({
-    body: entry.body,
-    created_at: entry.queued_at,
-    pending: true,
-    created_by: entry.created_by || currentEmpId || null,
-    created_by_name: entry.created_by_name || currentEmpName || null
-  }));
+  }).map(entry => {
+    const queuedAtMs = entry.queued_at ? Date.parse(entry.queued_at) : NaN;
+    return {
+      body: entry.body,
+      created_at: entry.queued_at,
+      created_at_ms: Number.isFinite(queuedAtMs) ? queuedAtMs : null,
+      pending: true,
+      created_by: entry.created_by || currentEmpId || null,
+      created_by_name: entry.created_by_name || currentEmpName || null
+    };
+  });
 
   const rows = [...comments, ...pendingRows].sort((a, b) => {
-    const at = new Date(a.created_at || 0).getTime();
-    const bt = new Date(b.created_at || 0).getTime();
+    const at = getShipmentCommentTimeMs(a);
+    const bt = getShipmentCommentTimeMs(b);
     return at - bt;
   });
 
@@ -7243,7 +7266,10 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
   }
 
   return rows.map(row => {
-    const when = formatDateTimeLocal(row.created_at);
+    const createdAtMs = getShipmentCommentTimeMs(row);
+    const when = formatDateTimeLocal(
+      Number.isFinite(createdAtMs) ? createdAtMs : row.created_at
+    );
     const isMine =
       currentEmpId &&
       row.created_by &&
@@ -7257,8 +7283,53 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
     const pendingTag = row.pending
       ? '<span class="ship-detail-tag ship-detail-tag--pending">Pending sync</span>'
       : '';
-    const deleteBtn = !row.pending
-      ? `<button class="btn danger btn-sm" data-comment-delete="${row.id}">Delete</button>`
+    const canUndo = !row.pending &&
+      isMine &&
+      Number.isFinite(createdAtMs) &&
+      (Date.now() - createdAtMs <= SHIPMENT_COMMENT_UNDO_WINDOW_MS);
+    const canDelete = !row.pending && (isMine || isSuperAdmin);
+    const actionItems = [];
+    if (canUndo) {
+      actionItems.push(
+        `<button
+          type="button"
+          class="ship-detail-thread-menu-item"
+          data-comment-action="undo"
+          data-comment-id="${escapeHTML(String(row.id || ''))}"
+          data-comment-created-at-ms="${Number.isFinite(createdAtMs) ? String(createdAtMs) : ''}"
+          data-comment-undo-expire="${Number.isFinite(createdAtMs)
+            ? String(createdAtMs + SHIPMENT_COMMENT_UNDO_WINDOW_MS)
+            : ''}"
+        >Undo send</button>`
+      );
+    }
+    if (canDelete) {
+      actionItems.push(
+        `<button
+          type="button"
+          class="ship-detail-thread-menu-item"
+          data-comment-action="delete"
+          data-comment-id="${escapeHTML(String(row.id || ''))}"
+        >Delete</button>`
+      );
+    }
+    const menu = actionItems.length
+      ? `
+        <div class="ship-detail-thread-menu">
+          <button
+            type="button"
+            class="ship-detail-thread-menu-toggle"
+            aria-label="Comment options"
+            data-comment-menu-toggle="${escapeHTML(String(row.id || ''))}"
+          >&hellip;</button>
+          <div
+            class="ship-detail-thread-menu-popover hidden"
+            data-comment-menu-popover="${escapeHTML(String(row.id || ''))}"
+          >
+            ${actionItems.join('')}
+          </div>
+        </div>
+      `
       : '';
     return `
       <div class="ship-detail-thread-row ${row.pending ? 'pending' : ''} ${isMine ? 'mine' : ''}">
@@ -7272,11 +7343,43 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
             ${pendingTag}
           </div>
           <div class="ship-detail-thread-body">${escapeHTML(row.body || '')}</div>
-          ${deleteBtn ? `<div class="ship-detail-thread-actions">${deleteBtn}</div>` : ''}
+          ${menu}
         </div>
       </div>
     `;
   }).join('');
+}
+
+function isShipmentCommentUndoOpen(createdAtMs) {
+  const ts = Number(createdAtMs);
+  if (!Number.isFinite(ts)) return false;
+  return Date.now() - ts <= SHIPMENT_COMMENT_UNDO_WINDOW_MS;
+}
+
+async function deleteShipmentComment(shipmentId, commentId, options = {}) {
+  const { prompt = true } = options;
+  if (!commentId) return;
+  if (!isOnline()) {
+    alert('Comment deletion requires an online connection.');
+    return;
+  }
+  if (prompt) {
+    const ok = await showYesNoPrompt('Delete this comment?', {
+      yesLabel: 'Delete comment',
+      noLabel: 'Keep it',
+      tone: 'danger'
+    });
+    if (!ok) return;
+  }
+  try {
+    await fetchJSON(
+      `/api/shipments/${encodeURIComponent(shipmentId)}/comments/${encodeURIComponent(commentId)}`,
+      { method: 'DELETE' }
+    );
+    await loadShipmentComments(shipmentId, { preserveSearch: true });
+  } catch (err) {
+    alert('Error deleting comment: ' + err.message);
+  }
 }
 
 function renderShipmentThreadLayout({
@@ -7287,6 +7390,7 @@ function renderShipmentThreadLayout({
   searchTerm = '',
   offline = false
 } = {}) {
+  const { id: currentEmpId } = getCurrentVerifierInfo();
   const pendingCounts = buildShipmentThreadPendingCounts(queued, threads);
   const activeThread = getShipmentThreadById(threads, activeThreadId);
   const isGeneralPlaceholder = !activeThread && !threads.length;
@@ -7306,6 +7410,46 @@ function renderShipmentThreadLayout({
   const headerSubtitle = [createdMeta, createdBy, placeholderNote].filter(Boolean).join(' · ');
   const categoryTag = displayThread && displayThread.category
     ? `<span class="ship-detail-tag">${escapeHTML(displayThread.category)}</span>`
+    : '';
+  const canEditThread = displayThread &&
+    displayThread.id &&
+    currentEmpId &&
+    Number(displayThread.created_by) === Number(currentEmpId);
+  const editDisabled = offline ? 'disabled' : '';
+  const editHint = offline ? 'title="Go online to rename this thread."' : '';
+  const editButton = canEditThread
+    ? `
+      <button
+        id="ship-thread-edit-toggle"
+        type="button"
+        class="ship-detail-thread-edit-btn"
+        ${editDisabled}
+        ${editHint}
+      >Edit</button>
+    `
+    : '';
+  const editForm = canEditThread
+    ? `
+      <form
+        id="ship-thread-edit-form"
+        class="ship-detail-thread-edit-form hidden"
+        data-thread-id="${escapeHTML(String(displayThread.id || ''))}"
+        data-thread-title="${escapeHTML(String(title || ''))}"
+      >
+        <input
+          id="ship-thread-edit-title"
+          type="text"
+          maxlength="80"
+          value="${escapeHTML(String(title || ''))}"
+          placeholder="Thread subject"
+        />
+        <div class="ship-detail-thread-edit-actions">
+          <button type="submit" class="btn primary btn-sm">Save</button>
+          <button type="button" class="btn secondary btn-sm" id="ship-thread-edit-cancel">Cancel</button>
+          <span id="ship-thread-edit-message" class="message"></span>
+        </div>
+      </form>
+    `
     : '';
   const offlineBanner = offline
     ? '<div class="ship-detail-thread-banner">Offline: new threads require an online connection.</div>'
@@ -7364,9 +7508,13 @@ function renderShipmentThreadLayout({
       <div class="ship-detail-thread-pane">
         <div class="ship-detail-thread-header">
           <div class="ship-detail-thread-title">
-            <h4>${escapeHTML(title || '')}</h4>
-            ${categoryTag}
+            <div class="ship-detail-thread-title-main">
+              <h4>${escapeHTML(title || '')}</h4>
+              ${categoryTag}
+            </div>
+            ${editButton}
           </div>
+          ${editForm}
           <div class="ship-detail-thread-sub">${escapeHTML(headerSubtitle || '')}</div>
         </div>
         <div class="ship-detail-thread-messages">
@@ -7534,6 +7682,24 @@ async function createShipmentCommentThread(shipmentId) {
   }
 }
 
+async function updateShipmentCommentThread(shipmentId, threadId, title) {
+  if (!isOnline()) {
+    throw new Error('Go online to rename this thread.');
+  }
+  const trimmedTitle = String(title || '').trim();
+  if (!trimmedTitle) {
+    throw new Error('Thread title required.');
+  }
+  return fetchJSON(
+    `/api/shipments/${encodeURIComponent(shipmentId)}/comment-threads/${encodeURIComponent(threadId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: trimmedTitle })
+    }
+  );
+}
+
 function bindShipmentThreadHandlers(panel, shipmentId, offline = false) {
   const searchInput = panel.querySelector('#ship-thread-search');
   if (searchInput) {
@@ -7590,6 +7756,74 @@ function bindShipmentThreadHandlers(panel, shipmentId, offline = false) {
     });
   });
 
+  const editToggle = panel.querySelector('#ship-thread-edit-toggle');
+  const editForm = panel.querySelector('#ship-thread-edit-form');
+  const editInput = panel.querySelector('#ship-thread-edit-title');
+  const editCancel = panel.querySelector('#ship-thread-edit-cancel');
+  const editMessage = panel.querySelector('#ship-thread-edit-message');
+  const titleBlock = panel.querySelector('.ship-detail-thread-title');
+
+  const closeEdit = () => {
+    if (!editForm) return;
+    editForm.classList.add('hidden');
+    if (titleBlock) titleBlock.classList.remove('hidden');
+    if (editMessage) editMessage.textContent = '';
+  };
+
+  if (editToggle && editForm) {
+    editToggle.addEventListener('click', () => {
+      if (offline) return;
+      editForm.classList.remove('hidden');
+      if (titleBlock) titleBlock.classList.add('hidden');
+      if (editInput) {
+        editInput.value = editForm.dataset.threadTitle || '';
+        editInput.focus();
+        editInput.select();
+      }
+    });
+  }
+
+  if (editCancel) {
+    editCancel.addEventListener('click', () => {
+      closeEdit();
+    });
+  }
+
+  if (editForm) {
+    editForm.addEventListener('submit', async (evt) => {
+      evt.preventDefault();
+      const threadId = editForm.dataset.threadId;
+      const nextTitle = editInput ? editInput.value.trim() : '';
+      if (!nextTitle) {
+        if (editMessage) {
+          editMessage.textContent = 'Subject is required.';
+          editMessage.style.color = 'crimson';
+        }
+        return;
+      }
+      try {
+        if (editMessage) {
+          editMessage.textContent = 'Saving...';
+          editMessage.style.color = '';
+        }
+        await updateShipmentCommentThread(shipmentId, threadId, nextTitle);
+        if (editMessage) {
+          editMessage.textContent = 'Saved.';
+          editMessage.style.color = 'green';
+        }
+        await loadShipmentComments(shipmentId, {
+          activeThreadId: threadId,
+          preserveSearch: true
+        });
+      } catch (err) {
+        if (editMessage) {
+          editMessage.textContent = err.message || 'Failed to rename thread.';
+          editMessage.style.color = 'crimson';
+        }
+      }
+    });
+  }
+
   const form = panel.querySelector('#ship-detail-comment-form');
   if (form) {
     form.addEventListener('submit', async (evt) => {
@@ -7598,30 +7832,71 @@ function bindShipmentThreadHandlers(panel, shipmentId, offline = false) {
     });
   }
 
-  panel.querySelectorAll('button[data-comment-delete]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const commentId = btn.getAttribute('data-comment-delete');
-      if (!commentId) return;
-      if (!isOnline()) {
-        alert('Comment deletion requires an online connection.');
-        return;
-      }
-      const ok = await showYesNoPrompt('Delete this comment?', {
-        yesLabel: 'Delete comment',
-        noLabel: 'Keep it',
-        tone: 'danger'
-      });
-      if (!ok) return;
-      try {
-        await fetchJSON(
-          `/api/shipments/${encodeURIComponent(shipmentId)}/comments/${encodeURIComponent(commentId)}`,
-          { method: 'DELETE' }
-        );
-        await loadShipmentComments(shipmentId, { preserveSearch: true });
-      } catch (err) {
-        alert('Error deleting comment: ' + err.message);
+  const closeCommentMenus = () => {
+    panel.querySelectorAll('.ship-detail-thread-menu-popover').forEach(menu => {
+      menu.classList.add('hidden');
+    });
+  };
+
+  panel.querySelectorAll('.ship-detail-thread-menu-toggle').forEach(btn => {
+    btn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      const menuId = btn.getAttribute('data-comment-menu-toggle');
+      if (!menuId) return;
+      const menu = panel.querySelector(`[data-comment-menu-popover="${menuId}"]`);
+      if (!menu) return;
+      const shouldOpen = menu.classList.contains('hidden');
+      closeCommentMenus();
+      if (shouldOpen) {
+        menu.classList.remove('hidden');
       }
     });
+  });
+
+  if (!panel.dataset.shipDetailMenuBound) {
+    panel.addEventListener('click', (evt) => {
+      if (evt.target.closest('.ship-detail-thread-menu')) return;
+      closeCommentMenus();
+    });
+    panel.dataset.shipDetailMenuBound = '1';
+  }
+
+  panel.querySelectorAll('[data-comment-action]').forEach(btn => {
+    btn.addEventListener('click', async (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      const action = btn.getAttribute('data-comment-action');
+      const commentId = btn.getAttribute('data-comment-id');
+      if (!action || !commentId) return;
+      closeCommentMenus();
+      if (action === 'undo') {
+        const createdAtMs = btn.getAttribute('data-comment-created-at-ms');
+        if (!isShipmentCommentUndoOpen(createdAtMs)) {
+          alert('Undo send is only available for 5 minutes after posting.');
+          return;
+        }
+        await deleteShipmentComment(shipmentId, commentId, { prompt: false });
+        return;
+      }
+      if (action === 'delete') {
+        await deleteShipmentComment(shipmentId, commentId, { prompt: true });
+      }
+    });
+  });
+
+  panel.querySelectorAll('[data-comment-undo-expire]').forEach(btn => {
+    const expiresAt = Number(btn.getAttribute('data-comment-undo-expire'));
+    if (!Number.isFinite(expiresAt)) return;
+    const delay = expiresAt - Date.now();
+    if (delay <= 0) {
+      btn.classList.add('hidden');
+      return;
+    }
+    setTimeout(() => {
+      if (!document.body.contains(btn)) return;
+      btn.classList.add('hidden');
+    }, delay);
   });
 }
 

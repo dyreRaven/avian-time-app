@@ -3,6 +3,7 @@
 
 let editingEmployeeId = null;
 let editingEmployeeIsSuperAdmin = false;
+let editingEmployeeAdminUser = null;
 let currentEmployeeIsActive = true;
 let employeeListStatus = 'active'; // 'active' or 'inactive'
 let employeesTableData = [];
@@ -105,6 +106,267 @@ function forceSuperAdminPermissionChecks() {
     const el = document.getElementById(id);
     if (el) el.checked = true;
   });
+}
+
+function coerceAdminFlag(value) {
+  return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function getAdminUserForEmployee(employeeId) {
+  if (!employeeId) return null;
+  if (typeof window.getAdminUserByEmployeeId === 'function') {
+    return window.getAdminUserByEmployeeId(employeeId);
+  }
+  const cache = window.ADMIN_USERS_CACHE;
+  if (Array.isArray(cache)) {
+    return cache.find(user => Number(user.employee_id) === Number(employeeId)) || null;
+  }
+  return null;
+}
+
+async function loadAdminUserForEmployee(employeeId) {
+  let user = getAdminUserForEmployee(employeeId);
+  if (user || window.CURRENT_IS_SUPER_ADMIN !== true) return user;
+  if (typeof window.refreshAdminUsersCache === 'function') {
+    try {
+      await window.refreshAdminUsersCache();
+    } catch (err) {
+      console.warn('Failed to refresh admin logins', err);
+    }
+    return getAdminUserForEmployee(employeeId);
+  }
+  try {
+    const data = await fetchJSON('/api/auth/users');
+    window.ADMIN_USERS_CACHE = (data && data.users) || [];
+    return getAdminUserForEmployee(employeeId);
+  } catch (err) {
+    console.warn('Failed to load admin logins', err);
+    return user;
+  }
+}
+
+function setEmployeeAdminLoginMessage(text, color) {
+  const msgEl = document.getElementById('employee-admin-login-message');
+  if (!msgEl) return;
+  msgEl.textContent = text || '';
+  msgEl.style.color = color || '';
+}
+
+function updateEmployeeAdminLoginActionLabel() {
+  const saveBtn = document.getElementById('employee-admin-login-save');
+  if (!saveBtn) return;
+  const hasPassword = !!(
+    document.getElementById('employee-admin-login-password')?.value ||
+    document.getElementById('employee-admin-login-password-confirm')?.value
+  );
+  if (hasPassword) {
+    saveBtn.textContent = editingEmployeeAdminUser ? 'Save admin login' : 'Create admin login';
+  } else {
+    saveBtn.textContent = editingEmployeeAdminUser ? 'Resend setup link' : 'Send setup link';
+  }
+}
+
+function updateEmployeeAdminLoginSection({ emp, adminUser } = {}) {
+  const section = document.getElementById('employee-admin-login-section');
+  const statusEl = document.getElementById('employee-admin-login-status');
+  const emailInput = document.getElementById('employee-admin-login-email');
+  const passwordInput = document.getElementById('employee-admin-login-password');
+  const confirmInput = document.getElementById('employee-admin-login-password-confirm');
+  const saveBtn = document.getElementById('employee-admin-login-save');
+
+  if (!section) return;
+
+  if (window.CURRENT_IS_SUPER_ADMIN !== true) {
+    section.classList.add('hidden');
+    return;
+  }
+
+  section.classList.remove('hidden');
+  editingEmployeeAdminUser = adminUser || null;
+
+  if (statusEl) {
+    let statusText = 'No admin login yet.';
+    let status = 'none';
+    if (adminUser) {
+      const enabled = coerceAdminFlag(adminUser.login_enabled);
+      const isSuper = coerceAdminFlag(adminUser.is_super_admin);
+      const setupPending = coerceAdminFlag(adminUser.password_setup_pending);
+      if (!enabled) {
+        statusText = `Login disabled for ${adminUser.email || 'this user'}.`;
+        status = 'disabled';
+      } else if (setupPending) {
+        statusText = `Setup link sent to ${adminUser.email || 'this user'}.`;
+        status = 'pending';
+      } else if (!isSuper) {
+        statusText = 'Login blocked (not super admin).';
+        status = 'blocked';
+      } else {
+        statusText = `Login enabled for ${adminUser.email || 'this user'}.`;
+        status = 'enabled';
+      }
+    }
+    statusEl.textContent = statusText;
+    statusEl.dataset.status = status;
+  }
+
+  if (emailInput) {
+    const fallbackEmail =
+      document.getElementById('edit-employee-email')?.value ||
+      (emp && emp.email) ||
+      '';
+    if (adminUser && adminUser.email) {
+      emailInput.value = adminUser.email;
+      emailInput.readOnly = true;
+      emailInput.classList.add('readonly-field');
+    } else {
+      emailInput.readOnly = false;
+      emailInput.classList.remove('readonly-field');
+      emailInput.value = fallbackEmail;
+    }
+  }
+
+  if (passwordInput) passwordInput.value = '';
+  if (confirmInput) confirmInput.value = '';
+  setEmployeeAdminLoginMessage('', '');
+  updateEmployeeAdminLoginActionLabel();
+}
+
+async function refreshEmployeeAdminLoginSection(emp) {
+  if (window.CURRENT_IS_SUPER_ADMIN !== true) {
+    const section = document.getElementById('employee-admin-login-section');
+    if (section) section.classList.add('hidden');
+    return;
+  }
+  if (!emp || !emp.id) {
+    updateEmployeeAdminLoginSection({ emp, adminUser: null });
+    return;
+  }
+  const adminUser = await loadAdminUserForEmployee(emp.id);
+  updateEmployeeAdminLoginSection({ emp, adminUser });
+}
+
+function clearEmployeeAdminLoginSection() {
+  editingEmployeeAdminUser = null;
+  const section = document.getElementById('employee-admin-login-section');
+  const statusEl = document.getElementById('employee-admin-login-status');
+  const emailInput = document.getElementById('employee-admin-login-email');
+  const passwordInput = document.getElementById('employee-admin-login-password');
+  const confirmInput = document.getElementById('employee-admin-login-password-confirm');
+  const saveBtn = document.getElementById('employee-admin-login-save');
+
+  if (section && window.CURRENT_IS_SUPER_ADMIN !== true) {
+    section.classList.add('hidden');
+  }
+  if (statusEl) {
+    statusEl.textContent = '';
+    statusEl.dataset.status = 'none';
+  }
+  if (emailInput) {
+    emailInput.value = '';
+    emailInput.readOnly = false;
+    emailInput.classList.remove('readonly-field');
+  }
+  if (passwordInput) passwordInput.value = '';
+  if (confirmInput) confirmInput.value = '';
+  if (saveBtn) saveBtn.textContent = 'Send setup link';
+  setEmployeeAdminLoginMessage('', '');
+}
+
+async function saveEmployeeAdminLogin() {
+  const saveBtn = document.getElementById('employee-admin-login-save');
+  const emailInput = document.getElementById('employee-admin-login-email');
+  const passwordInput = document.getElementById('employee-admin-login-password');
+  const confirmInput = document.getElementById('employee-admin-login-password-confirm');
+  const desktopAccessCheckbox = document.getElementById('edit-employee-desktop-access');
+
+  if (!saveBtn || !emailInput) return;
+  if (!editingEmployeeId) {
+    setEmployeeAdminLoginMessage('No employee selected.', 'crimson');
+    return;
+  }
+  if (window.CURRENT_IS_SUPER_ADMIN !== true) {
+    setEmployeeAdminLoginMessage('Super admin access required.', 'crimson');
+    return;
+  }
+
+  const email = String(emailInput.value || '').trim();
+  const password = passwordInput ? String(passwordInput.value || '') : '';
+  const confirm = confirmInput ? String(confirmInput.value || '') : '';
+  const sendInvite = !password && !confirm;
+  const hasDesktop = desktopAccessCheckbox ? !!desktopAccessCheckbox.checked : false;
+
+  if (!email) {
+    setEmployeeAdminLoginMessage('Login email is required.', '#b45309');
+    return;
+  }
+  if (!currentEmployeeIsActive || !hasDesktop) {
+    setEmployeeAdminLoginMessage(
+      'Employee must be active with desktop access before creating a login.',
+      '#b45309'
+    );
+    return;
+  }
+  if (!sendInvite && (password || confirm)) {
+    if (password !== confirm) {
+      setEmployeeAdminLoginMessage('Passwords do not match.', 'crimson');
+      return;
+    }
+    if (password.length < 8) {
+      setEmployeeAdminLoginMessage('Password must be at least 8 characters.', '#b45309');
+      return;
+    }
+  }
+
+  saveBtn.disabled = true;
+  setEmployeeAdminLoginMessage(sendInvite ? 'Sending setup link…' : 'Saving admin login…', '#6b7280');
+
+  try {
+    const payload = {
+      email,
+      employee_id: editingEmployeeId
+    };
+    if (password) payload.password = password;
+    if (sendInvite) payload.send_invite = true;
+    await fetchJSON('/api/auth/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (passwordInput) passwordInput.value = '';
+    if (confirmInput) confirmInput.value = '';
+    setEmployeeAdminLoginMessage(sendInvite ? 'Setup link sent.' : 'Admin login saved.', 'green');
+    updateEmployeeAdminLoginActionLabel();
+
+    if (typeof window.refreshAdminUsersCache === 'function') {
+      try {
+        await window.refreshAdminUsersCache({ render: true });
+      } catch (err) {
+        console.warn('Failed to refresh admin accounts after save', err);
+      }
+    }
+
+    const adminUser = getAdminUserForEmployee(editingEmployeeId);
+    if (adminUser && coerceAdminFlag(adminUser.login_enabled) && coerceAdminFlag(adminUser.is_super_admin)) {
+      editingEmployeeIsSuperAdmin = true;
+      forceSuperAdminPermissionChecks();
+      const editBtn = document.getElementById('employee-edit-edit');
+      const isViewMode = editBtn && editBtn.textContent.trim() === 'Edit';
+      setEmployeeInputsReadOnly(!!isViewMode);
+    }
+
+    updateEmployeeAdminLoginSection({
+      emp: { id: editingEmployeeId, email },
+      adminUser
+    });
+
+    await loadEmployeesTable();
+    await refreshTimesheetAdminsIfAvailable();
+  } catch (err) {
+    setEmployeeAdminLoginMessage(err?.message || 'Failed to save admin login.', 'crimson');
+  } finally {
+    saveBtn.disabled = false;
+  }
 }
 
 function getSuggestionDismissKey(orgId, empId) {
@@ -495,7 +757,7 @@ function renderEmployeesTable(filterTerm = '') {
     return;
   }
 
-  const hasAllOverlordPerms = emp => {
+  const hasAllSuperAdminPerms = emp => {
     const isOn = value => value === true || value === 1 || value === '1' || value === 'true';
     if (isOn(emp.is_super_admin)) return true;
     return (
@@ -521,10 +783,10 @@ function renderEmployeesTable(filterTerm = '') {
     const nameBadge = languageMissing
       ? ' <span class="pill pill-warn" title="Language missing; defaulting to English">Language missing</span>'
       : '';
-    const overlordBadge = hasAllOverlordPerms(emp)
-      ? '<span class="overlord-crown" title="Overlord permissions">♛</span> '
+    const superAdminBadge = hasAllSuperAdminPerms(emp)
+      ? '<span class="super-admin-crown" title="Super Admin permissions">♛</span> '
       : '';
-    const displayName = `${overlordBadge}${emp.name || ''}${nameBadge}`;
+    const displayName = `${superAdminBadge}${emp.name || ''}${nameBadge}`;
     const qboStatus =
       emp.needs_qbo_sync || (!emp.employee_qbo_id && !emp.vendor_qbo_id)
         ? 'Needs link'
@@ -711,14 +973,18 @@ function renderPendingEmployees() {
 async function loadEmployeesForSelect() {
   const teEmployeeSelect = document.getElementById('te-employee');
   const filterEmployeeSelect = document.getElementById('te-filter-employee');
+  const reportEmployeeSelect = document.getElementById('ter-filter-employee');
 
-  if (!teEmployeeSelect && !filterEmployeeSelect) return;
+  if (!teEmployeeSelect && !filterEmployeeSelect && !reportEmployeeSelect) return;
 
   if (teEmployeeSelect) {
     teEmployeeSelect.innerHTML = '<option value="">(select employee)</option>';
   }
   if (filterEmployeeSelect) {
     filterEmployeeSelect.innerHTML = '<option value="">(all employees)</option>';
+  }
+  if (reportEmployeeSelect) {
+    reportEmployeeSelect.innerHTML = '<option value="">(all employees)</option>';
   }
 
   try {
@@ -737,6 +1003,13 @@ async function loadEmployeesForSelect() {
         opt2.value = emp.id;
         opt2.textContent = emp.name;
         filterEmployeeSelect.appendChild(opt2);
+      }
+
+      if (reportEmployeeSelect) {
+        const opt3 = document.createElement('option');
+        opt3.value = emp.id;
+        opt3.textContent = emp.name;
+        reportEmployeeSelect.appendChild(opt3);
       }
     });
   } catch (err) {
@@ -1026,6 +1299,7 @@ function openEmployeeModal(emp) {
   
   if (!emp) return;
 
+  clearEmployeeAdminLoginSection();
   editingEmployeeId = emp.id;
   editingEmployeeIsSuperAdmin = !!emp.is_super_admin;
   currentEmployeeIsActive = emp.active !== 0 && emp.active !== false;
@@ -1149,6 +1423,9 @@ function openEmployeeModal(emp) {
   // Start in view mode
   enterEmployeeViewMode();
   updateActiveToggleButtonLabel();
+  refreshEmployeeAdminLoginSection(emp).catch(err => {
+    console.warn('Failed to load admin login status', err);
+  });
 
   if (modal) modal.classList.remove('hidden');
   if (backdrop) backdrop.classList.remove('hidden');
@@ -1353,6 +1630,7 @@ function closeEmployeeEditModal() {
   editingEmployeeIsSuperAdmin = false;
   editingEmployeeOriginalRate = null;
   editingEmployeeOriginalNameOnChecks = '';
+  editingEmployeeAdminUser = null;
 
   const modal = document.getElementById('employee-edit-modal');
   const backdrop = document.getElementById('employee-edit-backdrop');
@@ -1370,6 +1648,7 @@ function closeEmployeeEditModal() {
   if (pinStatusEl) {
     pinStatusEl.textContent = '';
   }
+  clearEmployeeAdminLoginSection();
 
   // Reset modal back to view mode for next time
   enterEmployeeViewMode();
@@ -1497,6 +1776,9 @@ function initEmployeeModalControls() {
   const saveBtn     = document.getElementById('employee-edit-save');    // if you still have a separate Save button
   const toggleBtn   = document.getElementById('employee-edit-toggle-active');
   const photoDeleteBtn = document.getElementById('employee-photo-delete');
+  const adminLoginSaveBtn = document.getElementById('employee-admin-login-save');
+  const adminLoginPassword = document.getElementById('employee-admin-login-password');
+  const adminLoginPasswordConfirm = document.getElementById('employee-admin-login-password-confirm');
 
   // Close actions
   [closeBtn, xBtn, cancelBtn].forEach(btn => {
@@ -1544,6 +1826,18 @@ function initEmployeeModalControls() {
     photoDeleteBtn.addEventListener('click', () => {
       deleteEmployeePhotoFromModal();
     });
+  }
+
+  if (adminLoginSaveBtn) {
+    adminLoginSaveBtn.addEventListener('click', () => {
+      saveEmployeeAdminLogin();
+    });
+  }
+  if (adminLoginPassword) {
+    adminLoginPassword.addEventListener('input', updateEmployeeAdminLoginActionLabel);
+  }
+  if (adminLoginPasswordConfirm) {
+    adminLoginPasswordConfirm.addEventListener('input', updateEmployeeAdminLoginActionLabel);
   }
 }
 

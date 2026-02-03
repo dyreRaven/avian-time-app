@@ -1,5 +1,28 @@
 # Change Log
 
+- 2026-02-03: Renamed the top-level role label to Super Admin, including existing data.
+- 2026-02-03: Shipment comment delete is now enforced server-side for creators (super admins can override).
+- 2026-02-03: Shipment comment undo-send timing now uses server timestamps to avoid timezone drift.
+- 2026-02-03: Shipment comment thread accents now use green instead of purple.
+- 2026-02-03: Removed category pills and creator names from shipment comment thread list items.
+- 2026-02-03: Thread creators can rename shipment comment subjects.
+- 2026-02-03: Shipment comment delete is now limited to your own messages.
+- 2026-02-03: Shipment comments now use an action menu with a 5-minute undo-send window.
+- 2026-02-03: Made the shipment comment delete action visually subtle.
+- 2026-02-03: Fixed shipment detail comments failing to reload after posting a message.
+- 2026-02-03: Rounded the shipment detail Comments message box to match form styling.
+- 2026-02-03: Shipment detail Comments panel now stretches to fill the modal height on desktop.
+- 2026-02-03: Employee details now include an admin login section to assign or enable super admin access.
+- 2026-02-03: Admin Accounts settings were cleaned up with clearer grouping, simplified actions, and a streamlined create/update flow.
+- 2026-02-03: Admin Accounts no longer includes the kiosk PIN toggle; kiosk access and PINs are managed in Employee Details.
+- 2026-02-03: Admin login creation now supports emailing a setup link so new admins can set their own passwords.
+- 2026-02-03: Moved Review Time Entries into the Time & Pay nav and removed the Time Exceptions report section.
+- 2026-02-03: Added a read-only Time Entries Report under Reports for filtered viewing.
+- 2026-02-03: Removed the “Approve all clean entries” action from Review Time Entries.
+- 2026-02-03: Moved the Review Time Entries export button to the top-right above the table.
+- 2026-02-03: Added an “Export” label to the Review Time Entries export button.
+- 2026-02-03: Made the Review Time Entries “Run Report” action use the green primary style.
+- 2026-02-03: Time entry detail punches now show separate clock-in and clock-out device IDs.
 - 2026-02-02: Time entry detail panels now show punch device IDs, and timesheets list/detail surfaces the device ID for open sessions.
 - 2026-02-02: Shipment cards and shipment document details now warn when required Shippers Invoice or BOL documents are missing.
 - 2026-02-02: Restored the admin dashboard overview with onboarding checklist, quick stats, and quick links.
@@ -149,7 +172,7 @@
 - 2026-01-30: Added a Permissions Help page in the admin console with a quick reference for access toggles and permission gates.
 - 2026-01-30: Clarified employee permission descriptions in the employee details modal on the admin console.
 - 2026-01-30: Added recommended role templates and a one-click creator in Settings; clarified role title vs. role template in the employee modal.
-- 2026-01-30: Added an Overlord role template and assign it to the org creator during bootstrap.
+- 2026-01-30: Added a Super Admin role template and assign it to the org creator during bootstrap.
 - 2026-01-30: Seed recommended role templates during bootstrap so new orgs start with editable presets.
 - 2026-01-30: Blocked kiosk admins from starting a new timesheet for a project when one is already open on the same tablet (with a warning message).
 - 2026-01-30: Start-timesheet modal now keeps the dialog open and shows the duplicate-timesheet warning inline.
@@ -855,4 +878,4 @@
 - 2025-01-XX: Clarified org timezone single source (orgs), storage_daily_late_fee_default default null/0, and bootstrap admin worker_timekeeping default.
 - 2025-01-XX: Added migration scaffolding (schema_migrations + 0001 foundations), seed script defaults, and DB_PATH config doc updates.
 - 2026-02-02: Payroll approval no longer requires field review completion; approvals can proceed with optional warnings.
-- 2026-02-02: Added an Audit Trails report in Reports with domain filters (time entries, payroll, shipments, access/security, settings, and more).
+- 2026-02-02: Added dedicated Audit Reports in Reports (Time, Payroll, Operations, Security) with domain-focused filters.

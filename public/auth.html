@@ -111,6 +111,45 @@
               </div>
             </form>
 
+            <!-- Password setup form (invite/reset) -->
+            <form id="setup-form" class="stack-vert hidden" autocomplete="off">
+              <div class="auth-email-row">
+                <div class="auth-email-meta">
+                  <span class="auth-email-label">Email</span>
+                  <span id="setup-email-display" class="auth-email-value"></span>
+                </div>
+              </div>
+
+              <label>
+                <span class="field-label">New password</span>
+                <input
+                  id="setup-password"
+                  type="password"
+                  minlength="8"
+                  required
+                  autocomplete="new-password"
+                />
+              </label>
+
+              <label>
+                <span class="field-label">Confirm password</span>
+                <input
+                  id="setup-password-confirm"
+                  type="password"
+                  minlength="8"
+                  required
+                  autocomplete="new-password"
+                />
+              </label>
+
+              <button type="submit" class="btn primary w-full">
+                Set password
+              </button>
+              <button type="button" id="setup-cancel" class="btn secondary w-full">
+                Back to sign in
+              </button>
+            </form>
+
 
             <!-- Bootstrap form (hidden by default) -->
             <form

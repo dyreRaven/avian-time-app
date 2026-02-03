@@ -169,14 +169,18 @@ async function saveProjectFromModal() {
 async function loadProjectsForTimeEntries() {
   const entrySelect = document.getElementById('te-project');
   const filterSelect = document.getElementById('te-filter-project');
+  const reportSelect = document.getElementById('ter-filter-project');
 
-  if (!entrySelect && !filterSelect) return;
+  if (!entrySelect && !filterSelect && !reportSelect) return;
 
   if (entrySelect) {
     entrySelect.innerHTML = '<option value="">(select project)</option>';
   }
   if (filterSelect) {
     filterSelect.innerHTML = '<option value="">(all projects)</option>';
+  }
+  if (reportSelect) {
+    reportSelect.innerHTML = '<option value="">(all projects)</option>';
   }
 
   try {
@@ -200,6 +204,13 @@ async function loadProjectsForTimeEntries() {
         opt2.value = p.id;
         opt2.textContent = label;
         filterSelect.appendChild(opt2);
+      }
+
+      if (reportSelect) {
+        const opt3 = document.createElement('option');
+        opt3.value = p.id;
+        opt3.textContent = label;
+        reportSelect.appendChild(opt3);
       }
     });
   } catch (err) {

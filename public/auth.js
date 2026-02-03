@@ -113,6 +113,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const loginStepEmail = document.getElementById('login-step-email');
   const loginStepPassword = document.getElementById('login-step-password');
   const loginEmailDisplay = document.getElementById('login-email-display');
+  const setupForm = document.getElementById('setup-form');
+  const setupEmailDisplay = document.getElementById('setup-email-display');
+  const setupPasswordInput = document.getElementById('setup-password');
+  const setupPasswordConfirmInput = document.getElementById('setup-password-confirm');
+  const setupCancelBtn = document.getElementById('setup-cancel');
   const bootstrapEmailInput = document.getElementById('bootstrap-email');
   const bootstrapPasswordInput = document.getElementById('bootstrap-password');
   const bootstrapPasswordConfirmInput = document.getElementById('bootstrap-password-confirm');
@@ -125,6 +130,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const deviceKioskBtn = document.getElementById('auth-device-kiosk');
   const deviceChooser = document.getElementById('auth-device');
   const headerText = document.querySelector('.auth-header-text');
+  const urlParams = new URLSearchParams(window.location.search);
+  const setupToken = (urlParams.get('setup') || '').trim();
 
   let mode = 'bootstrap';
   let bootstrapRequired = false;
@@ -300,6 +307,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (loginForm) {
       loginForm.classList.toggle('hidden', mode !== 'login');
     }
+    if (setupForm) {
+      setupForm.classList.toggle('hidden', mode !== 'setup');
+    }
     if (bootstrapForm) {
       bootstrapForm.classList.toggle('hidden', mode !== 'bootstrap');
     }
@@ -316,10 +326,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       toggleBtn.textContent =
         mode === 'login' ? 'Create company admin' : 'Sign in';
     }
+    if (toggleWrap) {
+      toggleWrap.classList.toggle('hidden', mode === 'setup');
+    }
 
     if (mode === 'login') {
       setLoginStep('email');
       setHeader('', '');
+    }
+    if (mode === 'setup') {
+      setHeader('Set your password', 'Finish setting up your admin login.');
     }
     if (mode === 'bootstrap') {
       setBootstrapStep('account');
@@ -396,7 +412,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let requestedUiMode = null;
   const storedDeviceMode = loadDeviceMode();
-  const urlParams = new URLSearchParams(window.location.search);
   const forceDesktopParam = (urlParams.get('force_desktop') || '').toLowerCase();
   if (forceDesktopParam === '1' || forceDesktopParam === 'true') {
     requestedUiMode = 'desktop';
@@ -559,6 +574,91 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  async function initPasswordSetup(token) {
+    if (!token) return false;
+    setMode('setup');
+    if (setupEmailDisplay) setupEmailDisplay.textContent = '';
+    showMessage('Validating setup link...', 'black');
+    try {
+      const data = await fetchJSON(`/api/auth/password-setup?token=${encodeURIComponent(token)}`);
+      if (setupEmailDisplay) setupEmailDisplay.textContent = data?.email || '';
+      showMessage('', '');
+      return true;
+    } catch (err) {
+      console.error('Setup link validation error:', err);
+      setMode('login');
+      setLoginStep('email');
+      setHeader('Sign In', 'Request a new setup link from your admin.');
+      showMessage(err.message || 'Setup link is invalid or expired.', 'red');
+      return false;
+    }
+  }
+
+  if (setupForm) {
+    setupForm.addEventListener('submit', async evt => {
+      evt.preventDefault();
+      if (!setupToken) {
+        showMessage('Setup link is missing.', 'red');
+        return;
+      }
+      if (!setupPasswordInput || !setupPasswordConfirmInput) return;
+      if (!setupPasswordInput.checkValidity()) {
+        setupPasswordInput.reportValidity();
+        return;
+      }
+      if (!setupPasswordConfirmInput.checkValidity()) {
+        setupPasswordConfirmInput.reportValidity();
+        return;
+      }
+      if (setupPasswordInput.value !== setupPasswordConfirmInput.value) {
+        showMessage('Passwords do not match.', 'red');
+        setupPasswordConfirmInput.focus();
+        return;
+      }
+
+      showMessage('Setting password...', 'black');
+      try {
+        const data = await fetchJSON('/api/auth/password-setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: setupToken,
+            password: setupPasswordInput.value,
+            password_confirm: setupPasswordConfirmInput.value
+          })
+        });
+
+        if (setupPasswordInput) setupPasswordInput.value = '';
+        if (setupPasswordConfirmInput) setupPasswordConfirmInput.value = '';
+
+        if (loginEmailInput && data?.email) {
+          loginEmailInput.value = data.email;
+        }
+        const nextUrl = new URL(window.location.href);
+        nextUrl.searchParams.delete('setup');
+        window.history.replaceState({}, document.title, nextUrl.toString());
+
+        setMode('login');
+        setLoginStep('password');
+        showMessage('Password set. Please sign in.', 'green');
+      } catch (err) {
+        console.error('Password setup error:', err);
+        showMessage(err.message || 'Failed to set password.', 'red');
+      }
+    });
+  }
+
+  if (setupCancelBtn) {
+    setupCancelBtn.addEventListener('click', () => {
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.delete('setup');
+      window.history.replaceState({}, document.title, nextUrl.toString());
+      setMode('login');
+      setLoginStep('email', { focus: true });
+      showMessage('');
+    });
+  }
+
   if (bootstrapForm) {
     bootstrapForm.addEventListener('submit', async evt => {
       evt.preventDefault();
@@ -608,6 +708,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   buildTimezoneOptions();
   setDeviceSelection(storedDeviceMode);
+
+  if (setupToken) {
+    await initPasswordSetup(setupToken);
+    return;
+  }
+
   setMode('bootstrap');
 
   try {

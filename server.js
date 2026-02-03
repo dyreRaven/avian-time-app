@@ -2240,6 +2240,50 @@ function normalizeEmail(email) {
   return (email || '').trim().toLowerCase();
 }
 
+const PASSWORD_SETUP_TTL_HOURS = 72;
+
+function hashPasswordSetupToken(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function getRequestBaseUrl(req) {
+  const protoHeader = req.headers['x-forwarded-proto'];
+  const hostHeader = req.headers['x-forwarded-host'];
+  const proto = (protoHeader ? String(protoHeader) : req.protocol || 'http').split(',')[0].trim();
+  const host = (hostHeader ? String(hostHeader) : req.get('host') || '').split(',')[0].trim();
+  if (!host) return '';
+  return `${proto}://${host}`;
+}
+
+async function issuePasswordSetupToken({ userId, orgId, createdBy }) {
+  if (!userId) return null;
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = hashPasswordSetupToken(rawToken);
+  const expiresAt = new Date(Date.now() + PASSWORD_SETUP_TTL_HOURS * 60 * 60 * 1000).toISOString();
+  await dbRun(
+    `
+      UPDATE users
+      SET
+        password_reset_token_hash = ?,
+        password_reset_token_expires_at = ?,
+        password_reset_token_used_at = NULL,
+        password_reset_token_created_at = datetime('now'),
+        password_reset_token_created_by = ?,
+        password_reset_org_id = ?
+      WHERE id = ?
+    `,
+    [tokenHash, expiresAt, createdBy || null, orgId || null, userId]
+  );
+  return { token: rawToken, expiresAt };
+}
+
+function isPasswordSetupTokenExpired(expiresAt) {
+  if (!expiresAt) return false;
+  const ts = Date.parse(expiresAt);
+  if (Number.isNaN(ts)) return false;
+  return ts < Date.now();
+}
+
 const PASSWORD_MIN_LENGTH = 8;
 function validatePassword(password) {
   const value = String(password || '');
@@ -2777,12 +2821,12 @@ app.post('/api/auth/bootstrap', bootstrapRateLimiter, async (req, res) => {
       return res.lastID;
     };
 
-    const overlordAccess = {
+    const superAdminAccess = {
       worker_timekeeping: true,
       desktop_access: true,
       kiosk_admin_access: true
     };
-    const overlordPerms = {
+    const superAdminPerms = {
       see_shipments: true,
       modify_time: true,
       approve_time: true,
@@ -2793,11 +2837,11 @@ app.post('/api/auth/bootstrap', bootstrapRateLimiter, async (req, res) => {
       modify_payroll: true,
       modify_pay_rates: true
     };
-    const overlordTemplateId = await createTemplate({
-      name: 'Overlord',
-      role_title: 'Overlord',
-      access: overlordAccess,
-      permissions: overlordPerms
+    const superAdminTemplateId = await createTemplate({
+      name: 'Super Admin',
+      role_title: 'Super Admin',
+      access: superAdminAccess,
+      permissions: superAdminPerms
     });
 
     await createTemplate({
@@ -2886,7 +2930,7 @@ app.post('/api/auth/bootstrap', bootstrapRateLimiter, async (req, res) => {
         SET permission_template_id = ?, role_title = ?
         WHERE id = ? AND org_id = ?
       `,
-      [overlordTemplateId, 'Overlord', employeeId, orgId]
+      [superAdminTemplateId, 'Super Admin', employeeId, orgId]
     );
 
     await dbRun(
@@ -2972,6 +3016,122 @@ app.post('/api/auth/bootstrap', bootstrapRateLimiter, async (req, res) => {
     }
     console.error('Bootstrap error:', err);
     return res.status(500).json({ error: 'Bootstrap failed.' });
+  }
+});
+
+app.get('/api/auth/password-setup', async (req, res) => {
+  const token = String(req.query.token || '').trim();
+  if (!token) {
+    return res.status(400).json({ error: 'Token is required.' });
+  }
+
+  try {
+    const tokenHash = hashPasswordSetupToken(token);
+    const user = await dbGet(
+      `
+        SELECT
+          id,
+          email,
+          password_reset_token_expires_at AS expires_at,
+          password_reset_token_used_at AS used_at
+        FROM users
+        WHERE password_reset_token_hash = ?
+      `,
+      [tokenHash]
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: 'Setup link is invalid or expired.' });
+    }
+    if (user.used_at) {
+      return res.status(410).json({ error: 'Setup link has already been used.' });
+    }
+    if (isPasswordSetupTokenExpired(user.expires_at)) {
+      return res.status(410).json({ error: 'Setup link has expired.' });
+    }
+
+    return res.json({ ok: true, email: user.email });
+  } catch (err) {
+    console.error('Password setup validation error:', err);
+    return res.status(500).json({ error: 'Failed to validate setup link.' });
+  }
+});
+
+app.post('/api/auth/password-setup', async (req, res) => {
+  const { token, password, password_confirm } = req.body || {};
+  const rawToken = String(token || '').trim();
+  const nextPassword = String(password || '');
+  const confirmPassword = String(password_confirm || '');
+
+  if (!rawToken) {
+    return res.status(400).json({ error: 'Token is required.' });
+  }
+  if (!nextPassword || !confirmPassword) {
+    return res.status(400).json({ error: 'Password and confirmation are required.' });
+  }
+  if (nextPassword !== confirmPassword) {
+    return res.status(400).json({ error: 'Passwords do not match.' });
+  }
+  const passwordErr = validatePassword(nextPassword);
+  if (passwordErr) {
+    return res.status(400).json({ error: passwordErr });
+  }
+
+  try {
+    const tokenHash = hashPasswordSetupToken(rawToken);
+    const user = await dbGet(
+      `
+        SELECT
+          id,
+          email,
+          password_reset_token_expires_at AS expires_at,
+          password_reset_token_used_at AS used_at,
+          password_reset_org_id AS org_id
+        FROM users
+        WHERE password_reset_token_hash = ?
+      `,
+      [tokenHash]
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: 'Setup link is invalid or expired.' });
+    }
+    if (user.used_at) {
+      return res.status(410).json({ error: 'Setup link has already been used.' });
+    }
+    if (isPasswordSetupTokenExpired(user.expires_at)) {
+      return res.status(410).json({ error: 'Setup link has expired.' });
+    }
+
+    const hash = await bcrypt.hash(nextPassword, 10);
+    await dbRun(
+      `
+        UPDATE users
+        SET
+          password_hash = ?,
+          password_reset_token_used_at = datetime('now'),
+          password_reset_token_hash = NULL,
+          password_reset_token_expires_at = NULL,
+          password_reset_token_created_at = NULL,
+          password_reset_token_created_by = NULL,
+          password_reset_org_id = NULL
+        WHERE id = ?
+      `,
+      [hash, user.id]
+    );
+
+    await logAuditEvent({
+      orgId: user.org_id || null,
+      action: 'user.password.setup',
+      entityType: 'user',
+      entityId: user.id,
+      note: 'Password set via setup link.'
+    });
+
+    return res.json({ ok: true, email: user.email });
+  } catch (err) {
+    console.error('Password setup error:', err);
+    return res.status(500).json({ error: 'Failed to set password.' });
   }
 });
 
@@ -3442,7 +3602,18 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
 
     const newHash = await bcrypt.hash(new_password, 10);
     await dbRun(
-      'UPDATE users SET password_hash = ? WHERE id = ?',
+      `
+        UPDATE users
+        SET
+          password_hash = ?,
+          password_reset_token_hash = NULL,
+          password_reset_token_expires_at = NULL,
+          password_reset_token_used_at = NULL,
+          password_reset_token_created_at = NULL,
+          password_reset_token_created_by = NULL,
+          password_reset_org_id = NULL
+        WHERE id = ?
+      `,
       [newHash, user.id]
     );
 
@@ -3537,6 +3708,16 @@ app.get('/api/auth/users', requireAuth, requireSuperAdmin, async (req, res) => {
           uo.employee_id,
           uo.is_super_admin,
           uo.login_enabled,
+          CASE
+            WHEN u.password_reset_token_hash IS NOT NULL
+              AND u.password_reset_token_used_at IS NULL
+              AND (
+                u.password_reset_token_expires_at IS NULL
+                OR u.password_reset_token_expires_at > datetime('now')
+              )
+            THEN 1
+            ELSE 0
+          END AS password_setup_pending,
           e.name AS employee_name,
           IFNULL(e.active, 1) AS employee_active,
           IFNULL(e.desktop_access, 0) AS desktop_access
@@ -3582,7 +3763,21 @@ app.post('/api/auth/users/:id/reset-password', requireAuth, requireSuperAdmin, a
     }
 
     const hash = await bcrypt.hash(String(new_password), 10);
-    await dbRun('UPDATE users SET password_hash = ? WHERE id = ?', [hash, userId]);
+    await dbRun(
+      `
+        UPDATE users
+        SET
+          password_hash = ?,
+          password_reset_token_hash = NULL,
+          password_reset_token_expires_at = NULL,
+          password_reset_token_used_at = NULL,
+          password_reset_token_created_at = NULL,
+          password_reset_token_created_by = NULL,
+          password_reset_org_id = NULL
+        WHERE id = ?
+      `,
+      [hash, userId]
+    );
 
     const revoked = await revokeUserSessions({ userId });
     await logAuditEvent({
@@ -3742,7 +3937,7 @@ app.post('/api/auth/users/:id/enable', requireAuth, requireSuperAdmin, async (re
 });
 
 app.post('/api/auth/users', requireAuth, requireSuperAdmin, async (req, res) => {
-  const { email, password, employee_id } = req.body || {};
+  const { email, password, employee_id, send_invite } = req.body || {};
 
   if (!email) {
     return res.status(400).json({ error: 'Email is required.' });
@@ -3751,12 +3946,19 @@ app.post('/api/auth/users', requireAuth, requireSuperAdmin, async (req, res) => 
   const orgId = req.session.orgId;
   const normEmail = normalizeEmail(email);
   const employeeId = employee_id ? Number(employee_id) : null;
+  const wantsInvite = !!send_invite && !password;
   const passwordErr = password ? validatePassword(password) : null;
   if (passwordErr) {
     return res.status(400).json({ error: passwordErr });
   }
 
   try {
+    if (wantsInvite && (!smtpConfigured || !mailFromAddress)) {
+      return res.status(400).json({
+        error: 'Email is not configured. Set a password instead.'
+      });
+    }
+
     if (!employeeId) {
       return res.status(400).json({ error: 'employee_id is required.' });
     }
@@ -3775,27 +3977,41 @@ app.post('/api/auth/users', requireAuth, requireSuperAdmin, async (req, res) => 
       });
     }
 
-    let user = await dbGet('SELECT id FROM users WHERE LOWER(email) = LOWER(?)', [
+    let user = await dbGet('SELECT id, email FROM users WHERE LOWER(email) = LOWER(?)', [
       normEmail
     ]);
+    let createdUser = false;
     if (!user) {
-      if (!password) {
+      if (!password && !wantsInvite) {
         return res
           .status(400)
           .json({ error: 'Password is required for new users.' });
       }
-      const hash = await bcrypt.hash(password, 10);
+      const nextPassword = password || crypto.randomBytes(24).toString('hex');
+      const hash = await bcrypt.hash(nextPassword, 10);
       const userRes = await dbRun(
         'INSERT INTO users (email, password_hash) VALUES (?, ?)',
         [normEmail, hash]
       );
-      user = { id: userRes.lastID };
+      user = { id: userRes.lastID, email: normEmail };
+      createdUser = true;
     } else if (password) {
       const hash = await bcrypt.hash(password, 10);
-      await dbRun('UPDATE users SET password_hash = ? WHERE id = ?', [
-        hash,
-        user.id
-      ]);
+      await dbRun(
+        `
+          UPDATE users
+          SET
+            password_hash = ?,
+            password_reset_token_hash = NULL,
+            password_reset_token_expires_at = NULL,
+            password_reset_token_used_at = NULL,
+            password_reset_token_created_at = NULL,
+            password_reset_token_created_by = NULL,
+            password_reset_org_id = NULL
+          WHERE id = ?
+        `,
+        [hash, user.id]
+      );
     }
 
     const existingForEmployee = await dbGet(
@@ -3863,7 +4079,68 @@ app.post('/api/auth/users', requireAuth, requireSuperAdmin, async (req, res) => 
       }
     });
 
-    return res.json({ ok: true, userId: user.id });
+    let inviteResult = null;
+    if (wantsInvite) {
+      try {
+        const tokenInfo = await issuePasswordSetupToken({
+          userId: user.id,
+          orgId,
+          createdBy: req.session?.userId
+        });
+        if (!tokenInfo) {
+          throw new Error('Failed to create setup link.');
+        }
+        const orgRow = await dbGet('SELECT name FROM orgs WHERE id = ?', [orgId]);
+        const orgName = orgRow?.name || 'your organization';
+        const baseUrl = getRequestBaseUrl(req);
+        const setupUrl = baseUrl ? `${baseUrl}/auth?setup=${tokenInfo.token}` : '';
+        const title = `${orgName} admin login setup`;
+        const bodyLines = [
+          `You have been invited to ${orgName} as an admin.`,
+          '',
+          setupUrl
+            ? `Set your password using this link: ${setupUrl}`
+            : 'Open the Avian sign-in page and use your setup link to set a password.',
+          '',
+          `This link expires in ${PASSWORD_SETUP_TTL_HOURS} hours.`
+        ];
+        inviteResult = await sendEmailNotification({
+          userEmail: normEmail,
+          title,
+          body: bodyLines.join('\n')
+        });
+        if (inviteResult?.status !== 'sent') {
+          throw new Error(inviteResult?.error || 'Email send failed.');
+        }
+        await logAuditEvent({
+          req,
+          orgId,
+          action: createdUser ? 'user.invite.sent' : 'user.invite.resent',
+          entityType: 'user',
+          entityId: user.id,
+          note: inviteResult?.status === 'sent' ? 'Setup link sent.' : inviteResult?.error || ''
+        });
+      } catch (inviteErr) {
+        console.error('Invite send error:', inviteErr);
+        await dbRun(
+          `
+            UPDATE users
+            SET
+              password_reset_token_hash = NULL,
+              password_reset_token_expires_at = NULL,
+              password_reset_token_used_at = NULL,
+              password_reset_token_created_at = NULL,
+              password_reset_token_created_by = NULL,
+              password_reset_org_id = NULL
+            WHERE id = ?
+          `,
+          [user.id]
+        );
+        return res.status(500).json({ error: 'Failed to send setup link.' });
+      }
+    }
+
+    return res.json({ ok: true, userId: user.id, invite: inviteResult });
   } catch (err) {
     console.error('Create user error:', err);
     return res.status(500).json({ error: 'Failed to create user.' });
@@ -6883,7 +7160,21 @@ app.post('/api/kiosk/admin/account/password', async (req, res) => {
     }
 
     const newHash = await bcrypt.hash(new_password, 10);
-    await dbRun('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, ctx.user.id]);
+    await dbRun(
+      `
+        UPDATE users
+        SET
+          password_hash = ?,
+          password_reset_token_hash = NULL,
+          password_reset_token_expires_at = NULL,
+          password_reset_token_used_at = NULL,
+          password_reset_token_created_at = NULL,
+          password_reset_token_created_by = NULL,
+          password_reset_org_id = NULL
+        WHERE id = ?
+      `,
+      [newHash, ctx.user.id]
+    );
     await logAuditEvent({
       orgId: ctx.orgId,
       action: 'auth.password.change',
@@ -13926,6 +14217,7 @@ app.get('/api/time-entries/:id/punches', requireViewTimeReports, async (req, res
           tp.clock_in_local_date,
           tp.clock_out_local_date,
           tp.device_id,
+          tp.clock_out_device_id,
           tp.kiosk_session_id,
           k.name AS kiosk_name,
           k.location AS kiosk_location
@@ -15898,6 +16190,7 @@ app.post('/api/kiosk/punch', async (req, res) => {
         clock_out_lng = ?,
         geo_distance_m = ?,
         geo_violation = ?,
+        clock_out_device_id = ?,
         updated_at = ?
     WHERE id = ? AND org_id = ? AND clock_out_ts IS NULL AND time_entry_id IS NULL
   `;
@@ -15911,6 +16204,7 @@ app.post('/api/kiosk/punch', async (req, res) => {
       lng ?? null,
       geoDistance,
       geoViolation,
+      deviceId || null,
       punchTime,
       open.id,
       orgId
@@ -22108,6 +22402,74 @@ app.post('/api/shipments/:id/comment-threads', async (req, res) => {
   }
 });
 
+app.patch('/api/shipments/:id/comment-threads/:threadId', async (req, res) => {
+  try {
+    const { title } = req.body || {};
+    const trimmedTitle = String(title || '').trim();
+    if (!trimmedTitle) {
+      return res.status(400).json({ error: 'Thread title required.' });
+    }
+
+    const access = await ensureShipmentAccess(req);
+    if (!access.ok) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || 'Not authorized' });
+    }
+
+    const shipmentId = Number(req.params.id);
+    const threadId = Number(req.params.threadId);
+    if (!shipmentId || !threadId) {
+      return res.status(400).json({ error: 'Invalid shipment or thread id.' });
+    }
+
+    const threadRow = await dbGet(
+      `SELECT id, title, created_by
+       FROM shipment_comment_threads
+       WHERE id = ? AND shipment_id = ? AND org_id = ?`,
+      [threadId, shipmentId, access.orgId]
+    );
+    if (!threadRow) {
+      return res.status(404).json({ error: 'Thread not found.' });
+    }
+
+    const editorId = access.employee ? access.employee.id : null;
+    if (!editorId || !threadRow.created_by ||
+      Number(threadRow.created_by) !== Number(editorId)) {
+      return res.status(403).json({ error: 'Only the thread creator can rename this thread.' });
+    }
+
+    await dbRun(
+      `UPDATE shipment_comment_threads
+       SET title = ?, updated_at = datetime('now')
+       WHERE id = ? AND org_id = ?`,
+      [trimmedTitle, threadId, access.orgId]
+    );
+
+    await logAuditEvent({
+      orgId: access.orgId,
+      action: 'shipment.comment_thread.update',
+      entityType: 'shipment',
+      entityId: shipmentId,
+      actorEmployeeId: editorId,
+      actorName: access.employee ? access.employee.name : null,
+      before: {
+        thread_id: threadId,
+        title: threadRow.title || null
+      },
+      after: {
+        thread_id: threadId,
+        title: trimmedTitle
+      }
+    });
+
+    res.json({ ok: true, thread_id: threadId, title: trimmedTitle });
+  } catch (err) {
+    console.error('Error updating shipment comment thread:', err);
+    res.status(500).json({ error: 'Error updating comment thread.' });
+  }
+});
+
 app.get('/api/shipments/:id/comments', async (req, res) => {
 
   try {
@@ -22121,6 +22483,9 @@ app.get('/api/shipments/:id/comments', async (req, res) => {
     if (!shipmentId) {
       return res.status(400).json({ error: 'Invalid shipment id.' });
     }
+    const threadId = req.query && req.query.thread_id
+      ? Number(req.query.thread_id)
+      : null;
     const shipmentRow = await dbGet(
       'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
       [shipmentId, access.orgId]
@@ -22141,7 +22506,10 @@ app.get('/api/shipments/:id/comments', async (req, res) => {
     }
 
     const rows = await dbAll(
-      `SELECT c.*, e.name AS created_by_name
+      `SELECT
+         c.*,
+         e.name AS created_by_name,
+         CAST(strftime('%s', c.created_at) AS INTEGER) * 1000 AS created_at_ms
        FROM shipment_comments c
        LEFT JOIN employees e ON e.id = c.created_by AND e.org_id = c.org_id
        WHERE c.shipment_id = ? AND c.org_id = ? AND IFNULL(c.is_deleted, 0) = 0
@@ -22294,6 +22662,16 @@ app.delete('/api/shipments/:id/comments/:commentId', async (req, res) => {
     );
     if (!row) {
       return res.status(404).json({ error: 'Comment not found.' });
+    }
+
+    const actorId = access.employee ? access.employee.id : null;
+    const isCreator = actorId && row.created_by &&
+      Number(row.created_by) === Number(actorId);
+    const isSuperAdmin = actorId
+      ? await isEmployeeSuperAdmin({ employeeId: actorId, orgId: access.orgId })
+      : false;
+    if (!isCreator && !isSuperAdmin) {
+      return res.status(403).json({ error: 'Only the comment author can delete this comment.' });
     }
 
     await dbRun(

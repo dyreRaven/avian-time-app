@@ -1,5 +1,6 @@
 # Decisions Log
 
+- 2026-02-03: Removed bulk approve from Review Time Entries; approvals are per-row only.
 - 2026-02-02: Audit logs are retained indefinitely by default; orgs can set `audit_log_retention_days` to purge older audit entries.
 - 2026-02-02: Timesheet sharing is per-admin only; shared-with-all is deprecated and ignored (no global share UI).
 - 2026-02-02: Timesheet assignment defaults to the creator; super admins or assign-timesheets admins can reassign; any admin can be assigned.
@@ -61,7 +62,7 @@
 - 2025-01-XX: QBO linking blocks duplicate IDs; admins can unlink QBO IDs to resolve conflicts (unlink sets needs_qbo_sync=1).
 - 2025-01-XX: Auto clock-out runs at org-local midnight with hourly catch-up; it closes prior-day open punches and tags reasons as midnight_auto/catch_up_auto.
 - 2025-01-XX: Super admins can set auto clock-out thresholds (daily/weekly max hours) or leave them unset; thresholds also flag discrepancies.
-- 2025-01-XX: Weekly time entry approval is required before payroll; approvals happen in Time Entry Report with per-row and bulk approve for clean entries.
+- 2025-01-XX: Weekly time entry approval is required before payroll; approvals happen in Review Time Entries with per-row approve.
 - 2025-01-XX: Payroll is blocked until all entries in the period are approved; approvals reset on edits and are fully audited.
 - 2025-01-XX: Retention defaults: clock-in photos 30 days; audit logs 1 year; notifications 90 days; idempotency keys 30 days; ID images and shipment docs require manual delete.
 - 2025-01-XX: Backups run daily (optional), include DB + uploads, and retain 30 daily + 12 monthly snapshots by default.

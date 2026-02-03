@@ -8,7 +8,9 @@
 ## Identity and Access
 - `orgs`: id, name, timezone, status, created_at, updated_at.
 - `org_settings`: org_id, key, value (e.g., clock_in_photo_required, kiosk_enrollment_code, time_exception_rules, payroll_rules, notifications, branding, audit_log_retention_days).
-- `users`: id, email, password_hash, created_at.
+- `users`: id, email, password_hash, password_reset_token_hash, password_reset_token_expires_at,
+  password_reset_token_used_at, password_reset_token_created_at, password_reset_token_created_by,
+  password_reset_org_id, created_at.
 - `user_orgs`: id, user_id, org_id, employee_id, is_super_admin, login_enabled, created_at.
 - `employees`: id, org_id, name, given_name, family_name, nickname, name_on_checks, rate, active, pin_hash,
   language, employee_qbo_id, vendor_qbo_id, role_title, permission_template_id, worker_timekeeping,
@@ -39,7 +41,7 @@
   clock_in_ts, clock_in_local_date, clock_out_ts, clock_out_local_date, clock_out_project_id,
   clock_in_lat, clock_in_lng, clock_out_lat, clock_out_lng,
   geo_distance_m, geo_violation,
-  clock_in_photo_path, device_id, kiosk_session_id, foreman_employee_id,
+  clock_in_photo_path, device_id, clock_out_device_id, kiosk_session_id, foreman_employee_id,
   auto_clock_out, auto_clock_out_reason,
   exception_resolved, exception_resolved_at, exception_resolved_by,
   exception_review_status, exception_review_note, exception_reviewed_by, exception_reviewed_at,

@@ -171,7 +171,7 @@ Permissions:
 - Same as report permission
 
 ## Viewer Access
-- Audit Trails report (Reports → Audit Trails) surfaces audit history by domain.
+- Audit reports are separated into dedicated report pages (Time, Payroll, Operations, Security).
 - Super admins: full audit log across domains (including access/security + QuickBooks).
 - Non-super admins: limited audit views per domain based on existing permissions:
   - Time audits: view_time_reports or view_payroll

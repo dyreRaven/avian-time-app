@@ -72,8 +72,9 @@ Phase 6: Retention + monitoring
 | Projects    |                                        |
 | Shipments   |                                        |
 | Timesheets  |                                        |
-| Time Exceptions |                                    |
+| Review Time Entries |                                |
 | Payroll     |                                        |
+| Time Entries Report |                                |
 | Reports     |                                        |
 | Settings    |                                        |
 +-------------+----------------------------------------+
@@ -96,11 +97,11 @@ Shipments
 
 Time & Pay
 - Timesheets: kiosk sessions + live workers.
-- Time Exceptions: review modal (approve/modify/reject with notes).
-- Time Entry Report: filters + manual edits (note required).
+- Review Time Entries: filters + manual edits (note required) + exception review (approve/modify/reject with notes).
 - Payroll: settings, preflight, create checks, retry failed, unpay.
 
 Reports/Settings
+- Time Entries Report (read-only, filter-driven).
 - Payroll Runs + Run Details + Audit Log.
 - Shipment Verification report (summary/detail).
 - Settings for company, access control, payroll rules, time exception rules, clock-in photo requirement,

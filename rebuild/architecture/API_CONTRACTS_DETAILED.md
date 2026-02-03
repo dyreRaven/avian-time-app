@@ -75,16 +75,28 @@ Note: kiosk admin device auth or admin session required; updates the linked logi
 - Response: `{ "ok": true }`
 Note: kiosk admin device auth or admin session required; new_password must be at least 8 characters.
 
+### GET /api/auth/password-setup  [public]
+- Request: `?token=...`
+- Response: `{ "ok": true, "email": "..." }`
+Note: validates a setup link token without requiring a session.
+Note: returns 404/410 for invalid or expired tokens.
+
+### POST /api/auth/password-setup  [public]
+- Request: `{ "token": "...", "password": "...", "password_confirm": "..." }`
+- Response: `{ "ok": true, "email": "..." }`
+Note: sets the password for the token user and consumes the setup token.
+
 ### GET /api/auth/users  [super admin]
-- Response: `{ "ok": true, "users": [ { "user_id": 1, "email": "...", "employee_id": 12, "employee_name": "...", "employee_active": 1, "desktop_access": 1, "is_super_admin": 1, "login_enabled": 1 } ] }`
+- Response: `{ "ok": true, "users": [ { "user_id": 1, "email": "...", "employee_id": 12, "employee_name": "...", "employee_active": 1, "desktop_access": 1, "is_super_admin": 1, "login_enabled": 1, "password_setup_pending": 0 } ] }`
 
 ### POST /api/auth/users  [super admin]
 Create a user and optionally link to an employee.
-- Request: `{ "email": "...", "password": "...", "employee_id": 12 }`
-- Response: `{ "ok": true, "userId": 5 }`
+- Request: `{ "email": "...", "password": "...", "employee_id": 12, "send_invite": true }`
+- Response: `{ "ok": true, "userId": 5, "invite": { "status": "sent" } }`
 Note: employee_id is required and must be active with desktop_access. The membership is always super admin.
 Note: if the email already exists, add/update the membership for the active org; password is optional in that case.
 Note: if password is provided for an existing user, it resets the password.
+Note: if send_invite=true and no password is supplied, a setup link is emailed (SMTP must be configured).
 
 ### POST /api/auth/users/:id/reset-password  [super admin]
 - Request: `{ "new_password": "..." }`
@@ -785,8 +797,13 @@ Note: ordered by last comment activity (latest first), falling back to thread up
 Note: title is required. category is optional. client_id is optional and used to dedupe retries.
 Note: duplicate client_id returns ok=true with alreadyProcessed=true.
 
+### PATCH /api/shipments/:id/comment-threads/:threadId  [see_shipments]
+- Request: `{ "title": "Updated subject" }`
+- Response: `{ "ok": true, "thread_id": 9, "title": "Updated subject" }`
+Note: title is required. Only the thread creator can rename the thread.
+
 ### GET /api/shipments/:id/comments  [see_shipments]
-- Response: `{ "comments": [ { "id": 1, "shipment_id": 12, "thread_id": 9, "body": "...", "created_by": 12, "created_at": "..." } ] }`
+- Response: `{ "comments": [ { "id": 1, "shipment_id": 12, "thread_id": 9, "body": "...", "created_by": 12, "created_at": "...", "created_at_ms": 1700000000000 } ] }`
 Note: ordered by created_at ASC; soft-deleted comments are excluded.
 Note: `thread_id` query param filters comments to a single thread.
 
