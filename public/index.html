@@ -1840,6 +1840,14 @@
                     <label for="te-note">Change note (required)</label>
                     <textarea id="te-note" rows="2" class="input"></textarea>
                   </div>
+
+                  <div class="form-field checkbox-field hidden" id="te-approve-now-wrap" style="grid-column: 1 / -1;">
+                    <label class="checkbox-inline">
+                      <input id="te-approve-now" type="checkbox" />
+                      Approve for payroll now
+                    </label>
+                    <p class="card-sub">Requires payroll approval access.</p>
+                  </div>
                 </div>
 
                 <!-- message area used by saveTimeEntry -->
@@ -1888,11 +1896,23 @@
                   </label>
 
                   <label>
+                    Date range
+                    <select id="te-filter-date-range">
+                      <option value="all" selected>All dates</option>
+                      <option value="this_week">This week</option>
+                      <option value="last_week">Last week</option>
+                      <option value="this_month">This month</option>
+                      <option value="last_month">Last month</option>
+                      <option value="range">Date range</option>
+                    </select>
+                  </label>
+
+                  <label id="te-filter-start-wrap">
                     Start date
                     <input type="date" id="te-filter-start" />
                   </label>
 
-                  <label>
+                  <label id="te-filter-end-wrap">
                     End date
                     <input type="date" id="te-filter-end" />
                   </label>
@@ -1919,15 +1939,15 @@
                 <table class="clickable-rows">
                   <thead>
                     <tr>
-                      <th>Entry ID</th>
                       <th>Employee</th>
                       <th>Project</th>
                       <th>Date</th>
+                      <th>Clock In</th>
+                      <th>Clock Out</th>
                       <th>Hours</th>
-                      <th>Pay</th>
-                      <th>Paid?</th>
-                      <th>Date Paid</th>
-                      <th>Approval</th>
+                      <th>Flags</th>
+                      <th>Field Review</th>
+                      <th>Approve</th>
                     </tr>
                   </thead>
                   <tbody id="time-table-body">
@@ -1936,6 +1956,12 @@
                     </tr>
                   </tbody>
                 </table>
+              </div>
+
+              <div class="time-entry-approve-toolbar">
+                <button type="button" id="te-approve-selected" class="btn primary btn-sm" disabled>
+                  Approve checked entries
+                </button>
               </div>
             </div> <!-- /card-body -->
           </div> <!-- /card -->

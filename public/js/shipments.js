@@ -7177,9 +7177,8 @@ function renderShipmentThreadList(threads = [], activeThreadId, pendingCounts = 
   }
 
   return filtered.map(thread => {
-    const when = formatDateTimeLocal(
-      thread.last_comment_at || thread.updated_at || thread.created_at
-    );
+    const whenMs = getShipmentThreadActivityTimeMs(thread);
+    const when = formatDateTimeInOrgTime(whenMs);
     const preview = thread.last_comment_body || 'No messages yet.';
     const isActive = Number(thread.id) === Number(activeThreadId);
     const pendingCount = pendingCounts[thread.id] || 0;
@@ -7206,6 +7205,77 @@ function renderShipmentThreadList(threads = [], activeThreadId, pendingCounts = 
   }).join('');
 }
 
+function formatDateTimeInOrgTime(ms) {
+  if (!Number.isFinite(ms)) return '';
+  const tz = window.CURRENT_ORG_TIMEZONE || null;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '';
+  if (tz) {
+    try {
+      const datePart = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(date);
+      const timePart = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      }).format(date);
+      return `${datePart}, ${timePart}`;
+    } catch {
+      // fall back to local formatting
+    }
+  }
+  return formatDateTimeLocal(date);
+}
+
+function getShipmentTimestampMs(value) {
+  if (value == null) return Number.NaN;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : Number.NaN;
+  const text = String(value).trim();
+  if (!text) return Number.NaN;
+  if (/^\d{4}-\d{2}-\d{2} /.test(text)) {
+    const normalized = text.replace(' ', 'T') + 'Z';
+    const parsed = Date.parse(normalized);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function getShipmentThreadActivityTimeMs(thread = {}) {
+  const direct =
+    thread.last_comment_at_ms ||
+    thread.updated_at_ms ||
+    thread.created_at_ms ||
+    null;
+  let ms = Number(direct);
+  if (Number.isFinite(ms)) {
+    if (ms > 0 && ms < 1000000000000) {
+      ms = ms * 1000;
+    }
+    return ms;
+  }
+  return getShipmentTimestampMs(
+    thread.last_comment_at || thread.updated_at || thread.created_at
+  );
+}
+
+function getShipmentThreadCreatedTimeMs(thread = {}) {
+  const direct = thread.created_at_ms || null;
+  let ms = Number(direct);
+  if (Number.isFinite(ms)) {
+    if (ms > 0 && ms < 1000000000000) {
+      ms = ms * 1000;
+    }
+    return ms;
+  }
+  return getShipmentTimestampMs(thread.created_at);
+}
+
 function getShipmentCommentTimeMs(row) {
   if (!row) return Number.NaN;
   const direct = row.created_at_ms;
@@ -7216,18 +7286,7 @@ function getShipmentCommentTimeMs(row) {
     }
     return ms;
   }
-  const raw = row.created_at;
-  if (!raw) return Number.NaN;
-  if (typeof raw === 'number') return raw;
-  const text = String(raw).trim();
-  if (!text) return Number.NaN;
-  if (/^\d{4}-\d{2}-\d{2} /.test(text)) {
-    const normalized = text.replace(' ', 'T') + 'Z';
-    const parsed = Date.parse(normalized);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  const parsed = Date.parse(text);
-  return Number.isFinite(parsed) ? parsed : Number.NaN;
+  return getShipmentTimestampMs(row.created_at);
 }
 
 function renderShipmentThreadMessages(comments = [], queued = [], activeThread = null, threads = []) {
@@ -7267,9 +7326,7 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
 
   return rows.map(row => {
     const createdAtMs = getShipmentCommentTimeMs(row);
-    const when = formatDateTimeLocal(
-      Number.isFinite(createdAtMs) ? createdAtMs : row.created_at
-    );
+    const when = formatDateTimeInOrgTime(createdAtMs);
     const isMine =
       currentEmpId &&
       row.created_by &&
@@ -7283,11 +7340,10 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
     const pendingTag = row.pending
       ? '<span class="ship-detail-tag ship-detail-tag--pending">Pending sync</span>'
       : '';
-    const canUndo = !row.pending &&
-      isMine &&
-      Number.isFinite(createdAtMs) &&
+    const withinUndoWindow = Number.isFinite(createdAtMs) &&
       (Date.now() - createdAtMs <= SHIPMENT_COMMENT_UNDO_WINDOW_MS);
-    const canDelete = !row.pending && (isMine || isSuperAdmin);
+    const canUndo = !row.pending && isMine && withinUndoWindow;
+    const canDelete = !row.pending && (isMine || isSuperAdmin) && withinUndoWindow;
     const actionItems = [];
     if (canUndo) {
       actionItems.push(
@@ -7297,7 +7353,7 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
           data-comment-action="undo"
           data-comment-id="${escapeHTML(String(row.id || ''))}"
           data-comment-created-at-ms="${Number.isFinite(createdAtMs) ? String(createdAtMs) : ''}"
-          data-comment-undo-expire="${Number.isFinite(createdAtMs)
+          data-comment-expire="${Number.isFinite(createdAtMs)
             ? String(createdAtMs + SHIPMENT_COMMENT_UNDO_WINDOW_MS)
             : ''}"
         >Undo send</button>`
@@ -7310,6 +7366,9 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
           class="ship-detail-thread-menu-item"
           data-comment-action="delete"
           data-comment-id="${escapeHTML(String(row.id || ''))}"
+          data-comment-expire="${Number.isFinite(createdAtMs)
+            ? String(createdAtMs + SHIPMENT_COMMENT_UNDO_WINDOW_MS)
+            : ''}"
         >Delete</button>`
       );
     }
@@ -7397,8 +7456,8 @@ function renderShipmentThreadLayout({
   const displayThread = activeThread || (isGeneralPlaceholder
     ? { id: null, title: 'General', category: 'General' }
     : null);
-  const createdMeta = displayThread && displayThread.created_at
-    ? formatDateTimeLocal(displayThread.created_at)
+  const createdMeta = displayThread
+    ? formatDateTimeInOrgTime(getShipmentThreadCreatedTimeMs(displayThread))
     : '';
   const createdBy = displayThread && displayThread.created_by_name
     ? `by ${displayThread.created_by_name}`
@@ -7885,8 +7944,8 @@ function bindShipmentThreadHandlers(panel, shipmentId, offline = false) {
     });
   });
 
-  panel.querySelectorAll('[data-comment-undo-expire]').forEach(btn => {
-    const expiresAt = Number(btn.getAttribute('data-comment-undo-expire'));
+  panel.querySelectorAll('[data-comment-expire]').forEach(btn => {
+    const expiresAt = Number(btn.getAttribute('data-comment-expire'));
     if (!Number.isFinite(expiresAt)) return;
     const delay = expiresAt - Date.now();
     if (delay <= 0) {

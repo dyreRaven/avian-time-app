@@ -669,6 +669,86 @@
 </div>
 
 
+<!-- TIME ENTRY NOTE MODAL -->
+<div id="time-entry-note-backdrop" class="modal-backdrop hidden"></div>
+<div id="time-entry-note-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card time-entry-note-card">
+    <div class="modal-header">
+      <h3>Notice</h3>
+      <button
+        id="time-entry-note-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close notice"
+      >
+        ×
+      </button>
+    </div>
+    <div class="modal-section modal-body">
+      <p id="time-entry-note-message"></p>
+    </div>
+    <div class="modal-footer">
+      <button id="time-entry-note-ok" type="button" class="btn primary">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- TIME ENTRY APPROVE NOTE MODAL -->
+<div id="time-entry-approve-note-backdrop" class="modal-backdrop hidden"></div>
+<div id="time-entry-approve-note-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card time-entry-note-card">
+    <div class="modal-header">
+      <h3>Approval note</h3>
+      <button
+        id="time-entry-approve-note-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close approval note"
+      >
+        ×
+      </button>
+    </div>
+    <div class="modal-section">
+      <p id="time-entry-approve-note-message" class="text-sm text-gray-700"></p>
+      <textarea
+        id="time-entry-approve-note-input"
+        rows="3"
+        placeholder="Add note"
+      ></textarea>
+    </div>
+    <div class="modal-footer">
+      <button id="time-entry-approve-note-cancel" type="button" class="btn secondary">Cancel</button>
+      <button id="time-entry-approve-note-submit" type="button" class="btn primary">Submit</button>
+    </div>
+  </div>
+</div>
+
+<!-- TIME ENTRY REVIEW WARNING MODAL -->
+<div id="time-entry-review-warning-backdrop" class="modal-backdrop hidden"></div>
+<div id="time-entry-review-warning-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card time-entry-note-card">
+    <div class="modal-header">
+      <h3>Field review pending</h3>
+      <button
+        id="time-entry-review-warning-close"
+        class="icon-button"
+        type="button"
+        aria-label="Close warning"
+      >
+        ×
+      </button>
+    </div>
+    <div class="modal-section">
+      <p id="time-entry-review-warning-message" class="text-sm text-gray-700"></p>
+    </div>
+    <div class="modal-footer">
+      <button id="time-entry-review-warning-cancel" type="button" class="btn secondary">Cancel</button>
+      <button id="time-entry-review-warning-ok" type="button" class="btn primary">Approve anyway</button>
+    </div>
+  </div>
+</div>
+
+
 <!-- Kiosk Add/Edit Modal -->
 <div id="kiosk-modal-backdrop" class="modal-backdrop hidden"></div>
 

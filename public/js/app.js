@@ -879,25 +879,54 @@ function deriveFieldReviewState(entry = {}) {
   return { label, isReviewed, isRejected, isModified, isApproved };
 }
 
-async function loadTimeEntryFlagsMap(filters = {}) {
-  const params = new URLSearchParams();
-  const hasFilters = !!(
-    filters.start ||
-    filters.end ||
-    filters.employee_id ||
-    filters.project_id
-  );
+function getTimeEntryFlagsBounds(entries = []) {
+  let minDate = '';
+  let maxDate = '';
 
-  if (hasFilters) {
-    if (filters.start) params.set('start', filters.start);
-    if (filters.end) params.set('end', filters.end);
-    if (filters.employee_id) params.set('employee_id', filters.employee_id);
-    if (filters.project_id) params.set('project_id', filters.project_id);
-  } else {
-    const today = new Date().toISOString().slice(0, 10);
-    params.set('start', today);
-    params.set('end', today);
+  entries.forEach(entry => {
+    const start = entry?.start_date || entry?.end_date || '';
+    const end = entry?.end_date || entry?.start_date || '';
+    if (start) {
+      if (!minDate || start < minDate) minDate = start;
+      if (!maxDate || start > maxDate) maxDate = start;
+    }
+    if (end) {
+      if (!minDate || end < minDate) minDate = end;
+      if (!maxDate || end > maxDate) maxDate = end;
+    }
+  });
+
+  if (!minDate || !maxDate) return null;
+  return { start: minDate, end: maxDate };
+}
+
+async function loadTimeEntryFlagsMap(filters = {}, entries = []) {
+  const params = new URLSearchParams();
+  let start = filters.start || '';
+  let end = filters.end || '';
+
+  if (start && !end) {
+    end = start;
+  } else if (!start && end) {
+    start = end;
   }
+
+  if (!start || !end) {
+    const bounds = getTimeEntryFlagsBounds(entries);
+    if (bounds) {
+      start = bounds.start;
+      end = bounds.end;
+    } else {
+      const today = new Date().toISOString().slice(0, 10);
+      start = today;
+      end = today;
+    }
+  }
+
+  params.set('start', start);
+  params.set('end', end);
+  if (filters.employee_id) params.set('employee_id', filters.employee_id);
+  if (filters.project_id) params.set('project_id', filters.project_id);
 
   params.set('hide_resolved', '0');
 
@@ -964,6 +993,7 @@ async function loadTimeEntriesTable(filters = {}) {
   if (filters.end)         params.push(`end=${encodeURIComponent(filters.end)}`);
   if (filters.employee_id) params.push(`employee_id=${encodeURIComponent(filters.employee_id)}`);
   if (filters.project_id)  params.push(`project_id=${encodeURIComponent(filters.project_id)}`);
+  if (filters.all_dates)   params.push('all_dates=1');
   if (filters.hide_paid)   params.push('hide_paid=1');
   if (filters.hide_approved) params.push('hide_payroll_approved=1');
   params.push(`limit=${encodeURIComponent(pageSize)}`);
@@ -1098,7 +1128,7 @@ async function loadTimeEntriesTable(filters = {}) {
 
     // Load flags asynchronously so table doesn't hang if flags are slow.
     try {
-      const flagsMap = await loadTimeEntryFlagsMap(filters);
+      const flagsMap = await loadTimeEntryFlagsMap(filters, entries);
       tbody.querySelectorAll('.te-flags-cell').forEach(cell => {
         const entryId = cell.getAttribute('data-entry-id');
         if (!entryId) return;
@@ -1374,7 +1404,7 @@ async function approveSelectedTimeEntries() {
         body: JSON.stringify(payload)
       });
     } catch (err) {
-      window.alert(err?.message || `Failed to approve entry ${id}.`);
+      showTimeEntryNoteModal(err?.message || `Failed to approve entry ${id}.`);
       return;
     }
   }
@@ -1784,7 +1814,7 @@ async function loadTimeEntryChangeSummary(entryId) {
 
 async function approveAllTimeEntries() {
   if (!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time)) {
-    window.alert('Payroll approval access required.');
+    showTimeEntryNoteModal('Payroll approval access required.');
     return;
   }
 
@@ -1833,7 +1863,7 @@ async function approveAllTimeEntries() {
     const skippedMsg = skippedCount
       ? ` Skipped ${skippedCount} entries${reasonParts.length ? ` (${reasonParts.join(', ')})` : ''}.`
       : '';
-    window.alert(`Approved ${approvedCount} entries.${skippedMsg}`);
+    showTimeEntryNoteModal(`Approved ${approvedCount} entries.${skippedMsg}`);
 
     if (hasActiveTimeEntryFilters(filters)) {
       resetTimeEntryPagination();
@@ -1843,29 +1873,159 @@ async function approveAllTimeEntries() {
       await loadTimeEntriesTable();
     }
   } catch (err) {
-    window.alert(err?.message || 'Bulk approve failed.');
+    showTimeEntryNoteModal(err?.message || 'Bulk approve failed.');
   }
 }
 
 function applyTimeEntryApprovalAccess() {
   const approveAllBtn = document.getElementById('te-approve-all');
-  if (!approveAllBtn) return;
+  const approveNowWrap = document.getElementById('te-approve-now-wrap');
+  const approveNowInput = document.getElementById('te-approve-now');
+  if (!approveAllBtn && !approveNowWrap) return;
   const canApprove = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
-  approveAllBtn.style.display = canApprove ? 'inline-flex' : 'none';
+  if (approveAllBtn) {
+    approveAllBtn.style.display = canApprove ? 'inline-flex' : 'none';
+  }
+  if (approveNowWrap) {
+    approveNowWrap.style.display = canApprove ? 'flex' : 'none';
+    approveNowWrap.classList.toggle('hidden', !canApprove);
+  }
+  if (!canApprove && approveNowInput) {
+    approveNowInput.checked = false;
+  }
+}
+
+let timeEntryDateRangeMode = null;
+let timeEntryLastCustomRange = { start: '', end: '' };
+
+function formatDateInputValue(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function resolveTimeEntryWeekStartDay() {
+  const raw = window.CURRENT_PAYROLL_RULES?.pay_period_start_weekday;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 6) {
+    return parsed;
+  }
+  return 1;
+}
+
+function getWeekStartDate(date, weekStartDay) {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  const diff = (start.getDay() - weekStartDay + 7) % 7;
+  start.setDate(start.getDate() - diff);
+  return start;
+}
+
+function getTimeEntryDateRangePreset(mode) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  if (mode === 'this_week' || mode === 'last_week') {
+    const weekStartDay = resolveTimeEntryWeekStartDay();
+    const currentWeekStart = getWeekStartDate(today, weekStartDay);
+    const start = new Date(currentWeekStart);
+    if (mode === 'last_week') {
+      start.setDate(start.getDate() - 7);
+    }
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    return { start: formatDateInputValue(start), end: formatDateInputValue(end) };
+  }
+
+  if (mode === 'this_month' || mode === 'last_month') {
+    const year = today.getFullYear();
+    const month = today.getMonth();
+    const start = mode === 'this_month'
+      ? new Date(year, month, 1)
+      : new Date(year, month - 1, 1);
+    const end = mode === 'this_month'
+      ? new Date(year, month + 1, 0)
+      : new Date(year, month, 0);
+    return { start: formatDateInputValue(start), end: formatDateInputValue(end) };
+  }
+
+  return null;
+}
+
+function applyTimeEntryDateRangeMode(mode) {
+  const startWrap = document.getElementById('te-filter-start-wrap');
+  const endWrap = document.getElementById('te-filter-end-wrap');
+  const startInput = document.getElementById('te-filter-start');
+  const endInput = document.getElementById('te-filter-end');
+
+  const nextMode = mode || 'range';
+
+  if (timeEntryDateRangeMode === 'range' && startInput && endInput) {
+    timeEntryLastCustomRange = {
+      start: startInput.value || '',
+      end: endInput.value || ''
+    };
+  }
+
+  timeEntryDateRangeMode = nextMode;
+
+  const showRange = nextMode === 'range';
+  if (startWrap) startWrap.classList.toggle('hidden', !showRange);
+  if (endWrap) endWrap.classList.toggle('hidden', !showRange);
+
+  if (!startInput || !endInput) return;
+
+  if (showRange) {
+    if (timeEntryLastCustomRange.start || timeEntryLastCustomRange.end) {
+      startInput.value = timeEntryLastCustomRange.start;
+      endInput.value = timeEntryLastCustomRange.end;
+    }
+    return;
+  }
+
+  if (nextMode === 'all') {
+    startInput.value = '';
+    endInput.value = '';
+    return;
+  }
+
+  const preset = getTimeEntryDateRangePreset(nextMode);
+  if (preset) {
+    startInput.value = preset.start;
+    endInput.value = preset.end;
+  }
 }
 
 function getTimeEntryFiltersFromUi() {
   const empFilter   = document.getElementById('te-filter-employee');
   const projFilter  = document.getElementById('te-filter-project');
+  const rangeFilter = document.getElementById('te-filter-date-range');
   const startFilter = document.getElementById('te-filter-start');
   const endFilter   = document.getElementById('te-filter-end');
   const hideApproved = document.getElementById('te-filter-hide-approved');
 
+  const rangeMode = rangeFilter && rangeFilter.value ? rangeFilter.value : 'all';
+  let startValue = startFilter && startFilter.value ? startFilter.value : '';
+  let endValue = endFilter && endFilter.value ? endFilter.value : '';
+
+  if (rangeMode !== 'range') {
+    if (rangeMode === 'all') {
+      startValue = '';
+      endValue = '';
+    } else {
+      const preset = getTimeEntryDateRangePreset(rangeMode);
+      startValue = preset ? preset.start : '';
+      endValue = preset ? preset.end : '';
+    }
+  }
+
   return {
     employee_id: empFilter && empFilter.value ? empFilter.value : '',
     project_id:  projFilter && projFilter.value ? projFilter.value : '',
-    start:       startFilter && startFilter.value ? startFilter.value : '',
-    end:         endFilter && endFilter.value ? endFilter.value : '',
+    start:       startValue,
+    end:         endValue,
+    all_dates:   rangeMode === 'all',
     hide_paid:   true,
     hide_approved: hideApproved ? !!hideApproved.checked : false
   };
@@ -1877,6 +2037,7 @@ function hasActiveTimeEntryFilters(filters = {}) {
     (filters.project_id && String(filters.project_id).trim())  ||
     (filters.start && String(filters.start).trim())            ||
     (filters.end && String(filters.end).trim())                ||
+    filters.all_dates === true                                 ||
     filters.hide_approved === true
   );
 }
@@ -1886,17 +2047,15 @@ function resetTimeEntryPagination() {
 }
 
 function buildTimeEntriesExportUrl(format) {
-  const empFilter   = document.getElementById('te-filter-employee');
-  const projFilter  = document.getElementById('te-filter-project');
-  const startFilter = document.getElementById('te-filter-start');
-  const endFilter   = document.getElementById('te-filter-end');
+  const filters = getTimeEntryFiltersFromUi();
 
   const params = new URLSearchParams();
 
-  if (empFilter && empFilter.value)   params.set('employee_id', empFilter.value);
-  if (projFilter && projFilter.value) params.set('project_id', projFilter.value);
-  if (startFilter && startFilter.value) params.set('start', startFilter.value);
-  if (endFilter && endFilter.value)     params.set('end', endFilter.value);
+  if (filters.employee_id) params.set('employee_id', filters.employee_id);
+  if (filters.project_id) params.set('project_id', filters.project_id);
+  if (filters.start) params.set('start', filters.start);
+  if (filters.end) params.set('end', filters.end);
+  if (filters.all_dates) params.set('all_dates', '1');
 
   const qs = params.toString();
   return `/api/time-entries/export/${format}` + (qs ? `?${qs}` : '');
@@ -1942,6 +2101,7 @@ async function loadTimeEntryIntoFormFromRow(row, { showFormCard = true } = {}) {
   const endTimeInput   = document.getElementById('te-end-time');
   const hoursInput     = document.getElementById('te-hours');
   const noteInput      = document.getElementById('te-note');
+  const approveNowInput = document.getElementById('te-approve-now');
   const updatedAtInput = document.getElementById('te-updated-at');
   const msgEl          = document.getElementById('time-entry-message');
   const origBlock      = document.getElementById('te-original');
@@ -1972,6 +2132,7 @@ async function loadTimeEntryIntoFormFromRow(row, { showFormCard = true } = {}) {
   if (startTimeInput) startTimeInput.value = row.dataset.startTime || '';
   if (endTimeInput)   endTimeInput.value   = row.dataset.endTime || '';
   if (noteInput) noteInput.value = '';
+  if (approveNowInput) approveNowInput.checked = false;
 
   if (origBlock) {
     origBlock.classList.remove('hidden');
@@ -2209,6 +2370,7 @@ async function saveTimeEntry() {
   const endTimeInput   = document.getElementById('te-end-time');
   const noteInput      = document.getElementById('te-note');
   const updatedAtInput = document.getElementById('te-updated-at');
+  const approveNowInput = document.getElementById('te-approve-now');
   const msgEl          = document.getElementById('time-entry-message');
 
   // Basic field values
@@ -2218,6 +2380,8 @@ async function saveTimeEntry() {
   const start_time  = startTimeInput?.value || '';
   const end_time    = endTimeInput?.value || '';
   const change_note = noteInput?.value || '';
+  const approveNow = !!approveNowInput?.checked;
+  const canApproveNow = approveNow && !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
 
   // 👉 Manual entries are always single-day
   const end_date = start_date;
@@ -2291,7 +2455,9 @@ async function saveTimeEntry() {
       queued_at: new Date().toISOString()
     });
     if (msgEl) {
-      msgEl.textContent = 'Saved offline — will sync when back online.';
+      msgEl.textContent = approveNow
+        ? 'Saved offline — payroll approval requires an online connection.'
+        : 'Saved offline — will sync when back online.';
       msgEl.style.color = '#b45309';
     }
     resetTimeEntryFormToNewMode();
@@ -2303,19 +2469,46 @@ async function saveTimeEntry() {
   }
 
   try {
-    await fetchJSON(url, {
+    const resp = await fetchJSON(url, {
       method: 'POST', // your API is using POST for both create + update
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
 
+    let approvedNow = false;
+    if (canApproveNow) {
+      const entryId = isEdit ? idInput?.value : resp?.id;
+      if (entryId) {
+        try {
+          await fetchJSON(`/api/time-entries/${encodeURIComponent(entryId)}/approve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ note: change_note.trim() })
+          });
+          approvedNow = true;
+        } catch (err) {
+          showTimeEntryNoteModal(err?.message || 'Failed to approve time entry.');
+        }
+      }
+    }
+
     if (msgEl) {
-      msgEl.textContent = isEdit
-        ? 'Time entry updated.'
-        : 'Time entry saved.';
+      if (approvedNow) {
+        msgEl.textContent = isEdit
+          ? 'Time entry updated and approved.'
+          : 'Time entry saved and approved.';
+      } else {
+        msgEl.textContent = isEdit
+          ? 'Time entry updated.'
+          : 'Time entry saved.';
+      }
       msgEl.style.color = 'green';
     }
-    showToast(isEdit ? 'Time entry updated.' : 'Time entry saved.');
+    if (approvedNow) {
+      showToast(isEdit ? 'Time entry updated and approved.' : 'Time entry saved and approved.');
+    } else {
+      showToast(isEdit ? 'Time entry updated.' : 'Time entry saved.');
+    }
 
     // Reset form back to "new" mode
     resetTimeEntryFormToNewMode();
@@ -2370,6 +2563,7 @@ function resetTimeEntryFormToNewMode() {
   const endTimeInput   = document.getElementById('te-end-time');
   const hoursInput     = document.getElementById('te-hours');
   const noteInput      = document.getElementById('te-note');
+  const approveNowInput = document.getElementById('te-approve-now');
   const updatedAtInput = document.getElementById('te-updated-at');
   const origBlock      = document.getElementById('te-original');
   const msgEl          = document.getElementById('time-entry-message');
@@ -2384,6 +2578,7 @@ function resetTimeEntryFormToNewMode() {
   if (endTimeInput)   endTimeInput.value = '';
   if (hoursInput)     hoursInput.value = '';
   if (noteInput)      noteInput.value = '';
+  if (approveNowInput) approveNowInput.checked = false;
   if (updatedAtInput) updatedAtInput.value = '';
   if (origBlock)      origBlock.classList.add('hidden');
 
@@ -2437,7 +2632,7 @@ async function loadModalsIntoDom() {
   const container = document.getElementById('modals-root');
 
   try {
-    const cacheBust = '20260202-time-entry-detail';
+    const cacheBust = '20260204-time-entry-alerts';
     const response = await fetch(`/modals.html?v=${cacheBust}`, { cache: 'no-store' });
     const html = await response.text();
     container.innerHTML = html;
@@ -5833,6 +6028,7 @@ if (connectBtn) {
   const timeFilterClearBtn  = document.getElementById('time-filter-clear');
   const timeFilterEmployee  = document.getElementById('te-filter-employee');
   const timeFilterProject   = document.getElementById('te-filter-project');
+  const timeFilterRange     = document.getElementById('te-filter-date-range');
   const timeFilterStart     = document.getElementById('te-filter-start');
   const timeFilterEnd       = document.getElementById('te-filter-end');
   const timeFilterHideApproved = document.getElementById('te-filter-hide-approved');
@@ -5855,9 +6051,11 @@ if (connectBtn) {
     timeFilterClearBtn.addEventListener('click', () => {
       if (timeFilterEmployee) timeFilterEmployee.value = '';
       if (timeFilterProject)  timeFilterProject.value  = '';
+      if (timeFilterRange)    timeFilterRange.value    = 'all';
       if (timeFilterStart)    timeFilterStart.value    = '';
       if (timeFilterEnd)      timeFilterEnd.value      = '';
       if (timeFilterHideApproved) timeFilterHideApproved.checked = false;
+      applyTimeEntryDateRangeMode(timeFilterRange ? timeFilterRange.value : 'all');
 
       resetTimeEntryPagination();
       loadTimeEntriesTable(getTimeEntryFiltersFromUi());
@@ -5885,6 +6083,15 @@ if (connectBtn) {
       const filters = getTimeEntryFiltersFromUi();
       loadTimeEntriesTable(filters);
     });
+  }
+
+  if (timeFilterRange) {
+    timeFilterRange.addEventListener('change', () => {
+      applyTimeEntryDateRangeMode(timeFilterRange.value);
+    });
+    applyTimeEntryDateRangeMode(timeFilterRange.value);
+  } else {
+    applyTimeEntryDateRangeMode('range');
   }
 
   if (approveSelectedBtn) {

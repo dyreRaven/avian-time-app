@@ -4650,11 +4650,6 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
       FROM time_entries t
       LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
       LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
-      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
-      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
-      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
-      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
-      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
       WHERE t.org_id = ? AND t.start_date >= ? AND t.end_date <= ?
         ${paidClause}
       GROUP BY
@@ -13867,6 +13862,11 @@ app.get('/api/time-entries', requireViewTimeReports, async (req, res) => {
     Math.max(1, Number(limitRaw || 50))
   );
   const offset = Math.max(0, Number(offsetRaw || 0));
+  const allDates =
+    req.query &&
+    (req.query.all_dates === '1' ||
+      req.query.all_dates === 'true' ||
+      req.query.all_dates === 'yes');
   const hidePaid =
     req.query &&
     (req.query.hide_paid === '1' ||
@@ -13899,8 +13899,8 @@ app.get('/api/time-entries', requireViewTimeReports, async (req, res) => {
     ? await isEmployeeSuperAdmin({ employeeId, orgId })
     : false;
 
-  // If nothing specified, default to "today"
-  if (!start && !end && !employee_id && !project_id) {
+  // If nothing specified, default to "today" (unless all_dates is requested)
+  if (!allDates && !start && !end && !employee_id && !project_id) {
     const today = getTodayIsoDate(orgTimezone);
     start = today;
     end = today;
@@ -22258,6 +22258,8 @@ app.get('/api/shipments/:id/comment-threads', async (req, res) => {
         SELECT
           t.*,
           e.name AS created_by_name,
+          CAST(strftime('%s', t.created_at) AS INTEGER) * 1000 AS created_at_ms,
+          CAST(strftime('%s', t.updated_at) AS INTEGER) * 1000 AS updated_at_ms,
           (
             SELECT c.body
             FROM shipment_comments c
@@ -22278,6 +22280,16 @@ app.get('/api/shipments/:id/comment-threads', async (req, res) => {
             ORDER BY c.created_at DESC, c.id DESC
             LIMIT 1
           ) AS last_comment_at,
+          (
+            SELECT CAST(strftime('%s', c.created_at) AS INTEGER) * 1000
+            FROM shipment_comments c
+            WHERE c.thread_id = t.id
+              AND c.org_id = t.org_id
+              AND c.shipment_id = t.shipment_id
+              AND IFNULL(c.is_deleted, 0) = 0
+            ORDER BY c.created_at DESC, c.id DESC
+            LIMIT 1
+          ) AS last_comment_at_ms,
           (
             SELECT e2.name
             FROM shipment_comments c
@@ -22657,7 +22669,9 @@ app.delete('/api/shipments/:id/comments/:commentId', async (req, res) => {
     }
 
     const row = await dbGet(
-      `SELECT id, body, created_by FROM shipment_comments WHERE id = ? AND shipment_id = ? AND org_id = ?`,
+      `SELECT id, body, created_by, created_at
+       FROM shipment_comments
+       WHERE id = ? AND shipment_id = ? AND org_id = ?`,
       [commentId, shipmentId, access.orgId]
     );
     if (!row) {
@@ -22672,6 +22686,16 @@ app.delete('/api/shipments/:id/comments/:commentId', async (req, res) => {
       : false;
     if (!isCreator && !isSuperAdmin) {
       return res.status(403).json({ error: 'Only the comment author can delete this comment.' });
+    }
+
+    const createdAt = parseSqliteDateToUtc(row.created_at);
+    if (createdAt) {
+      const elapsedMs = Date.now() - createdAt.getTime();
+      if (elapsedMs > 5 * 60 * 1000) {
+        return res.status(403).json({
+          error: 'Comments can only be deleted within 5 minutes of posting.'
+        });
+      }
     }
 
     await dbRun(
@@ -24452,6 +24476,11 @@ app.get('/api/time-entries/export/:format', requireViewTimeReports, async (req, 
     return res.status(401).json({ error: 'Not authenticated.' });
   }
   const orgTimezone = await getOrgTimezone(orgId);
+  const allDates =
+    req.query &&
+    (req.query.all_dates === '1' ||
+      req.query.all_dates === 'true' ||
+      req.query.all_dates === 'yes');
 
   let canViewPayroll = false;
   let perms = req.adminPerms;
@@ -24469,7 +24498,7 @@ app.get('/api/time-entries/export/:format', requireViewTimeReports, async (req, 
     : false;
 
   // Same default as normal endpoint: if no filters, default to "today"
-  if (!start && !end && !employee_id && !project_id) {
+  if (!allDates && !start && !end && !employee_id && !project_id) {
     const today = getTodayIsoDate(orgTimezone);
     start = today;
     end = today;

@@ -1,6 +1,16 @@
 # Change Log
 
+- 2026-02-04: Review Time Entries table headers now match the displayed columns.
+- 2026-02-04: Added an "Approve checked entries" button to Review Time Entries for payroll approval.
+- 2026-02-04: Review Time Entries alerts now use in-app modals instead of browser alerts.
+- 2026-02-04: Review Time Entries now includes date presets (all/this week/last week/this month/last month) with a custom date range toggle.
+- 2026-02-04: Fixed Review Time Entries "All dates" to include all entries instead of defaulting to today.
+- 2026-02-04: Manual time entry form now supports approving the entry for payroll on save (when permitted).
+- 2026-02-03: Fixed payroll summary failing to load due to duplicate kiosk session joins.
 - 2026-02-03: Renamed the top-level role label to Super Admin, including existing data.
+- 2026-02-03: Shipment comment deletes are now blocked after 5 minutes.
+- 2026-02-03: Shipment comment timestamps now display in org-local time.
+- 2026-02-03: Softened the shipment comment thread green accents.
 - 2026-02-03: Shipment comment delete is now enforced server-side for creators (super admins can override).
 - 2026-02-03: Shipment comment undo-send timing now uses server timestamps to avoid timezone drift.
 - 2026-02-03: Shipment comment thread accents now use green instead of purple.

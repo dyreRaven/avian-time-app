@@ -788,7 +788,7 @@ Note: ordered by created_at ASC.
 Note: event_type is "status_change" in legacy; note is optional.
 
 ### GET /api/shipments/:id/comment-threads  [see_shipments]
-- Response: `{ "threads": [ { "id": 1, "shipment_id": 12, "title": "General", "category": "General", "created_by": 12, "created_at": "...", "updated_at": "...", "created_by_name": "...", "last_comment_body": "...", "last_comment_at": "...", "last_comment_by_name": "..." } ] }`
+- Response: `{ "threads": [ { "id": 1, "shipment_id": 12, "title": "General", "category": "General", "created_by": 12, "created_at": "...", "created_at_ms": 1700000000000, "updated_at": "...", "updated_at_ms": 1700000000000, "created_by_name": "...", "last_comment_body": "...", "last_comment_at": "...", "last_comment_at_ms": 1700000000000, "last_comment_by_name": "..." } ] }`
 Note: ordered by last comment activity (latest first), falling back to thread updated_at/created_at.
 
 ### POST /api/shipments/:id/comment-threads  [see_shipments]
@@ -820,6 +820,7 @@ Note: duplicate client_id returns ok=true with alreadyProcessed=true.
 - Response: `{ "ok": true }`
 Note: soft delete only (set is_deleted=1, deleted_at, deleted_by); the row remains in the DB.
 Note: deletion is online-only (not queued for offline sync).
+Note: comments can only be deleted within 5 minutes of posting.
 
 ### GET /api/shipments/:id/documents  [see_shipments]
 - Response: `{ "documents": [ { "id": 1, "shipment_id": 12, "title": "...", "category": null, "doc_type": "...", "doc_label": "...", "file_path": "/api/shipments/documents/1/download", "uploaded_at": "...", "url": "/api/shipments/documents/1/download", "view_url": "/api/shipments/documents/1/view", "download_url": "/api/shipments/documents/1/download" } ] }`

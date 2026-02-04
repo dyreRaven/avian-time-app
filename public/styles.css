@@ -1202,6 +1202,7 @@ table.vendors-table th:first-child {
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
+  margin-top: 20px;
   padding-right: 0;
   margin-bottom: 8px;
 }
@@ -1731,6 +1732,29 @@ table.vendors-table th:first-child {
   margin: 0;
   color: var(--slate-700);
   line-height: 1.4;
+}
+
+#time-entry-approve-note-modal textarea {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--slate-300);
+  padding: 8px 10px;
+  font-size: 0.9rem;
+  color: var(--slate-800);
+  background: #ffffff;
+  resize: vertical;
+  min-height: 90px;
+  outline: none;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background 0.15s ease;
+}
+
+#time-entry-approve-note-modal textarea:focus {
+  border-color: var(--emerald-500);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35);
+  background: #ffffff;
 }
 
 /* Time Exception review modal tweaks */
@@ -3442,8 +3466,8 @@ table.vendors-table th:first-child {
 }
 
 .ship-detail-thread-item.active {
-  border-color: #6ee7b7;
-  background: #ecfdf5;
+  border-color: #c7efe4;
+  background: var(--emerald-50);
 }
 
 .ship-detail-thread-item-title {
@@ -3654,13 +3678,13 @@ table.vendors-table th:first-child {
 }
 
 .ship-detail-thread-row.mine .ship-detail-thread-bubble {
-  background: #ecfdf5;
-  border-color: #a7f3d0;
+  background: var(--emerald-50);
+  border-color: #c7efe4;
 }
 
 .ship-detail-thread-row.mine .ship-detail-thread-avatar {
-  background: #a7f3d0;
-  color: #065f46;
+  background: #c7efe4;
+  color: var(--emerald-600);
 }
 
 .ship-detail-thread-row.mine {
