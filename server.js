@@ -2761,6 +2761,7 @@ app.post('/api/auth/bootstrap', bootstrapRateLimiter, async (req, res) => {
       ['company_name', orgName],
       ['company_email', null],
       ['storage_daily_late_fee_default', null],
+      ['storage_container_daily_late_fee_default', null],
       ['clock_in_photo_required', 0],
       [ENROLLMENT_CODE_KEY, enrollmentCode],
       ['payroll_rules', JSON.stringify(payrollRules)],
@@ -10911,6 +10912,10 @@ app.get('/api/settings', requireViewPayroll, async (req, res) => {
         data[r.key] = r.value === null || r.value === '' ? null : Number(r.value);
         return;
       }
+      if (r.key === 'storage_container_daily_late_fee_default') {
+        data[r.key] = r.value === null || r.value === '' ? null : Number(r.value);
+        return;
+      }
       if (r.key === 'audit_log_retention_days') {
         if (r.value === null || r.value === '') {
           data[r.key] = null;
@@ -10962,6 +10967,17 @@ app.post('/api/settings', requireViewPayroll, express.json(), async (req, res) =
           : Number(raw);
       updates.push([
         'storage_daily_late_fee_default',
+        val === null || Number.isNaN(val) ? null : String(val)
+      ]);
+    }
+    if (settings.storage_container_daily_late_fee_default !== undefined) {
+      const raw = settings.storage_container_daily_late_fee_default;
+      const val =
+        raw === null || raw === '' || typeof raw === 'undefined'
+          ? null
+          : Number(raw);
+      updates.push([
+        'storage_container_daily_late_fee_default',
         val === null || Number.isNaN(val) ? null : String(val)
       ]);
     }
@@ -20713,6 +20729,7 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
       expected_arrival_date,
       tracking_number,
       bol_number,
+      is_container,
       items,
 
       // STORAGE / PICKUP FIELDS
@@ -20796,12 +20813,14 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
       if (trimmed) initialStatus = trimmed;
     }
 
+    const isContainerFlag = coerceBooleanFlag(is_container) ? 1 : 0;
+
     let resolvedStorageDailyLateFee = storage_daily_late_fee;
     if (resolvedStorageDailyLateFee == null) {
-      const defaultFeeRaw = await loadOrgSettingValue(
-        orgId,
-        'storage_daily_late_fee_default'
-      );
+      const defaultKey = isContainerFlag
+        ? 'storage_container_daily_late_fee_default'
+        : 'storage_daily_late_fee_default';
+      const defaultFeeRaw = await loadOrgSettingValue(orgId, defaultKey);
       const defaultFee = defaultFeeRaw != null ? Number(defaultFeeRaw) : NaN;
       resolvedStorageDailyLateFee =
         Number.isFinite(defaultFee) && defaultFee >= 0 ? defaultFee : null;
@@ -20868,6 +20887,7 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
         expected_arrival_date,
         tracking_number,
         bol_number,
+        is_container,
         storage_due_date,
         storage_daily_late_fee,
         picked_up_by,
@@ -20918,6 +20938,7 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
         expected_arrival_date || null,
         tracking_number || null,
         bol_number || null,
+        isContainerFlag,
         storage_due_date || null,
         canViewPayroll && resolvedStorageDailyLateFee != null ? resolvedStorageDailyLateFee : null,
         picked_up_by || null,
@@ -21271,6 +21292,7 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
       expected_arrival_date,
       tracking_number,
       bol_number,
+      is_container,
       items,
       storage_due_date,
       storage_daily_late_fee,
@@ -21383,6 +21405,14 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
       }
     }
 
+    const isContainerProvided = Object.prototype.hasOwnProperty.call(
+      body,
+      'is_container'
+    );
+    const nextIsContainer = isContainerProvided
+      ? (coerceBooleanFlag(is_container) ? 1 : 0)
+      : (existing.is_container ? 1 : 0);
+
     const nowIso = new Date().toISOString();
 
     const normalizeText = (val) => {
@@ -21400,6 +21430,10 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
     const vendorPaidProvided = Object.prototype.hasOwnProperty.call(
       body,
       'vendor_paid'
+    );
+    const storageDailyFeeProvided = Object.prototype.hasOwnProperty.call(
+      body,
+      'storage_daily_late_fee'
     );
     const vendorPaidAmountProvided = Object.prototype.hasOwnProperty.call(
       body,
@@ -21486,9 +21520,25 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
     const nextPricePerItem = canViewPayroll
       ? (price_per_item != null ? price_per_item : null)
       : existing.price_per_item;
-    const nextStorageDailyLateFee = canViewPayroll
-      ? (storage_daily_late_fee != null ? storage_daily_late_fee : null)
+    let nextStorageDailyLateFee = canViewPayroll
+      ? (storageDailyFeeProvided
+        ? (storage_daily_late_fee != null ? storage_daily_late_fee : null)
+        : existing.storage_daily_late_fee)
       : existing.storage_daily_late_fee;
+    if (
+      canViewPayroll &&
+      !storageDailyFeeProvided &&
+      isContainerProvided &&
+      existing.storage_daily_late_fee == null
+    ) {
+      const defaultKey = nextIsContainer
+        ? 'storage_container_daily_late_fee_default'
+        : 'storage_daily_late_fee_default';
+      const defaultFeeRaw = await loadOrgSettingValue(orgId, defaultKey);
+      const defaultFee = defaultFeeRaw != null ? Number(defaultFeeRaw) : NaN;
+      nextStorageDailyLateFee =
+        Number.isFinite(defaultFee) && defaultFee >= 0 ? defaultFee : null;
+    }
     const nextVendorPaid = canViewPayroll
       ? (vendorPaidProvided ? (vendor_paid ? 1 : 0) : existing.vendor_paid)
       : existing.vendor_paid;
@@ -21608,6 +21658,7 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
           expected_arrival_date = ?,
           tracking_number       = ?,
           bol_number            = ?,
+          is_container          = ?,
           storage_due_date      = ?,
           storage_daily_late_fee = ?,
           picked_up_by          = ?,
@@ -21654,6 +21705,7 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
         expected_arrival_date || null,
         tracking_number || null,
         bol_number || null,
+        nextIsContainer,
         storage_due_date || null,
         nextStorageDailyLateFee,
         nextPickedUpBy,
@@ -26312,6 +26364,9 @@ function normalizeOrgSettingValue(key, value) {
     return value === '1' || value === 1 || value === true || value === 'true';
   }
   if (key === 'storage_daily_late_fee_default') {
+    return value === '' ? null : Number(value);
+  }
+  if (key === 'storage_container_daily_late_fee_default') {
     return value === '' ? null : Number(value);
   }
   if (key === 'audit_log_retention_days') {

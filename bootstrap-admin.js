@@ -93,6 +93,7 @@ async function bootstrap() {
       ['company_name', orgName],
       ['company_email', null],
       ['storage_daily_late_fee_default', null],
+      ['storage_container_daily_late_fee_default', null],
       ['clock_in_photo_required', 0],
       [ENROLLMENT_CODE_KEY, enrollmentCode],
       ['payroll_rules', JSON.stringify(payrollRules)],

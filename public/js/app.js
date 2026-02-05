@@ -3408,6 +3408,7 @@ if (connectBtn) {
     company_name: document.getElementById('settings-company-name'),
     company_email: document.getElementById('settings-company-email'),
     storage_daily_late_fee_default: document.getElementById('settings-storage-daily-fee'),
+    storage_container_daily_late_fee_default: document.getElementById('settings-storage-container-daily-fee'),
     clock_in_photo_required: document.getElementById('settings-clock-in-photo-required'),
     audit_log_retention_days: document.getElementById('settings-audit-retention-days')
   };
@@ -5537,6 +5538,14 @@ if (connectBtn) {
             : data.storage_daily_late_fee_default;
         settingsFields.storage_daily_late_fee_default.value = fee;
       }
+      if (settingsFields.storage_container_daily_late_fee_default) {
+        const fee =
+          data.storage_container_daily_late_fee_default === null ||
+          typeof data.storage_container_daily_late_fee_default === 'undefined'
+            ? ''
+            : data.storage_container_daily_late_fee_default;
+        settingsFields.storage_container_daily_late_fee_default.value = fee;
+      }
       if (settingsFields.clock_in_photo_required) {
         settingsFields.clock_in_photo_required.checked = asBool(data.clock_in_photo_required);
       }
@@ -5591,6 +5600,10 @@ if (connectBtn) {
     const rawStorageFee = settingsFields.storage_daily_late_fee_default?.value || '';
     const storageFee =
       rawStorageFee.trim() === '' ? null : Number(rawStorageFee);
+    const rawContainerFee =
+      settingsFields.storage_container_daily_late_fee_default?.value || '';
+    const containerFee =
+      rawContainerFee.trim() === '' ? null : Number(rawContainerFee);
     const rawAuditRetention = settingsFields.audit_log_retention_days?.value || '';
     const trimmedAuditRetention = rawAuditRetention.trim();
     let auditRetention = null;
@@ -5609,6 +5622,7 @@ if (connectBtn) {
       company_name: settingsFields.company_name?.value || '',
       company_email: settingsFields.company_email?.value || '',
       storage_daily_late_fee_default: Number.isNaN(storageFee) ? null : storageFee,
+      storage_container_daily_late_fee_default: Number.isNaN(containerFee) ? null : containerFee,
       clock_in_photo_required: settingsFields.clock_in_photo_required?.checked || false,
       time_exception_rules: collectExceptionRuleSettings()
     };

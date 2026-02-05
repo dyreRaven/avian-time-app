@@ -1187,18 +1187,24 @@
                   <div class="settings-accordion-right">
                     <div class="settings-accordion-meta">
                       <span class="settings-pill">Operations</span>
-                      <span class="settings-pill">1 field</span>
+                      <span class="settings-pill">2 fields</span>
                     </div>
                     <span class="settings-accordion-chevron" aria-hidden="true"></span>
                   </div>
                 </summary>
                 <div class="settings-accordion-body">
                   <div class="card-body">
-                    <label>
-                      Default daily storage fee (past pickup due date)
-                      <input type="number" id="settings-storage-daily-fee" min="0" step="0.01" placeholder="0.00" />
-                    </label>
-                    <p class="card-sub">This value will be used to auto-calc estimated fees past the due date.</p>
+                    <div class="form-grid">
+                      <label>
+                        Default daily storage fee (non-container)
+                        <input type="number" id="settings-storage-daily-fee" min="0" step="0.01" placeholder="0.00" />
+                      </label>
+                      <label>
+                        Default daily container fee (past pickup due date)
+                        <input type="number" id="settings-storage-container-daily-fee" min="0" step="0.01" placeholder="0.00" />
+                      </label>
+                    </div>
+                    <p class="card-sub">Used to auto-calc estimated fees past the due date. Container shipments use the container fee; everything else uses the standard storage fee.</p>
                   </div>
                 </div>
               </details>
@@ -1246,8 +1252,6 @@
                     <p class="card-sub">Use this code on the kiosk device to enroll it. Rotate the code if it was shared by mistake.</p>
                     <div class="device-setup-code-row">
                       <div id="settings-kiosk-enrollment-code" class="device-setup-code">••••••</div>
-                    </div>
-                    <div class="device-setup-actions">
                       <button type="button" id="settings-kiosk-rotate" class="btn secondary">Rotate code</button>
                     </div>
                     <p id="settings-kiosk-status" class="message"></p>

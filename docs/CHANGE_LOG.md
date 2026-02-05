@@ -6,6 +6,7 @@
 - 2026-02-04: Review Time Entries now includes date presets (all/this week/last week/this month/last month) with a custom date range toggle.
 - 2026-02-04: Fixed Review Time Entries "All dates" to include all entries instead of defaulting to today.
 - 2026-02-04: Manual time entry form now supports approving the entry for payroll on save (when permitted).
+- 2026-02-04: Added container vs standard shipment fees: shipments track container status, and storage fee defaults now use the container fee when flagged.
 - 2026-02-03: Fixed payroll summary failing to load due to duplicate kiosk session joins.
 - 2026-02-03: Renamed the top-level role label to Super Admin, including existing data.
 - 2026-02-03: Shipment comment deletes are now blocked after 5 minutes.

@@ -93,7 +93,7 @@
   freight_forwarder, destination, project_id, project_name_snapshot,
   sku, quantity, total_price, price_per_item,
   expected_ship_date, expected_arrival_date, tracking_number, bol_number,
-  storage_due_date, storage_daily_late_fee,
+  is_container, storage_due_date, storage_daily_late_fee,
   picked_up_by, picked_up_date, picked_up_updated_by, picked_up_updated_at,
   vendor_paid, vendor_paid_amount, shipper_paid, shipper_paid_amount,
   shipper_paid_by, customs_paid, customs_paid_amount, customs_paid_by,

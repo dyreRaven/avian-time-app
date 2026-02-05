@@ -519,6 +519,7 @@ CREATE TABLE IF NOT EXISTS shipments (
   expected_arrival_date TEXT,
   tracking_number TEXT,
   bol_number TEXT,
+  is_container INTEGER NOT NULL DEFAULT 0,
   storage_due_date TEXT,
   storage_daily_late_fee REAL,
   picked_up_by TEXT,

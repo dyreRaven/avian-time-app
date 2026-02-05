@@ -1179,7 +1179,7 @@
                 </div>
 
                 <div class="shipment-payment-section">
-                  <h4 class="shipment-payment-title">Storage Fees</h4>
+                  <h4 class="shipment-payment-title" id="shipment-storage-fee-title">Storage Fees</h4>
                   <div class="form-row-2">
                     <div class="form-group payment-flag">
                       <label>
@@ -1353,6 +1353,14 @@
               <section class="shipment-card">
                 <h3 class="shipment-section-title">Storage &amp; Pickup</h3>
 
+            <div class="form-group">
+              <label class="checkbox-inline">
+                <input type="checkbox" id="shipment-is-container" name="is_container" />
+                Container shipment (use container fees)
+              </label>
+              <p class="small-muted">Uses the container daily fee from Settings; unchecked uses the standard storage fee.</p>
+            </div>
+
             <div class="form-row-2">
               <div class="form-group">
                 <label for="shipment-storage-due-date">Pickup Due Date</label>
@@ -1363,7 +1371,7 @@
                 />
               </div>
               <div class="form-group">
-                <label for="shipment-storage-fees-estimate">Est. Storage Fees (auto)</label>
+                <label for="shipment-storage-fees-estimate" id="shipment-storage-fees-label">Est. Storage Fees (auto)</label>
                 <div class="currency-field">
                   <input
                     type="text"

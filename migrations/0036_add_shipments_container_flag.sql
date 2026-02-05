@@ -1,0 +1,1 @@
+ALTER TABLE shipments ADD COLUMN is_container INTEGER NOT NULL DEFAULT 0;

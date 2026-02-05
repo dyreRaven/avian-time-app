@@ -216,7 +216,7 @@
 - Add shipment modal with core fields (PO, vendor, project, SKU/qty/pricing, dates, tracking/BOL, notes).
 - Detail modal tabs: Overview, Payments, Timeline, Documents, Comments.
 - Overview includes storage/pickup fields, daily late fee, and verification summary.
-- Late fees auto-calc from storage due date using the org default daily fee (org_settings.storage_daily_late_fee_default; legacy daily_fee), editable per shipment. If the org default is null/0, late fees are disabled until set.
+- Late fees auto-calc from storage due date using the org default daily fee: org_settings.storage_daily_late_fee_default for standard shipments and org_settings.storage_container_daily_late_fee_default for container shipments (legacy daily_fee), editable per shipment. If the relevant org default is null/0, late fees are disabled until set.
 - Payments include summary flags (vendor/shipper/customs/total) and detailed ledger entries.
 - Documents support type/label metadata and secure download.
 - Item verification captures per-item status and notes.
@@ -324,6 +324,7 @@
 - Create requires title + project; default status Pre-Order; project/vendor name snapshot stored on the shipment.
 - Create/edit fields include:
   - Header: title, project, vendor (QBO-synced list), PO number, freight forwarder (vendor flagged as freight_forwarder), destination, internal ref (sku).
+  - Flags: is_container (uses container storage fee defaults when true).
   - Dates: expected_ship_date (when vendor expects to ship), expected_arrival_date, storage_due_date, picked_up_date.
   - Tracking: tracking_number, bol_number.
   - Line items: description, sku, quantity, unit_price, line_total, vendor_name.
@@ -337,7 +338,7 @@
   - Freight forwarder selector is limited to vendors flagged as freight_forwarders; it stores a name string.
   - PO number is optional but included in search and reports.
   - Items start with one blank row; empty rows are ignored on save. line_total is computed as quantity * unit_price.
-  - storage_daily_late_fee defaults from org_settings.storage_daily_late_fee_default when blank; if the org default is null/0, treat as no late fee. Storage fee estimate is UI-only.
+  - storage_daily_late_fee defaults from org_settings.storage_daily_late_fee_default (non-container) or org_settings.storage_container_daily_late_fee_default (container) when blank; if the relevant org default is null/0, treat as no late fee. Storage fee estimate is UI-only.
   - Paid flags default false; amount inputs are disabled when unchecked (storage fees remain editable to record unpaid fees); total_paid auto-sums paid amounts.
 - Update replaces all items in the payload; items_verified can be explicitly set or inferred from items.
 
@@ -463,7 +464,7 @@
 - Payroll rules (pay period + overtime; super admin only; org_settings.payroll_rules).
 - Clock-in photo requirement (org-level, super admin only; org_settings.clock_in_photo_required; replaces legacy kiosk_require_photo).
 - Audit log retention days (org-level, super admin only; org_settings.audit_log_retention_days; blank/0 = retain forever).
-- Shipment settings (default daily late fee: org_settings.storage_daily_late_fee_default; default is null/0 until set).
+- Shipment settings (default daily late fee: org_settings.storage_daily_late_fee_default for standard shipments, org_settings.storage_container_daily_late_fee_default for container shipments; defaults are null/0 until set).
 - Notification settings.
 - Kiosk enrollment code (super admin only): view/copy/rotate; rotation affects new enrollments only and does not invalidate existing devices.
 - Enrollment code is stored in org_settings.kiosk_enrollment_code (6-digit numeric; normalize by stripping non-digits).

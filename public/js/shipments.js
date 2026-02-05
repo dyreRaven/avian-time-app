@@ -2677,6 +2677,7 @@ function captureShipmentFormState() {
     total_override: getVal('shipment-total-price-override'),
     storage_due: getVal('shipment-storage-due-date'),
     storage_daily_fee: getVal('shipment-storage-daily-fee'),
+    is_container: getVal('shipment-is-container'),
     picked_by: getVal('shipment-picked-up-by'),
     picked_date: getVal('shipment-picked-up-date'),
     shipper_paid: getVal('shipment-shipper-paid'),
@@ -4569,6 +4570,7 @@ function openShipmentCreateModal() {
   const updatedAtInput = document.getElementById('shipment-updated-at');
   const storageDueInput     = document.getElementById('shipment-storage-due-date');
   const storageDailyInput   = document.getElementById('shipment-storage-daily-fee');
+  const containerInput      = document.getElementById('shipment-is-container');
   const storageEstimate     = document.getElementById('shipment-storage-fees-estimate');
   const storageEstimateHelp = document.getElementById('shipment-storage-fees-helper');
   const totalOverrideInput  = document.getElementById('shipment-total-price-override');
@@ -4623,7 +4625,13 @@ function openShipmentCreateModal() {
 
   // Reset storage due date / fees
   if (storageDueInput) storageDueInput.value = '';
-  if (storageDailyInput) storageDailyInput.value = '';
+  if (storageDailyInput) {
+    storageDailyInput.value = '';
+    storageDailyInput.dataset.defaultSource = '';
+    storageDailyInput.dataset.defaultValue = '';
+  }
+  if (containerInput) containerInput.checked = false;
+  updateStorageFeeLabels();
   if (storageEstimate) storageEstimate.value = '$0.00';
   if (storageEstimateHelp) {
     storageEstimateHelp.textContent = '';
@@ -4802,6 +4810,7 @@ async function saveShipmentFromModal(options = {}) {
   // NEW: post-pickup + payments fields
   const storageDueInput     = document.getElementById('shipment-storage-due-date');
   const storageDailyInput   = document.getElementById('shipment-storage-daily-fee');
+  const isContainerInput    = document.getElementById('shipment-is-container');
   const pickedUpByInput     = document.getElementById('shipment-picked-up-by');
   const pickedUpDateInput   = document.getElementById('shipment-picked-up-date');
 
@@ -4824,6 +4833,7 @@ async function saveShipmentFromModal(options = {}) {
     storageDailyFeeRaw !== '' && !Number.isNaN(Number(storageDailyFeeRaw))
       ? Number(storageDailyFeeRaw)
       : null;
+  const isContainer = isContainerInput && isContainerInput.checked ? 1 : 0;
   const pickedUpBy     = pickedUpByInput?.value.trim() || '';
   const pickedUpDate   = pickedUpDateInput?.value || '';
 
@@ -5000,6 +5010,7 @@ async function saveShipmentFromModal(options = {}) {
     // Storage + pickup
     storage_due_date: storageDueDate || null,
     storage_daily_late_fee: storageDailyFee != null ? storageDailyFee : null,
+    is_container: isContainer,
     picked_up_by:    pickedUpBy || null,
     picked_up_date:  pickedUpDate || null,
 
@@ -5183,7 +5194,12 @@ function openShipmentEditModal(shipment, items = []) {
   const bolInput         = document.getElementById('shipment-bol-number');
   const storageDueInput  = document.getElementById('shipment-storage-due-date');
   const storageDailyInput= document.getElementById('shipment-storage-daily-fee');
+  const containerInput   = document.getElementById('shipment-is-container');
   const totalOverrideInput = document.getElementById('shipment-total-price-override');
+  if (storageDailyInput) {
+    storageDailyInput.dataset.defaultSource = '';
+    storageDailyInput.dataset.defaultValue = '';
+  }
 
   // Payments + pickup
   const pickedUpByInput   = document.getElementById('shipment-picked-up-by');
@@ -5266,6 +5282,7 @@ function openShipmentEditModal(shipment, items = []) {
   if (trackingInput)    trackingInput.value    = shipment.tracking_number || '';
   if (bolInput)         bolInput.value         = shipment.bol_number || '';
   if (storageDueInput)  storageDueInput.value  = shipment.storage_due_date || '';
+  if (containerInput)   containerInput.checked = isContainerValue(shipment.is_container);
   if (storageDailyInput)
     storageDailyInput.value =
       shipment.storage_daily_late_fee != null
@@ -5305,6 +5322,7 @@ function openShipmentEditModal(shipment, items = []) {
     }
   }
   updateStorageFeeEstimate();
+  updateStorageFeeLabels();
 
   // Post-pickup + payments
   if (pickedUpByInput)   pickedUpByInput.value   = shipment.picked_up_by || '';
@@ -6535,6 +6553,12 @@ async function openShipmentDetail(id) {
     const pickupDate = s.picked_up_date
       ? formatDateUS(s.picked_up_date)
       : '';
+    const isContainer = isContainerValue(s.is_container);
+    const storageFeeType = isContainer ? 'Container' : 'Standard';
+    const storageFeeRate =
+      s.storage_daily_late_fee != null
+        ? `${formatMoney(s.storage_daily_late_fee)}/day`
+        : '—';
     const shipperPaidByLabel =
       s.shipper_paid && s.shipper_paid_by
         ? escapeHTML(s.shipper_paid_by)
@@ -6602,6 +6626,14 @@ async function openShipmentDetail(id) {
         <div class="form-field">
           <label>Pickup Due</label>
           <div>${pickupDue}</div>
+        </div>
+        <div class="form-field">
+          <label>Storage fee type</label>
+          <div>${escapeHTML(storageFeeType)}</div>
+        </div>
+        <div class="form-field">
+          <label>Daily storage fee</label>
+          <div>${escapeHTML(storageFeeRate)}</div>
         </div>
         <div class="form-field">
           <label>Picked Up</label>
@@ -6850,6 +6882,7 @@ function renderShipmentPayments(rows = [], shipment = {}) {
   const shipperPaid = !!shipment.shipper_paid;
   const customsPaid = !!shipment.customs_paid;
   const storagePaid = !!shipment.storage_paid;
+  const storageTitle = isContainerValue(shipment.is_container) ? 'Container Fees' : 'Storage Fees';
 
   const shipperAmtRaw = shipment.shipper_paid_amount;
   const customsAmtRaw = shipment.customs_paid_amount;
@@ -6982,7 +7015,7 @@ function renderShipmentPayments(rows = [], shipment = {}) {
       </div>
 
       <div class="shipment-payment-section">
-        <h4 class="shipment-payment-title">Storage Fees</h4>
+        <h4 class="shipment-payment-title">${storageTitle}</h4>
         <div class="form-row-2 ship-detail-payment-grid">
           <div class="form-field">
             <label>Status</label>
@@ -8124,6 +8157,43 @@ function showDocsUI() {
   if (listContainer) listContainer.classList.remove("hidden");
 }
 
+function getShipmentIsContainer() {
+  const containerInput = document.getElementById('shipment-is-container');
+  return !!(containerInput && containerInput.checked);
+}
+
+function isContainerValue(value) {
+  return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function parseStorageDefaultFee(raw) {
+  if (raw === null || typeof raw === 'undefined' || raw === '') return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num < 0) return null;
+  return num;
+}
+
+function getShipmentStorageDefaults(settings = {}) {
+  return {
+    standard: parseStorageDefaultFee(settings.storage_daily_late_fee_default),
+    container: parseStorageDefaultFee(settings.storage_container_daily_late_fee_default)
+  };
+}
+
+function updateStorageFeeLabels() {
+  const isContainer = getShipmentIsContainer();
+  const estimateLabel = document.getElementById('shipment-storage-fees-label');
+  const paymentTitle = document.getElementById('shipment-storage-fee-title');
+  if (estimateLabel) {
+    estimateLabel.textContent = isContainer
+      ? 'Est. Container Fees (auto)'
+      : 'Est. Storage Fees (auto)';
+  }
+  if (paymentTitle) {
+    paymentTitle.textContent = isContainer ? 'Container Fees' : 'Storage Fees';
+  }
+}
+
 async function loadShipmentSettingsCached() {
   // Always fetch fresh to reflect any Settings changes without reload.
   if (shipmentSettingsPromise) return shipmentSettingsPromise;
@@ -8143,18 +8213,36 @@ async function loadShipmentSettingsCached() {
   return shipmentSettingsPromise;
 }
 
-async function applyDefaultStorageLateFeeFromSettings() {
+async function applyDefaultStorageLateFeeFromSettings(options = {}) {
   const feeInput = document.getElementById('shipment-storage-daily-fee');
-  if (!feeInput || (feeInput.value && feeInput.value.trim() !== '')) return;
+  if (!feeInput) return;
+
+  const currentValue = feeInput.value ? feeInput.value.trim() : '';
+  const force = options && options.force === true;
+  if (!force && currentValue !== '') {
+    updateStorageFeeLabels();
+    return;
+  }
 
   const settings = await loadShipmentSettingsCached();
-  const dailyFeeRaw = settings ? settings.storage_daily_late_fee_default : null;
-  const dailyFeeNum = Number(dailyFeeRaw);
+  const { standard, container } = getShipmentStorageDefaults(settings || {});
+  const isContainer = getShipmentIsContainer();
+  const dailyFeeNum = isContainer ? container : standard;
 
-  if (Number.isNaN(dailyFeeNum) || dailyFeeNum < 0) return;
+  if (!Number.isFinite(dailyFeeNum) || dailyFeeNum < 0) {
+    feeInput.value = '';
+    feeInput.dataset.defaultSource = isContainer ? 'container' : 'standard';
+    feeInput.dataset.defaultValue = '';
+    updateStorageFeeEstimate();
+    updateStorageFeeLabels();
+    return;
+  }
 
   feeInput.value = dailyFeeNum.toFixed(2);
+  feeInput.dataset.defaultSource = isContainer ? 'container' : 'standard';
+  feeInput.dataset.defaultValue = dailyFeeNum.toFixed(2);
   updateStorageFeeEstimate();
+  updateStorageFeeLabels();
 }
 function clearShipmentSettingsCache() {
   shipmentSettingsCache = null;
@@ -8162,7 +8250,11 @@ function clearShipmentSettingsCache() {
 window.clearShipmentSettingsCache = clearShipmentSettingsCache;
 
 function calculateStorageLateFees(dueDateStr, dailyFeeRaw, effectiveDateStr = '') {
-  const dailyFee = Number(dailyFeeRaw);
+  const dailyFeeText = String(dailyFeeRaw ?? '').trim();
+  if (!dailyFeeText) {
+    return { daysLate: 0, estimate: 0 };
+  }
+  const dailyFee = Number(dailyFeeText);
   if (!dueDateStr || Number.isNaN(dailyFee) || dailyFee < 0) {
     return { daysLate: 0, estimate: 0 };
   }
@@ -8219,8 +8311,31 @@ function updateStorageFeeEstimate() {
   }
 
   if (helper) {
-    helper.textContent = '';
-    helper.style.display = 'none';
+    const paymentsAllowed =
+      typeof canViewShipmentPayments === 'function'
+        ? canViewShipmentPayments()
+        : true;
+    if (!paymentsAllowed) {
+      helper.textContent = '';
+      helper.style.display = 'none';
+    } else {
+      const isContainer = getShipmentIsContainer();
+      const label = isContainer ? 'Container fee' : 'Storage fee';
+      const feeTrimmed = String(dailyFeeRaw || '').trim();
+      const feeNum =
+        feeTrimmed === '' || feeTrimmed == null ? null : Number(feeTrimmed);
+      const hasFee = feeNum != null && Number.isFinite(feeNum) && feeNum >= 0;
+
+      if (hasFee) {
+        helper.textContent = `${label} rate: $${feeNum.toFixed(2)}/day.`;
+        helper.style.display = 'block';
+      } else {
+        helper.textContent = isContainer
+          ? 'No container fee set. Update Shipment Defaults in Settings to auto-calc fees.'
+          : 'No storage fee set. Update Shipment Defaults in Settings to auto-calc fees.';
+        helper.style.display = 'block';
+      }
+    }
   }
 
   if (storagePaidAmt) {
@@ -8253,6 +8368,7 @@ function setupStorageLateFeeListeners() {
   const dueInput = document.getElementById('shipment-storage-due-date');
   const feeInput = document.getElementById('shipment-storage-daily-fee');
   const pickedUpInput = document.getElementById('shipment-picked-up-date');
+  const containerInput = document.getElementById('shipment-is-container');
 
   if (dueInput) {
     dueInput.addEventListener('change', updateStorageFeeEstimate);
@@ -8268,6 +8384,15 @@ function setupStorageLateFeeListeners() {
 
   if (pickedUpInput) {
     pickedUpInput.addEventListener('change', updateStorageFeeEstimate);
+  }
+
+  if (containerInput && containerInput.dataset.bound !== '1') {
+    containerInput.addEventListener('change', () => {
+      applyDefaultStorageLateFeeFromSettings({ force: true });
+      updateStorageFeeEstimate();
+      updateStorageFeeLabels();
+    });
+    containerInput.dataset.bound = '1';
   }
 }
 

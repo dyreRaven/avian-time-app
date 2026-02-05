@@ -1,5 +1,6 @@
 # Decisions Log
 
+- 2026-02-04: Shipments have an is_container flag; storage_daily_late_fee defaults to storage_container_daily_late_fee_default for container shipments and storage_daily_late_fee_default otherwise.
 - 2026-02-03: Removed bulk approve from Review Time Entries; approvals are per-row only.
 - 2026-02-02: Audit logs are retained indefinitely by default; orgs can set `audit_log_retention_days` to purge older audit entries.
 - 2026-02-02: Timesheet sharing is per-admin only; shared-with-all is deprecated and ignored (no global share UI).
