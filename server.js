@@ -1538,6 +1538,344 @@ function normalizeReceiptVendorName(value) {
   return raw || null;
 }
 
+const RECEIPT_LIST_DEFAULT_WINDOW_DAYS = 30;
+const RECEIPT_LIST_DEFAULT_PAGE_SIZE = 50;
+const RECEIPT_LIST_MAX_PAGE_SIZE = 200;
+const REIMBURSEMENT_DUPLICATE_LIMIT = 8;
+
+function normalizePositiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  const intVal = Math.floor(num);
+  if (intVal < min) return fallback;
+  if (intVal > max) return max;
+  return intVal;
+}
+
+function normalizeReimbursementPagination(query = {}) {
+  const page = normalizePositiveInt(query.page, 1, { min: 1, max: 1000000 });
+  const pageSize = normalizePositiveInt(
+    query.page_size != null ? query.page_size : query.limit,
+    RECEIPT_LIST_DEFAULT_PAGE_SIZE,
+    { min: 1, max: RECEIPT_LIST_MAX_PAGE_SIZE }
+  );
+  const offset = (page - 1) * pageSize;
+  return { page, pageSize, offset };
+}
+
+function buildPaginationPayload({ totalCount, page, pageSize, appliedStart, appliedEnd, defaultWindowApplied }) {
+  const safeTotal = Number.isFinite(Number(totalCount)) ? Math.max(0, Number(totalCount)) : 0;
+  const safePageSize = Number.isFinite(Number(pageSize)) && Number(pageSize) > 0 ? Number(pageSize) : RECEIPT_LIST_DEFAULT_PAGE_SIZE;
+  const totalPages = Math.max(1, Math.ceil(safeTotal / safePageSize));
+  const normalizedPage = Math.min(Math.max(1, Number(page) || 1), totalPages);
+  return {
+    page: normalizedPage,
+    page_size: safePageSize,
+    total_count: safeTotal,
+    total_pages: totalPages,
+    has_prev: normalizedPage > 1,
+    has_next: normalizedPage < totalPages,
+    applied_start: appliedStart || null,
+    applied_end: appliedEnd || null,
+    default_window_applied: !!defaultWindowApplied
+  };
+}
+
+async function resolveReimbursementDateWindow({ orgId, start, end }) {
+  let effectiveStart = normalizeString(start);
+  let effectiveEnd = normalizeString(end);
+  let defaultWindowApplied = false;
+
+  if (effectiveStart && !isValidDateOnlyString(effectiveStart)) {
+    return { ok: false, error: 'start must be YYYY-MM-DD.' };
+  }
+  if (effectiveEnd && !isValidDateOnlyString(effectiveEnd)) {
+    return { ok: false, error: 'end must be YYYY-MM-DD.' };
+  }
+
+  if (!effectiveStart && !effectiveEnd) {
+    const orgTimezone = await getOrgTimezone(orgId);
+    const today = getTodayIsoDate(orgTimezone);
+    effectiveEnd = today;
+    effectiveStart = shiftIsoDate(today, -(RECEIPT_LIST_DEFAULT_WINDOW_DAYS - 1));
+    defaultWindowApplied = true;
+  }
+
+  if (effectiveStart && effectiveEnd && effectiveStart > effectiveEnd) {
+    return { ok: false, error: 'start cannot be after end.' };
+  }
+
+  return {
+    ok: true,
+    start: effectiveStart || null,
+    end: effectiveEnd || null,
+    defaultWindowApplied
+  };
+}
+
+async function computeFileSha256(filePath) {
+  if (!filePath) return null;
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', reject);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('end', () => {
+      try {
+        resolve(hash.digest('hex'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
+
+async function findPotentialReimbursementDuplicates({
+  orgId,
+  employeeId,
+  expenseDate,
+  vendorName,
+  amount,
+  fileSha256,
+  limit = REIMBURSEMENT_DUPLICATE_LIMIT
+}) {
+  if (!orgId || !employeeId || !expenseDate || !Number.isFinite(Number(amount))) return [];
+  const normalizedVendor = normalizeReceiptVendorName(vendorName) || '';
+  const normalizedAmount = roundCurrency(amount);
+  const useFileHash = !!(fileSha256 && String(fileSha256).trim());
+  const effectiveLimit = normalizePositiveInt(limit, REIMBURSEMENT_DUPLICATE_LIMIT, {
+    min: 1,
+    max: 25
+  });
+
+  let sql = `
+    SELECT
+      rr.id,
+      rr.employee_id,
+      rr.project_id,
+      rr.vendor_name,
+      rr.amount,
+      rr.expense_date,
+      rr.status,
+      rr.requested_at,
+      rr.approved_at,
+      rr.paid_date,
+      rr.file_sha256,
+      e.name AS employee_name,
+      COALESCE(p.name, '(No project)') AS project_name,
+      CASE
+        WHEN ? = 1 AND rr.file_sha256 IS NOT NULL AND rr.file_sha256 = ?
+        THEN 1 ELSE 0
+      END AS match_file_hash,
+      CASE
+        WHEN rr.employee_id = ?
+          AND rr.expense_date = ?
+          AND lower(trim(COALESCE(rr.vendor_name, ''))) = lower(trim(?))
+          AND abs(IFNULL(rr.amount, 0) - ?) < 0.005
+        THEN 1 ELSE 0
+      END AS match_details
+    FROM payroll_receipt_reimbursements rr
+    JOIN employees e
+      ON e.id = rr.employee_id
+     AND e.org_id = rr.org_id
+    LEFT JOIN projects p
+      ON p.id = rr.project_id
+     AND p.org_id = rr.org_id
+    WHERE rr.org_id = ?
+      AND (
+        (
+          ? = 1
+          AND rr.file_sha256 IS NOT NULL
+          AND rr.file_sha256 = ?
+        )
+        OR
+        (
+          rr.employee_id = ?
+          AND rr.expense_date = ?
+          AND lower(trim(COALESCE(rr.vendor_name, ''))) = lower(trim(?))
+          AND abs(IFNULL(rr.amount, 0) - ?) < 0.005
+        )
+      )
+    ORDER BY rr.requested_at DESC, rr.id DESC
+    LIMIT ?
+  `;
+  const params = [
+    useFileHash ? 1 : 0,
+    fileSha256 || null,
+    employeeId,
+    expenseDate,
+    normalizedVendor,
+    normalizedAmount,
+    orgId,
+    useFileHash ? 1 : 0,
+    fileSha256 || null,
+    employeeId,
+    expenseDate,
+    normalizedVendor,
+    normalizedAmount,
+    effectiveLimit
+  ];
+
+  const rows = await dbAll(sql, params);
+  return (rows || []).map(row => {
+    const reasons = [];
+    if (Number(row.match_file_hash) === 1) reasons.push('file_hash');
+    if (Number(row.match_details) === 1) reasons.push('details');
+    return {
+      id: Number(row.id || 0),
+      employee_id: Number(row.employee_id || 0),
+      employee_name: row.employee_name || null,
+      project_id: Number(row.project_id || 0),
+      project_name: row.project_name || null,
+      vendor_name: row.vendor_name || null,
+      amount: Number(row.amount || 0),
+      expense_date: row.expense_date || null,
+      status: row.status || null,
+      requested_at: row.requested_at || null,
+      approved_at: row.approved_at || null,
+      paid_date: row.paid_date || null,
+      reasons
+    };
+  });
+}
+
+async function insertReimbursementStatusHistory({
+  orgId,
+  reimbursementId,
+  status,
+  actorEmployeeId = null,
+  actorSource = null,
+  reason = null,
+  meta = null,
+  createdAt = null
+}) {
+  if (!orgId || !reimbursementId || !status) return;
+  const metaJson = meta && typeof meta === 'object' ? JSON.stringify(meta) : null;
+  await dbRun(
+    `
+      INSERT INTO payroll_reimbursement_status_history (
+        org_id,
+        reimbursement_id,
+        status,
+        actor_employee_id,
+        actor_source,
+        reason,
+        meta_json,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
+    `,
+    [
+      orgId,
+      reimbursementId,
+      String(status).trim().toLowerCase(),
+      actorEmployeeId || null,
+      actorSource || null,
+      reason || null,
+      metaJson,
+      createdAt || null
+    ]
+  );
+}
+
+async function loadReimbursementHistory({
+  orgId,
+  reimbursementId
+}) {
+  if (!orgId || !reimbursementId) return [];
+  const rows = await dbAll(
+    `
+      SELECT
+        h.id,
+        h.status,
+        h.actor_employee_id,
+        h.actor_source,
+        h.reason,
+        h.meta_json,
+        h.created_at,
+        e.name AS actor_name
+      FROM payroll_reimbursement_status_history h
+      LEFT JOIN employees e
+        ON e.id = h.actor_employee_id
+       AND e.org_id = h.org_id
+      WHERE h.org_id = ?
+        AND h.reimbursement_id = ?
+      ORDER BY h.created_at ASC, h.id ASC
+    `,
+    [orgId, reimbursementId]
+  );
+  return (rows || []).map(row => {
+    let meta = null;
+    if (row.meta_json) {
+      try {
+        const parsed = JSON.parse(row.meta_json);
+        if (parsed && typeof parsed === 'object') meta = parsed;
+      } catch {
+        meta = null;
+      }
+    }
+    return {
+      id: Number(row.id || 0),
+      status: row.status || null,
+      actor_employee_id: row.actor_employee_id ? Number(row.actor_employee_id) : null,
+      actor_name: row.actor_name || null,
+      actor_source: row.actor_source || null,
+      reason: row.reason || null,
+      meta,
+      created_at: row.created_at || null
+    };
+  });
+}
+
+function buildFallbackReimbursementHistoryRowSet(row) {
+  if (!row || !row.id) return [];
+  const history = [];
+  if (row.requested_at) {
+    history.push({
+      status: 'requested',
+      actor_employee_id: row.requested_by_employee_id || null,
+      actor_name: row.requested_by_name || null,
+      actor_source: 'request',
+      reason: null,
+      meta: null,
+      created_at: row.requested_at
+    });
+  }
+  if (row.approved_at) {
+    history.push({
+      status: 'approved',
+      actor_employee_id: row.approved_by_employee_id || null,
+      actor_name: row.approved_by_name || null,
+      actor_source: 'review',
+      reason: null,
+      meta: null,
+      created_at: row.approved_at
+    });
+  }
+  if (String(row.status || '').toLowerCase() === 'cancelled') {
+    history.push({
+      status: 'cancelled',
+      actor_employee_id: row.approved_by_employee_id || null,
+      actor_name: row.approved_by_name || null,
+      actor_source: 'review',
+      reason: null,
+      meta: null,
+      created_at: row.updated_at || row.approved_at || row.requested_at || null
+    });
+  }
+  if (row.paid_date) {
+    history.push({
+      status: 'paid',
+      actor_employee_id: row.approved_by_employee_id || null,
+      actor_name: row.approved_by_name || null,
+      actor_source: 'payroll',
+      reason: null,
+      meta: null,
+      created_at: row.paid_date
+    });
+  }
+  return history;
+}
+
 function buildReceiptLineProjectId(projectId, vendorName) {
   const projectNum = Number(projectId) || 0;
   const vendor = normalizeReceiptVendorName(vendorName) || 'vendor';
@@ -5278,25 +5616,73 @@ app.get('/api/payroll/reimbursements', requireSectionEnabled('payroll'), require
     return res.status(401).json({ error: 'Not authenticated.' });
   }
 
-  const start = normalizeString(req.query?.start);
-  const end = normalizeString(req.query?.end);
+  const startRaw = normalizeString(req.query?.start);
+  const endRaw = normalizeString(req.query?.end);
   const employeeId = Number(req.query?.employeeId || 0);
   const projectId = Number(req.query?.projectId || 0);
-  const rawLimit = Number(req.query?.limit || 100);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 300) : 100;
+  const { page, pageSize } = normalizeReimbursementPagination(req.query || {});
   const rawStatus = normalizeString(req.query?.status);
+  const normalizedStatus = rawStatus === 'pending' ? 'requested' : rawStatus;
   const allowedStatuses = new Set(['requested', 'approved', 'paid', 'cancelled', 'all']);
-  const statusFilter = allowedStatuses.has(rawStatus || '') ? rawStatus : 'requested';
-
-  if (start && !isValidDateOnlyString(start)) {
-    return res.status(400).json({ error: 'start must be YYYY-MM-DD.' });
-  }
-  if (end && !isValidDateOnlyString(end)) {
-    return res.status(400).json({ error: 'end must be YYYY-MM-DD.' });
-  }
+  const statusFilter = allowedStatuses.has(normalizedStatus || '') ? normalizedStatus : 'requested';
 
   try {
-    let sql = `
+    const dateWindow = await resolveReimbursementDateWindow({
+      orgId,
+      start: startRaw,
+      end: endRaw
+    });
+    if (!dateWindow.ok) {
+      return res.status(400).json({ error: dateWindow.error });
+    }
+
+    const where = ['rr.org_id = ?'];
+    const whereParams = [orgId];
+    if (statusFilter && statusFilter !== 'all') {
+      where.push('rr.status = ?');
+      whereParams.push(statusFilter);
+    }
+    if (dateWindow.start) {
+      where.push('rr.expense_date >= ?');
+      whereParams.push(dateWindow.start);
+    }
+    if (dateWindow.end) {
+      where.push('rr.expense_date <= ?');
+      whereParams.push(dateWindow.end);
+    }
+    if (employeeId) {
+      where.push('rr.employee_id = ?');
+      whereParams.push(employeeId);
+    }
+    if (projectId) {
+      where.push('rr.project_id = ?');
+      whereParams.push(projectId);
+    }
+    const whereSql = where.join(' AND ');
+
+    const countRow = await dbGet(
+      `
+        SELECT COUNT(*) AS total_count
+        FROM payroll_receipt_reimbursements rr
+        WHERE ${whereSql}
+      `,
+      whereParams
+    );
+    const totalCount = Number(countRow?.total_count || 0);
+
+    const paging = buildPaginationPayload({
+      totalCount,
+      page,
+      pageSize,
+      appliedStart: dateWindow.start,
+      appliedEnd: dateWindow.end,
+      defaultWindowApplied: dateWindow.defaultWindowApplied
+    });
+    const effectivePage = Math.max(1, Number(paging.page || 1));
+    const effectiveOffset = (effectivePage - 1) * pageSize;
+
+    const rows = await dbAll(
+      `
       SELECT
         rr.id,
         rr.employee_id,
@@ -5306,14 +5692,17 @@ app.get('/api/payroll/reimbursements', requireSectionEnabled('payroll'), require
         rr.expense_date,
         rr.note,
         rr.status,
+        rr.requested_by_employee_id,
         rr.requested_at,
         rr.approved_at,
         rr.approved_by_employee_id,
         rr.paid_date,
         rr.payroll_run_id,
         rr.payroll_check_id,
+        rr.updated_at,
         rr.original_filename,
         rr.mime_type,
+        rr.file_sha256,
         e.name AS employee_name,
         COALESCE(p.name, '(No project)') AS project_name,
         p.customer_name AS project_customer_name,
@@ -5332,35 +5721,12 @@ app.get('/api/payroll/reimbursements', requireSectionEnabled('payroll'), require
       LEFT JOIN employees ab
         ON ab.id = rr.approved_by_employee_id
        AND ab.org_id = rr.org_id
-      WHERE rr.org_id = ?
-    `;
-    const params = [orgId];
-
-    if (statusFilter && statusFilter !== 'all') {
-      sql += ' AND rr.status = ?';
-      params.push(statusFilter);
-    }
-    if (start) {
-      sql += ' AND rr.expense_date >= ?';
-      params.push(start);
-    }
-    if (end) {
-      sql += ' AND rr.expense_date <= ?';
-      params.push(end);
-    }
-    if (employeeId) {
-      sql += ' AND rr.employee_id = ?';
-      params.push(employeeId);
-    }
-    if (projectId) {
-      sql += ' AND rr.project_id = ?';
-      params.push(projectId);
-    }
-
-    sql += ' ORDER BY rr.expense_date DESC, rr.id DESC LIMIT ?';
-    params.push(limit);
-
-    const rows = await dbAll(sql, params);
+      WHERE ${whereSql}
+      ORDER BY rr.expense_date DESC, rr.id DESC
+      LIMIT ? OFFSET ?
+      `,
+      [...whereParams, pageSize, effectiveOffset]
+    );
     const payloadRows = (rows || []).map(row => ({
       id: row.id,
       employee_id: row.employee_id,
@@ -5373,6 +5739,7 @@ app.get('/api/payroll/reimbursements', requireSectionEnabled('payroll'), require
       expense_date: row.expense_date,
       note: row.note || null,
       status: row.status || 'requested',
+      requested_by_employee_id: row.requested_by_employee_id || null,
       requested_at: row.requested_at || null,
       requested_by_name: row.requested_by_name || null,
       approved_at: row.approved_at || null,
@@ -5381,15 +5748,47 @@ app.get('/api/payroll/reimbursements', requireSectionEnabled('payroll'), require
       paid_date: row.paid_date || null,
       payroll_run_id: row.payroll_run_id || null,
       payroll_check_id: row.payroll_check_id || null,
+      updated_at: row.updated_at || null,
       original_filename: row.original_filename || null,
       mime_type: row.mime_type || null,
+      file_sha256: row.file_sha256 || null,
       receipt_url: `/api/payroll/reimbursements/${row.id}/receipt`
     }));
 
-    return res.json({ ok: true, rows: payloadRows });
+    return res.json({
+      ok: true,
+      rows: payloadRows,
+      paging
+    });
   } catch (err) {
     console.error('Error loading payroll reimbursements:', err);
     return res.status(500).json({ error: 'Failed to load payroll reimbursements.' });
+  }
+});
+
+// Payroll reimbursement pending count (for badges/alerts)
+app.get('/api/payroll/reimbursements/pending-count', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+  try {
+    const row = await dbGet(
+      `
+        SELECT COUNT(*) AS pending_count
+        FROM payroll_receipt_reimbursements
+        WHERE org_id = ?
+          AND status = 'requested'
+      `,
+      [orgId]
+    );
+    return res.json({
+      ok: true,
+      pending_count: Number(row?.pending_count || 0)
+    });
+  } catch (err) {
+    console.error('Error loading reimbursement pending count:', err);
+    return res.status(500).json({ error: 'Failed to load pending count.' });
   }
 });
 
@@ -5417,11 +5816,14 @@ app.post(
     const employeeId = Number(req.body?.employee_id || 0);
     const projectId = Number(req.body?.project_id || 0);
     const amount = Number(req.body?.amount);
+    const roundedAmount = roundCurrency(amount);
     const vendorName = normalizeReceiptVendorName(req.body?.vendor_name);
     const note = normalizeString(req.body?.note);
+    const allowDuplicate = parseBooleanFlag(req.body?.allow_duplicate, false);
     const providedExpenseDate = normalizeString(req.body?.expense_date);
-    const defaultExpenseDate = new Date().toISOString().slice(0, 10);
+    const defaultExpenseDate = getTodayIsoDate(await getOrgTimezone(orgId));
     const expenseDate = providedExpenseDate || defaultExpenseDate;
+    const requestedByEmployeeId = req.session && req.session.employeeId ? Number(req.session.employeeId) : null;
 
     if (!employeeId || !projectId || !Number.isFinite(amount) || amount <= 0 || !vendorName) {
       await cleanupFile();
@@ -5473,6 +5875,28 @@ app.post(
         return res.status(400).json({ error: 'Project not found.' });
       }
 
+      const fileSha256 = await computeFileSha256(file.path);
+      const duplicateMatches = await findPotentialReimbursementDuplicates({
+        orgId,
+        employeeId,
+        expenseDate,
+        vendorName,
+        amount: roundedAmount,
+        fileSha256,
+        limit: REIMBURSEMENT_DUPLICATE_LIMIT
+      });
+      if (!allowDuplicate && duplicateMatches.length) {
+        await cleanupFile();
+        return res.status(409).json({
+          error: 'Possible duplicate reimbursement detected. Review existing entries before submitting.',
+          code: 'duplicate_reimbursement',
+          duplicates: duplicateMatches.map(row => ({
+            ...row,
+            receipt_url: `/api/payroll/reimbursements/${row.id}/receipt`
+          }))
+        });
+      }
+
       const relPath = `payroll_receipts/${file.filename}`;
       const insertRes = await dbRun(
         `
@@ -5487,28 +5911,39 @@ app.post(
             file_path,
             original_filename,
             mime_type,
+            file_sha256,
             status,
             requested_by_employee_id,
             requested_at,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, datetime('now'), datetime('now'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, datetime('now'), datetime('now'))
         `,
         [
           orgId,
           employeeId,
           projectId,
-          roundCurrency(amount),
+          roundedAmount,
           expenseDate,
           vendorName,
           note,
           relPath,
           file.originalname || null,
           uploadValidation.mime || file.mimetype || null,
-          req.session && req.session.employeeId ? req.session.employeeId : null
+          fileSha256 || null,
+          requestedByEmployeeId
         ]
       );
 
       const reimbursementId = insertRes?.lastID;
+      if (reimbursementId) {
+        await insertReimbursementStatusHistory({
+          orgId,
+          reimbursementId,
+          status: 'requested',
+          actorEmployeeId: requestedByEmployeeId,
+          actorSource: 'desktop_admin'
+        });
+      }
       await logAuditEvent({
         req,
         orgId,
@@ -5521,12 +5956,33 @@ app.post(
           project_id: projectId,
           project_name: projectRow.name || null,
           vendor_name: vendorName,
-          amount: roundCurrency(amount),
+          amount: roundedAmount,
           expense_date: expenseDate,
           note: note || null
         },
         note: 'Receipt reimbursement requested.'
       });
+
+      try {
+        await notifyPayrollEvent({
+          orgId,
+          eventType: 'PAYROLL_REIMBURSEMENT_REQUESTED',
+          title: 'Reimbursement awaiting approval',
+          body: `${employeeRow.name || 'Employee'} submitted ${roundedAmount.toFixed(2)} from ${vendorName}.`,
+          data: {
+            reimbursement_id: reimbursementId || null,
+            employee_id: employeeId,
+            employee_name: employeeRow.name || null,
+            project_id: projectId,
+            project_name: projectRow.name || null,
+            amount: roundedAmount,
+            expense_date: expenseDate,
+            source: 'desktop_admin'
+          }
+        });
+      } catch (notifyErr) {
+        console.warn('Failed to emit reimbursement requested notification:', notifyErr?.message || notifyErr);
+      }
 
       return res.json({
         ok: true,
@@ -5538,7 +5994,7 @@ app.post(
           project_name: projectRow.name || null,
           project_customer_name: projectRow.customer_name || null,
           vendor_name: vendorName,
-          amount: roundCurrency(amount),
+          amount: roundedAmount,
           expense_date: expenseDate,
           note: note || null,
           status: 'requested',
@@ -5694,6 +6150,13 @@ app.post('/api/payroll/reimbursements/:id/approve', requireSectionEnabled('payro
       const auditNote = currentStatus === 'cancelled'
         ? 'Receipt reimbursement re-approved for payroll.'
         : 'Receipt reimbursement approved for payroll.';
+      await insertReimbursementStatusHistory({
+        orgId,
+        reimbursementId,
+        status: 'approved',
+        actorEmployeeId,
+        actorSource: 'review'
+      });
       await logAuditEvent({
         req,
         orgId,
@@ -5882,6 +6345,14 @@ app.post('/api/payroll/reimbursements/:id/cancel', requireSectionEnabled('payrol
     }
 
     if (Number(updateRes?.changes || 0) > 0) {
+      await insertReimbursementStatusHistory({
+        orgId,
+        reimbursementId,
+        status: 'cancelled',
+        actorEmployeeId: req.session && req.session.employeeId ? Number(req.session.employeeId) : null,
+        actorSource: 'review',
+        reason: cancellationReason || null
+      });
       const auditNote = cancellationReason
         ? `Receipt reimbursement cancelled before payroll. Reason: ${cancellationReason}`
         : 'Receipt reimbursement cancelled before payroll.';
@@ -5933,6 +6404,61 @@ app.post('/api/payroll/reimbursements/:id/cancel', requireSectionEnabled('payrol
   } catch (err) {
     console.error('Error cancelling payroll reimbursement:', err);
     return res.status(500).json({ error: 'Failed to cancel reimbursement.' });
+  }
+});
+
+// Reimbursement status history (desktop)
+app.get('/api/payroll/reimbursements/:id/history', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  const reimbursementId = Number(req.params.id || 0);
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+  if (!Number.isFinite(reimbursementId) || reimbursementId <= 0) {
+    return res.status(400).json({ error: 'Invalid reimbursement id.' });
+  }
+
+  try {
+    const reimbursementRow = await dbGet(
+      `
+        SELECT
+          rr.id,
+          rr.status,
+          rr.requested_by_employee_id,
+          rr.requested_at,
+          rr.approved_by_employee_id,
+          rr.approved_at,
+          rr.paid_date,
+          rr.updated_at,
+          rb.name AS requested_by_name,
+          ab.name AS approved_by_name
+        FROM payroll_receipt_reimbursements rr
+        LEFT JOIN employees rb
+          ON rb.id = rr.requested_by_employee_id
+         AND rb.org_id = rr.org_id
+        LEFT JOIN employees ab
+          ON ab.id = rr.approved_by_employee_id
+         AND ab.org_id = rr.org_id
+        WHERE rr.id = ?
+          AND rr.org_id = ?
+        LIMIT 1
+      `,
+      [reimbursementId, orgId]
+    );
+    if (!reimbursementRow) {
+      return res.status(404).json({ error: 'Reimbursement not found.' });
+    }
+
+    const rows = await loadReimbursementHistory({ orgId, reimbursementId });
+    const fallbackRows = rows.length ? [] : buildFallbackReimbursementHistoryRowSet(reimbursementRow);
+    return res.json({
+      ok: true,
+      reimbursement_id: reimbursementId,
+      rows: rows.length ? rows : fallbackRows
+    });
+  } catch (err) {
+    console.error('Error loading reimbursement history:', err);
+    return res.status(500).json({ error: 'Failed to load reimbursement history.' });
   }
 });
 
@@ -6000,30 +6526,80 @@ app.get('/api/kiosk/admin/reimbursements', requireSectionEnabled('payroll'), asy
     return res.status(401).json({ error: 'Not authenticated.' });
   }
 
-  const start = normalizeString(req.query?.start);
-  const end = normalizeString(req.query?.end);
+  const startRaw = normalizeString(req.query?.start);
+  const endRaw = normalizeString(req.query?.end);
   const employeeId = Number(req.query?.employeeId || 0);
   const projectId = Number(req.query?.projectId || 0);
-  const rawLimit = Number(req.query?.limit || 100);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 300) : 100;
+  const { page, pageSize } = normalizeReimbursementPagination(req.query || {});
   const rawStatus = normalizeString(req.query?.status);
   const normalizedStatus = rawStatus === 'pending' ? 'requested' : rawStatus;
   const allowedStatuses = new Set(['requested', 'approved', 'paid', 'cancelled', 'all']);
   const statusFilter = allowedStatuses.has(normalizedStatus || '') ? normalizedStatus : 'requested';
 
-  if (start && !isValidDateOnlyString(start)) {
-    return res.status(400).json({ error: 'start must be YYYY-MM-DD.' });
-  }
-  if (end && !isValidDateOnlyString(end)) {
-    return res.status(400).json({ error: 'end must be YYYY-MM-DD.' });
-  }
-
   try {
     const perms = await getAdminAccessPerms({ employeeId: adminId, orgId });
     const isSuperAdmin = await isEmployeeSuperAdmin({ employeeId: adminId, orgId });
     const canViewAll = !!isSuperAdmin || isTruthyFlag(perms?.view_payroll);
+    const dateWindow = await resolveReimbursementDateWindow({
+      orgId,
+      start: startRaw,
+      end: endRaw
+    });
+    if (!dateWindow.ok) {
+      return res.status(400).json({ error: dateWindow.error });
+    }
 
-    let sql = `
+    const where = ['rr.org_id = ?'];
+    const whereParams = [orgId];
+    if (!canViewAll) {
+      where.push('rr.requested_by_employee_id = ?');
+      whereParams.push(adminId);
+    }
+    if (statusFilter && statusFilter !== 'all') {
+      where.push('rr.status = ?');
+      whereParams.push(statusFilter);
+    }
+    if (dateWindow.start) {
+      where.push('rr.expense_date >= ?');
+      whereParams.push(dateWindow.start);
+    }
+    if (dateWindow.end) {
+      where.push('rr.expense_date <= ?');
+      whereParams.push(dateWindow.end);
+    }
+    if (employeeId) {
+      where.push('rr.employee_id = ?');
+      whereParams.push(employeeId);
+    }
+    if (projectId) {
+      where.push('rr.project_id = ?');
+      whereParams.push(projectId);
+    }
+    const whereSql = where.join(' AND ');
+
+    const countRow = await dbGet(
+      `
+        SELECT COUNT(*) AS total_count
+        FROM payroll_receipt_reimbursements rr
+        WHERE ${whereSql}
+      `,
+      whereParams
+    );
+    const totalCount = Number(countRow?.total_count || 0);
+
+    const paging = buildPaginationPayload({
+      totalCount,
+      page,
+      pageSize,
+      appliedStart: dateWindow.start,
+      appliedEnd: dateWindow.end,
+      defaultWindowApplied: dateWindow.defaultWindowApplied
+    });
+    const effectivePage = Math.max(1, Number(paging.page || 1));
+    const effectiveOffset = (effectivePage - 1) * pageSize;
+
+    const rows = await dbAll(
+      `
       SELECT
         rr.id,
         rr.employee_id,
@@ -6040,8 +6616,10 @@ app.get('/api/kiosk/admin/reimbursements', requireSectionEnabled('payroll'), asy
         rr.paid_date,
         rr.payroll_run_id,
         rr.payroll_check_id,
+        rr.updated_at,
         rr.original_filename,
         rr.mime_type,
+        rr.file_sha256,
         e.name AS employee_name,
         COALESCE(p.name, '(No project)') AS project_name,
         p.customer_name AS project_customer_name,
@@ -6060,39 +6638,12 @@ app.get('/api/kiosk/admin/reimbursements', requireSectionEnabled('payroll'), asy
       LEFT JOIN employees ab
         ON ab.id = rr.approved_by_employee_id
        AND ab.org_id = rr.org_id
-      WHERE rr.org_id = ?
-    `;
-    const params = [orgId];
-
-    if (!canViewAll) {
-      sql += ' AND rr.requested_by_employee_id = ?';
-      params.push(adminId);
-    }
-    if (statusFilter && statusFilter !== 'all') {
-      sql += ' AND rr.status = ?';
-      params.push(statusFilter);
-    }
-    if (start) {
-      sql += ' AND rr.expense_date >= ?';
-      params.push(start);
-    }
-    if (end) {
-      sql += ' AND rr.expense_date <= ?';
-      params.push(end);
-    }
-    if (employeeId) {
-      sql += ' AND rr.employee_id = ?';
-      params.push(employeeId);
-    }
-    if (projectId) {
-      sql += ' AND rr.project_id = ?';
-      params.push(projectId);
-    }
-
-    sql += ' ORDER BY rr.expense_date DESC, rr.id DESC LIMIT ?';
-    params.push(limit);
-
-    const rows = await dbAll(sql, params);
+      WHERE ${whereSql}
+      ORDER BY rr.expense_date DESC, rr.id DESC
+      LIMIT ? OFFSET ?
+      `,
+      [...whereParams, pageSize, effectiveOffset]
+    );
     const payloadRows = (rows || []).map(row => ({
       id: row.id,
       employee_id: row.employee_id,
@@ -6114,15 +6665,18 @@ app.get('/api/kiosk/admin/reimbursements', requireSectionEnabled('payroll'), asy
       paid_date: row.paid_date || null,
       payroll_run_id: row.payroll_run_id || null,
       payroll_check_id: row.payroll_check_id || null,
+      updated_at: row.updated_at || null,
       original_filename: row.original_filename || null,
       mime_type: row.mime_type || null,
+      file_sha256: row.file_sha256 || null,
       receipt_url: `/api/kiosk/admin/reimbursements/${row.id}/receipt`
     }));
 
     return res.json({
       ok: true,
       can_view_all: canViewAll,
-      rows: payloadRows
+      rows: payloadRows,
+      paging
     });
   } catch (err) {
     console.error('Error loading kiosk admin reimbursements:', err);
@@ -6163,10 +6717,12 @@ app.post(
     const employeeId = Number(req.body?.employee_id || 0);
     const projectId = Number(req.body?.project_id || 0);
     const amount = Number(req.body?.amount);
+    const roundedAmount = roundCurrency(amount);
     const vendorName = normalizeReceiptVendorName(req.body?.vendor_name);
     const note = normalizeString(req.body?.note);
+    const allowDuplicate = parseBooleanFlag(req.body?.allow_duplicate, false);
     const providedExpenseDate = normalizeString(req.body?.expense_date);
-    const defaultExpenseDate = new Date().toISOString().slice(0, 10);
+    const defaultExpenseDate = getTodayIsoDate(await getOrgTimezone(orgId));
     const expenseDate = providedExpenseDate || defaultExpenseDate;
 
     if (!employeeId || !projectId || !Number.isFinite(amount) || amount <= 0 || !vendorName) {
@@ -6219,6 +6775,28 @@ app.post(
         return res.status(400).json({ error: 'Project not found.' });
       }
 
+      const fileSha256 = await computeFileSha256(file.path);
+      const duplicateMatches = await findPotentialReimbursementDuplicates({
+        orgId,
+        employeeId,
+        expenseDate,
+        vendorName,
+        amount: roundedAmount,
+        fileSha256,
+        limit: REIMBURSEMENT_DUPLICATE_LIMIT
+      });
+      if (!allowDuplicate && duplicateMatches.length) {
+        await cleanupFile();
+        return res.status(409).json({
+          error: 'Possible duplicate reimbursement detected. Review existing entries before submitting.',
+          code: 'duplicate_reimbursement',
+          duplicates: duplicateMatches.map(row => ({
+            ...row,
+            receipt_url: `/api/kiosk/admin/reimbursements/${row.id}/receipt`
+          }))
+        });
+      }
+
       const relPath = `payroll_receipts/${file.filename}`;
       const insertRes = await dbRun(
         `
@@ -6233,28 +6811,39 @@ app.post(
             file_path,
             original_filename,
             mime_type,
+            file_sha256,
             status,
             requested_by_employee_id,
             requested_at,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, datetime('now'), datetime('now'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, datetime('now'), datetime('now'))
         `,
         [
           orgId,
           employeeId,
           projectId,
-          roundCurrency(amount),
+          roundedAmount,
           expenseDate,
           vendorName,
           note,
           relPath,
           file.originalname || null,
           uploadValidation.mime || file.mimetype || null,
+          fileSha256 || null,
           adminId
         ]
       );
 
       const reimbursementId = insertRes?.lastID;
+      if (reimbursementId) {
+        await insertReimbursementStatusHistory({
+          orgId,
+          reimbursementId,
+          status: 'requested',
+          actorEmployeeId: adminId,
+          actorSource: 'kiosk_admin'
+        });
+      }
       await logAuditEvent({
         req,
         orgId,
@@ -6268,13 +6857,34 @@ app.post(
           project_id: projectId,
           project_name: projectRow.name || null,
           vendor_name: vendorName,
-          amount: roundCurrency(amount),
+          amount: roundedAmount,
           expense_date: expenseDate,
           note: note || null,
           source: 'kiosk_admin'
         },
         note: 'Receipt reimbursement requested via kiosk admin.'
       });
+
+      try {
+        await notifyPayrollEvent({
+          orgId,
+          eventType: 'PAYROLL_REIMBURSEMENT_REQUESTED',
+          title: 'Reimbursement awaiting approval',
+          body: `${employeeRow.name || 'Employee'} submitted ${roundedAmount.toFixed(2)} from ${vendorName}.`,
+          data: {
+            reimbursement_id: reimbursementId || null,
+            employee_id: employeeId,
+            employee_name: employeeRow.name || null,
+            project_id: projectId,
+            project_name: projectRow.name || null,
+            amount: roundedAmount,
+            expense_date: expenseDate,
+            source: 'kiosk_admin'
+          }
+        });
+      } catch (notifyErr) {
+        console.warn('Failed to emit kiosk reimbursement requested notification:', notifyErr?.message || notifyErr);
+      }
 
       return res.json({
         ok: true,
@@ -6286,7 +6896,7 @@ app.post(
           project_name: projectRow.name || null,
           project_customer_name: projectRow.customer_name || null,
           vendor_name: vendorName,
-          amount: roundCurrency(amount),
+          amount: roundedAmount,
           expense_date: expenseDate,
           note: note || null,
           status: 'requested',
@@ -6366,6 +6976,82 @@ app.get('/api/kiosk/admin/reimbursements/:id/receipt', requireSectionEnabled('pa
   } catch (err) {
     console.error('Error downloading kiosk admin reimbursement receipt:', err);
     return res.status(500).json({ error: 'Failed to download receipt.' });
+  }
+});
+
+// Kiosk admin: reimbursement status history (scope-aware)
+app.get('/api/kiosk/admin/reimbursements/:id/history', requireSectionEnabled('payroll'), async (req, res) => {
+  const reimbursementId = Number(req.params.id);
+  if (!Number.isFinite(reimbursementId) || reimbursementId <= 0) {
+    return res.status(400).json({ error: 'Invalid reimbursement id.' });
+  }
+
+  const adminCtx = await resolveKioskAdmin(req);
+  if (!adminCtx.ok) {
+    return res
+      .status(adminCtx.status || 401)
+      .json({ error: adminCtx.error || 'Not authenticated' });
+  }
+
+  const orgId = adminCtx.orgId;
+  const adminId = Number(adminCtx.adminId || 0);
+  if (!orgId || !adminId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+
+  try {
+    const perms = await getAdminAccessPerms({ employeeId: adminId, orgId });
+    const isSuperAdmin = await isEmployeeSuperAdmin({ employeeId: adminId, orgId });
+    const canViewAll = !!isSuperAdmin || isTruthyFlag(perms?.view_payroll);
+
+    const reimbursementRow = await dbGet(
+      `
+        SELECT
+          rr.id,
+          rr.status,
+          rr.requested_by_employee_id,
+          rr.requested_at,
+          rr.approved_by_employee_id,
+          rr.approved_at,
+          rr.paid_date,
+          rr.updated_at,
+          rb.name AS requested_by_name,
+          ab.name AS approved_by_name
+        FROM payroll_receipt_reimbursements rr
+        LEFT JOIN employees rb
+          ON rb.id = rr.requested_by_employee_id
+         AND rb.org_id = rr.org_id
+        LEFT JOIN employees ab
+          ON ab.id = rr.approved_by_employee_id
+         AND ab.org_id = rr.org_id
+        WHERE rr.id = ?
+          AND rr.org_id = ?
+        LIMIT 1
+      `,
+      [reimbursementId, orgId]
+    );
+    if (!reimbursementRow) {
+      return res.status(404).json({ error: 'Reimbursement not found.' });
+    }
+
+    if (!canViewAll) {
+      const requestedById = Number(reimbursementRow.requested_by_employee_id || 0);
+      if (requestedById !== adminId) {
+        return res.status(403).json({ error: 'Not authorized.' });
+      }
+    }
+
+    const rows = await loadReimbursementHistory({ orgId, reimbursementId });
+    const fallbackRows = rows.length ? [] : buildFallbackReimbursementHistoryRowSet(reimbursementRow);
+    return res.json({
+      ok: true,
+      can_view_all: canViewAll,
+      reimbursement_id: reimbursementId,
+      rows: rows.length ? rows : fallbackRows
+    });
+  } catch (err) {
+    console.error('Error loading kiosk reimbursement history:', err);
+    return res.status(500).json({ error: 'Failed to load reimbursement history.' });
   }
 });
 
@@ -6814,6 +7500,7 @@ app.post('/api/payroll/unpay', requireSectionEnabled('payroll'), requireSuperAdm
   }
   const runId = Number(payrollRunId);
   const empIdNum = Number(employeeId);
+  const actorEmployeeId = req.session && req.session.employeeId ? Number(req.session.employeeId) : null;
   const payrollCheckId =
     payrollCheckIdRaw && Number.isFinite(Number(payrollCheckIdRaw))
       ? Number(payrollCheckIdRaw)
@@ -6888,6 +7575,18 @@ app.post('/api/payroll/unpay', requireSectionEnabled('payroll'), requireSuperAdm
       [new Date().toISOString(), empIdNum, runId, orgId]
     );
 
+    const paidReimbursementRows = await dbAll(
+      `
+        SELECT id
+        FROM payroll_receipt_reimbursements
+        WHERE org_id = ?
+          AND employee_id = ?
+          AND payroll_run_id = ?
+          AND status = 'paid'
+      `,
+      [orgId, empIdNum, runId]
+    );
+
     await dbRun(
       `
         UPDATE payroll_receipt_reimbursements
@@ -6905,9 +7604,26 @@ app.post('/api/payroll/unpay', requireSectionEnabled('payroll'), requireSuperAdm
       [orgId, empIdNum, runId]
     );
 
+    for (const row of paidReimbursementRows || []) {
+      const reimbursementId = Number(row?.id || 0);
+      if (!reimbursementId) continue;
+      await insertReimbursementStatusHistory({
+        orgId,
+        reimbursementId,
+        status: 'approved',
+        actorEmployeeId,
+        actorSource: 'payroll_unpay',
+        reason: reason || 'Payroll check marked unpaid',
+        meta: {
+          payroll_run_id: runId,
+          payroll_check_id: payrollCheckId || null
+        }
+      });
+    }
+
     await logPayrollEvent({
       orgId: req.session && req.session.orgId,
-      actor_employee_id: req.session && req.session.employeeId ? req.session.employeeId : null,
+      actor_employee_id: actorEmployeeId,
       event_type: 'PAYROLL_UNPAY',
       payroll_run_id: runId,
       message: `Unlocked payroll for employee ${empIdNum} (run ${runId})`,
@@ -8201,23 +8917,51 @@ app.post('/api/payroll/create-checks', requireSectionEnabled('payroll'), require
 );
 
           if (normalized.include_receipt_reimbursements) {
-            await dbRun(
+            const approvedReimbursementRows = await dbAll(
               `
-                UPDATE payroll_receipt_reimbursements
-                SET
-                  status = 'paid',
-                  paid_date = ?,
-                  payroll_run_id = ?,
-                  payroll_check_id = ?,
-                  updated_at = datetime('now')
+                SELECT id
+                FROM payroll_receipt_reimbursements
                 WHERE org_id = ?
                   AND employee_id = ?
                   AND status = 'approved'
                   AND expense_date >= ?
                   AND expense_date <= ?
               `,
-              [paidAt, payrollRunId, payrollCheckId, orgId, empId, start, end]
+              [orgId, empId, start, end]
             );
+
+            for (const receiptRow of approvedReimbursementRows || []) {
+              const reimbursementId = Number(receiptRow?.id || 0);
+              if (!reimbursementId) continue;
+              await dbRun(
+                `
+                  UPDATE payroll_receipt_reimbursements
+                  SET
+                    status = 'paid',
+                    paid_date = ?,
+                    payroll_run_id = ?,
+                    payroll_check_id = ?,
+                    updated_at = datetime('now')
+                  WHERE id = ?
+                    AND org_id = ?
+                    AND status = 'approved'
+                `,
+                [paidAt, payrollRunId, payrollCheckId, reimbursementId, orgId]
+              );
+              await insertReimbursementStatusHistory({
+                orgId,
+                reimbursementId,
+                status: 'paid',
+                actorEmployeeId,
+                actorSource: 'payroll_run',
+                reason: null,
+                meta: {
+                  payroll_run_id: payrollRunId,
+                  payroll_check_id: payrollCheckId || null
+                },
+                createdAt: paidAt
+              });
+            }
           }
         }
 
@@ -21780,7 +22524,8 @@ const PAYROLL_NOTIFICATION_EVENTS = [
   'PAYROLL_RUN_FAILURE',
   'PAYROLL_FATAL_ERROR',
   'PAYROLL_QBO_ERROR',
-  'PAYROLL_UNPAY'
+  'PAYROLL_UNPAY',
+  'PAYROLL_REIMBURSEMENT_REQUESTED'
 ];
 
 const DEFAULT_NOTIFICATION_PREFS = {
@@ -21795,6 +22540,7 @@ const DEFAULT_NOTIFICATION_PREFS = {
     enabled: true,
     event_types: [
       'PAYROLL_RUN_DUE',
+      'PAYROLL_REIMBURSEMENT_REQUESTED',
       'PAYROLL_RUN_FAILURE',
       'PAYROLL_QBO_ERROR',
       'PAYROLL_FATAL_ERROR'

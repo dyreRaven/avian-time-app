@@ -168,6 +168,22 @@ body {
   box-shadow: 0 6px 14px rgba(16, 185, 129, 0.18);
 }
 
+.nav-pill {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 /* Disabled nav items: visible but not clickable */
 
 .nav-item[data-disabled="true"] {
@@ -4300,7 +4316,8 @@ table.vendors-table th:first-child {
   border-bottom: 1px solid #f1f5f9;
   background: transparent;
   text-align: left;
-  padding: 8px 10px;
+  padding: 10px 12px;
+  min-height: 36px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
@@ -4313,6 +4330,11 @@ table.vendors-table th:first-child {
 
 .ship-detail-thread-search-result:hover {
   background: #f8fafc;
+}
+
+.ship-detail-thread-search-result.is-active {
+  background: #ecfdf3;
+  outline: 1px solid #a7f3d0;
 }
 
 .ship-detail-thread-search-result-top {
@@ -4407,7 +4429,7 @@ table.vendors-table th:first-child {
 }
 
 .ship-detail-thread-row-wrap.can-edit .ship-detail-thread-item {
-  padding-right: 42px;
+  padding-right: 54px;
 }
 
 .ship-detail-thread-item:hover {
@@ -4427,6 +4449,16 @@ table.vendors-table th:first-child {
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--slate-800);
+}
+
+.ship-detail-thread-item-title-text {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ship-detail-thread-item-time {
@@ -4464,14 +4496,36 @@ table.vendors-table th:first-child {
   font-weight: 600;
 }
 
+.ship-detail-thread-unread-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #0c816d;
+  flex: 0 0 7px;
+}
+
+.ship-detail-thread-unread-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
 .ship-detail-thread-edit-inline {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 22px;
-  height: 22px;
+  top: 6px;
+  right: 6px;
+  width: 36px;
+  height: 36px;
   border: 1px solid var(--slate-200);
-  border-radius: 8px;
+  border-radius: 10px;
   background: #ffffff;
   color: var(--slate-600);
   padding: 0;
@@ -4483,8 +4537,8 @@ table.vendors-table th:first-child {
 }
 
 .ship-detail-thread-edit-inline svg {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   stroke: currentColor;
 }
 
@@ -4602,6 +4656,53 @@ table.vendors-table th:first-child {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.ship-detail-thread-load-earlier-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.ship-detail-thread-load-earlier-btn {
+  min-height: 36px;
+  border: 1px solid var(--slate-200);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--slate-600);
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.ship-detail-thread-load-earlier-btn:hover {
+  border-color: var(--slate-300);
+  color: var(--slate-700);
+  background: #f8fafc;
+}
+
+.ship-detail-thread-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0;
+  color: var(--slate-500);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.ship-detail-thread-divider::before,
+.ship-detail-thread-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #dbe5ee;
+}
+
+.ship-detail-thread-divider span {
+  white-space: nowrap;
 }
 
 .ship-detail-thread-form {
@@ -4740,7 +4841,8 @@ table.vendors-table th:first-child {
 .ship-detail-thread-inline-action {
   border: none;
   background: transparent;
-  padding: 0;
+  padding: 6px 2px;
+  min-height: 36px;
   color: var(--slate-500);
   font-size: 0.75rem;
   font-weight: 600;
@@ -5556,6 +5658,15 @@ input[type="checkbox"]:disabled {
   margin-bottom: 0.5rem;
 }
 
+.muted-text {
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.payroll-reimbursement-range-note {
+  margin: 8px 0 0;
+}
+
 .payroll-reimbursement-grid {
   align-items: end;
 }
@@ -5595,6 +5706,15 @@ input[type="checkbox"]:disabled {
   width: 100%;
 }
 
+.payroll-reimbursements-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
 #payroll-reimbursements-table .payroll-reimbursement-actions {
   display: inline-flex;
   align-items: center;
@@ -5615,6 +5735,52 @@ input[type="checkbox"]:disabled {
 #payroll-reimbursements-table th:nth-child(5) {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.payroll-reimbursement-history-modal-card {
+  max-width: 680px;
+}
+
+.payroll-reimbursement-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.payroll-reimbursement-history-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+}
+
+.payroll-reimbursement-history-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.payroll-reimbursement-history-status {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.74rem;
+  color: #0f172a;
+}
+
+.payroll-reimbursement-history-meta {
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.payroll-reimbursement-history-reason {
+  margin-top: 6px;
+  color: #334155;
+  font-size: 0.85rem;
 }
 
 .payroll-line-note {

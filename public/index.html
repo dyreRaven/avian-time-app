@@ -80,6 +80,7 @@
         <button class="nav-item" data-section="reimbursements">
           <img src="/icons/payroll.svg" class="nav-icon" alt="" aria-hidden="true" />
           <span>Reimbursements</span>
+          <span id="reimbursements-nav-badge" class="nav-pill hidden">0</span>
         </button>
 
         <!-- REPORTS -->
@@ -2290,6 +2291,7 @@
                     Clear
                   </button>
                 </div>
+                <p id="payroll-reimbursement-range-note" class="muted-text payroll-reimbursement-range-note"></p>
               </div>
               <p id="payroll-reimbursement-message" class="message"></p>
 
@@ -2304,13 +2306,19 @@
                       <th>Amount</th>
                       <th>Status</th>
                       <th>Receipt</th>
+                      <th>History</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody id="payroll-reimbursements-body">
-                    <tr><td colspan="8">(loading)</td></tr>
+                    <tr><td colspan="9">(loading)</td></tr>
                   </tbody>
                 </table>
+              </div>
+              <div class="payroll-reimbursements-pagination">
+                <button type="button" id="payroll-reimbursement-prev" class="btn secondary btn-sm">Previous</button>
+                <span id="payroll-reimbursement-page-info" class="muted-text">Page 1 of 1</span>
+                <button type="button" id="payroll-reimbursement-next" class="btn secondary btn-sm">Next</button>
               </div>
             </div>
           </div>
@@ -2376,6 +2384,27 @@
               <button id="payroll-reimbursement-submit" class="btn primary" type="button">
                 Request Reimbursement
               </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="payroll-reimbursement-history-backdrop" class="modal-backdrop hidden"></div>
+        <div
+          id="payroll-reimbursement-history-modal"
+          class="modal hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="payroll-reimbursement-history-title"
+        >
+          <div class="modal-card payroll-reimbursement-history-modal-card">
+            <div class="modal-header">
+              <h3 id="payroll-reimbursement-history-title">Reimbursement History</h3>
+              <button id="payroll-reimbursement-history-close" class="modal-close" type="button">×</button>
+            </div>
+            <p id="payroll-reimbursement-history-message" class="message"></p>
+            <div id="payroll-reimbursement-history-list" class="payroll-reimbursement-history-list"></div>
+            <div class="modal-footer">
+              <button id="payroll-reimbursement-history-done" class="btn secondary" type="button">Close</button>
             </div>
           </div>
         </div>
@@ -2997,10 +3026,10 @@
   <script src="/js/projects.js"></script>
   <script src="/js/shipments.js"></script>
   <script src="/js/kiosks.js"></script>
-		  <script src="/js/payroll.js?v=reviewfix24"></script>
+		  <script src="/js/payroll.js?v=reviewfix25"></script>
 	  <script src="/js/notifications.js"></script>
 	  <!-- cache-bust for app.js to ensure latest Review wiring loads -->
-			  <script src="/js/app.js?v=reviewfix26"></script>
+			  <script src="/js/app.js?v=reviewfix27"></script>
 		  <script>
 		    if ('serviceWorker' in navigator) {
 		      window.addEventListener('load', () => {

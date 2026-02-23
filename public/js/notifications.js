@@ -25,6 +25,7 @@
 
   const PAYROLL_EVENTS = [
     { value: 'PAYROLL_RUN_DUE', label: 'Payroll due' },
+    { value: 'PAYROLL_REIMBURSEMENT_REQUESTED', label: 'Reimbursement requested' },
     { value: 'PAYROLL_RUN_SUCCESS', label: 'Payroll success' },
     { value: 'PAYROLL_RUN_PARTIAL', label: 'Payroll partial' },
     { value: 'PAYROLL_RUN_FAILURE', label: 'Payroll failure' },

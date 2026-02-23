@@ -1,6 +1,10 @@
 # Change Log
 
 - 2026-02-23: Backup operations were hardened with env-configurable schedule/retention/path (`BACKUP_*`), a new super-admin backup runtime status summary in Settings, and a `backup-health-check` script plus production backup runbook.
+- 2026-02-23: Reimbursements now support duplicate guards on upload (file hash + detail match) with a user-confirmed override path (`allow_duplicate=1`) on desktop and kiosk admin flows.
+- 2026-02-23: Added reimbursement timeline history tracking (`payroll_reimbursement_status_history`) and new history endpoints for desktop/kiosk reimbursement detail views.
+- 2026-02-23: Reimbursement list APIs/UI now use pagination plus a default server-applied 30-day window when no date range is specified, with applied-range metadata returned to clients.
+- 2026-02-23: Desktop payroll nav now shows a live pending reimbursement badge and payroll notification preferences now include `PAYROLL_REIMBURSEMENT_REQUESTED`.
 - 2026-02-23: Kiosk admin shipment messages now use an inline pencil rename action in the left thread list (creator-only), replacing the standalone `Rename` button in the message header.
 - 2026-02-23: Desktop shipment messages now also use an inline pencil rename action in the left thread list (creator-only), replacing the standalone header `Edit` button.
 - 2026-02-23: Shipments Summary (desktop + kiosk admin) now includes an `Unread Comments` card sourced from unread shipment-comment notifications, grouped by shipment with unread counts; clicking a row opens that shipment directly on the `Comments` tab.
@@ -1006,3 +1010,9 @@
 - 2026-02-23: Redesigned kiosk admin shipment messages to a desktop-style split pane with a collapsible left thread list to reduce vertical clutter.
 - 2026-02-23: Temporarily removed the kiosk shipment-message thread controls container (threads/search/new/refresh) to maximize chat space.
 - 2026-02-23: Reintroduced a compact collapsible left thread rail with search, refresh, and new-thread icon buttons while keeping the main chat pane dominant.
+- 2026-02-23: Shipment message views (desktop + kiosk admin) now show per-thread unread badges and a one-time “New messages” divider when opening a thread with unread comments.
+- 2026-02-23: Shipment message views now lazy-load long threads with a “Load earlier messages” control to reduce initial vertical clutter.
+- 2026-02-23: Shipment message Undo Send now shows a live countdown timer until the 5-minute undo window ends.
+- 2026-02-23: Shipment message search now supports Enter/Arrow key cycling across matches without clearing the search query.
+- 2026-02-23: Increased shipment-message touch targets (search results, rename icons, inline actions) to improve kiosk/tablet usability.
+- 2026-02-23: Added `check:kiosk-comment-auth` regression check to verify kiosk shipment comment requests include device + employee auth on GET/POST/DELETE.

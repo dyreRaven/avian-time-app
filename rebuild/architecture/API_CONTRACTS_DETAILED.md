@@ -665,18 +665,25 @@ Note: reimbursements use `receipt_expense_account_name` as their default expense
 Note: set `expense_account_name` for regular payroll lines, `receipt_expense_account_name` for reimbursement lines (fallback to main expense if blank), and `receipt_class_name` for reimbursement classes.
 
 ### GET /api/payroll/reimbursements  [super admin]
-- Query: optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `status=requested|approved|paid|cancelled|all` (default `requested`), `employeeId`, `projectId`, `limit` (default 100, max 300)
-- Response: `{ "ok": true, "rows": [ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested|approved|paid|cancelled", "requested_at": "YYYY-MM-DD HH:MM:SS", "requested_by_name": "...", "approved_at": null, "approved_by_employee_id": null, "approved_by_name": null, "paid_date": null, "payroll_run_id": null, "payroll_check_id": null, "original_filename": "...", "mime_type": "...", "receipt_url": "/api/payroll/reimbursements/1/receipt" } ] }`
+- Query: optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `status=requested|approved|paid|cancelled|all|pending` (default `requested`; `pending` alias maps to `requested`), `employeeId`, `projectId`, `page` (default 1), `page_size` (default 50, max 200; legacy `limit` accepted).
+- Response: `{ "ok": true, "rows": [ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested|approved|paid|cancelled", "requested_at": "YYYY-MM-DD HH:MM:SS", "requested_by_name": "...", "approved_at": null, "approved_by_employee_id": null, "approved_by_name": null, "paid_date": null, "payroll_run_id": null, "payroll_check_id": null, "original_filename": "...", "mime_type": "...", "file_sha256": "...", "receipt_url": "/api/payroll/reimbursements/1/receipt" } ], "paging": { "page": 1, "page_size": 50, "total_count": 120, "total_pages": 3, "has_prev": false, "has_next": true, "applied_start": "YYYY-MM-DD", "applied_end": "YYYY-MM-DD", "default_window_applied": true } }`
 Note: rows are org-scoped and ordered by expense_date DESC then id DESC.
 Note: date filters validate strict YYYY-MM-DD.
+Note: when both start/end are omitted, server applies a default 30-day window (`applied_start`/`applied_end`) and returns `default_window_applied=true`.
+
+### GET /api/payroll/reimbursements/pending-count  [super admin]
+- Response: `{ "ok": true, "pending_count": 6 }`
+Note: counts reimbursements in `requested` status across the org.
 
 ### POST /api/payroll/reimbursements  [super admin]
-- Request: multipart/form-data with `receipt` (required file), `employee_id` (required), `project_id` (required), `vendor_name` (required), `amount` (required > 0), optional `expense_date` (`YYYY-MM-DD`), optional `note`.
+- Request: multipart/form-data with `receipt` (required file), `employee_id` (required), `project_id` (required), `vendor_name` (required), `amount` (required > 0), optional `expense_date` (`YYYY-MM-DD`), optional `note`, optional `allow_duplicate=1`.
 - Response: `{ "ok": true, "reimbursement": { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested", "receipt_url": "/api/payroll/reimbursements/1/receipt" } }`
+  - Duplicate response (409): `{ "error": "Possible duplicate reimbursement detected. Review existing entries before submitting.", "code": "duplicate_reimbursement", "duplicates": [ { "id": 9, "employee_id": 7, "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "status": "requested", "reasons": ["file_hash", "details"] } ] }`
 Note: upload is stored under secure uploads (outside public root).
 Note: allowed file types are PDF and images (png/jpg/jpeg/gif/webp), max 10MB, and file content is validated by signature sniffing.
 Note: employee_id/project_id must belong to the same org.
 Note: new reimbursement requests are not payroll-eligible until a super admin approves them.
+Note: server computes and stores `file_sha256`; duplicates are detected by matching file hash and/or same employee + date + vendor + amount.
 
 ### POST /api/payroll/reimbursements/:id/approve  [super admin]
 - Request: no body required.
@@ -688,22 +695,32 @@ Note: approving `requested` or `cancelled` rows transitions them to `approved`; 
 - Response: `{ "ok": true, "reimbursement": { "id": 1, "status": "cancelled", ... } }`
 Note: only `requested` or `approved` reimbursements can be cancelled/rejected. `paid` or already-`cancelled` rows return 409.
 
+### GET /api/payroll/reimbursements/:id/history  [super admin]
+- Response: `{ "ok": true, "reimbursement_id": 1, "rows": [ { "id": 12, "status": "requested|approved|cancelled|paid", "actor_employee_id": 7, "actor_name": "...", "actor_source": "desktop_admin|kiosk_admin|review|payroll_run|payroll_unpay|...", "reason": "...", "meta": { "payroll_run_id": 22, "payroll_check_id": 95 }, "created_at": "YYYY-MM-DD HH:MM:SS" } ] }`
+Note: if no history rows exist yet for older data, server returns a synthesized fallback timeline from reimbursement timestamps.
+
 ### GET /api/payroll/reimbursements/:id/receipt  [super admin]
 - Response: binary file download
 Note: file download is org-scoped and returns 404 when the row or file is missing.
 
 ### GET /api/kiosk/admin/reimbursements  [kiosk admin]
-- Query: optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `status=requested|approved|paid|cancelled|all` (default `requested`; `pending` alias maps to `requested`), optional `employeeId`, `projectId`, `limit` (default 100, max 300)
-- Response: `{ "ok": true, "can_view_all": false, "rows": [ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested|approved|paid|cancelled", "requested_by_employee_id": 12, "requested_at": "YYYY-MM-DD HH:MM:SS", "requested_by_name": "...", "approved_at": null, "approved_by_employee_id": null, "approved_by_name": null, "paid_date": null, "payroll_run_id": null, "payroll_check_id": null, "original_filename": "...", "mime_type": "...", "receipt_url": "/api/kiosk/admin/reimbursements/1/receipt" } ] }`
+- Query: optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `status=requested|approved|paid|cancelled|all|pending` (default `requested`; `pending` alias maps to `requested`), optional `employeeId`, `projectId`, `page` (default 1), `page_size` (default 50, max 200; legacy `limit` accepted).
+- Response: `{ "ok": true, "can_view_all": false, "rows": [ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested|approved|paid|cancelled", "requested_by_employee_id": 12, "requested_at": "YYYY-MM-DD HH:MM:SS", "requested_by_name": "...", "approved_at": null, "approved_by_employee_id": null, "approved_by_name": null, "paid_date": null, "payroll_run_id": null, "payroll_check_id": null, "original_filename": "...", "mime_type": "...", "file_sha256": "...", "receipt_url": "/api/kiosk/admin/reimbursements/1/receipt" } ], "paging": { "page": 1, "page_size": 50, "total_count": 25, "total_pages": 1, "has_prev": false, "has_next": false, "applied_start": "YYYY-MM-DD", "applied_end": "YYYY-MM-DD", "default_window_applied": true } }`
 Note: requires kiosk admin auth and payroll section enabled.
 Note: `can_view_all=true` only for super admins or admins with `view_payroll`; otherwise rows are restricted to reimbursements where `requested_by_employee_id` equals the current kiosk admin.
+Note: when both start/end are omitted, server applies a default 30-day window (`applied_start`/`applied_end`) and returns `default_window_applied=true`.
 
 ### POST /api/kiosk/admin/reimbursements  [kiosk admin]
-- Request: multipart/form-data with `receipt` (required file), `employee_id` (required), `project_id` (required), `vendor_name` (required), `amount` (required > 0), optional `expense_date` (`YYYY-MM-DD`), optional `note`.
+- Request: multipart/form-data with `receipt` (required file), `employee_id` (required), `project_id` (required), `vendor_name` (required), `amount` (required > 0), optional `expense_date` (`YYYY-MM-DD`), optional `note`, optional `allow_duplicate=1`.
 - Response: `{ "ok": true, "reimbursement": { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested", "requested_by_employee_id": 12, "receipt_url": "/api/kiosk/admin/reimbursements/1/receipt" } }`
+  - Duplicate response (409): `{ "error": "Possible duplicate reimbursement detected. Review existing entries before submitting.", "code": "duplicate_reimbursement", "duplicates": [ ... ] }`
 Note: requires kiosk admin auth and payroll section enabled.
 Note: upload validation and file-type rules are the same as desktop reimbursements.
 Note: `requested_by_employee_id` is always set to the authenticated kiosk admin.
+
+### GET /api/kiosk/admin/reimbursements/:id/history  [kiosk admin]
+- Response: `{ "ok": true, "can_view_all": false, "reimbursement_id": 1, "rows": [ { "id": 12, "status": "requested|approved|cancelled|paid", "actor_employee_id": 7, "actor_name": "...", "actor_source": "...", "reason": "...", "meta": { "payroll_run_id": 22, "payroll_check_id": 95 }, "created_at": "YYYY-MM-DD HH:MM:SS" } ] }`
+Note: super admins and `view_payroll` admins can view any reimbursement history in-org; other kiosk admins can view history only for reimbursements they uploaded.
 
 ### GET /api/kiosk/admin/reimbursements/:id/receipt  [kiosk admin]
 - Response: binary file download

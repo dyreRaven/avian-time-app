@@ -6,7 +6,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/kiosk-admin.css?v=20260223g" />
+  <link rel="stylesheet" href="/kiosk-admin.css?v=20260223h" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#10b981" />
 
@@ -734,6 +734,12 @@
             </tr>
           </tbody>
         </table>
+      </div>
+      <div id="ka-receipts-range-note" class="ka-muted ka-receipts-range-note"></div>
+      <div class="ka-receipts-pagination">
+        <button type="button" id="ka-receipts-prev" class="btn secondary btn-sm">Previous</button>
+        <span id="ka-receipts-page-info" class="ka-muted">Page 1 of 1</span>
+        <button type="button" id="ka-receipts-next" class="btn secondary btn-sm">Next</button>
       </div>
     </div>
 
@@ -1475,7 +1481,7 @@
 <script src="/js/utils.js"></script>
 <script src="/js/bcrypt.min.js"></script>
 <script src="/js/offline-store.js"></script>
-<script src="/kiosk-admin.js?v=20260223g"></script>
+<script src="/kiosk-admin.js?v=20260223h"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {

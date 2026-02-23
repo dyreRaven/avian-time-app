@@ -418,6 +418,7 @@ CREATE TABLE IF NOT EXISTS payroll_receipt_reimbursements (
   file_path TEXT NOT NULL,
   original_filename TEXT,
   mime_type TEXT,
+  file_sha256 TEXT,
   status TEXT NOT NULL DEFAULT 'requested',
   requested_by_employee_id INTEGER,
   requested_at TEXT DEFAULT (datetime('now')),
@@ -432,6 +433,21 @@ CREATE TABLE IF NOT EXISTS payroll_receipt_reimbursements (
   FOREIGN KEY (project_id) REFERENCES projects(id),
   FOREIGN KEY (requested_by_employee_id) REFERENCES employees(id),
   FOREIGN KEY (approved_by_employee_id) REFERENCES employees(id)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_reimbursement_status_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id INTEGER NOT NULL,
+  reimbursement_id INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  actor_employee_id INTEGER,
+  actor_source TEXT,
+  reason TEXT,
+  meta_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
+  FOREIGN KEY (reimbursement_id) REFERENCES payroll_receipt_reimbursements(id) ON DELETE CASCADE,
+  FOREIGN KEY (actor_employee_id) REFERENCES employees(id)
 );
 
 CREATE TABLE IF NOT EXISTS payroll_run_attempts (
@@ -885,3 +901,15 @@ CREATE INDEX IF NOT EXISTS idx_payroll_receipts_org_employee_date
 
 CREATE INDEX IF NOT EXISTS idx_payroll_receipts_org_run_employee
   ON payroll_receipt_reimbursements(org_id, payroll_run_id, employee_id);
+
+CREATE INDEX IF NOT EXISTS idx_payroll_receipts_org_file_sha256
+  ON payroll_receipt_reimbursements(org_id, file_sha256);
+
+CREATE INDEX IF NOT EXISTS idx_payroll_receipts_org_dup_guard
+  ON payroll_receipt_reimbursements(org_id, employee_id, expense_date, vendor_name, amount);
+
+CREATE INDEX IF NOT EXISTS idx_reimbursement_history_org_reimbursement_created
+  ON payroll_reimbursement_status_history(org_id, reimbursement_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_reimbursement_history_org_status_created
+  ON payroll_reimbursement_status_history(org_id, status, created_at);

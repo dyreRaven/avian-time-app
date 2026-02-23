@@ -54,6 +54,11 @@ let payrollReportCheckFilters = {
   paid: ''
 };
 let auditReportsInitialized = false;
+const PAYROLL_REIMBURSEMENT_PAGE_SIZE = 50;
+let payrollReimbursementCurrentPage = 1;
+let payrollReimbursementTotalPages = 1;
+let payrollReimbursementTotalCount = 0;
+let payrollReimbursementLastFilters = null;
 
 function collectPayrollWarnings(results) {
   if (!Array.isArray(results)) return [];
@@ -951,6 +956,59 @@ function resetPayrollReimbursementFiltersUi() {
   if (end) end.value = '';
 }
 
+function normalizePayrollReimbursementFilters(filters) {
+  const source = filters && typeof filters === 'object' ? filters : {};
+  const employeeId = Number(source.employeeId || 0);
+  const projectId = Number(source.projectId || 0);
+  const statusRaw = String(source.status || 'all').trim().toLowerCase();
+  const start = String(source.start || '').trim();
+  const end = String(source.end || '').trim();
+  return {
+    employeeId: Number.isFinite(employeeId) && employeeId > 0 ? employeeId : null,
+    projectId: Number.isFinite(projectId) && projectId > 0 ? projectId : null,
+    status: PAYROLL_REIMBURSEMENT_STATUSES.has(statusRaw) ? statusRaw : 'all',
+    start,
+    end
+  };
+}
+
+function setPayrollReimbursementRangeNote(paging = null) {
+  const noteEl = document.getElementById('payroll-reimbursement-range-note');
+  if (!noteEl) return;
+  const start = String(paging?.applied_start || '').trim();
+  const end = String(paging?.applied_end || '').trim();
+  const defaulted = !!paging?.default_window_applied;
+  if (!start && !end) {
+    noteEl.textContent = '';
+    return;
+  }
+  const rangeLabel = start && end
+    ? `${formatDateUS(start)} - ${formatDateUS(end)}`
+    : (start ? `From ${formatDateUS(start)}` : `Through ${formatDateUS(end)}`);
+  noteEl.textContent = defaulted
+    ? `Showing latest 30-day window (${rangeLabel}).`
+    : `Showing ${rangeLabel}.`;
+}
+
+function updatePayrollReimbursementPaginationUi(paging = null) {
+  const page = Math.max(1, Number(paging?.page || payrollReimbursementCurrentPage || 1));
+  const totalPages = Math.max(1, Number(paging?.total_pages || payrollReimbursementTotalPages || 1));
+  const totalCount = Math.max(0, Number(paging?.total_count || payrollReimbursementTotalCount || 0));
+  payrollReimbursementCurrentPage = page;
+  payrollReimbursementTotalPages = totalPages;
+  payrollReimbursementTotalCount = totalCount;
+
+  const prevBtn = document.getElementById('payroll-reimbursement-prev');
+  const nextBtn = document.getElementById('payroll-reimbursement-next');
+  const info = document.getElementById('payroll-reimbursement-page-info');
+
+  if (prevBtn) prevBtn.disabled = page <= 1;
+  if (nextBtn) nextBtn.disabled = page >= totalPages;
+  if (info) {
+    info.textContent = `Page ${page} of ${totalPages} (${totalCount})`;
+  }
+}
+
 function parseYmd(value) {
   if (!value) return null;
   const str = String(value).trim();
@@ -1528,6 +1586,86 @@ function formatPayrollReimbursementStatus(row) {
   return statusRaw.toUpperCase();
 }
 
+function closePayrollReimbursementHistoryModal() {
+  const modal = document.getElementById('payroll-reimbursement-history-modal');
+  const backdrop = document.getElementById('payroll-reimbursement-history-backdrop');
+  const listEl = document.getElementById('payroll-reimbursement-history-list');
+  const msgEl = document.getElementById('payroll-reimbursement-history-message');
+  if (modal) modal.classList.add('hidden');
+  if (backdrop) backdrop.classList.add('hidden');
+  if (listEl) listEl.innerHTML = '';
+  if (msgEl) msgEl.textContent = '';
+}
+
+function statusHistoryLabel(statusRaw) {
+  const status = String(statusRaw || '').trim().toLowerCase();
+  if (status === 'requested') return 'Requested';
+  if (status === 'approved') return 'Approved';
+  if (status === 'paid') return 'Paid';
+  if (status === 'cancelled') return 'Cancelled';
+  return status ? `${status[0].toUpperCase()}${status.slice(1)}` : 'Unknown';
+}
+
+function renderPayrollReimbursementHistory(rows) {
+  const listEl = document.getElementById('payroll-reimbursement-history-list');
+  if (!listEl) return;
+  const events = Array.isArray(rows) ? rows : [];
+  if (!events.length) {
+    listEl.innerHTML = '<div class="payroll-reimbursement-history-item">No history found.</div>';
+    return;
+  }
+  listEl.innerHTML = events.map(event => {
+    const status = statusHistoryLabel(event?.status || '');
+    const when = event?.created_at ? formatDateTimeLocal(event.created_at) : 'Unknown date';
+    const actor = String(event?.actor_name || '').trim();
+    const source = String(event?.actor_source || '').trim();
+    const reason = String(event?.reason || '').trim();
+    const meta = event?.meta && typeof event.meta === 'object' ? event.meta : null;
+    const actorLabel = actor || (source ? source.replace(/_/g, ' ') : 'System');
+    const sourceMeta = meta?.payroll_run_id
+      ? `Run #${meta.payroll_run_id}${meta.payroll_check_id ? ` • Check #${meta.payroll_check_id}` : ''}`
+      : '';
+    return `
+      <div class="payroll-reimbursement-history-item">
+        <div class="payroll-reimbursement-history-item-head">
+          <div class="payroll-reimbursement-history-status">${escapeHTML(status)}</div>
+          <div class="payroll-reimbursement-history-meta">${escapeHTML(when)}</div>
+        </div>
+        <div class="payroll-reimbursement-history-meta">${escapeHTML(actorLabel)}${sourceMeta ? ` • ${escapeHTML(sourceMeta)}` : ''}</div>
+        ${reason ? `<div class="payroll-reimbursement-history-reason">${escapeHTML(reason)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+async function openPayrollReimbursementHistoryModal(reimbursementId) {
+  const reimbursementIdNum = Number(reimbursementId || 0);
+  if (!Number.isFinite(reimbursementIdNum) || reimbursementIdNum <= 0) return;
+
+  const modal = document.getElementById('payroll-reimbursement-history-modal');
+  const backdrop = document.getElementById('payroll-reimbursement-history-backdrop');
+  const titleEl = document.getElementById('payroll-reimbursement-history-title');
+  const msgEl = document.getElementById('payroll-reimbursement-history-message');
+  if (!modal || !backdrop) return;
+
+  if (titleEl) titleEl.textContent = `Reimbursement History #${reimbursementIdNum}`;
+  if (msgEl) msgEl.textContent = 'Loading history...';
+  renderPayrollReimbursementHistory([]);
+  modal.classList.remove('hidden');
+  backdrop.classList.remove('hidden');
+
+  try {
+    const payload = await fetchJSON(`/api/payroll/reimbursements/${reimbursementIdNum}/history`);
+    const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+    renderPayrollReimbursementHistory(rows);
+    if (msgEl) msgEl.textContent = '';
+  } catch (err) {
+    console.error('[PAYROLL] openPayrollReimbursementHistoryModal error', err);
+    if (msgEl) msgEl.textContent = err?.message || 'Failed to load reimbursement history.';
+    renderPayrollReimbursementHistory([]);
+  }
+}
+
 function renderPayrollReimbursementsTable(rows) {
   const tbody = document.getElementById('payroll-reimbursements-body');
   if (!tbody) return;
@@ -1536,7 +1674,7 @@ function renderPayrollReimbursementsTable(rows) {
   tbody.innerHTML = '';
   if (!list.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="8">(no receipt reimbursements found)</td>';
+    tr.innerHTML = '<td colspan="9">(no receipt reimbursements found)</td>';
     tbody.appendChild(tr);
     return;
   }
@@ -1558,6 +1696,10 @@ function renderPayrollReimbursementsTable(rows) {
       Number.isFinite(reimbursementId) &&
       reimbursementId > 0;
     let actionHtml = '—';
+    const historyHtml =
+      Number.isFinite(reimbursementId) && reimbursementId > 0
+        ? `<button type="button" class="btn tertiary btn-sm payroll-reimbursement-history" data-reimbursement-id="${reimbursementId}">Timeline</button>`
+        : '—';
     if (showApproveAction || showCancelAction) {
       const actionButtons = [];
       let actionLabel = '';
@@ -1594,22 +1736,38 @@ function renderPayrollReimbursementsTable(rows) {
       <td>$${amount.toFixed(2)}</td>
       <td>${esc(status)}</td>
       <td>${row.receipt_url ? `<a href="${esc(row.receipt_url)}" target="_blank" rel="noopener">View</a>` : ''}</td>
+      <td>${historyHtml}</td>
       <td>${actionHtml}</td>
     `;
     tbody.appendChild(tr);
   });
 }
 
-async function loadPayrollReimbursements(filters = null) {
+async function loadPayrollReimbursements(filters = null, options = {}) {
   if (!isPayrollFeatureEnabled()) return;
   const tbody = document.getElementById('payroll-reimbursements-body');
   if (tbody && !tbody.children.length) {
-    tbody.innerHTML = '<tr><td colspan="8">(loading)</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9">(loading)</td></tr>';
   }
 
-  const activeFilters = (filters && typeof filters === 'object')
-    ? filters
-    : getPayrollReimbursementFiltersFromUi();
+  const resetPage = !!options?.resetPage;
+  const requestedPage = Number(options?.page || 0);
+  if (resetPage) payrollReimbursementCurrentPage = 1;
+  if (Number.isFinite(requestedPage) && requestedPage > 0) {
+    payrollReimbursementCurrentPage = Math.floor(requestedPage);
+  }
+
+  const providedFilters = (filters && typeof filters === 'object')
+    ? normalizePayrollReimbursementFilters(filters)
+    : null;
+  if (providedFilters) {
+    payrollReimbursementLastFilters = providedFilters;
+  }
+  const activeFilters = payrollReimbursementLastFilters || normalizePayrollReimbursementFilters(getPayrollReimbursementFiltersFromUi());
+  if (!payrollReimbursementLastFilters) {
+    payrollReimbursementLastFilters = activeFilters;
+  }
+
   const params = new URLSearchParams();
   const statusRaw = String(activeFilters?.status || 'all').trim().toLowerCase();
   params.set('status', PAYROLL_REIMBURSEMENT_STATUSES.has(statusRaw) ? statusRaw : 'all');
@@ -1625,18 +1783,30 @@ async function loadPayrollReimbursements(filters = null) {
   if (Number.isFinite(projectId) && projectId > 0) {
     params.set('projectId', String(projectId));
   }
-  params.set('limit', '200');
+  params.set('page', String(payrollReimbursementCurrentPage));
+  params.set('page_size', String(PAYROLL_REIMBURSEMENT_PAGE_SIZE));
 
   try {
     const data = await fetchJSON(`/api/payroll/reimbursements?${params.toString()}`);
     const rows = Array.isArray(data)
       ? data
       : (Array.isArray(data?.rows) ? data.rows : []);
+    const paging = data && data.paging ? data.paging : null;
     renderPayrollReimbursementsTable(rows);
+    updatePayrollReimbursementPaginationUi(paging);
+    setPayrollReimbursementRangeNote(paging);
     setPayrollReimbursementMessage('', false, { includePage: true, includeModal: false });
+    if (typeof window.refreshReimbursementPendingBadge === 'function') {
+      window.refreshReimbursementPendingBadge();
+    }
   } catch (err) {
     console.error('[PAYROLL] loadPayrollReimbursements error', err);
     renderPayrollReimbursementsTable([]);
+    updatePayrollReimbursementPaginationUi({
+      page: payrollReimbursementCurrentPage,
+      total_pages: payrollReimbursementTotalPages,
+      total_count: payrollReimbursementTotalCount
+    });
     setPayrollReimbursementMessage(
       'Failed to load reimbursements: ' + (err?.message || 'Unknown error'),
       true,
@@ -1748,7 +1918,22 @@ async function cancelPayrollReimbursement(reimbursementId, currentStatus = 'requ
   }
 }
 
-async function submitPayrollReimbursement() {
+function buildPayrollDuplicateWarning(duplicates) {
+  const rows = Array.isArray(duplicates) ? duplicates : [];
+  if (!rows.length) return '';
+  return rows
+    .slice(0, 3)
+    .map(row => {
+      const date = row?.expense_date ? formatDateUS(row.expense_date) : 'Unknown date';
+      const amount = Number(row?.amount || 0).toFixed(2);
+      const vendor = row?.vendor_name || 'Unknown vendor';
+      const status = String(row?.status || 'requested').toUpperCase();
+      return `- ${date}: ${vendor} $${amount} (${status})`;
+    })
+    .join('\n');
+}
+
+async function submitPayrollReimbursement({ allowDuplicate = false } = {}) {
   if (!canModifyPayrollReports()) {
     alert('You do not have permission to request reimbursements.');
     return;
@@ -1787,6 +1972,7 @@ async function submitPayrollReimbursement() {
   formData.append('vendor_name', vendorName);
   if (expenseDate) formData.append('expense_date', expenseDate);
   if (note) formData.append('note', note);
+  if (allowDuplicate) formData.append('allow_duplicate', '1');
   formData.append('receipt', file);
 
   if (submitBtn) submitBtn.disabled = true;
@@ -1817,6 +2003,15 @@ async function submitPayrollReimbursement() {
     }
   } catch (err) {
     console.error('[PAYROLL] submitPayrollReimbursement error', err);
+    if (err?.status === 409 && err?.body?.code === 'duplicate_reimbursement' && !allowDuplicate) {
+      const warning = buildPayrollDuplicateWarning(err?.body?.duplicates);
+      const proceed = confirm(
+        `Possible duplicate reimbursement found.${warning ? `\n\n${warning}` : ''}\n\nUpload anyway?`
+      );
+      if (proceed) {
+        return submitPayrollReimbursement({ allowDuplicate: true });
+      }
+    }
     setPayrollReimbursementMessage(
       'Failed to create reimbursement request: ' + (err?.message || 'Unknown error'),
       true,
@@ -1833,7 +2028,8 @@ function setupPayrollReimbursements() {
   if (filterApplyBtn && !filterApplyBtn.dataset.bound) {
     filterApplyBtn.dataset.bound = '1';
     filterApplyBtn.addEventListener('click', () => {
-      loadPayrollReimbursements();
+      const nextFilters = normalizePayrollReimbursementFilters(getPayrollReimbursementFiltersFromUi());
+      loadPayrollReimbursements(nextFilters, { resetPage: true });
     });
   }
   const filterClearBtn = document.getElementById('payroll-reimbursement-filter-clear');
@@ -1841,7 +2037,8 @@ function setupPayrollReimbursements() {
     filterClearBtn.dataset.bound = '1';
     filterClearBtn.addEventListener('click', () => {
       resetPayrollReimbursementFiltersUi();
-      loadPayrollReimbursements();
+      const cleared = normalizePayrollReimbursementFilters(getPayrollReimbursementFiltersFromUi());
+      loadPayrollReimbursements(cleared, { resetPage: true });
     });
   }
   const openBtn = document.getElementById('payroll-reimbursement-open-modal');
@@ -1892,11 +2089,64 @@ function setupPayrollReimbursements() {
         approvePayrollReimbursement(reimbursementId);
         return;
       }
+      const historyBtn = event.target.closest('.payroll-reimbursement-history');
+      if (historyBtn) {
+        const reimbursementId = Number(historyBtn.dataset.reimbursementId || 0);
+        openPayrollReimbursementHistoryModal(reimbursementId);
+        return;
+      }
       const cancelBtn = event.target.closest('.payroll-reimbursement-cancel');
       if (!cancelBtn) return;
       const reimbursementId = Number(cancelBtn.dataset.reimbursementId || 0);
       const status = String(cancelBtn.dataset.reimbursementStatus || 'requested');
       cancelPayrollReimbursement(reimbursementId, status);
+    });
+  }
+
+  const historyCloseBtn = document.getElementById('payroll-reimbursement-history-close');
+  if (historyCloseBtn && !historyCloseBtn.dataset.bound) {
+    historyCloseBtn.dataset.bound = '1';
+    historyCloseBtn.addEventListener('click', closePayrollReimbursementHistoryModal);
+  }
+  const historyDoneBtn = document.getElementById('payroll-reimbursement-history-done');
+  if (historyDoneBtn && !historyDoneBtn.dataset.bound) {
+    historyDoneBtn.dataset.bound = '1';
+    historyDoneBtn.addEventListener('click', closePayrollReimbursementHistoryModal);
+  }
+  const historyBackdrop = document.getElementById('payroll-reimbursement-history-backdrop');
+  if (historyBackdrop && !historyBackdrop.dataset.bound) {
+    historyBackdrop.dataset.bound = '1';
+    historyBackdrop.addEventListener('click', event => {
+      if (event.target === historyBackdrop) {
+        closePayrollReimbursementHistoryModal();
+      }
+    });
+  }
+  const historyModal = document.getElementById('payroll-reimbursement-history-modal');
+  if (historyModal && !historyModal.dataset.boundEscape) {
+    historyModal.dataset.boundEscape = '1';
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      if (historyModal.classList.contains('hidden')) return;
+      closePayrollReimbursementHistoryModal();
+    });
+  }
+
+  const prevBtn = document.getElementById('payroll-reimbursement-prev');
+  if (prevBtn && !prevBtn.dataset.bound) {
+    prevBtn.dataset.bound = '1';
+    prevBtn.addEventListener('click', () => {
+      if (payrollReimbursementCurrentPage <= 1) return;
+      loadPayrollReimbursements(null, { page: payrollReimbursementCurrentPage - 1 });
+    });
+  }
+
+  const nextBtn = document.getElementById('payroll-reimbursement-next');
+  if (nextBtn && !nextBtn.dataset.bound) {
+    nextBtn.dataset.bound = '1';
+    nextBtn.addEventListener('click', () => {
+      if (payrollReimbursementCurrentPage >= payrollReimbursementTotalPages) return;
+      loadPayrollReimbursements(null, { page: payrollReimbursementCurrentPage + 1 });
     });
   }
 }

@@ -1,6 +1,10 @@
 # Decisions Log
 
 - 2026-02-23: Kiosk Admin receipts behavior is upload-first for all kiosk admins; receipt list visibility is permission-scoped so super admins or admins with `view_payroll` can see all receipts, while other kiosk admins can only see receipts they uploaded.
+- 2026-02-23: Reimbursement lists (desktop + kiosk) are paginated and default to a server-applied 30-day window when no explicit start/end filters are provided.
+- 2026-02-23: Reimbursement submissions enforce duplicate protection (file hash and detail match) with an explicit `upload anyway` override (`allow_duplicate=1`) for intentional repeats.
+- 2026-02-23: Reimbursement status transitions are recorded in `payroll_reimbursement_status_history` and exposed as a timeline API for desktop/kiosk review.
+- 2026-02-23: Desktop payroll nav now surfaces pending reimbursement workload via a badge (`requested` count), and payroll notifications include `PAYROLL_REIMBURSEMENT_REQUESTED`.
 - 2026-02-23: Reimbursement status remains editable until paid; super admins can re-approve cancelled reimbursements and can cancel non-paid reimbursements, but paid reimbursements stay immutable.
 - 2026-02-23: QuickBooks management UI lives in Organization Settings (`QuickBooks` accordion) for super admins; the cross-page top QuickBooks connection card is removed.
 - 2026-02-23: Super admins can reject/cancel reimbursements from the Reimbursements page; `requested` and `approved` rows can be moved to `cancelled` (with optional audit reason), while `paid` rows remain immutable.

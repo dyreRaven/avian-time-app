@@ -26,7 +26,11 @@ let kaShipmentMessageState = {
   activeThreadId: null,
   comments: [],
   allComments: [],
-  search: ''
+  search: '',
+  searchMatches: [],
+  searchActiveIndex: -1,
+  visibleCommentCountByThread: {},
+  dividerReadAtByThread: {}
 };
 let kaShipmentMessageSidebarCollapsed = false;
 let kaTimesheetDate = '';
@@ -44,6 +48,10 @@ let kaReceiptsInitialized = false;
 let kaReceiptsListVisible = false;
 let kaReceiptsLoading = false;
 let kaReceiptsCanViewAll = false;
+let kaReceiptsPage = 1;
+let kaReceiptsTotalPages = 1;
+let kaReceiptsTotalCount = 0;
+const KA_RECEIPTS_PAGE_SIZE = 50;
 const kaItemAutoSaveTimers = new Map();
 const kaSavedItemStatuses = new Map();
 const kaSavedItemNotes = new Map();
@@ -190,7 +198,9 @@ const KA_SHIPMENTS_CACHE_KEY = 'avian_kiosk_shipments_cache_v1';
 const KA_DOC_CACHE_NAME = 'avian_doc_cache_v1';
 const KA_ORG_TIMEZONE_KEY = 'avian_kiosk_org_timezone_v1';
 const KA_DEFAULT_TIMEZONE = 'America/Puerto_Rico';
+const KA_SHIPMENT_THREAD_READS_KEY = 'avian_kiosk_shipment_thread_reads_v1';
 const KA_SHIPMENT_COMMENT_UNDO_WINDOW_MS = 5 * 60 * 1000;
+const KA_SHIPMENT_THREAD_PAGE_SIZE = 60;
 const KA_LANGUAGE_LABELS = {
   en: 'English',
   es: 'Spanish',
@@ -224,6 +234,7 @@ const KA_TIME_EVENTS = [
 
 const KA_PAYROLL_EVENTS = [
   { value: 'PAYROLL_RUN_DUE', label: 'Payroll due' },
+  { value: 'PAYROLL_REIMBURSEMENT_REQUESTED', label: 'Reimbursement requested' },
   { value: 'PAYROLL_RUN_STARTED', label: 'Payroll started' },
   { value: 'PAYROLL_RUN_SUCCESS', label: 'Payroll success' },
   { value: 'PAYROLL_RUN_PARTIAL', label: 'Payroll partial' },
@@ -254,6 +265,7 @@ const KA_NOTIFICATION_PREF_DEFAULT = {
     enabled: true,
     event_types: [
       'PAYROLL_RUN_DUE',
+      'PAYROLL_REIMBURSEMENT_REQUESTED',
       'PAYROLL_RUN_FAILURE',
       'PAYROLL_QBO_ERROR',
       'PAYROLL_FATAL_ERROR'
@@ -688,7 +700,7 @@ async function fetchJSON(url, options = {}) {
     if (!headers.get('X-Kiosk-Device-Id')) headers.set('X-Kiosk-Device-Id', deviceId);
     if (!headers.get('X-Kiosk-Device-Secret')) headers.set('X-Kiosk-Device-Secret', deviceSecret);
 
-    if (method === 'GET') {
+    const appendAuthToQuery = () => {
       const u = new URL(url, window.location.origin);
       if ((needsKioskAuth || needsTimeAuth) && adminId && !u.searchParams.get('admin_id')) {
         u.searchParams.set('admin_id', adminId);
@@ -697,6 +709,10 @@ async function fetchJSON(url, options = {}) {
         u.searchParams.set('employee_id', adminId);
       }
       url = u.pathname + u.search;
+    };
+
+    if (method === 'GET') {
+      appendAuthToQuery();
     } else {
       const contentType = headers.get('Content-Type') || headers.get('content-type') || '';
       const isJson = /application\/json/i.test(contentType);
@@ -714,6 +730,9 @@ async function fetchJSON(url, options = {}) {
         if ((needsKioskAuth || needsTimeAuth) && adminId && !body.admin_id) body.admin_id = adminId;
         if (needsShipmentAuth && adminId && !body.employee_id) body.employee_id = adminId;
         opts.body = JSON.stringify(body);
+      } else {
+        // DELETE/FormData/plain-text requests do not get JSON body auth, so include query auth.
+        appendAuthToQuery();
       }
     }
   }
@@ -8410,6 +8429,42 @@ function kaApplyReceiptsScope(canViewAll) {
   }
 }
 
+function kaUpdateReceiptsRangeNote(paging) {
+  const el = document.getElementById('ka-receipts-range-note');
+  if (!el) return;
+  const start = String(paging?.applied_start || '').trim();
+  const end = String(paging?.applied_end || '').trim();
+  const defaulted = !!paging?.default_window_applied;
+  if (!start && !end) {
+    el.textContent = '';
+    return;
+  }
+  const rangeText = start && end
+    ? `${kaFormatDateIso(start)} - ${kaFormatDateIso(end)}`
+    : (start ? `From ${kaFormatDateIso(start)}` : `Through ${kaFormatDateIso(end)}`);
+  el.textContent = defaulted
+    ? `Showing latest 30-day window (${rangeText}).`
+    : `Showing ${rangeText}.`;
+}
+
+function kaUpdateReceiptsPagination(paging) {
+  const page = Math.max(1, Number(paging?.page || kaReceiptsPage || 1));
+  const totalPages = Math.max(1, Number(paging?.total_pages || kaReceiptsTotalPages || 1));
+  const totalCount = Math.max(0, Number(paging?.total_count || kaReceiptsTotalCount || 0));
+  kaReceiptsPage = page;
+  kaReceiptsTotalPages = totalPages;
+  kaReceiptsTotalCount = totalCount;
+
+  const prevBtn = document.getElementById('ka-receipts-prev');
+  const nextBtn = document.getElementById('ka-receipts-next');
+  const info = document.getElementById('ka-receipts-page-info');
+  if (prevBtn) prevBtn.disabled = kaReceiptsLoading || page <= 1;
+  if (nextBtn) nextBtn.disabled = kaReceiptsLoading || page >= totalPages;
+  if (info) {
+    info.textContent = `Page ${page} of ${totalPages} (${totalCount})`;
+  }
+}
+
 function kaRenderReceiptsRows(rows) {
   const tbody = document.getElementById('ka-receipts-body');
   if (!tbody) return;
@@ -8447,7 +8502,8 @@ function kaReceiptsQueryParams() {
   const start = String(document.getElementById('ka-receipts-filter-start')?.value || '').trim();
   const end = String(document.getElementById('ka-receipts-filter-end')?.value || '').trim();
   params.set('status', status);
-  params.set('limit', '200');
+  params.set('page', String(kaReceiptsPage || 1));
+  params.set('page_size', String(KA_RECEIPTS_PAGE_SIZE));
   if (/^\d{4}-\d{2}-\d{2}$/.test(start)) params.set('start', start);
   if (/^\d{4}-\d{2}-\d{2}$/.test(end)) params.set('end', end);
   if (kaReceiptsCanViewAll) {
@@ -8466,6 +8522,7 @@ async function kaLoadReceiptsList() {
     tbody.innerHTML = '<tr><td colspan="7">(loading...)</td></tr>';
   }
   kaReceiptsLoading = true;
+  kaUpdateReceiptsPagination();
   try {
     const params = kaReceiptsQueryParams();
     const payload = await fetchJSON(`/api/kiosk/admin/reimbursements?${params.toString()}`);
@@ -8473,11 +8530,19 @@ async function kaLoadReceiptsList() {
     kaReceiptsCanViewAll = !!payload?.can_view_all;
     kaApplyReceiptsScope(kaReceiptsCanViewAll);
     kaRenderReceiptsRows(rows);
+    kaUpdateReceiptsRangeNote(payload?.paging || null);
+    kaUpdateReceiptsPagination(payload?.paging || null);
   } catch (err) {
     console.error('Failed to load reimbursements for kiosk admin:', err);
     if (tbody) {
       tbody.innerHTML = '<tr><td colspan="7">(failed to load receipts)</td></tr>';
     }
+    kaUpdateReceiptsRangeNote(null);
+    kaUpdateReceiptsPagination({
+      page: kaReceiptsPage,
+      total_pages: kaReceiptsTotalPages,
+      total_count: kaReceiptsTotalCount
+    });
     kaSetReceiptsMessage(
       `Failed to load receipts: ${err?.message || 'Unknown error.'}`,
       'error'
@@ -8500,11 +8565,27 @@ function kaSetReceiptsListVisible(isVisible) {
       : 'View Pending Reimbursements';
   }
   if (kaReceiptsListVisible) {
+    kaReceiptsPage = 1;
     kaLoadReceiptsList();
   }
 }
 
-async function kaSubmitReceiptRequest() {
+function kaBuildDuplicateWarning(duplicates) {
+  const rows = Array.isArray(duplicates) ? duplicates : [];
+  if (!rows.length) return '';
+  return rows
+    .slice(0, 3)
+    .map(row => {
+      const date = row?.expense_date ? kaFormatDateIso(row.expense_date) : 'Unknown date';
+      const amount = kaFmtMoney(row?.amount != null ? row.amount : 0);
+      const vendor = row?.vendor_name || 'Unknown vendor';
+      const status = kaReceiptStatusLabel(String(row?.status || 'requested'));
+      return `- ${date}: ${vendor} ${amount} (${status})`;
+    })
+    .join('\n');
+}
+
+async function kaSubmitReceiptRequest({ allowDuplicate = false } = {}) {
   const employeeSelect = document.getElementById('ka-receipt-employee');
   const projectSelect = document.getElementById('ka-receipt-project');
   const vendorInput = document.getElementById('ka-receipt-vendor');
@@ -8541,6 +8622,7 @@ async function kaSubmitReceiptRequest() {
   form.append('amount', String(amount));
   if (expenseDate) form.append('expense_date', expenseDate);
   if (note) form.append('note', note);
+  if (allowDuplicate) form.append('allow_duplicate', '1');
   form.append('receipt', file);
   const auth = kaEmployeeAuthMeta();
   if (auth.admin_id) form.append('admin_id', String(auth.admin_id));
@@ -8565,6 +8647,15 @@ async function kaSubmitReceiptRequest() {
     }
   } catch (err) {
     console.error('Failed to upload reimbursement receipt from kiosk admin:', err);
+    if (err?.status === 409 && err?.body?.code === 'duplicate_reimbursement' && !allowDuplicate) {
+      const warningLines = kaBuildDuplicateWarning(err?.body?.duplicates);
+      const proceed = confirm(
+        `Possible duplicate reimbursement found.${warningLines ? `\n\n${warningLines}` : ''}\n\nUpload anyway?`
+      );
+      if (proceed) {
+        return kaSubmitReceiptRequest({ allowDuplicate: true });
+      }
+    }
     kaSetReceiptsMessage(
       `Failed to request reimbursement: ${err?.message || 'Unknown error.'}`,
       'error'
@@ -8587,19 +8678,44 @@ function kaBindReceiptsControls() {
     kaLoadReceiptsList();
   });
   document.getElementById('ka-receipts-filter-status')?.addEventListener('change', () => {
-    if (kaReceiptsListVisible) kaLoadReceiptsList();
+    if (kaReceiptsListVisible) {
+      kaReceiptsPage = 1;
+      kaLoadReceiptsList();
+    }
   });
   document.getElementById('ka-receipts-filter-start')?.addEventListener('change', () => {
-    if (kaReceiptsListVisible) kaLoadReceiptsList();
+    if (kaReceiptsListVisible) {
+      kaReceiptsPage = 1;
+      kaLoadReceiptsList();
+    }
   });
   document.getElementById('ka-receipts-filter-end')?.addEventListener('change', () => {
-    if (kaReceiptsListVisible) kaLoadReceiptsList();
+    if (kaReceiptsListVisible) {
+      kaReceiptsPage = 1;
+      kaLoadReceiptsList();
+    }
   });
   document.getElementById('ka-receipts-filter-employee')?.addEventListener('change', () => {
-    if (kaReceiptsListVisible) kaLoadReceiptsList();
+    if (kaReceiptsListVisible) {
+      kaReceiptsPage = 1;
+      kaLoadReceiptsList();
+    }
   });
   document.getElementById('ka-receipts-filter-project')?.addEventListener('change', () => {
-    if (kaReceiptsListVisible) kaLoadReceiptsList();
+    if (kaReceiptsListVisible) {
+      kaReceiptsPage = 1;
+      kaLoadReceiptsList();
+    }
+  });
+  document.getElementById('ka-receipts-prev')?.addEventListener('click', () => {
+    if (!kaReceiptsListVisible || kaReceiptsLoading || kaReceiptsPage <= 1) return;
+    kaReceiptsPage -= 1;
+    kaLoadReceiptsList();
+  });
+  document.getElementById('ka-receipts-next')?.addEventListener('click', () => {
+    if (!kaReceiptsListVisible || kaReceiptsLoading || kaReceiptsPage >= kaReceiptsTotalPages) return;
+    kaReceiptsPage += 1;
+    kaLoadReceiptsList();
   });
 }
 
@@ -8633,6 +8749,12 @@ function kaEnsureReceiptsViewReady() {
 
   kaReceiptsCanViewAll = kaCanViewAllReceipts();
   kaApplyReceiptsScope(kaReceiptsCanViewAll);
+  kaUpdateReceiptsRangeNote(null);
+  kaUpdateReceiptsPagination({
+    page: kaReceiptsPage,
+    total_pages: kaReceiptsTotalPages,
+    total_count: kaReceiptsTotalCount
+  });
 }
 
 // --- Timesheet helpers (sessions per kiosk) ---
@@ -12483,7 +12605,11 @@ async function kaCloseItemsModal(opts = {}) {
     activeThreadId: null,
     comments: [],
     allComments: [],
-    search: ''
+    search: '',
+    searchMatches: [],
+    searchActiveIndex: -1,
+    visibleCommentCountByThread: {},
+    dividerReadAtByThread: {}
   };
   kaExpandedItems.clear();
   kaAutoExpandedItems.clear();
@@ -14302,6 +14428,166 @@ function kaShipmentCommentTimestampMs(row = {}) {
   return kaShipmentParseTimestampMs(row.created_at || row.queued_at);
 }
 
+function kaLoadShipmentThreadReadMap() {
+  try {
+    const raw = localStorage.getItem(KA_SHIPMENT_THREAD_READS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function kaSaveShipmentThreadReadMap(next = {}) {
+  try {
+    localStorage.setItem(KA_SHIPMENT_THREAD_READS_KEY, JSON.stringify(next || {}));
+  } catch {}
+}
+
+function kaShipmentThreadReadMapKey(shipmentId, threadId, adminId = null) {
+  const orgId = Number(
+    (kaKiosk && kaKiosk.org_id) ||
+    (kaCurrentAdmin && kaCurrentAdmin.org_id) ||
+    window.CURRENT_ORG_ID ||
+    0
+  );
+  const effectiveAdminId = adminId != null ? Number(adminId) : Number(kaAdminAuthId() || 0);
+  const shipmentKey = Number(shipmentId) > 0 ? Number(shipmentId) : 'none';
+  const threadKey = Number(threadId) > 0 ? Number(threadId) : 'general';
+  const orgKey = Number.isFinite(orgId) && orgId > 0 ? orgId : 'default';
+  const adminKey = Number.isFinite(effectiveAdminId) && effectiveAdminId > 0
+    ? effectiveAdminId
+    : 'anon';
+  return `${orgKey}:${adminKey}:${shipmentKey}:${threadKey}`;
+}
+
+function kaShipmentThreadLastReadAt(shipmentId, threadId, adminId = null) {
+  const key = kaShipmentThreadReadMapKey(shipmentId, threadId, adminId);
+  const map = kaLoadShipmentThreadReadMap();
+  const value = Number(map[key]);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function kaSetShipmentThreadLastReadAt(shipmentId, threadId, readAtMs, adminId = null) {
+  const ts = Number(readAtMs);
+  if (!Number.isFinite(ts) || ts <= 0) return;
+  const key = kaShipmentThreadReadMapKey(shipmentId, threadId, adminId);
+  const map = kaLoadShipmentThreadReadMap();
+  const prev = Number(map[key]);
+  if (Number.isFinite(prev) && prev >= ts) return;
+  map[key] = ts;
+  kaSaveShipmentThreadReadMap(map);
+}
+
+function kaShipmentThreadLatestCommentMs(comments = [], threadId = null, threads = []) {
+  const normalizedThreadId = Number(threadId);
+  if (!Number.isFinite(normalizedThreadId) || normalizedThreadId <= 0) return Number.NaN;
+  const generalThreadId = kaShipmentGeneralThreadId(threads);
+  let latest = Number.NaN;
+  (comments || []).forEach(row => {
+    const rowThreadId = kaNormalizeShipmentThreadId(row && row.thread_id, generalThreadId);
+    if (Number(rowThreadId) !== normalizedThreadId) return;
+    const createdAtMs = kaShipmentCommentTimestampMs(row);
+    if (!Number.isFinite(createdAtMs)) return;
+    latest = Number.isFinite(latest) ? Math.max(latest, createdAtMs) : createdAtMs;
+  });
+  return latest;
+}
+
+function kaMarkShipmentThreadReadThroughLatest({
+  shipmentId,
+  threadId,
+  comments = [],
+  threads = [],
+  adminId = null
+} = {}) {
+  const latestMs = kaShipmentThreadLatestCommentMs(comments, threadId, threads);
+  if (!Number.isFinite(latestMs)) return;
+  kaSetShipmentThreadLastReadAt(shipmentId, threadId, latestMs, adminId);
+}
+
+function kaBuildShipmentThreadUnreadCounts({
+  shipmentId,
+  threads = [],
+  comments = [],
+  adminId = null
+} = {}) {
+  const counts = {};
+  const generalThreadId = kaShipmentGeneralThreadId(threads);
+  const normalizedAdminId = Number(adminId);
+  const lastReadByThread = {};
+
+  (comments || []).forEach(row => {
+    const threadId = kaNormalizeShipmentThreadId(row && row.thread_id, generalThreadId);
+    if (!Number.isFinite(Number(threadId)) || Number(threadId) <= 0) return;
+    const createdAtMs = kaShipmentCommentTimestampMs(row);
+    if (!Number.isFinite(createdAtMs)) return;
+    const isMine = Number.isFinite(normalizedAdminId) &&
+      normalizedAdminId > 0 &&
+      Number(row && row.created_by) === normalizedAdminId;
+    if (isMine) return;
+    if (!Object.prototype.hasOwnProperty.call(lastReadByThread, threadId)) {
+      lastReadByThread[threadId] = kaShipmentThreadLastReadAt(
+        shipmentId,
+        threadId,
+        adminId
+      );
+    }
+    const lastReadAtMs = Number(lastReadByThread[threadId]) || 0;
+    if (createdAtMs <= lastReadAtMs) return;
+    counts[threadId] = (counts[threadId] || 0) + 1;
+  });
+
+  return counts;
+}
+
+function kaEnsureShipmentThreadVisibleCount(threadId, totalRows = 0) {
+  const normalizedThreadId = Number(threadId);
+  if (!Number.isFinite(normalizedThreadId) || normalizedThreadId <= 0) return;
+  const current = Number(
+    kaShipmentMessageState.visibleCommentCountByThread &&
+      kaShipmentMessageState.visibleCommentCountByThread[normalizedThreadId]
+  );
+  if (Number.isFinite(current) && current > 0) return;
+  const minimum = Math.max(1, Math.min(Number(totalRows) || 0, KA_SHIPMENT_THREAD_PAGE_SIZE));
+  kaShipmentMessageState.visibleCommentCountByThread = {
+    ...(kaShipmentMessageState.visibleCommentCountByThread || {}),
+    [normalizedThreadId]: minimum || KA_SHIPMENT_THREAD_PAGE_SIZE
+  };
+}
+
+function kaBumpShipmentThreadVisibleCount(threadId, amount = KA_SHIPMENT_THREAD_PAGE_SIZE) {
+  const normalizedThreadId = Number(threadId);
+  if (!Number.isFinite(normalizedThreadId) || normalizedThreadId <= 0) return;
+  const current = Number(
+    kaShipmentMessageState.visibleCommentCountByThread &&
+      kaShipmentMessageState.visibleCommentCountByThread[normalizedThreadId]
+  );
+  const nextCount = (Number.isFinite(current) && current > 0 ? current : KA_SHIPMENT_THREAD_PAGE_SIZE) +
+    Math.max(1, Number(amount) || KA_SHIPMENT_THREAD_PAGE_SIZE);
+  kaShipmentMessageState.visibleCommentCountByThread = {
+    ...(kaShipmentMessageState.visibleCommentCountByThread || {}),
+    [normalizedThreadId]: nextCount
+  };
+}
+
+function kaRevealAllShipmentThreadMessages(threadId) {
+  const normalizedThreadId = Number(threadId);
+  if (!Number.isFinite(normalizedThreadId) || normalizedThreadId <= 0) return;
+  kaShipmentMessageState.visibleCommentCountByThread = {
+    ...(kaShipmentMessageState.visibleCommentCountByThread || {}),
+    [normalizedThreadId]: Number.MAX_SAFE_INTEGER
+  };
+}
+
+function kaShipmentUndoCountdownLabel(remainingMs) {
+  const totalSeconds = Math.max(0, Math.ceil(Number(remainingMs) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes)}:${String(seconds).padStart(2, '0')}`;
+}
+
 function kaFormatShipmentMessageDateTime(ms) {
   if (!Number.isFinite(ms)) return '';
   const dt = new Date(ms);
@@ -14531,6 +14817,7 @@ function kaRenderShipmentThreadList({
   filteredThreads = [],
   activeThreadId = null,
   pendingCounts = {},
+  unreadCounts = {},
   searchTerm = '',
   currentAdminId = null,
   offline = false
@@ -14556,6 +14843,16 @@ function kaRenderShipmentThreadList({
     const category = String(thread && thread.category || 'General');
     const when = kaFormatShipmentMessageDateTime(kaShipmentThreadActivityMs(thread));
     const pendingCount = Number(pendingCounts[threadId] || 0);
+    const unreadCount = Number(unreadCounts[threadId] || 0);
+    const pendingTag = pendingCount > 0
+      ? `<span class="ka-ship-msg-thread-count">${pendingCount}</span>`
+      : '';
+    const unreadTag = unreadCount > 0
+      ? `<span class="ka-ship-msg-thread-unread-count">${unreadCount}</span>`
+      : '';
+    const unreadDot = unreadCount > 0
+      ? '<span class="ka-ship-msg-thread-unread-dot" aria-hidden="true"></span>'
+      : '';
     const editIcon = canEditThread
       ? `
         <button
@@ -14582,8 +14879,8 @@ function kaRenderShipmentThreadList({
           data-thread-id="${escapeHTML(String(threadId || ''))}"
         >
           <div class="ka-ship-msg-thread-item-title">
-            <span>${escapeHTML(title)}</span>
-            ${pendingCount > 0 ? `<span class="ka-ship-msg-thread-count">${pendingCount}</span>` : ''}
+            <span class="ka-ship-msg-thread-title-text">${unreadDot}<span>${escapeHTML(title)}</span></span>
+            <span class="ka-ship-msg-thread-title-tags">${pendingTag}${unreadTag}</span>
           </div>
           <div class="ka-ship-msg-thread-item-meta">
             <span>${escapeHTML(category)}</span>
@@ -14623,9 +14920,21 @@ function kaOpenShipmentThreadRenameForm(options = {}) {
   }
 }
 
-function kaSelectShipmentMessageThread(shipmentId, threadId) {
+function kaSelectShipmentMessageThread(shipmentId, threadId, options = {}) {
   const normalizedThreadId = Number(threadId);
   if (!Number.isFinite(normalizedThreadId) || normalizedThreadId <= 0) return false;
+  const currentAdminId = Number(kaAdminAuthId() || 0);
+  const previousReadAt = kaShipmentThreadLastReadAt(
+    shipmentId,
+    normalizedThreadId,
+    currentAdminId
+  );
+  if (options.captureDivider !== false) {
+    kaShipmentMessageState.dividerReadAtByThread = {
+      ...(kaShipmentMessageState.dividerReadAtByThread || {}),
+      [normalizedThreadId]: previousReadAt
+    };
+  }
 
   kaShipmentMessageState.activeThreadId = normalizedThreadId;
   kaShipmentMessageState.comments = kaShipmentCommentsForThread(
@@ -14633,6 +14942,27 @@ function kaSelectShipmentMessageThread(shipmentId, threadId) {
     normalizedThreadId,
     kaShipmentMessageState.threads
   );
+  const generalThreadId = kaShipmentGeneralThreadId(kaShipmentMessageState.threads);
+  const queuedForThread = kaLoadShipmentCommentsQueue().filter(entry => {
+    if (Number(entry && entry.shipment_id) !== Number(shipmentId)) return false;
+    const queuedThreadId = Number(entry && entry.thread_id);
+    if (Number.isFinite(queuedThreadId) && queuedThreadId > 0) {
+      return queuedThreadId === normalizedThreadId;
+    }
+    return Number.isFinite(Number(generalThreadId)) &&
+      Number(generalThreadId) === normalizedThreadId;
+  });
+  kaEnsureShipmentThreadVisibleCount(
+    normalizedThreadId,
+    kaShipmentMessageState.comments.length + queuedForThread.length
+  );
+  kaMarkShipmentThreadReadThroughLatest({
+    shipmentId,
+    threadId: normalizedThreadId,
+    comments: kaShipmentMessageState.allComments,
+    threads: kaShipmentMessageState.threads,
+    adminId: currentAdminId
+  });
   return true;
 }
 
@@ -14733,7 +15063,11 @@ function kaRenderShipmentMessagesPanel(shipmentId, options = {}) {
       activeThreadId,
       comments: [],
       allComments: [],
-      search: ''
+      search: '',
+      searchMatches: [],
+      searchActiveIndex: -1,
+      visibleCommentCountByThread: {},
+      dividerReadAtByThread: {}
     };
   } else {
     kaShipmentMessageState.activeThreadId = activeThreadId;
@@ -14741,13 +15075,28 @@ function kaRenderShipmentMessagesPanel(shipmentId, options = {}) {
 
   const filteredThreads = threads;
   const pendingCounts = kaBuildShipmentThreadPendingCounts(queued, threads);
+  const unreadCounts = kaBuildShipmentThreadUnreadCounts({
+    shipmentId,
+    threads,
+    comments: allComments,
+    adminId: kaAdminAuthId()
+  });
   const pendingGeneral = pendingCounts.__general__ || 0;
   const currentAdminId = kaAdminAuthId();
+  const activeVisibleCount = Number(
+    kaShipmentMessageState.visibleCommentCountByThread &&
+      kaShipmentMessageState.visibleCommentCountByThread[Number(activeThreadId)]
+  );
+  const dividerReadAtMs = Number(
+    kaShipmentMessageState.dividerReadAtByThread &&
+      kaShipmentMessageState.dividerReadAtByThread[Number(activeThreadId)]
+  );
   const threadListHtml = kaRenderShipmentThreadList({
     threads,
     filteredThreads,
     activeThreadId,
     pendingCounts,
+    unreadCounts,
     searchTerm: '',
     currentAdminId,
     offline
@@ -14877,7 +15226,9 @@ function kaRenderShipmentMessagesPanel(shipmentId, options = {}) {
     comments: kaShipmentMessageState.comments,
     queued,
     activeThreadId,
-    threads
+    threads,
+    visibleCount: Number.isFinite(activeVisibleCount) ? activeVisibleCount : KA_SHIPMENT_THREAD_PAGE_SIZE,
+    dividerReadAtMs: Number.isFinite(dividerReadAtMs) ? dividerReadAtMs : 0
   })}
         </div>
 
@@ -14893,6 +15244,18 @@ function kaRenderShipmentMessagesPanel(shipmentId, options = {}) {
   `;
 
   kaBindShipmentMessagesPanel(shipmentId, { offline });
+  const normalizedActiveThreadId = Number(kaShipmentMessageState.activeThreadId);
+  const currentAdminNum = Number(kaAdminAuthId() || 0);
+  if (Number.isFinite(normalizedActiveThreadId) && normalizedActiveThreadId > 0) {
+    kaShipmentMessageState.dividerReadAtByThread = {
+      ...(kaShipmentMessageState.dividerReadAtByThread || {}),
+      [normalizedActiveThreadId]: kaShipmentThreadLastReadAt(
+        shipmentId,
+        normalizedActiveThreadId,
+        currentAdminNum
+      )
+    };
+  }
 }
 
 function kaBindShipmentMessagesPanel(shipmentId, options = {}) {
@@ -14904,6 +15267,7 @@ function kaBindShipmentMessagesPanel(shipmentId, options = {}) {
   if (searchInput) {
     searchInput.addEventListener('input', () => {
       kaShipmentMessageState.search = searchInput.value || '';
+      kaShipmentMessageState.searchActiveIndex = 0;
       kaRenderShipmentSearchResults(panel, shipmentId, offline);
     });
     searchInput.addEventListener('focus', () => {
@@ -14911,7 +15275,24 @@ function kaBindShipmentMessagesPanel(shipmentId, options = {}) {
     });
     searchInput.addEventListener('search', () => {
       kaShipmentMessageState.search = searchInput.value || '';
+      kaShipmentMessageState.searchActiveIndex = 0;
       kaRenderShipmentSearchResults(panel, shipmentId, offline);
+    });
+    searchInput.addEventListener('keydown', (evt) => {
+      if (evt.key === 'Enter') {
+        evt.preventDefault();
+        kaCycleShipmentSearchMatch(panel, shipmentId, offline, evt.shiftKey ? -1 : 1);
+        return;
+      }
+      if (evt.key === 'ArrowDown') {
+        evt.preventDefault();
+        kaCycleShipmentSearchMatch(panel, shipmentId, offline, 1);
+        return;
+      }
+      if (evt.key === 'ArrowUp') {
+        evt.preventDefault();
+        kaCycleShipmentSearchMatch(panel, shipmentId, offline, -1);
+      }
     });
   }
 
@@ -14948,6 +15329,21 @@ function kaBindShipmentMessagesPanel(shipmentId, options = {}) {
       const threadId = Number(btn.getAttribute('data-thread-edit-id'));
       const threadTitle = String(btn.getAttribute('data-thread-edit-title') || '');
       kaRenderShipmentMessageThreadWithEdit(shipmentId, threadId, threadTitle, offline);
+    });
+  });
+
+  panel.querySelectorAll('[data-load-earlier]').forEach(btn => {
+    btn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      const threadId = Number(
+        btn.getAttribute('data-load-earlier-thread-id') ||
+        kaShipmentMessageState.activeThreadId
+      );
+      if (!Number.isFinite(threadId) || threadId <= 0) return;
+      kaBumpShipmentThreadVisibleCount(threadId, KA_SHIPMENT_THREAD_PAGE_SIZE);
+      kaRenderShipmentMessagesPanel(shipmentId, { offline });
+      const listEl = panel.querySelector('#ka-ship-msg-list');
+      if (listEl) listEl.scrollTop = 0;
     });
   });
 
@@ -15089,15 +15485,22 @@ function kaStartCommentUndoTimers(panel) {
   panel.querySelectorAll('[data-comment-expire]').forEach(btn => {
     const expiresAt = Number(btn.getAttribute('data-comment-expire'));
     if (!Number.isFinite(expiresAt)) return;
-    const delay = expiresAt - Date.now();
-    if (delay <= 0) {
-      btn.classList.add('hidden');
-      return;
-    }
-    setTimeout(() => {
+    const action = String(btn.getAttribute('data-comment-action') || '').toLowerCase();
+    const undoLabel = String(btn.getAttribute('data-undo-label') || 'Undo Send');
+    const update = () => {
       if (!document.body.contains(btn)) return;
-      btn.classList.add('hidden');
-    }, delay);
+      const remaining = expiresAt - Date.now();
+      if (remaining <= 0) {
+        btn.classList.add('hidden');
+        return;
+      }
+      if (action === 'undo') {
+        btn.textContent = `${undoLabel} (${kaShipmentUndoCountdownLabel(remaining)})`;
+      }
+      const nextDelay = Math.min(1000, Math.max(120, remaining % 1000 || 1000));
+      window.setTimeout(update, nextDelay);
+    };
+    update();
   });
 }
 
@@ -15161,7 +15564,9 @@ function kaRenderShipmentMessageRows({
   comments = [],
   queued = [],
   activeThreadId = null,
-  threads = []
+  threads = [],
+  visibleCount = KA_SHIPMENT_THREAD_PAGE_SIZE,
+  dividerReadAtMs = 0
 } = {}) {
   const adminId = kaAdminAuthId();
   const isSuperAdmin = kaIsSuperAdmin();
@@ -15199,7 +15604,34 @@ function kaRenderShipmentMessageRows({
     return '<div class="ka-ship-msg-empty">(No messages yet.)</div>';
   }
 
-  return rows.map((row, rowIndex) => {
+  const rowsWithIndex = rows.map((row, idx) => ({ row, rowIndex: idx }));
+  let visibleRows = rowsWithIndex;
+  let hiddenCount = 0;
+  const normalizedVisibleCount = Number(visibleCount);
+  if (Number.isFinite(normalizedVisibleCount) &&
+    normalizedVisibleCount > 0 &&
+    rowsWithIndex.length > normalizedVisibleCount) {
+    hiddenCount = rowsWithIndex.length - normalizedVisibleCount;
+    visibleRows = rowsWithIndex.slice(hiddenCount);
+  }
+
+  const loadEarlierButton = hiddenCount > 0 && Number(activeThreadId) > 0
+    ? `
+      <div class="ka-ship-msg-load-earlier-wrap">
+        <button
+          type="button"
+          class="ka-ship-msg-load-earlier-btn"
+          data-load-earlier="1"
+          data-load-earlier-thread-id="${escapeHTML(String(activeThreadId || ''))}"
+        >
+          Load earlier messages (${escapeHTML(String(hiddenCount))} hidden)
+        </button>
+      </div>
+    `
+    : '';
+
+  let dividerInserted = false;
+  const rowMarkup = visibleRows.map(({ row, rowIndex }) => {
     const createdAt = kaShipmentCommentTimestampMs(row);
     const when = kaFormatShipmentMessageDateTime(createdAt);
     const author = row.created_by_name
@@ -15224,16 +15656,20 @@ function kaRenderShipmentMessageRows({
     const withinWindow = Number.isFinite(createdAt) && kaShipmentCommentUndoOpen(createdAt);
     const canUndo = !row.pending && isMine && withinWindow;
     const canDelete = !row.pending && (isMine || isSuperAdmin) && withinWindow;
+    const undoCountdown = canUndo
+      ? kaShipmentUndoCountdownLabel((createdAt + KA_SHIPMENT_COMMENT_UNDO_WINDOW_MS) - Date.now())
+      : '';
     const actionControl = canUndo
       ? `
         <button
           type="button"
           class="ka-ship-msg-inline-action"
           data-comment-action="undo"
+          data-undo-label="Undo Send"
           data-comment-id="${escapeHTML(String(row.id || ''))}"
           data-comment-created-at-ms="${Number.isFinite(createdAt) ? String(createdAt) : ''}"
           data-comment-expire="${Number.isFinite(createdAt) ? String(createdAt + KA_SHIPMENT_COMMENT_UNDO_WINDOW_MS) : ''}"
-        >Undo Send</button>
+        >Undo Send (${escapeHTML(undoCountdown)})</button>
       `
       : (canDelete
         ? `
@@ -15249,7 +15685,19 @@ function kaRenderShipmentMessageRows({
     const actionRow = actionControl
       ? `<div class="ka-ship-msg-inline-actions">${actionControl}</div>`
       : '';
+    const shouldRenderDivider = !dividerInserted &&
+      Number.isFinite(dividerReadAtMs) &&
+      dividerReadAtMs > 0 &&
+      !row.pending &&
+      !isMine &&
+      Number.isFinite(createdAt) &&
+      createdAt > dividerReadAtMs;
+    if (shouldRenderDivider) dividerInserted = true;
+    const dividerMarkup = shouldRenderDivider
+      ? '<div class="ka-ship-msg-divider"><span>New messages</span></div>'
+      : '';
     return `
+      ${dividerMarkup}
       <div
         class="ka-ship-msg-row ${isMine ? 'mine' : ''} ${row.pending ? 'pending' : ''}"
         ${commentIdAttr}
@@ -15268,6 +15716,8 @@ function kaRenderShipmentMessageRows({
       </div>
     `;
   }).join('');
+
+  return `${loadEarlierButton}${rowMarkup}`;
 }
 
 async function kaLoadShipmentMessages(shipmentId, options = {}) {
@@ -15292,6 +15742,9 @@ async function kaLoadShipmentMessages(shipmentId, options = {}) {
     const threads = sameShipment && Array.isArray(kaShipmentMessageState.threads)
       ? kaShipmentMessageState.threads
       : [];
+    const previousThreadId = sameShipment
+      ? Number(kaShipmentMessageState.activeThreadId)
+      : null;
     let activeThreadId = Number.isFinite(requestedThreadId) && requestedThreadId > 0
       ? requestedThreadId
       : existingThreadId;
@@ -15302,13 +15755,50 @@ async function kaLoadShipmentMessages(shipmentId, options = {}) {
       ? kaShipmentMessageState.allComments
       : [];
     const comments = kaShipmentCommentsForThread(allComments, activeThreadId, threads);
+    const visibleCommentCountByThread = sameShipment
+      ? { ...(kaShipmentMessageState.visibleCommentCountByThread || {}) }
+      : {};
+    const dividerReadAtByThread = sameShipment
+      ? { ...(kaShipmentMessageState.dividerReadAtByThread || {}) }
+      : {};
+    const normalizedActiveThreadId = Number(activeThreadId);
+    const currentAdminId = Number(kaAdminAuthId() || 0);
+    if (Number.isFinite(normalizedActiveThreadId) && normalizedActiveThreadId > 0) {
+      kaEnsureShipmentThreadVisibleCount(normalizedActiveThreadId, comments.length);
+      const nextVisible = Number(
+        kaShipmentMessageState.visibleCommentCountByThread &&
+          kaShipmentMessageState.visibleCommentCountByThread[normalizedActiveThreadId]
+      );
+      if (Number.isFinite(nextVisible) && nextVisible > 0) {
+        visibleCommentCountByThread[normalizedActiveThreadId] = nextVisible;
+      }
+      const changedThread = Number(previousThreadId) !== normalizedActiveThreadId;
+      if (changedThread || !sameShipment) {
+        dividerReadAtByThread[normalizedActiveThreadId] = kaShipmentThreadLastReadAt(
+          shipmentId,
+          normalizedActiveThreadId,
+          currentAdminId
+        );
+      }
+      kaMarkShipmentThreadReadThroughLatest({
+        shipmentId,
+        threadId: normalizedActiveThreadId,
+        comments: allComments,
+        threads,
+        adminId: currentAdminId
+      });
+    }
     kaShipmentMessageState = {
       shipmentId,
       threads,
       activeThreadId,
       comments,
       allComments,
-      search: existingSearch
+      search: existingSearch,
+      searchMatches: [],
+      searchActiveIndex: -1,
+      visibleCommentCountByThread,
+      dividerReadAtByThread
     };
     kaRenderShipmentMessagesPanel(shipmentId, { offline: true });
     return;
@@ -15327,6 +15817,9 @@ async function kaLoadShipmentMessages(shipmentId, options = {}) {
     const allComments = Array.isArray(commentsRes && commentsRes.comments)
       ? commentsRes.comments
       : [];
+    const previousThreadId = sameShipment
+      ? Number(kaShipmentMessageState.activeThreadId)
+      : null;
 
     let activeThreadId = Number.isFinite(requestedThreadId) && requestedThreadId > 0
       ? requestedThreadId
@@ -15339,6 +15832,39 @@ async function kaLoadShipmentMessages(shipmentId, options = {}) {
     }
 
     const comments = kaShipmentCommentsForThread(allComments, activeThreadId, threads);
+    const visibleCommentCountByThread = sameShipment
+      ? { ...(kaShipmentMessageState.visibleCommentCountByThread || {}) }
+      : {};
+    const dividerReadAtByThread = sameShipment
+      ? { ...(kaShipmentMessageState.dividerReadAtByThread || {}) }
+      : {};
+    const normalizedActiveThreadId = Number(activeThreadId);
+    const currentAdminId = Number(kaAdminAuthId() || 0);
+    if (Number.isFinite(normalizedActiveThreadId) && normalizedActiveThreadId > 0) {
+      kaEnsureShipmentThreadVisibleCount(normalizedActiveThreadId, comments.length);
+      const nextVisible = Number(
+        kaShipmentMessageState.visibleCommentCountByThread &&
+          kaShipmentMessageState.visibleCommentCountByThread[normalizedActiveThreadId]
+      );
+      if (Number.isFinite(nextVisible) && nextVisible > 0) {
+        visibleCommentCountByThread[normalizedActiveThreadId] = nextVisible;
+      }
+      const changedThread = Number(previousThreadId) !== normalizedActiveThreadId;
+      if (changedThread || !sameShipment) {
+        dividerReadAtByThread[normalizedActiveThreadId] = kaShipmentThreadLastReadAt(
+          shipmentId,
+          normalizedActiveThreadId,
+          currentAdminId
+        );
+      }
+      kaMarkShipmentThreadReadThroughLatest({
+        shipmentId,
+        threadId: normalizedActiveThreadId,
+        comments: allComments,
+        threads,
+        adminId: currentAdminId
+      });
+    }
 
     kaShipmentMessageState = {
       shipmentId,
@@ -15346,7 +15872,11 @@ async function kaLoadShipmentMessages(shipmentId, options = {}) {
       activeThreadId,
       comments,
       allComments,
-      search: existingSearch
+      search: existingSearch,
+      searchMatches: [],
+      searchActiveIndex: -1,
+      visibleCommentCountByThread,
+      dividerReadAtByThread
     };
     kaRenderShipmentMessagesPanel(shipmentId, { offline: false });
   } catch (err) {
@@ -15493,6 +16023,67 @@ function kaFocusShipmentSearchResult(panel, result = {}) {
   }, 1600);
 }
 
+function kaJumpToShipmentSearchMatch(panel, shipmentId, matchIndex, offline = false) {
+  const matches = Array.isArray(kaShipmentMessageState.searchMatches)
+    ? kaShipmentMessageState.searchMatches
+    : [];
+  if (!matches.length) return;
+
+  const total = matches.length;
+  let nextIndex = Number(matchIndex);
+  if (!Number.isFinite(nextIndex)) nextIndex = 0;
+  if (nextIndex < 0) nextIndex = ((nextIndex % total) + total) % total;
+  if (nextIndex >= total) nextIndex = nextIndex % total;
+  kaShipmentMessageState.searchActiveIndex = nextIndex;
+
+  const match = matches[nextIndex] || null;
+  if (!match) return;
+  const threadId = Number(match.threadId);
+  if (!Number.isFinite(threadId) || threadId <= 0) return;
+
+  kaRevealAllShipmentThreadMessages(threadId);
+  const activeChanged = Number(kaShipmentMessageState.activeThreadId) !== threadId;
+  if (activeChanged) {
+    kaSelectShipmentMessageThread(shipmentId, threadId, { captureDivider: false });
+    kaRenderShipmentMessagesPanel(shipmentId, { offline });
+  } else {
+    kaRenderShipmentMessagesPanel(shipmentId, { offline });
+  }
+
+  const targetPanel = document.getElementById('ka-items-comments') || panel;
+  window.requestAnimationFrame(() => {
+    const searchInput = targetPanel.querySelector('#ka-ship-msg-thread-search');
+    if (searchInput) {
+      searchInput.focus({ preventScroll: true });
+      const length = String(searchInput.value || '').length;
+      try {
+        searchInput.setSelectionRange(length, length);
+      } catch {}
+    }
+    kaFocusShipmentSearchResult(targetPanel, {
+      commentId: match.commentId != null ? Number(match.commentId) : null,
+      localKey: match.localKey || ''
+    });
+    kaRenderShipmentSearchResults(targetPanel, shipmentId, offline);
+  });
+}
+
+function kaCycleShipmentSearchMatch(panel, shipmentId, offline = false, step = 1) {
+  const matches = Array.isArray(kaShipmentMessageState.searchMatches)
+    ? kaShipmentMessageState.searchMatches
+    : [];
+  if (!matches.length) return;
+  const total = matches.length;
+  const currentIndex = Number(kaShipmentMessageState.searchActiveIndex);
+  let nextIndex = 0;
+  if (Number.isFinite(currentIndex) && currentIndex >= 0 && currentIndex < total) {
+    nextIndex = (currentIndex + step + total) % total;
+  } else if (step < 0) {
+    nextIndex = total - 1;
+  }
+  kaJumpToShipmentSearchMatch(panel, shipmentId, nextIndex, offline);
+}
+
 function kaRenderShipmentSearchResults(panel, shipmentId, offline = false) {
   if (!panel || !shipmentId) return;
   const resultsEl = panel.querySelector('#ka-ship-msg-search-results');
@@ -15500,6 +16091,8 @@ function kaRenderShipmentSearchResults(panel, shipmentId, offline = false) {
 
   const term = String(kaShipmentMessageState.search || '').trim();
   if (!term) {
+    kaShipmentMessageState.searchMatches = [];
+    kaShipmentMessageState.searchActiveIndex = -1;
     resultsEl.innerHTML = '';
     resultsEl.classList.add('hidden');
     return;
@@ -15513,12 +16106,20 @@ function kaRenderShipmentSearchResults(panel, shipmentId, offline = false) {
     ),
     searchTerm: term
   });
+  kaShipmentMessageState.searchMatches = matches;
 
   if (!matches.length) {
+    kaShipmentMessageState.searchActiveIndex = -1;
     resultsEl.innerHTML = '<div class="ka-ship-msg-search-empty">No messages match.</div>';
     resultsEl.classList.remove('hidden');
     return;
   }
+
+  let activeIndex = Number(kaShipmentMessageState.searchActiveIndex);
+  if (!Number.isFinite(activeIndex) || activeIndex < 0 || activeIndex >= matches.length) {
+    activeIndex = 0;
+  }
+  kaShipmentMessageState.searchActiveIndex = activeIndex;
 
   resultsEl.innerHTML = matches.map((match, idx) => {
     const commentIdAttr = Number.isFinite(Number(match.commentId)) && Number(match.commentId) > 0
@@ -15531,7 +16132,7 @@ function kaRenderShipmentSearchResults(panel, shipmentId, offline = false) {
     return `
       <button
         type="button"
-        class="ka-ship-msg-search-result"
+        class="ka-ship-msg-search-result ${idx === activeIndex ? 'is-active' : ''}"
         data-search-thread-id="${escapeHTML(String(match.threadId || ''))}"
         ${commentIdAttr}
         ${localKeyAttr}
@@ -15549,25 +16150,9 @@ function kaRenderShipmentSearchResults(panel, shipmentId, offline = false) {
 
   resultsEl.querySelectorAll('.ka-ship-msg-search-result').forEach(btn => {
     btn.addEventListener('click', () => {
-      const threadId = Number(btn.getAttribute('data-search-thread-id'));
-      if (!Number.isFinite(threadId) || threadId <= 0) return;
-      const commentId = btn.getAttribute('data-search-comment-id');
-      const localKey = btn.getAttribute('data-search-local-key') || '';
-
-      kaShipmentMessageState.activeThreadId = threadId;
-      kaShipmentMessageState.comments = kaShipmentCommentsForThread(
-        kaShipmentMessageState.allComments,
-        threadId,
-        kaShipmentMessageState.threads
-      );
-      kaShipmentMessageState.search = '';
-      kaRenderShipmentMessagesPanel(shipmentId, { offline });
-      window.requestAnimationFrame(() => {
-        kaFocusShipmentSearchResult(panel, {
-          commentId: commentId ? Number(commentId) : null,
-          localKey
-        });
-      });
+      const idx = Number(btn.getAttribute('data-search-result-index'));
+      if (!Number.isFinite(idx)) return;
+      kaJumpToShipmentSearchMatch(panel, shipmentId, idx, offline);
     });
   });
 }
@@ -15601,7 +16186,11 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
     activeThreadId: null,
     comments: [],
     allComments: [],
-    search: ''
+    search: '',
+    searchMatches: [],
+    searchActiveIndex: -1,
+    visibleCommentCountByThread: {},
+    dividerReadAtByThread: {}
   };
   commentsEl.innerHTML = '<div class="ka-ship-muted">(loading messages…)</div>';
 

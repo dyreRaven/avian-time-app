@@ -22,6 +22,8 @@ const timeEntriesReportPageSize = 50;
 let timeEntriesReportLastFilters = {};
 window.CURRENT_ACCESS_PERMS = window.CURRENT_ACCESS_PERMS || {};
 window.CURRENT_SECTION_FEATURES = window.CURRENT_SECTION_FEATURES || {};
+let reimbursementBadgeIntervalId = null;
+let reimbursementBadgeInFlight = false;
 const SECTION_FEATURE_DEFAULTS = {
   time: true,
   payroll: true,
@@ -137,7 +139,58 @@ function applyPayrollNavForAccess(perms = {}) {
   if (reimbursementsSection) reimbursementsSection.remove();
   if (payrollReportsSection) payrollReportsSection.remove();
   if (payrollAuditSection) payrollAuditSection.remove();
+  stopReimbursementBadgePolling();
+  setReimbursementNavBadge(0);
 }
+
+function setReimbursementNavBadge(count) {
+  const badge = document.getElementById('reimbursements-nav-badge');
+  if (!badge) return;
+  const num = Number(count || 0);
+  if (!Number.isFinite(num) || num <= 0) {
+    badge.classList.add('hidden');
+    badge.textContent = '0';
+    return;
+  }
+  badge.textContent = num > 99 ? '99+' : String(num);
+  badge.classList.remove('hidden');
+}
+
+function stopReimbursementBadgePolling() {
+  if (reimbursementBadgeIntervalId) {
+    clearInterval(reimbursementBadgeIntervalId);
+    reimbursementBadgeIntervalId = null;
+  }
+  reimbursementBadgeInFlight = false;
+}
+
+async function refreshReimbursementPendingBadge() {
+  const canViewPayroll =
+    coerceAccessFlag(window.CURRENT_ACCESS_PERMS?.view_payroll) &&
+    isSectionFeatureEnabled('payroll', window.CURRENT_SECTION_FEATURES);
+  if (!canViewPayroll) {
+    setReimbursementNavBadge(0);
+    return;
+  }
+  if (reimbursementBadgeInFlight) return;
+  reimbursementBadgeInFlight = true;
+  try {
+    const payload = await fetchJSON('/api/payroll/reimbursements/pending-count');
+    setReimbursementNavBadge(Number(payload?.pending_count || 0));
+  } catch (err) {
+    console.warn('Failed to refresh reimbursement pending badge:', err?.message || err);
+  } finally {
+    reimbursementBadgeInFlight = false;
+  }
+}
+
+function startReimbursementBadgePolling() {
+  stopReimbursementBadgePolling();
+  refreshReimbursementPendingBadge();
+  reimbursementBadgeIntervalId = setInterval(refreshReimbursementPendingBadge, 60 * 1000);
+}
+
+window.refreshReimbursementPendingBadge = refreshReimbursementPendingBadge;
 
 function applySectionAccessNav(perms = {}) {
   applyTimeSectionForAccess();
@@ -172,6 +225,9 @@ function navigateToSection(sectionKey, { force = false } = {}) {
 
   if (sectionKey === 'payroll' || sectionKey === 'reimbursements') {
     initPayrollTabIfNeeded();
+    if (sectionKey === 'reimbursements') {
+      refreshReimbursementPendingBadge();
+    }
   }
 
   if (sectionKey === 'time-entries') {
@@ -6525,6 +6581,12 @@ if (disconnectBtn) {
             ...currentAccess
           };
           applySectionAccessNav(window.CURRENT_ACCESS_PERMS);
+          if (coerceAccessFlag(window.CURRENT_ACCESS_PERMS.view_payroll)) {
+            startReimbursementBadgePolling();
+          } else {
+            stopReimbursementBadgePolling();
+            setReimbursementNavBadge(0);
+          }
           if (typeof loadAssignableAdmins === 'function' &&
               typeof canAssignTimesheets === 'function' &&
               canAssignTimesheets()) {

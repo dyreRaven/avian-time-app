@@ -75,9 +75,11 @@
 - `payroll_checks`: id, org_id, payroll_run_id, employee_id, total_hours, total_pay,
   qbo_txn_id, paid, paid_date, check_number, voided_at, voided_reason.
 - `payroll_receipt_reimbursements`: id, org_id, employee_id, project_id, amount, expense_date,
-  vendor_name, note, file_path, original_filename, mime_type,
+  vendor_name, note, file_path, original_filename, mime_type, file_sha256,
   status (`requested|approved|paid|cancelled`), requested_by_employee_id, requested_at,
   approved_by_employee_id, approved_at, paid_date, payroll_run_id, payroll_check_id, updated_at.
+- `payroll_reimbursement_status_history`: id, org_id, reimbursement_id, status,
+  actor_employee_id, actor_source, reason, meta_json, created_at.
 - `payroll_run_attempts`: id, org_id, payroll_run_id, start_date, end_date,
   ok, fatal_error, created_at.
 - `payroll_attempt_results`: id, org_id, attempt_id, employee_id, employee_name,
