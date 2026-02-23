@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS user_orgs (
   employee_id INTEGER,
   is_super_admin INTEGER NOT NULL DEFAULT 0,
   login_enabled INTEGER NOT NULL DEFAULT 1,
+  notification_email TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   UNIQUE (user_id, org_id),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,

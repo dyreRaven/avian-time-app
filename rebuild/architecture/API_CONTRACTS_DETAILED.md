@@ -1074,10 +1074,11 @@ Note: when all=true, ignore ids and mark all unread notifications as read.
 Note: channels default to ["in_app"] when omitted. Push/email are skipped if disabled or missing subscription/email.
 
 ### GET /api/notifications/prefs  [auth]
-- Response: `{ "prefs": { "email_enabled": true, "push_enabled": true, "shipment_filters": { ... }, "payroll_filters": { ... }, "time_filters": { ... }, "remind_time": "09:00", "remind_every_days": 1, "clockout_enabled": false, "clockout_time": "17:00" }, "push_public_key": "..." }`
+- Response: `{ "prefs": { "email_enabled": true, "notification_email": "ops@company.com", "email_destination": "ops@company.com", "email_destination_editable": true, "login_email": "user@company.com", "is_super_admin": false, "push_enabled": true, "shipment_filters": { ... }, "payroll_filters": { ... }, "time_filters": { ... }, "remind_time": "09:00", "remind_every_days": 1, "clockout_enabled": false, "clockout_time": "17:00" }, "push_public_key": "..." }`
 Note: push_public_key may be empty when web push is not configured; the client uses it to register a push subscription.
 Note: shipment_filters/payroll_filters/time_filters are parsed from JSON blobs; empty objects when unset.
 Note: if no prefs exist, return defaults (email_enabled=true, push_enabled=true, empty filters, remind_time="", remind_every_days=1, clockout_enabled=false, clockout_time="").
+Note: `notification_email` is a per-org override for non-superadmins. Super admins always deliver email notifications to `login_email`; for super admins, `email_destination_editable=false` and `notification_email` is returned as empty.
 Note: remind_time/remind_every_days define the schedule for non-event alerts (e.g., clock-out reminders). clockout_time is legacy and currently ignored.
 Note: recommended filter shapes:
 - shipment_filters: `{ "enabled": true, "statuses": [], "project_ids": [] }`
@@ -1087,9 +1088,10 @@ Note: time event_types: TIME_EXCEPTION_OPEN, TIME_EXCEPTION_REVIEWED, TIME_EXCEP
 Note: payroll event_types: PAYROLL_RUN_DUE, PAYROLL_RUN_STARTED, PAYROLL_RUN_SUCCESS, PAYROLL_RUN_PARTIAL, PAYROLL_RUN_FAILURE, PAYROLL_FATAL_ERROR, PAYROLL_QBO_ERROR, PAYROLL_UNPAY.
 
 ### PUT /api/notifications/prefs  [auth]
-- Request: `{ "email_enabled": true, "push_enabled": true, "shipment_filters": { ... }, "payroll_filters": { ... }, "time_filters": { ... }, "remind_time": "09:00", "remind_every_days": 1, "clockout_enabled": false, "clockout_time": "17:00" }`
+- Request: `{ "email_enabled": true, "notification_email": "ops@company.com", "push_enabled": true, "shipment_filters": { ... }, "payroll_filters": { ... }, "time_filters": { ... }, "remind_time": "09:00", "remind_every_days": 1, "clockout_enabled": false, "clockout_time": "17:00" }`
 - Response: `{ "ok": true, "prefs": { ... } }`
 Note: remind_time/clockout_time must be HH:MM (24-hour) when provided; remind_every_days coerced to >= 1. clockout_time is legacy and currently ignored.
+Note: `notification_email` is optional. Blank clears the override for non-superadmins. Super-admin requests always keep email delivery on `login_email`.
 
 ### POST /api/notifications/push/subscribe  [auth]
 - Request: `{ "endpoint": "...", "p256dh": "...", "auth": "...", "user_agent": "..." }`

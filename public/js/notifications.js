@@ -56,6 +56,32 @@
     if (color) el.style.color = color;
   }
 
+  function getNotificationEmailHelpText(prefs) {
+    const loginEmail = String(prefs?.login_email || '').trim();
+    const overrideEmail = String(prefs?.notification_email || '').trim();
+    const destination = String(prefs?.email_destination || loginEmail || '').trim();
+    const editable = prefs?.email_destination_editable !== false;
+
+    if (!editable) {
+      if (destination) {
+        return `Super admin accounts always use the login email (${destination}).`;
+      }
+      return 'Super admin accounts always use the login email.';
+    }
+
+    if (overrideEmail) {
+      if (loginEmail && destination && destination !== loginEmail) {
+        return `Email alerts are sent to ${destination}. Clear this to use your login email (${loginEmail}).`;
+      }
+      return `Email alerts are sent to ${destination || overrideEmail}.`;
+    }
+
+    if (loginEmail) {
+      return `Email alerts are sent to your login email (${loginEmail}).`;
+    }
+    return 'Leave blank to use your login email for alerts.';
+  }
+
   function isConnectionIssue(err) {
     const msg = err && err.message ? String(err.message) : '';
     return !navigator.onLine || /network|failed to fetch|offline/i.test(msg);
@@ -324,6 +350,8 @@
 
   function applyPrefsToUI(prefs) {
     const emailToggle = getEl('notifications-email-enabled');
+    const emailOverride = getEl('notifications-email-override');
+    const emailOverrideHelp = getEl('notifications-email-override-help');
     const pushToggle = getEl('notifications-push-enabled');
     const shipmentsToggle = getEl('notifications-shipments-enabled');
     const timeToggle = getEl('notifications-time-enabled');
@@ -336,6 +364,13 @@
     const payrollContainer = getEl('notifications-payroll-events');
 
     if (emailToggle) emailToggle.checked = !!prefs.email_enabled;
+    if (emailOverride) {
+      emailOverride.value = prefs.notification_email || '';
+      emailOverride.disabled = prefs.email_destination_editable === false;
+    }
+    if (emailOverrideHelp) {
+      emailOverrideHelp.textContent = getNotificationEmailHelpText(prefs);
+    }
     if (pushToggle) pushToggle.checked = !!prefs.push_enabled;
 
     const shipmentFilters = prefs.shipment_filters || {};
@@ -386,6 +421,7 @@
 
   function collectPrefsFromUI() {
     const emailToggle = getEl('notifications-email-enabled');
+    const emailOverride = getEl('notifications-email-override');
     const pushToggle = getEl('notifications-push-enabled');
     const shipmentsToggle = getEl('notifications-shipments-enabled');
     const timeToggle = getEl('notifications-time-enabled');
@@ -400,6 +436,7 @@
 
     return {
       email_enabled: !!emailToggle?.checked,
+      notification_email: emailOverride?.value || '',
       push_enabled: !!pushToggle?.checked,
       shipment_filters: {
         enabled: !!shipmentsToggle?.checked,

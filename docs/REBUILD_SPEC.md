@@ -592,6 +592,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Event-driven notifications (shipments status changes, payroll runs, time exceptions) create in-app rows immediately; push/email send immediately if enabled.
 - Per-admin preferences in notification_prefs (managed in Settings via /api/notifications/prefs). Use a single Notifications screen with global channel toggles + category filters:
   - Channel toggles: email_enabled, push_enabled.
+  - Email destination: non-superadmins can set an optional per-org notification email override; if blank, delivery falls back to login email. Super admins always deliver to login email.
   - Filters JSON (category toggles + optional filters):
     - shipment_filters_json: `{ enabled: true, statuses: [], project_ids: [] }`
     - payroll_filters_json: `{ enabled: true, event_types: [] }`

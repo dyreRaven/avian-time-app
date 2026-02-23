@@ -112,7 +112,7 @@ This file tracks the issues discovered in smoke testing. Each ticket lists prior
 - Priority: P2
 - Area: Notifications
 - Problem: Email notifications always send to the user login email. Non-superadmin users need a configurable notification email, while superadmins should always use their login email.
-- Status: Open (2026-01-22)
+- Status: Fixed (2026-02-23)
 - Acceptance criteria:
   - Add per-org notification email override (e.g., user_orgs.notification_email).
   - Super admins always receive emails at users.email.

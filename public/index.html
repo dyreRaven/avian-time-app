@@ -1127,7 +1127,16 @@
                           <input type="checkbox" id="notifications-email-enabled" />
                           Email alerts
                         </label>
-                        <p class="card-sub">Uses your login email; you can opt out any time.</p>
+                        <p class="card-sub">Default destination is your login email; you can opt out any time.</p>
+                        <div class="form-field">
+                          <label for="notifications-email-override">Notification email override</label>
+                          <input
+                            type="email"
+                            id="notifications-email-override"
+                            placeholder="Leave blank to use login email"
+                          />
+                          <p id="notifications-email-override-help" class="card-sub"></p>
+                        </div>
                       </div>
                       <div class="prefs-item">
                         <label class="checkbox-inline">
@@ -2513,6 +2522,36 @@
             <div id="payroll-reimbursement-history-list" class="payroll-reimbursement-history-list"></div>
             <div class="modal-footer">
               <button id="payroll-reimbursement-history-done" class="btn secondary" type="button">Close</button>
+            </div>
+          </div>
+        </div>
+        <div id="payroll-preflight-failure-backdrop" class="modal-backdrop hidden"></div>
+        <div
+          id="payroll-preflight-failure-modal"
+          class="modal hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="payroll-preflight-failure-title"
+        >
+          <div class="modal-card payroll-preflight-failure-modal-card">
+            <div class="modal-header">
+              <h3 id="payroll-preflight-failure-title">Some checks still need fixes</h3>
+              <button
+                id="payroll-preflight-failure-close"
+                class="icon-button"
+                type="button"
+                aria-label="Close check warning"
+              >
+                ×
+              </button>
+            </div>
+            <div class="modal-section">
+              <p id="payroll-preflight-failure-message" class="payroll-preflight-failure-message"></p>
+              <ul id="payroll-preflight-failure-list" class="payroll-preflight-failure-list"></ul>
+            </div>
+            <div class="modal-footer">
+              <button id="payroll-preflight-failure-cancel" class="btn secondary" type="button">Cancel and Back</button>
+              <button id="payroll-preflight-failure-confirm" class="btn primary" type="button">Create Ready Checks</button>
             </div>
           </div>
         </div>

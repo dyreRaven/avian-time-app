@@ -11,7 +11,7 @@
 - `users`: id, email, password_hash, password_reset_token_hash, password_reset_token_expires_at,
   password_reset_token_used_at, password_reset_token_created_at, password_reset_token_created_by,
   password_reset_org_id, created_at.
-- `user_orgs`: id, user_id, org_id, employee_id, is_super_admin, login_enabled, created_at.
+- `user_orgs`: id, user_id, org_id, employee_id, is_super_admin, login_enabled, notification_email, created_at.
 - `employees`: id, org_id, name, given_name, family_name, nickname, name_on_checks, rate, active, pin_hash,
   language, employee_qbo_id, vendor_qbo_id, role_title, permission_template_id, worker_timekeeping,
   desktop_access, kiosk_admin_access, email, phone, needs_qbo_sync,

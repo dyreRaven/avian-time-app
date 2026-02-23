@@ -1,11 +1,11 @@
 # Open Questions
 
-- [ ] On signup/account-creation completion, prevent the dashboard flash before onboarding.
+- [x] On signup/account-creation completion, prevent the dashboard flash before onboarding.
   - If onboarding is not completed and not explicitly skipped, users should land directly on the onboarding checklist/card instead of briefly rendering dashboard content.
   - Repro: signup success -> redirect to `/` currently shows dashboard first, then onboarding.
   - Additional repro noted: clicking `Create organization` from the onboarding card briefly renders dashboard content again before returning to onboarding.
 
-- [ ] On onboarding step "Connect QuickBooks", Intuit authorization sometimes stalls on the App Center loader and redirects back to onboarding without reaching credential entry/consent.
+- [x] On onboarding step "Connect QuickBooks", Intuit authorization sometimes stalls on the App Center loader and redirects back to onboarding without reaching credential entry/consent.
   - Repro: onboarding card -> Connect QuickBooks -> Intuit App Center loader spins -> returns to app onboarding checklist.
   - Follow-up: capture callback `qbo_reason`/`qbo_message` and validate OAuth state + callback redirect handling.
 

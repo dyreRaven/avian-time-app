@@ -23093,6 +23093,25 @@ function normalizeNotifyTime(value) {
   return `${match[1]}:${match[2]}`;
 }
 
+function isTruthySuperAdminFlag(value) {
+  return value === 1 || value === true || value === 'true';
+}
+
+function normalizeNotificationEmailOverride(value) {
+  return normalizeEmail(value);
+}
+
+function getEffectiveNotificationEmail({
+  isSuperAdmin,
+  loginEmail,
+  notificationEmail
+}) {
+  const normalizedLoginEmail = normalizeEmail(loginEmail);
+  const normalizedOverride = normalizeNotificationEmailOverride(notificationEmail);
+  if (isSuperAdmin) return normalizedLoginEmail;
+  return normalizedOverride || normalizedLoginEmail;
+}
+
 const TIME_NOTIFICATION_EVENTS = [
   'TIME_EXCEPTION_OPEN',
   'TIME_EXCEPTION_REVIEWED',
@@ -23236,6 +23255,10 @@ function normalizeNotificationPrefsPayload(body) {
   const shipmentFilters = payload.shipment_filters || {};
   const payrollFilters = payload.payroll_filters || {};
   const timeFilters = payload.time_filters || {};
+  const notificationEmailProvided = Object.prototype.hasOwnProperty.call(
+    payload,
+    'notification_email'
+  );
 
   const normalized = {
     email_enabled: payload.email_enabled !== false && payload.email_enabled !== 0,
@@ -23274,7 +23297,11 @@ function normalizeNotificationPrefsPayload(body) {
       payload.clockout_enabled === true ||
       payload.clockout_enabled === 1 ||
       payload.clockout_enabled === 'true',
-    clockout_time: payload.clockout_time ? normalizeNotifyTime(payload.clockout_time) : ''
+    clockout_time: payload.clockout_time ? normalizeNotifyTime(payload.clockout_time) : '',
+    notification_email_provided: notificationEmailProvided,
+    notification_email: notificationEmailProvided
+      ? normalizeNotificationEmailOverride(payload.notification_email)
+      : null
   };
 
   if (!Number.isFinite(normalized.remind_every_days) || normalized.remind_every_days < 1) {
@@ -23365,6 +23392,77 @@ async function loadNotificationPrefsMap(orgId) {
   return map;
 }
 
+function buildNotificationEmailSettings(row) {
+  const isSuperAdmin = isTruthySuperAdminFlag(row?.is_super_admin);
+  const loginEmail = normalizeEmail(row?.login_email || row?.email || '');
+  const notificationEmail = isSuperAdmin
+    ? ''
+    : normalizeNotificationEmailOverride(row?.notification_email || '');
+  const emailDestination = getEffectiveNotificationEmail({
+    isSuperAdmin,
+    loginEmail,
+    notificationEmail
+  });
+  return {
+    is_super_admin: isSuperAdmin,
+    login_email: loginEmail,
+    notification_email: notificationEmail,
+    email_destination: emailDestination,
+    email_destination_editable: !isSuperAdmin
+  };
+}
+
+function mergeNotificationPrefsWithEmailSettings(prefs, emailSettings) {
+  return {
+    ...(prefs || {}),
+    notification_email: emailSettings?.notification_email || '',
+    email_destination: emailSettings?.email_destination || '',
+    email_destination_editable: !!emailSettings?.email_destination_editable,
+    login_email: emailSettings?.login_email || '',
+    is_super_admin: !!emailSettings?.is_super_admin
+  };
+}
+
+async function loadNotificationEmailSettings(orgId, userId) {
+  if (!orgId || !userId) return buildNotificationEmailSettings(null);
+  const row = await dbGet(
+    `
+      SELECT
+        u.email AS login_email,
+        uo.is_super_admin,
+        uo.notification_email
+      FROM user_orgs uo
+      JOIN users u ON u.id = uo.user_id
+      WHERE uo.org_id = ? AND uo.user_id = ?
+      LIMIT 1
+    `,
+    [orgId, userId]
+  );
+  return buildNotificationEmailSettings(row);
+}
+
+async function saveNotificationEmailSettings({
+  orgId,
+  userId,
+  isSuperAdmin,
+  notificationEmail,
+  notificationEmailProvided
+}) {
+  if (!orgId || !userId) return;
+  if (!isSuperAdmin && !notificationEmailProvided) return;
+  const value = isSuperAdmin
+    ? null
+    : normalizeNotificationEmailOverride(notificationEmail || '') || null;
+  await dbRun(
+    `
+      UPDATE user_orgs
+      SET notification_email = ?
+      WHERE org_id = ? AND user_id = ?
+    `,
+    [value, orgId, userId]
+  );
+}
+
 async function loadNotificationRecipients(orgId) {
   if (!orgId) return [];
   const rows = await dbAll(
@@ -23373,6 +23471,7 @@ async function loadNotificationRecipients(orgId) {
         uo.user_id,
         uo.employee_id,
         uo.is_super_admin,
+        uo.notification_email,
         u.email,
         e.name AS employee_name,
         e.desktop_access,
@@ -23456,6 +23555,17 @@ async function recordNotificationDelivery({ orgId, notificationId, channel, stat
     `,
     [orgId, notificationId, channel, status || null, error || null]
   );
+}
+
+async function resolveNotificationEmailDestination({ orgId, userId, recipient }) {
+  const candidate = recipient || null;
+  if (candidate) {
+    const settings = buildNotificationEmailSettings(candidate);
+    return settings.email_destination || '';
+  }
+  if (!orgId || !userId) return '';
+  const settings = await loadNotificationEmailSettings(orgId, userId);
+  return settings.email_destination || '';
 }
 
 async function sendEmailNotification({ userEmail, title, body }) {
@@ -23550,6 +23660,7 @@ async function deliverNotificationToUser({
   orgId,
   userId,
   prefs,
+  recipient,
   type,
   title,
   body,
@@ -23609,9 +23720,13 @@ async function deliverNotificationToUser({
 
   if (sendChannels.includes('email')) {
     if (prefs && prefs.email_enabled) {
-      const userRow = await dbGet('SELECT email FROM users WHERE id = ?', [userId]);
+      const destinationEmail = await resolveNotificationEmailDestination({
+        orgId,
+        userId,
+        recipient
+      });
       const res = await sendEmailNotification({
-        userEmail: userRow?.email || null,
+        userEmail: destinationEmail || null,
         title,
         body
       });
@@ -23688,6 +23803,7 @@ async function notifyShipmentStatusChange({
       orgId,
       userId: row.user_id,
       prefs,
+      recipient: row,
       type: 'shipment',
       title: 'Shipment status updated',
       body,
@@ -23755,6 +23871,7 @@ async function notifyShipmentComment({
       orgId,
       userId: row.user_id,
       prefs,
+      recipient: row,
       type: 'shipment_comment',
       title: 'Shipment comment',
       body,
@@ -23786,6 +23903,7 @@ async function notifyTimeEvent({ orgId, eventType, title, body, data }) {
       orgId,
       userId: row.user_id,
       prefs,
+      recipient: row,
       type: 'time',
       title,
       body,
@@ -23852,6 +23970,7 @@ async function notifyTimeEventOnce({ orgId, eventType, title, body, data, match 
       orgId,
       userId: row.user_id,
       prefs,
+      recipient: row,
       type: 'time',
       title,
       body,
@@ -23911,6 +24030,7 @@ async function notifyPayrollEvent({ orgId, eventType, title, body, data }) {
       orgId,
       userId: row.user_id,
       prefs,
+      recipient: row,
       type: 'payroll',
       title,
       body,
@@ -24288,8 +24408,13 @@ app.get('/api/notifications/prefs', requireAuth, async (req, res) => {
     }
 
     const prefs = await loadNotificationPrefs(orgId, userId);
-    res.json({
+    const emailSettings = await loadNotificationEmailSettings(orgId, userId);
+    const responsePrefs = mergeNotificationPrefsWithEmailSettings(
       prefs,
+      emailSettings
+    );
+    res.json({
+      prefs: responsePrefs,
       push_public_key: VAPID_PUBLIC_KEY || '',
       config: {
         email_configured: smtpConfigured,
@@ -24313,6 +24438,11 @@ app.put('/api/notifications/prefs', requireAuth, async (req, res) => {
     }
 
     const beforePrefs = await loadNotificationPrefs(orgId, userId);
+    const beforeEmailSettings = await loadNotificationEmailSettings(orgId, userId);
+    const beforeAuditPrefs = mergeNotificationPrefsWithEmailSettings(
+      beforePrefs,
+      beforeEmailSettings
+    );
     const normalized = normalizeNotificationPrefsPayload(req.body || {});
     if (req.body?.remind_time && normalized.remind_time == null) {
       return res.status(400).json({
@@ -24326,18 +24456,30 @@ app.put('/api/notifications/prefs', requireAuth, async (req, res) => {
     }
 
     const prefs = await upsertNotificationPrefs(orgId, userId, normalized);
-    if (JSON.stringify(beforePrefs) !== JSON.stringify(prefs)) {
+    await saveNotificationEmailSettings({
+      orgId,
+      userId,
+      isSuperAdmin: beforeEmailSettings.is_super_admin,
+      notificationEmail: normalized.notification_email,
+      notificationEmailProvided: normalized.notification_email_provided
+    });
+    const afterEmailSettings = await loadNotificationEmailSettings(orgId, userId);
+    const responsePrefs = mergeNotificationPrefsWithEmailSettings(
+      prefs,
+      afterEmailSettings
+    );
+    if (JSON.stringify(beforeAuditPrefs) !== JSON.stringify(responsePrefs)) {
       await logAuditEvent({
         req,
         orgId,
         action: 'notification.pref.update',
         entityType: 'user',
         entityId: userId,
-        before: beforePrefs,
-        after: prefs
+        before: beforeAuditPrefs,
+        after: responsePrefs
       });
     }
-    res.json({ ok: true, prefs });
+    res.json({ ok: true, prefs: responsePrefs });
   } catch (err) {
     console.error('Error saving notification prefs:', err);
     res.status(500).json({ error: 'Failed to save notification prefs.' });
@@ -30817,6 +30959,7 @@ async function runShipmentRemindersForOrg(orgId, timeZone) {
       orgId,
       userId: row.user_id,
       prefs: userPrefs,
+      recipient,
       type: 'shipment_reminder',
       title: 'Shipment reminder',
       body,
