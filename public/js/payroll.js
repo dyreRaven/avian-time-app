@@ -309,7 +309,12 @@ function applyPayrollSettingsAccess() {
     reimbursementBtn.disabled = !canEdit;
     reimbursementBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
   }
-  document.querySelectorAll('.payroll-reimbursement-approve').forEach(btn => {
+  const reimbursementOpenBtn = document.getElementById('payroll-reimbursement-open-modal');
+  if (reimbursementOpenBtn) {
+    reimbursementOpenBtn.disabled = !canEdit;
+    reimbursementOpenBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
+  }
+  document.querySelectorAll('.payroll-reimbursement-approve, .payroll-reimbursement-cancel').forEach(btn => {
     btn.disabled = !canEdit;
     btn.title = canEdit ? '' : 'Requires modify payroll permission.';
   });
@@ -853,26 +858,27 @@ function getProjectLabel(projectId, projectName, customerName) {
   return match.customer_name ? `${match.customer_name} : ${match.name}` : (match.name || '');
 }
 
-function populatePayrollReimbursementFormOptions() {
-  const employeeSelect = document.getElementById('payroll-reimbursement-employee');
-  const projectSelect = document.getElementById('payroll-reimbursement-project');
-  if (!employeeSelect || !projectSelect) return;
-
-  const selectedEmployee = employeeSelect.value;
-  const selectedProject = projectSelect.value;
-
-  employeeSelect.innerHTML = '<option value="">(select employee)</option>';
+function populatePayrollReimbursementEmployeeSelect(selectEl, placeholderText = '(select employee)') {
+  if (!selectEl) return;
+  const selectedValue = selectEl.value;
+  selectEl.innerHTML = `<option value="">${placeholderText}</option>`;
   (payrollEmployees || []).forEach(emp => {
     const id = Number(emp.id || 0);
     if (!id) return;
     const option = document.createElement('option');
     option.value = String(id);
     option.textContent = emp.name || `Employee #${id}`;
-    employeeSelect.appendChild(option);
+    selectEl.appendChild(option);
   });
-  if (selectedEmployee) employeeSelect.value = selectedEmployee;
+  if (selectedValue && Array.from(selectEl.options || []).some(opt => opt.value === selectedValue)) {
+    selectEl.value = selectedValue;
+  }
+}
 
-  projectSelect.innerHTML = '<option value="">(select project)</option>';
+function populatePayrollReimbursementProjectSelect(selectEl, placeholderText = '(select project)') {
+  if (!selectEl) return;
+  const selectedValue = selectEl.value;
+  selectEl.innerHTML = `<option value="">${placeholderText}</option>`;
   (payrollProjects || []).forEach(project => {
     const id = Number(project.id || 0);
     if (!id) return;
@@ -881,15 +887,68 @@ function populatePayrollReimbursementFormOptions() {
     option.textContent = project.customer_name
       ? `${project.customer_name} : ${project.name || ''}`
       : (project.name || `Project #${id}`);
-    projectSelect.appendChild(option);
+    selectEl.appendChild(option);
   });
-  if (selectedProject) projectSelect.value = selectedProject;
+  if (selectedValue && Array.from(selectEl.options || []).some(opt => opt.value === selectedValue)) {
+    selectEl.value = selectedValue;
+  }
+}
+
+function populatePayrollReimbursementFormOptions() {
+  populatePayrollReimbursementEmployeeSelect(
+    document.getElementById('payroll-reimbursement-employee'),
+    '(select employee)'
+  );
+  populatePayrollReimbursementProjectSelect(
+    document.getElementById('payroll-reimbursement-project'),
+    '(select project)'
+  );
+  populatePayrollReimbursementEmployeeSelect(
+    document.getElementById('payroll-reimbursement-filter-employee'),
+    'All employees'
+  );
+  populatePayrollReimbursementProjectSelect(
+    document.getElementById('payroll-reimbursement-filter-project'),
+    'All projects'
+  );
 }
 
 function ensurePayrollReimbursementDateDefault() {
   const input = document.getElementById('payroll-reimbursement-date');
   if (!input || input.value) return;
   input.value = new Date().toISOString().slice(0, 10);
+}
+
+const PAYROLL_REIMBURSEMENT_STATUSES = new Set(['all', 'requested', 'approved', 'paid', 'cancelled']);
+
+function getPayrollReimbursementFiltersFromUi() {
+  const employeeIdRaw = Number(document.getElementById('payroll-reimbursement-filter-employee')?.value || 0);
+  const projectIdRaw = Number(document.getElementById('payroll-reimbursement-filter-project')?.value || 0);
+  const statusRaw = String(
+    document.getElementById('payroll-reimbursement-filter-status')?.value || 'all'
+  ).trim().toLowerCase();
+  const start = String(document.getElementById('payroll-reimbursement-filter-start')?.value || '').trim();
+  const end = String(document.getElementById('payroll-reimbursement-filter-end')?.value || '').trim();
+  return {
+    employeeId: Number.isFinite(employeeIdRaw) && employeeIdRaw > 0 ? employeeIdRaw : null,
+    projectId: Number.isFinite(projectIdRaw) && projectIdRaw > 0 ? projectIdRaw : null,
+    status: PAYROLL_REIMBURSEMENT_STATUSES.has(statusRaw) ? statusRaw : 'all',
+    start,
+    end
+  };
+}
+
+function resetPayrollReimbursementFiltersUi() {
+  const employee = document.getElementById('payroll-reimbursement-filter-employee');
+  const project = document.getElementById('payroll-reimbursement-filter-project');
+  const status = document.getElementById('payroll-reimbursement-filter-status');
+  const start = document.getElementById('payroll-reimbursement-filter-start');
+  const end = document.getElementById('payroll-reimbursement-filter-end');
+  if (employee) employee.value = '';
+  if (project) project.value = '';
+  if (status) status.value = 'all';
+  if (start) start.value = '';
+  if (end) end.value = '';
 }
 
 function parseYmd(value) {
@@ -1413,11 +1472,42 @@ function getPayrollSettingsStatusEl() {
   return el;
 }
 
-function setPayrollReimbursementMessage(text, isError = false) {
-  const el = document.getElementById('payroll-reimbursement-message');
-  if (!el) return;
-  el.textContent = text || '';
-  el.style.color = isError ? '#b91c1c' : '';
+function setPayrollReimbursementMessage(text, isError = false, options = {}) {
+  const includePage = options.includePage !== false;
+  const includeModal = options.includeModal !== false;
+  const targets = [];
+  if (includePage) targets.push(document.getElementById('payroll-reimbursement-message'));
+  if (includeModal) targets.push(document.getElementById('payroll-reimbursement-modal-message'));
+  targets
+    .filter(Boolean)
+    .forEach(el => {
+      el.textContent = text || '';
+      el.style.color = isError ? '#b91c1c' : '';
+    });
+}
+
+function openPayrollReimbursementModal() {
+  if (!canModifyPayrollReports()) return;
+  const modal = document.getElementById('payroll-reimbursement-modal');
+  const backdrop = document.getElementById('payroll-reimbursement-modal-backdrop');
+  if (!modal || !backdrop) return;
+  populatePayrollReimbursementFormOptions();
+  ensurePayrollReimbursementDateDefault();
+  setPayrollReimbursementMessage('', false, { includePage: false, includeModal: true });
+  modal.classList.remove('hidden');
+  backdrop.classList.remove('hidden');
+  const employeeSelect = document.getElementById('payroll-reimbursement-employee');
+  if (employeeSelect) {
+    setTimeout(() => employeeSelect.focus(), 0);
+  }
+}
+
+function closePayrollReimbursementModal() {
+  const modal = document.getElementById('payroll-reimbursement-modal');
+  const backdrop = document.getElementById('payroll-reimbursement-modal-backdrop');
+  if (modal) modal.classList.add('hidden');
+  if (backdrop) backdrop.classList.add('hidden');
+  setPayrollReimbursementMessage('', false, { includePage: false, includeModal: true });
 }
 
 function formatPayrollReimbursementStatus(row) {
@@ -1461,10 +1551,41 @@ function renderPayrollReimbursementsTable(rows) {
     const statusRaw = String(row.status || 'requested').trim().toLowerCase();
     const status = formatPayrollReimbursementStatus(row);
     const canApprove = canModifyPayrollReports();
-    const showApproveAction = statusRaw === 'requested' && Number.isFinite(reimbursementId) && reimbursementId > 0;
-    const actionHtml = showApproveAction
-      ? `<button type="button" class="btn secondary btn-sm payroll-reimbursement-approve" data-reimbursement-id="${reimbursementId}" ${canApprove ? '' : 'disabled title="Requires modify payroll permission."'}>Approve</button>`
-      : '—';
+    const showApproveAction = (statusRaw === 'requested' || statusRaw === 'cancelled') &&
+      Number.isFinite(reimbursementId) &&
+      reimbursementId > 0;
+    const showCancelAction = (statusRaw === 'requested' || statusRaw === 'approved') &&
+      Number.isFinite(reimbursementId) &&
+      reimbursementId > 0;
+    let actionHtml = '—';
+    if (showApproveAction || showCancelAction) {
+      const actionButtons = [];
+      let actionLabel = '';
+      if (showApproveAction) {
+        if (statusRaw === 'cancelled') {
+          actionLabel = '<span class="payroll-reimbursement-action-label payroll-reimbursement-action-label-cancelled">Cancelled</span>';
+        }
+        actionButtons.push(
+          `<button type="button" class="btn secondary btn-sm payroll-reimbursement-approve" data-reimbursement-id="${reimbursementId}" ${canApprove ? '' : 'disabled title="Requires modify payroll permission."'}>Approve</button>`
+        );
+      }
+      if (showCancelAction) {
+        const cancelLabel = statusRaw === 'approved' ? 'Cancel' : 'Reject';
+        if (statusRaw === 'approved') {
+          actionLabel = '<span class="payroll-reimbursement-action-label">Approved</span>';
+        }
+        actionButtons.push(
+          `<button type="button" class="btn danger btn-sm payroll-reimbursement-cancel" data-reimbursement-id="${reimbursementId}" data-reimbursement-status="${esc(statusRaw)}" ${canApprove ? '' : 'disabled title="Requires modify payroll permission."'}>${cancelLabel}</button>`
+        );
+      }
+      actionHtml = `<div class="payroll-reimbursement-actions">${actionLabel}${actionButtons.join('')}</div>`;
+    } else if (statusRaw === 'approved') {
+      actionHtml = 'Approved';
+    } else if (statusRaw === 'paid') {
+      actionHtml = 'Paid';
+    } else if (statusRaw === 'cancelled') {
+      actionHtml = 'Cancelled';
+    }
     tr.innerHTML = `
       <td>${esc(formatDateUS(row.expense_date || row.requested_at || ''))}</td>
       <td>${esc(row.employee_name || '')}</td>
@@ -1479,18 +1600,30 @@ function renderPayrollReimbursementsTable(rows) {
   });
 }
 
-async function loadPayrollReimbursements() {
+async function loadPayrollReimbursements(filters = null) {
   if (!isPayrollFeatureEnabled()) return;
   const tbody = document.getElementById('payroll-reimbursements-body');
   if (tbody && !tbody.children.length) {
     tbody.innerHTML = '<tr><td colspan="8">(loading)</td></tr>';
   }
 
+  const activeFilters = (filters && typeof filters === 'object')
+    ? filters
+    : getPayrollReimbursementFiltersFromUi();
   const params = new URLSearchParams();
-  params.set('status', 'all');
-  if (currentPayrollRange?.start && currentPayrollRange?.end) {
-    params.set('start', currentPayrollRange.start);
-    params.set('end', currentPayrollRange.end);
+  const statusRaw = String(activeFilters?.status || 'all').trim().toLowerCase();
+  params.set('status', PAYROLL_REIMBURSEMENT_STATUSES.has(statusRaw) ? statusRaw : 'all');
+  const start = String(activeFilters?.start || '').trim();
+  const end = String(activeFilters?.end || '').trim();
+  const employeeId = Number(activeFilters?.employeeId || 0);
+  const projectId = Number(activeFilters?.projectId || 0);
+  if (start) params.set('start', start);
+  if (end) params.set('end', end);
+  if (Number.isFinite(employeeId) && employeeId > 0) {
+    params.set('employeeId', String(employeeId));
+  }
+  if (Number.isFinite(projectId) && projectId > 0) {
+    params.set('projectId', String(projectId));
   }
   params.set('limit', '200');
 
@@ -1500,13 +1633,14 @@ async function loadPayrollReimbursements() {
       ? data
       : (Array.isArray(data?.rows) ? data.rows : []);
     renderPayrollReimbursementsTable(rows);
-    setPayrollReimbursementMessage('');
+    setPayrollReimbursementMessage('', false, { includePage: true, includeModal: false });
   } catch (err) {
     console.error('[PAYROLL] loadPayrollReimbursements error', err);
     renderPayrollReimbursementsTable([]);
     setPayrollReimbursementMessage(
       'Failed to load reimbursements: ' + (err?.message || 'Unknown error'),
-      true
+      true,
+      { includePage: true, includeModal: false }
     );
   } finally {
     applyPayrollSettingsAccess();
@@ -1526,7 +1660,7 @@ async function approvePayrollReimbursement(reimbursementId) {
   const confirmApprove = confirm('Approve this reimbursement for payroll?');
   if (!confirmApprove) return;
 
-  setPayrollReimbursementMessage('Approving reimbursement...');
+  setPayrollReimbursementMessage('Approving reimbursement...', false, { includePage: true, includeModal: false });
   try {
     const payload = await fetchJSON(`/api/payroll/reimbursements/${reimbursementIdNum}/approve`, {
       method: 'POST',
@@ -1537,16 +1671,77 @@ async function approvePayrollReimbursement(reimbursementId) {
       throw new Error(payload?.error || 'Failed to approve reimbursement.');
     }
 
-    setPayrollReimbursementMessage('Reimbursement approved for payroll.');
+    setPayrollReimbursementMessage('Reimbursement approved for payroll.', false, {
+      includePage: true,
+      includeModal: false
+    });
     await loadPayrollReimbursements();
     if (currentPayrollRange?.start && currentPayrollRange?.end && getPayrollIncludeReimbursementsSetting()) {
-      await loadPayrollSummary();
+      await loadPayrollSummary({ suppressAlerts: true });
     }
   } catch (err) {
     console.error('[PAYROLL] approvePayrollReimbursement error', err);
     setPayrollReimbursementMessage(
       'Failed to approve reimbursement: ' + (err?.message || 'Unknown error'),
-      true
+      true,
+      { includePage: true, includeModal: false }
+    );
+  } finally {
+    applyPayrollSettingsAccess();
+  }
+}
+
+async function cancelPayrollReimbursement(reimbursementId, currentStatus = 'requested') {
+  if (!canModifyPayrollReports()) {
+    alert('You do not have permission to reject/cancel reimbursements.');
+    return;
+  }
+  const reimbursementIdNum = Number(reimbursementId);
+  if (!Number.isFinite(reimbursementIdNum) || reimbursementIdNum <= 0) {
+    return;
+  }
+
+  const statusRaw = String(currentStatus || 'requested').trim().toLowerCase();
+  const isApproved = statusRaw === 'approved';
+  const confirmCancel = confirm(
+    isApproved
+      ? 'Cancel this approved reimbursement? It will no longer be included in payroll.'
+      : 'Reject this reimbursement request?'
+  );
+  if (!confirmCancel) return;
+  const reason = prompt('Optional reason (saved to audit log):', '');
+  if (reason === null) return;
+
+  setPayrollReimbursementMessage(
+    isApproved ? 'Cancelling reimbursement...' : 'Rejecting reimbursement...',
+    false,
+    { includePage: true, includeModal: false }
+  );
+  try {
+    const payload = await fetchJSON(`/api/payroll/reimbursements/${reimbursementIdNum}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: String(reason || '').trim() })
+    });
+    if (!payload?.ok) {
+      throw new Error(payload?.error || 'Failed to cancel reimbursement.');
+    }
+
+    setPayrollReimbursementMessage(
+      isApproved ? 'Reimbursement cancelled.' : 'Reimbursement rejected.',
+      false,
+      { includePage: true, includeModal: false }
+    );
+    await loadPayrollReimbursements();
+    if (currentPayrollRange?.start && currentPayrollRange?.end && getPayrollIncludeReimbursementsSetting()) {
+      await loadPayrollSummary({ suppressAlerts: true });
+    }
+  } catch (err) {
+    console.error('[PAYROLL] cancelPayrollReimbursement error', err);
+    setPayrollReimbursementMessage(
+      'Failed to reject/cancel reimbursement: ' + (err?.message || 'Unknown error'),
+      true,
+      { includePage: true, includeModal: false }
     );
   } finally {
     applyPayrollSettingsAccess();
@@ -1579,7 +1774,8 @@ async function submitPayrollReimbursement() {
   if (!employeeId || !projectId || !Number.isFinite(amount) || amount <= 0 || !vendorName || !file) {
     setPayrollReimbursementMessage(
       'Employee, project, vendor, amount, and receipt file are required.',
-      true
+      true,
+      { includePage: false, includeModal: true }
     );
     return;
   }
@@ -1594,7 +1790,7 @@ async function submitPayrollReimbursement() {
   formData.append('receipt', file);
 
   if (submitBtn) submitBtn.disabled = true;
-  setPayrollReimbursementMessage('Uploading receipt...');
+  setPayrollReimbursementMessage('Uploading receipt...', false, { includePage: false, includeModal: true });
   try {
     const data = await fetchJSON('/api/payroll/reimbursements', {
       method: 'POST',
@@ -1604,22 +1800,27 @@ async function submitPayrollReimbursement() {
       throw new Error(data?.error || 'Failed to create reimbursement request.');
     }
 
-    setPayrollReimbursementMessage('Reimbursement request created. Approve it before including it in payroll.');
+    setPayrollReimbursementMessage('Reimbursement request created. Approve it before including it in payroll.', false, {
+      includePage: true,
+      includeModal: false
+    });
     if (amountInput) amountInput.value = '';
     if (noteInput) noteInput.value = '';
     if (vendorInput) vendorInput.value = '';
     if (fileInput) fileInput.value = '';
     ensurePayrollReimbursementDateDefault();
+    closePayrollReimbursementModal();
 
     await loadPayrollReimbursements();
     if (currentPayrollRange?.start && currentPayrollRange?.end && getPayrollIncludeReimbursementsSetting()) {
-      await loadPayrollSummary();
+      await loadPayrollSummary({ suppressAlerts: true });
     }
   } catch (err) {
     console.error('[PAYROLL] submitPayrollReimbursement error', err);
     setPayrollReimbursementMessage(
       'Failed to create reimbursement request: ' + (err?.message || 'Unknown error'),
-      true
+      true,
+      { includePage: false, includeModal: true }
     );
   } finally {
     if (submitBtn) submitBtn.disabled = false;
@@ -1628,19 +1829,74 @@ async function submitPayrollReimbursement() {
 }
 
 function setupPayrollReimbursements() {
+  const filterApplyBtn = document.getElementById('payroll-reimbursement-filter-apply');
+  if (filterApplyBtn && !filterApplyBtn.dataset.bound) {
+    filterApplyBtn.dataset.bound = '1';
+    filterApplyBtn.addEventListener('click', () => {
+      loadPayrollReimbursements();
+    });
+  }
+  const filterClearBtn = document.getElementById('payroll-reimbursement-filter-clear');
+  if (filterClearBtn && !filterClearBtn.dataset.bound) {
+    filterClearBtn.dataset.bound = '1';
+    filterClearBtn.addEventListener('click', () => {
+      resetPayrollReimbursementFiltersUi();
+      loadPayrollReimbursements();
+    });
+  }
+  const openBtn = document.getElementById('payroll-reimbursement-open-modal');
+  if (openBtn && !openBtn.dataset.bound) {
+    openBtn.dataset.bound = '1';
+    openBtn.addEventListener('click', openPayrollReimbursementModal);
+  }
   const submitBtn = document.getElementById('payroll-reimbursement-submit');
   if (submitBtn && !submitBtn.dataset.bound) {
     submitBtn.dataset.bound = '1';
     submitBtn.addEventListener('click', submitPayrollReimbursement);
+  }
+  const closeBtn = document.getElementById('payroll-reimbursement-modal-close');
+  if (closeBtn && !closeBtn.dataset.bound) {
+    closeBtn.dataset.bound = '1';
+    closeBtn.addEventListener('click', closePayrollReimbursementModal);
+  }
+  const cancelBtn = document.getElementById('payroll-reimbursement-modal-cancel');
+  if (cancelBtn && !cancelBtn.dataset.bound) {
+    cancelBtn.dataset.bound = '1';
+    cancelBtn.addEventListener('click', closePayrollReimbursementModal);
+  }
+  const modalBackdrop = document.getElementById('payroll-reimbursement-modal-backdrop');
+  if (modalBackdrop && !modalBackdrop.dataset.bound) {
+    modalBackdrop.dataset.bound = '1';
+    modalBackdrop.addEventListener('click', event => {
+      if (event.target === modalBackdrop) {
+        closePayrollReimbursementModal();
+      }
+    });
+  }
+  const modal = document.getElementById('payroll-reimbursement-modal');
+  if (modal && !modal.dataset.boundEscape) {
+    modal.dataset.boundEscape = '1';
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      if (modal.classList.contains('hidden')) return;
+      closePayrollReimbursementModal();
+    });
   }
   const tbody = document.getElementById('payroll-reimbursements-body');
   if (tbody && !tbody.dataset.boundApprove) {
     tbody.dataset.boundApprove = '1';
     tbody.addEventListener('click', event => {
       const approveBtn = event.target.closest('.payroll-reimbursement-approve');
-      if (!approveBtn) return;
-      const reimbursementId = Number(approveBtn.dataset.reimbursementId || 0);
-      approvePayrollReimbursement(reimbursementId);
+      if (approveBtn) {
+        const reimbursementId = Number(approveBtn.dataset.reimbursementId || 0);
+        approvePayrollReimbursement(reimbursementId);
+        return;
+      }
+      const cancelBtn = event.target.closest('.payroll-reimbursement-cancel');
+      if (!cancelBtn) return;
+      const reimbursementId = Number(cancelBtn.dataset.reimbursementId || 0);
+      const status = String(cancelBtn.dataset.reimbursementStatus || 'requested');
+      cancelPayrollReimbursement(reimbursementId, status);
     });
   }
 }
@@ -2520,7 +2776,8 @@ function setupPayrollOverrideInputs() {
   });
 }
 
-async function loadPayrollSummary() {
+async function loadPayrollSummary(options = {}) {
+  const suppressAlerts = !!options.suppressAlerts;
   if (!isPayrollFeatureEnabled()) return;
   // ensure settings (and classes) are loaded first
   if (!payrollSettingsLoaded) {
@@ -2567,7 +2824,7 @@ async function loadPayrollSummary() {
     renderPayrollSummaryTable();
     setupPayrollOverrideInputs();
     await loadPayrollReimbursements();
-    if (!currentPayrollRows.length) {
+    if (!suppressAlerts && !currentPayrollRows.length) {
       if (currentPayrollPendingApprovalCount > 0) {
         alert(
           'No payroll-approved unpaid entries are ready yet for this date range.\n\n' +
@@ -2583,7 +2840,9 @@ async function loadPayrollSummary() {
     clearPayrollPendingApprovals();
     renderPayrollSummaryTable();
     await loadPayrollReimbursements();
-    alert('Could not load payroll summary:\n\n' + buildPayrollApiErrorMessage(err));
+    if (!suppressAlerts) {
+      alert('Could not load payroll summary:\n\n' + buildPayrollApiErrorMessage(err));
+    }
   }
 }
 

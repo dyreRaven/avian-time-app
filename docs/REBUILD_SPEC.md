@@ -26,7 +26,12 @@
 - SESSION_ENCRYPTION_KEY: optional; used to encrypt sessions and QBO tokens at rest (falls back to SESSION_SECRET if unset).
 - COOKIE_SECURE: true/false to force secure cookies (default: true in prod).
 - COOKIE_SAMESITE: lax/strict/none (default: strict in prod, lax in dev).
-- ENABLE_IN_PROCESS_BACKUPS: true/false to run daily backups in the web process (default false).
+- ENABLE_IN_PROCESS_BACKUPS: true/false to run scheduled backups in the web process (default false).
+- BACKUP_RUN_ON_STARTUP: true/false to run a backup on startup when in-process backups are enabled (default true).
+- BACKUP_INTERVAL_HOURS: backup interval in hours for in-process scheduling (default 24).
+- BACKUP_DAILY_RETENTION_COUNT: number of daily snapshot folders to keep (default 30).
+- BACKUP_MONTHLY_RETENTION_COUNT: number of monthly snapshot folders to keep (default 12).
+- BACKUP_DIR: backup root path (default `./backups`).
 - QuickBooks: QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI (realm_id is stored per org after OAuth); optional QBO_API_BASE (defaults to production) and QBO_DEBUG (logs QBO queries in dev).
 - APNs: APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID.
 - There is no dev seed flow in the rebuild. Testing uses the production bootstrap flow.
@@ -124,10 +129,9 @@
 - Admin Home is available to any desktop_access user, but cards/actions hide or disable if the user lacks the underlying permission.
 
 ### QuickBooks Connection
-- Global status card (connected/disconnected) and connect/refresh/disconnect action.
-- Sync actions: employees, vendors, projects, payroll accounts (manual "Sync Now" only).
-- Card behavior: shown only on Employees, Vendors, Projects, and Payroll tabs; hidden elsewhere.
-- Actions by tab: Employees → Sync Employees; Vendors → Sync Vendors; Projects → Sync Projects; Payroll → Sync Payroll Accounts.
+- Organization Settings includes a dedicated QuickBooks section with status plus connect/refresh/disconnect actions.
+- Sync actions (manual "Sync Now" only): employees, vendors, projects, payroll accounts.
+- Sync actions are managed from the Settings QuickBooks section (not from a global top-page card).
 - Shows a syncing indicator while a sync request is in-flight; uses `/api/status` for connection state.
 - Show "Last synced at" timestamps per list (employees/vendors/projects/payroll accounts) sourced from `/api/status.lastSync`.
 - Show "Last synced at" per entity list; if never synced, show a warning and disable link/create actions with a "Sync Now" CTA.
@@ -293,8 +297,9 @@
 - Support custom/additional payroll lines and memo overrides.
 - Memo/line templates support tokens ({start}, {end}, {dateRange}, {employee}, {project}, {hours}).
 - Receipt reimbursement requests: super admins can upload a receipt file (PDF/image), employee, project, required vendor name, amount, optional date/note; requests start as `requested`.
-- Reimbursements require one super-admin approval before payroll eligibility (`requested` -> `approved` -> `paid`).
+- Reimbursements require one super-admin approval before payroll eligibility (`requested` -> `approved` -> `paid`), and super admins can change non-paid reimbursement status until paid (`requested`/`approved`/`cancelled` can be moved between approved/cancelled via approve/cancel actions; `paid` is locked).
 - Reimbursement request upload/list UI lives on a dedicated `Reimbursements` page under Time & Pay (separate from Payroll settings/run UI).
+- Reimbursements page is table-first for review/approval; new reimbursement entry is opened via an `Add Reimbursement` modal.
 - Payroll summary has an `Include receipt reimbursements` toggle (default on). When enabled, approved in-range reimbursements appear as separate payroll lines (0 hours, reimbursement amount, synthetic `project_id` like `receipt-<project_id>-<vendor-hash>`).
 - Reimbursements are payroll-integrated: if an employee has only reimbursements (no time-entry pay), payroll still creates a check for that employee when reimbursements are included.
 - Reimbursement lines use the receipt reimbursement expense default (`receipt_expense_account_name`, fallback `expense_account_name`) and reimbursement default class (`receipt_class_name`).

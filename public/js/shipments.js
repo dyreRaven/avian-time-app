@@ -290,6 +290,64 @@ function isStatusAtOrAfterForwarder(status) {
   ].includes(cls);
 }
 
+function getShipmentIdFromNotification(notification = null) {
+  const raw = notification && notification.data
+    ? notification.data.shipment_id
+    : null;
+  const id = Number(raw);
+  if (Number.isInteger(id) && id > 0) return id;
+  return null;
+}
+
+function buildUnreadShipmentCommentSummary(shipments = [], notifications = []) {
+  if (!Array.isArray(shipments) || !shipments.length) return [];
+
+  const shipmentById = new Map();
+  shipments.forEach(sh => {
+    const id = Number(sh && sh.id);
+    if (!Number.isInteger(id) || id <= 0) return;
+    if (!shipmentById.has(id)) shipmentById.set(id, sh);
+  });
+  if (!shipmentById.size) return [];
+
+  const grouped = new Map();
+  (Array.isArray(notifications) ? notifications : []).forEach(notification => {
+    if (!notification || notification.type !== 'shipment_comment') return;
+    const shipmentId = getShipmentIdFromNotification(notification);
+    if (!shipmentId || !shipmentById.has(shipmentId)) return;
+
+    let row = grouped.get(shipmentId);
+    if (!row) {
+      const shipment = shipmentById.get(shipmentId);
+      row = {
+        ...shipment,
+        unread_comment_count: 0,
+        unread_comment_latest_body: notification.body || '',
+        unread_comment_latest_created_at: notification.created_at || ''
+      };
+      grouped.set(shipmentId, row);
+    }
+    row.unread_comment_count += 1;
+  });
+
+  const rows = Array.from(grouped.values());
+  rows.sort((a, b) => {
+    const countDiff =
+      (Number(b.unread_comment_count) || 0) -
+      (Number(a.unread_comment_count) || 0);
+    if (countDiff) return countDiff;
+
+    const latestA = String(a.unread_comment_latest_created_at || '');
+    const latestB = String(b.unread_comment_latest_created_at || '');
+    if (latestA < latestB) return 1;
+    if (latestA > latestB) return -1;
+
+    return String(a.title || '').localeCompare(String(b.title || ''));
+  });
+
+  return rows;
+}
+
 function buildShipmentSummaryData(list = []) {
   const missingCoo = [];
   const missingDocs = [];
@@ -390,6 +448,7 @@ function buildShipmentSummaryData(list = []) {
     unpaidClearing,
     requestClearing,
     personalNotes,
+    unreadShipmentComments: [],
     readyPickup,
     needsVerification
   };
@@ -476,6 +535,41 @@ function renderShipmentsSummary(summary = {}) {
         return snippet
           ? `<span class="ship-summary-note">${escapeHTML(snippet)}</span>`
           : '';
+      }
+    }));
+  }
+
+  const unreadShipmentComments = Array.isArray(summary.unreadShipmentComments)
+    ? summary.unreadShipmentComments
+    : [];
+  if (unreadShipmentComments.length) {
+    const unreadTotal = unreadShipmentComments.reduce(
+      (sum, sh) => sum + (Number(sh.unread_comment_count) || 0),
+      0
+    );
+    const unreadSubtitle = unreadTotal === 1
+      ? '1 unread message'
+      : `${unreadTotal} unread messages`;
+    cards.push(renderShipmentsSummaryCard({
+      id: 'unread-comments',
+      title: 'Unread Comments',
+      subtitle: unreadSubtitle,
+      items: unreadShipmentComments,
+      emptyLabel: 'No unread shipment comments.',
+      itemAction: 'shipment-comments',
+      buildMeta: (sh) => {
+        const project = sh.project_name || '—';
+        const vendor = sh.vendor_name || '—';
+        const status = sh.status || '—';
+        return `${escapeHTML(project)} · ${escapeHTML(vendor)} · ${escapeHTML(status)}`;
+      },
+      buildBadge: (sh) => {
+        const count = Number(sh.unread_comment_count) || 0;
+        const countLabel = `${count} unread`;
+        const snippet = truncateText(sh.unread_comment_latest_body || '', 110);
+        return snippet
+          ? `<span class="ship-summary-pill danger">${escapeHTML(countLabel)}</span> <span class="ship-summary-note">${escapeHTML(snippet)}</span>`
+          : `<span class="ship-summary-pill danger">${escapeHTML(countLabel)}</span>`;
       }
     }));
   }
@@ -645,6 +739,14 @@ function renderShipmentsSummary(summary = {}) {
         openShipmentPersonalNoteModal(id);
         return;
       }
+      if (action === 'shipment-comments') {
+        openShipmentDetail(id)
+          .then(() => {
+            setShipmentDetailTab('comments');
+          })
+          .catch(() => {});
+        return;
+      }
       openShipmentDetail(id);
     });
   });
@@ -680,6 +782,21 @@ async function loadShipmentsSummary({ force = false, skipBoardLoad = false } = {
       : list;
 
     const summary = buildShipmentSummaryData(filteredList);
+    let unreadNotifications = [];
+    if (Array.isArray(filteredList) && filteredList.length) {
+      try {
+        const unreadRes = await fetchJSON('/api/notifications?unread_only=1&limit=200');
+        unreadNotifications = Array.isArray(unreadRes?.notifications)
+          ? unreadRes.notifications
+          : [];
+      } catch (err) {
+        console.warn('Shipments summary unread comments unavailable:', err);
+      }
+    }
+    summary.unreadShipmentComments = buildUnreadShipmentCommentSummary(
+      filteredList,
+      unreadNotifications
+    );
     shipmentsSummaryCache = summary;
     shipmentsSummaryFiltersKey = filtersKey;
     renderShipmentsSummary(summary);
@@ -3655,6 +3772,7 @@ let shipmentThreadState = {
   activeThreadId: null,
   search: '',
   comments: [],
+  allComments: [],
   queued: []
 };
 
@@ -8495,6 +8613,27 @@ function getGeneralThreadId(threads = []) {
   return generalThread ? generalThread.id : null;
 }
 
+function normalizeShipmentThreadId(rawThreadId, generalThreadId = null) {
+  const threadId = Number(rawThreadId);
+  if (Number.isFinite(threadId) && threadId > 0) return threadId;
+  const normalizedGeneral = Number(generalThreadId);
+  return Number.isFinite(normalizedGeneral) && normalizedGeneral > 0
+    ? normalizedGeneral
+    : null;
+}
+
+function getShipmentCommentsForThread(comments = [], activeThreadId = null, threads = []) {
+  const selectedThreadId = Number(activeThreadId);
+  if (!Number.isFinite(selectedThreadId) || selectedThreadId <= 0) {
+    return [];
+  }
+  const generalThreadId = getGeneralThreadId(threads);
+  return (comments || []).filter(row => {
+    const rowThreadId = normalizeShipmentThreadId(row?.thread_id, generalThreadId);
+    return Number(rowThreadId) === Number(selectedThreadId);
+  });
+}
+
 function buildShipmentThreadSearchText(thread = {}) {
   return [
     thread.title,
@@ -8507,10 +8646,156 @@ function buildShipmentThreadSearchText(thread = {}) {
     .toLowerCase();
 }
 
-function filterShipmentThreads(threads = [], searchTerm = '') {
+function buildShipmentThreadSearchIndex(threads = [], comments = [], queued = []) {
+  const generalThreadId = getGeneralThreadId(threads);
+  const byThread = new Map();
+
+  const appendText = (threadId, parts = []) => {
+    const normalizedThreadId = Number(threadId);
+    if (!Number.isFinite(normalizedThreadId) || normalizedThreadId <= 0) return;
+    const existing = byThread.get(normalizedThreadId) || '';
+    const next = parts
+      .filter(Boolean)
+      .map(value => String(value).trim().toLowerCase())
+      .filter(Boolean)
+      .join(' ');
+    if (!next) return;
+    byThread.set(normalizedThreadId, `${existing} ${next}`.trim());
+  };
+
+  (threads || []).forEach(thread => {
+    appendText(normalizeShipmentThreadId(thread?.id, generalThreadId), [
+      thread?.title,
+      thread?.category,
+      thread?.last_comment_body,
+      thread?.last_comment_by_name
+    ]);
+  });
+
+  (comments || []).forEach(row => {
+    appendText(normalizeShipmentThreadId(row?.thread_id, generalThreadId), [
+      row?.body,
+      row?.created_by_name
+    ]);
+  });
+
+  (queued || []).forEach(row => {
+    appendText(normalizeShipmentThreadId(row?.thread_id, generalThreadId), [
+      row?.body,
+      row?.created_by_name
+    ]);
+  });
+
+  return byThread;
+}
+
+function filterShipmentThreads(threads = [], searchTerm = '', searchIndex = null) {
   const term = String(searchTerm || '').trim().toLowerCase();
   if (!term) return threads;
-  return threads.filter(thread => buildShipmentThreadSearchText(thread).includes(term));
+  return threads.filter(thread => {
+    const threadId = Number(thread?.id);
+    if (searchIndex && Number.isFinite(threadId)) {
+      return String(searchIndex.get(threadId) || '').includes(term);
+    }
+    return buildShipmentThreadSearchText(thread).includes(term);
+  });
+}
+
+function buildShipmentSearchSnippetHtml(body = '', searchTerm = '') {
+  const rawBody = String(body || '').trim();
+  if (!rawBody) return '<span class="ship-detail-thread-search-result-empty">(No message body)</span>';
+  const normalizedTerm = String(searchTerm || '').trim().toLowerCase();
+  if (!normalizedTerm) {
+    const plain = rawBody.length > 140 ? `${rawBody.slice(0, 140)}...` : rawBody;
+    return escapeHTML(plain);
+  }
+
+  const bodyLower = rawBody.toLowerCase();
+  const hitIndex = bodyLower.indexOf(normalizedTerm);
+  const start = hitIndex >= 0 ? Math.max(0, hitIndex - 42) : 0;
+  const end = hitIndex >= 0
+    ? Math.min(rawBody.length, hitIndex + normalizedTerm.length + 84)
+    : Math.min(rawBody.length, 140);
+  const snippet = rawBody.slice(start, end);
+  const prefix = start > 0 ? '...' : '';
+  const suffix = end < rawBody.length ? '...' : '';
+
+  if (hitIndex < start || hitIndex >= end) {
+    return `${escapeHTML(prefix)}${escapeHTML(snippet)}${escapeHTML(suffix)}`;
+  }
+
+  const localHit = hitIndex - start;
+  const before = escapeHTML(snippet.slice(0, localHit));
+  const hit = escapeHTML(snippet.slice(localHit, localHit + normalizedTerm.length));
+  const after = escapeHTML(snippet.slice(localHit + normalizedTerm.length));
+  return `${escapeHTML(prefix)}${before}<mark>${hit}</mark>${after}${escapeHTML(suffix)}`;
+}
+
+function buildShipmentMessageSearchMatches({
+  threads = [],
+  comments = [],
+  queued = [],
+  searchTerm = ''
+} = {}) {
+  const term = String(searchTerm || '').trim().toLowerCase();
+  if (!term) return [];
+
+  const generalThreadId = getGeneralThreadId(threads);
+  const threadById = new Map(
+    (threads || []).map(thread => [Number(thread && thread.id), thread || null])
+  );
+  const queuedRows = (queued || []).map((row, idx) => ({
+    ...row,
+    pending: true,
+    created_at: row && row.created_at ? row.created_at : (row && row.queued_at ? row.queued_at : null),
+    _local_key: String(
+      (row && row.client_id) || (row && row.queued_at) || `queued-${idx}`
+    )
+  }));
+  const rows = [...(comments || []), ...queuedRows];
+  const matches = [];
+
+  rows.forEach((row, idx) => {
+    const threadId = normalizeShipmentThreadId(row && row.thread_id, generalThreadId);
+    if (!Number.isFinite(threadId) || threadId <= 0) return;
+
+    const thread = threadById.get(Number(threadId)) || null;
+    const body = String(row && row.body || '');
+    const author = String(row && row.created_by_name || '');
+    const haystack = [
+      body,
+      author,
+      thread && thread.title,
+      thread && thread.category
+    ].filter(Boolean).join(' ').toLowerCase();
+    if (!haystack.includes(term)) return;
+
+    const commentIdNum = Number(row && row.id);
+    const commentId = Number.isFinite(commentIdNum) && commentIdNum > 0
+      ? commentIdNum
+      : null;
+    const localKey = row && row.pending
+      ? String(row._local_key || row.client_id || row.queued_at || `queued-${idx}`)
+      : '';
+    const createdAtMs = getShipmentCommentTimeMs(row);
+    matches.push({
+      threadId,
+      threadTitle: thread && thread.title ? String(thread.title) : 'Thread',
+      body,
+      createdAtMs,
+      author: author || 'Admin',
+      commentId,
+      localKey
+    });
+  });
+
+  matches.sort((a, b) => {
+    const at = Number.isFinite(a.createdAtMs) ? a.createdAtMs : 0;
+    const bt = Number.isFinite(b.createdAtMs) ? b.createdAtMs : 0;
+    return bt - at;
+  });
+
+  return matches.slice(0, 25);
 }
 
 function buildShipmentThreadPendingCounts(queued = [], threads = []) {
@@ -8524,8 +8809,18 @@ function buildShipmentThreadPendingCounts(queued = [], threads = []) {
   return counts;
 }
 
-function renderShipmentThreadList(threads = [], activeThreadId, pendingCounts = {}, searchTerm = '') {
-  const filtered = filterShipmentThreads(threads, searchTerm);
+function renderShipmentThreadList(
+  threads = [],
+  activeThreadId,
+  pendingCounts = {},
+  searchTerm = '',
+  allComments = [],
+  queued = [],
+  currentEmpId = null,
+  offline = false
+) {
+  const searchIndex = buildShipmentThreadSearchIndex(threads, allComments, queued);
+  const filtered = filterShipmentThreads(threads, searchTerm, searchIndex);
   if (!filtered.length) {
     const msg = threads.length
       ? 'No threads match your search.'
@@ -8534,30 +8829,57 @@ function renderShipmentThreadList(threads = [], activeThreadId, pendingCounts = 
   }
 
   return filtered.map(thread => {
+    const threadId = Number(thread && thread.id);
     const whenMs = getShipmentThreadActivityTimeMs(thread);
     const when = formatDateTimeInOrgTime(whenMs);
     const preview = thread.last_comment_body || 'No messages yet.';
-    const isActive = Number(thread.id) === Number(activeThreadId);
-    const pendingCount = pendingCounts[thread.id] || 0;
+    const isActive = threadId === Number(activeThreadId);
+    const pendingCount = pendingCounts[threadId] || 0;
+    const createdById = Number(thread && thread.created_by);
+    const canEditThread = Number.isFinite(createdById) &&
+      Number.isFinite(Number(currentEmpId)) &&
+      Number(createdById) === Number(currentEmpId);
+    const threadTitle = String(thread && thread.title || 'Thread');
     const pendingTag = pendingCount
       ? `<span class="ship-detail-thread-count">${pendingCount}</span>`
       : '';
     const metaRow = pendingTag
       ? `<div class="ship-detail-thread-item-meta">${pendingTag}</div>`
       : '';
+    const editIcon = canEditThread
+      ? `
+        <button
+          type="button"
+          class="ship-detail-thread-edit-inline"
+          data-thread-edit-id="${escapeHTML(String(threadId || ''))}"
+          data-thread-edit-title="${escapeHTML(threadTitle)}"
+          aria-label="Rename thread"
+          title="${offline ? 'Go online to rename this thread.' : 'Rename thread'}"
+          ${offline ? 'disabled' : ''}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 17.25V21h3.75L18.81 8.94l-3.75-3.75L3 17.25z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M14.06 4.94l3.75 3.75" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      `
+      : '';
     return `
-      <button
-        class="ship-detail-thread-item ${isActive ? 'active' : ''}"
-        type="button"
-        data-thread-id="${thread.id}"
-      >
-        <div class="ship-detail-thread-item-title">
-          <span>${escapeHTML(thread.title || 'Thread')}</span>
-          <span class="ship-detail-thread-item-time">${escapeHTML(when || '')}</span>
-        </div>
-        <div class="ship-detail-thread-item-preview">${escapeHTML(preview)}</div>
-        ${metaRow}
-      </button>
+      <div class="ship-detail-thread-row-wrap ${canEditThread ? 'can-edit' : ''}">
+        <button
+          class="ship-detail-thread-item ${isActive ? 'active' : ''}"
+          type="button"
+          data-thread-id="${thread.id}"
+        >
+          <div class="ship-detail-thread-item-title">
+            <span>${escapeHTML(threadTitle)}</span>
+            <span class="ship-detail-thread-item-time">${escapeHTML(when || '')}</span>
+          </div>
+          <div class="ship-detail-thread-item-preview">${escapeHTML(preview)}</div>
+          ${metaRow}
+        </button>
+        ${editIcon}
+      </div>
     `;
   }).join('');
 }
@@ -8643,7 +8965,7 @@ function getShipmentCommentTimeMs(row) {
     }
     return ms;
   }
-  return getShipmentTimestampMs(row.created_at);
+  return getShipmentTimestampMs(row.created_at || row.queued_at);
 }
 
 function renderShipmentThreadMessages(comments = [], queued = [], activeThread = null, threads = []) {
@@ -8666,6 +8988,7 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
       created_at: entry.queued_at,
       created_at_ms: Number.isFinite(queuedAtMs) ? queuedAtMs : null,
       pending: true,
+      client_id: entry.client_id || null,
       created_by: entry.created_by || currentEmpId || null,
       created_by_name: entry.created_by_name || currentEmpName || null
     };
@@ -8681,7 +9004,7 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
     return '<p class="ship-detail-thread-empty">(No messages yet.)</p>';
   }
 
-  return rows.map(row => {
+  return rows.map((row, rowIndex) => {
     const createdAtMs = getShipmentCommentTimeMs(row);
     const when = formatDateTimeInOrgTime(createdAtMs);
     const isMine =
@@ -8697,58 +9020,51 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
     const pendingTag = row.pending
       ? '<span class="ship-detail-tag ship-detail-tag--pending">Pending sync</span>'
       : '';
+    const commentIdNum = Number(row.id);
+    const commentIdAttr = Number.isFinite(commentIdNum) && commentIdNum > 0
+      ? `data-comment-id="${escapeHTML(String(commentIdNum))}"`
+      : '';
+    const localKey = row.pending
+      ? String(row.client_id || row.queued_at || `queued-${rowIndex}`)
+      : '';
+    const localKeyAttr = localKey
+      ? `data-comment-local-key="${escapeHTML(localKey)}"`
+      : '';
     const withinUndoWindow = Number.isFinite(createdAtMs) &&
       (Date.now() - createdAtMs <= SHIPMENT_COMMENT_UNDO_WINDOW_MS);
     const canUndo = !row.pending && isMine && withinUndoWindow;
     const canDelete = !row.pending && (isMine || isSuperAdmin) && withinUndoWindow;
-    const actionItems = [];
-    if (canUndo) {
-      actionItems.push(
-        `<button
+    const actionControl = canUndo
+      ? `<button
           type="button"
-          class="ship-detail-thread-menu-item"
+          class="ship-detail-thread-inline-action"
           data-comment-action="undo"
           data-comment-id="${escapeHTML(String(row.id || ''))}"
           data-comment-created-at-ms="${Number.isFinite(createdAtMs) ? String(createdAtMs) : ''}"
           data-comment-expire="${Number.isFinite(createdAtMs)
             ? String(createdAtMs + SHIPMENT_COMMENT_UNDO_WINDOW_MS)
             : ''}"
-        >Undo send</button>`
-      );
-    }
-    if (canDelete) {
-      actionItems.push(
-        `<button
-          type="button"
-          class="ship-detail-thread-menu-item"
-          data-comment-action="delete"
-          data-comment-id="${escapeHTML(String(row.id || ''))}"
-          data-comment-expire="${Number.isFinite(createdAtMs)
-            ? String(createdAtMs + SHIPMENT_COMMENT_UNDO_WINDOW_MS)
-            : ''}"
-        >Delete</button>`
-      );
-    }
-    const menu = actionItems.length
-      ? `
-        <div class="ship-detail-thread-menu">
-          <button
+        >Undo Send</button>`
+      : (canDelete
+        ? `<button
             type="button"
-            class="ship-detail-thread-menu-toggle"
-            aria-label="Comment options"
-            data-comment-menu-toggle="${escapeHTML(String(row.id || ''))}"
-          >&hellip;</button>
-          <div
-            class="ship-detail-thread-menu-popover hidden"
-            data-comment-menu-popover="${escapeHTML(String(row.id || ''))}"
-          >
-            ${actionItems.join('')}
-          </div>
-        </div>
-      `
+            class="ship-detail-thread-inline-action"
+            data-comment-action="delete"
+            data-comment-id="${escapeHTML(String(row.id || ''))}"
+            data-comment-expire="${Number.isFinite(createdAtMs)
+              ? String(createdAtMs + SHIPMENT_COMMENT_UNDO_WINDOW_MS)
+              : ''}"
+          >Delete</button>`
+        : '');
+    const actionRow = actionControl
+      ? `<div class="ship-detail-thread-inline-actions">${actionControl}</div>`
       : '';
     return `
-      <div class="ship-detail-thread-row ${row.pending ? 'pending' : ''} ${isMine ? 'mine' : ''}">
+      <div
+        class="ship-detail-thread-row ${row.pending ? 'pending' : ''} ${isMine ? 'mine' : ''}"
+        ${commentIdAttr}
+        ${localKeyAttr}
+      >
         <div class="ship-detail-thread-avatar" aria-hidden="true">
           ${escapeHTML(avatarText)}
         </div>
@@ -8759,7 +9075,7 @@ function renderShipmentThreadMessages(comments = [], queued = [], activeThread =
             ${pendingTag}
           </div>
           <div class="ship-detail-thread-body">${escapeHTML(row.body || '')}</div>
-          ${menu}
+          ${actionRow}
         </div>
       </div>
     `;
@@ -8802,6 +9118,7 @@ function renderShipmentThreadLayout({
   threads = [],
   activeThreadId = null,
   comments = [],
+  allComments = [],
   queued = [],
   searchTerm = '',
   offline = false
@@ -8831,19 +9148,6 @@ function renderShipmentThreadLayout({
     displayThread.id &&
     currentEmpId &&
     Number(displayThread.created_by) === Number(currentEmpId);
-  const editDisabled = offline ? 'disabled' : '';
-  const editHint = offline ? 'title="Go online to rename this thread."' : '';
-  const editButton = canEditThread
-    ? `
-      <button
-        id="ship-thread-edit-toggle"
-        type="button"
-        class="ship-detail-thread-edit-btn"
-        ${editDisabled}
-        ${editHint}
-      >Edit</button>
-    `
-    : '';
   const editForm = canEditThread
     ? `
       <form
@@ -8885,9 +9189,10 @@ function renderShipmentThreadLayout({
             id="ship-thread-search"
             class="ship-detail-thread-search"
             type="search"
-            placeholder="Search threads"
+            placeholder="Search all messages"
             value="${escapeHTML(String(searchTerm || ''))}"
           />
+          <div id="ship-thread-search-results" class="ship-detail-thread-search-results hidden"></div>
           <button
             id="ship-thread-new-toggle"
             class="btn secondary btn-sm"
@@ -8918,7 +9223,16 @@ function renderShipmentThreadLayout({
           </div>
         </form>
         <div class="ship-detail-thread-list">
-          ${renderShipmentThreadList(threads, activeThreadId, pendingCounts, searchTerm)}
+          ${renderShipmentThreadList(
+            threads,
+            activeThreadId,
+            pendingCounts,
+            '',
+            allComments,
+            queued,
+            currentEmpId,
+            offline
+          )}
         </div>
       </div>
       <div class="ship-detail-thread-pane">
@@ -8928,7 +9242,6 @@ function renderShipmentThreadLayout({
               <h4>${escapeHTML(title || '')}</h4>
               ${categoryTag}
             </div>
-            ${editButton}
           </div>
           ${editForm}
           <div class="ship-detail-thread-sub">${escapeHTML(headerSubtitle || '')}</div>
@@ -8963,6 +9276,7 @@ function paintShipmentThreadPanel(panel, offline = false) {
     threads: shipmentThreadState.threads,
     activeThreadId: shipmentThreadState.activeThreadId,
     comments: shipmentThreadState.comments,
+    allComments: shipmentThreadState.allComments,
     queued: shipmentThreadState.queued,
     searchTerm: shipmentThreadState.search,
     offline
@@ -8987,9 +9301,10 @@ async function loadShipmentComments(shipmentId, options = {}) {
     const activeThreadId = overrideThreadId ||
       (sameShipment ? shipmentThreadState.activeThreadId : null) ||
       (threads[0] ? threads[0].id : null);
-    const sameThread = sameShipment &&
-      Number(shipmentThreadState.activeThreadId) === Number(activeThreadId);
-    const comments = sameThread ? shipmentThreadState.comments : [];
+    const allComments = sameShipment && Array.isArray(shipmentThreadState.allComments)
+      ? shipmentThreadState.allComments
+      : [];
+    const comments = getShipmentCommentsForThread(allComments, activeThreadId, threads);
 
     shipmentThreadState = {
       shipmentId,
@@ -8997,6 +9312,7 @@ async function loadShipmentComments(shipmentId, options = {}) {
       activeThreadId,
       search: searchTerm,
       comments,
+      allComments,
       queued
     };
     paintShipmentThreadPanel(panel, true);
@@ -9004,21 +9320,19 @@ async function loadShipmentComments(shipmentId, options = {}) {
   }
 
   try {
-    const threadsRes = await fetchJSON(`/api/shipments/${shipmentId}/comment-threads`);
+    const [threadsRes, commentsRes] = await Promise.all([
+      fetchJSON(`/api/shipments/${shipmentId}/comment-threads`),
+      fetchJSON(`/api/shipments/${shipmentId}/comments`)
+    ]);
     const threads = Array.isArray(threadsRes.threads) ? threadsRes.threads : [];
+    const allComments = Array.isArray(commentsRes.comments) ? commentsRes.comments : [];
     let activeThreadId = overrideThreadId ||
       (sameShipment ? shipmentThreadState.activeThreadId : null);
     if (!activeThreadId || !threads.find(t => Number(t.id) === Number(activeThreadId))) {
       activeThreadId = threads[0] ? threads[0].id : null;
     }
 
-    let comments = [];
-    if (activeThreadId) {
-      const commentsRes = await fetchJSON(
-        `/api/shipments/${shipmentId}/comments?thread_id=${encodeURIComponent(activeThreadId)}`
-      );
-      comments = Array.isArray(commentsRes.comments) ? commentsRes.comments : [];
-    }
+    const comments = getShipmentCommentsForThread(allComments, activeThreadId, threads);
 
     shipmentThreadState = {
       shipmentId,
@@ -9026,6 +9340,7 @@ async function loadShipmentComments(shipmentId, options = {}) {
       activeThreadId,
       search: searchTerm,
       comments,
+      allComments,
       queued
     };
     paintShipmentThreadPanel(panel, false);
@@ -9116,12 +9431,134 @@ async function updateShipmentCommentThread(shipmentId, threadId, title) {
   );
 }
 
+function focusShipmentSearchResult(panel, result = {}) {
+  if (!panel || !result) return;
+  const commentIdNum = Number(result.commentId);
+  const localKey = String(result.localKey || '').trim();
+
+  let target = null;
+  if (Number.isFinite(commentIdNum) && commentIdNum > 0) {
+    target = panel.querySelector(`.ship-detail-thread-row[data-comment-id="${commentIdNum}"]`);
+  }
+  if (!target && localKey) {
+    target = Array.from(
+      panel.querySelectorAll('.ship-detail-thread-row[data-comment-local-key]')
+    ).find(row => String(row.getAttribute('data-comment-local-key') || '') === localKey) || null;
+  }
+  if (!target) return;
+
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  target.classList.add('search-hit');
+  window.setTimeout(() => {
+    if (!document.body.contains(target)) return;
+    target.classList.remove('search-hit');
+  }, 1600);
+}
+
+function renderShipmentThreadSearchResults(panel, shipmentId, offline = false) {
+  if (!panel || !shipmentId) return;
+  const resultsEl = panel.querySelector('#ship-thread-search-results');
+  if (!resultsEl) return;
+
+  const term = String(shipmentThreadState.search || '').trim();
+  if (!term) {
+    resultsEl.innerHTML = '';
+    resultsEl.classList.add('hidden');
+    return;
+  }
+
+  const matches = buildShipmentMessageSearchMatches({
+    threads: shipmentThreadState.threads,
+    comments: shipmentThreadState.allComments,
+    queued: shipmentThreadState.queued,
+    searchTerm: term
+  });
+
+  if (!matches.length) {
+    resultsEl.innerHTML = '<div class="ship-detail-thread-search-empty">No messages match.</div>';
+    resultsEl.classList.remove('hidden');
+    return;
+  }
+
+  resultsEl.innerHTML = matches.map((match, idx) => {
+    const commentIdAttr = Number.isFinite(Number(match.commentId)) && Number(match.commentId) > 0
+      ? `data-search-comment-id="${escapeHTML(String(match.commentId))}"`
+      : '';
+    const localKeyAttr = match.localKey
+      ? `data-search-local-key="${escapeHTML(String(match.localKey))}"`
+      : '';
+    const whenLabel = formatDateTimeInOrgTime(match.createdAtMs);
+    return `
+      <button
+        type="button"
+        class="ship-detail-thread-search-result"
+        data-search-thread-id="${escapeHTML(String(match.threadId || ''))}"
+        ${commentIdAttr}
+        ${localKeyAttr}
+        data-search-result-index="${idx}"
+      >
+        <div class="ship-detail-thread-search-result-top">
+          <span class="ship-detail-thread-search-result-thread">${escapeHTML(match.threadTitle || 'Thread')}</span>
+          ${whenLabel ? `<span class="ship-detail-thread-search-result-time">${escapeHTML(whenLabel)}</span>` : ''}
+        </div>
+        <div class="ship-detail-thread-search-result-body">${buildShipmentSearchSnippetHtml(match.body, term)}</div>
+      </button>
+    `;
+  }).join('');
+  resultsEl.classList.remove('hidden');
+
+  resultsEl.querySelectorAll('.ship-detail-thread-search-result').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const threadId = Number(btn.getAttribute('data-search-thread-id'));
+      if (!Number.isFinite(threadId) || threadId <= 0) return;
+      const commentId = btn.getAttribute('data-search-comment-id');
+      const localKey = btn.getAttribute('data-search-local-key') || '';
+
+      shipmentThreadState.activeThreadId = threadId;
+      shipmentThreadState.comments = getShipmentCommentsForThread(
+        shipmentThreadState.allComments,
+        threadId,
+        shipmentThreadState.threads
+      );
+      shipmentThreadState.search = '';
+      paintShipmentThreadPanel(panel, offline);
+      window.requestAnimationFrame(() => {
+        focusShipmentSearchResult(panel, {
+          commentId: commentId ? Number(commentId) : null,
+          localKey
+        });
+      });
+    });
+  });
+}
+
 function bindShipmentThreadHandlers(panel, shipmentId, offline = false) {
+  const openThreadEditForm = (titleOverride = '') => {
+    const editForm = panel.querySelector('#ship-thread-edit-form');
+    const editInput = panel.querySelector('#ship-thread-edit-title');
+    const editMessage = panel.querySelector('#ship-thread-edit-message');
+    if (!editForm) return;
+    editForm.classList.remove('hidden');
+    if (editInput) {
+      editInput.value = titleOverride || editForm.dataset.threadTitle || '';
+      editInput.focus();
+      editInput.select();
+    }
+    if (editMessage) editMessage.textContent = '';
+  };
+
   const searchInput = panel.querySelector('#ship-thread-search');
   if (searchInput) {
     searchInput.addEventListener('input', () => {
       shipmentThreadState.search = searchInput.value || '';
-      paintShipmentThreadPanel(panel, offline);
+      renderShipmentThreadSearchResults(panel, shipmentId, offline);
+    });
+    searchInput.addEventListener('focus', () => {
+      renderShipmentThreadSearchResults(panel, shipmentId, offline);
+    });
+    searchInput.addEventListener('search', () => {
+      shipmentThreadState.search = searchInput.value || '';
+      renderShipmentThreadSearchResults(panel, shipmentId, offline);
     });
   }
 
@@ -9162,42 +9599,52 @@ function bindShipmentThreadHandlers(panel, shipmentId, offline = false) {
   }
 
   panel.querySelectorAll('.ship-detail-thread-item').forEach(item => {
-    item.addEventListener('click', async () => {
+    item.addEventListener('click', () => {
       const threadId = item.getAttribute('data-thread-id');
       if (!threadId) return;
-      await loadShipmentComments(shipmentId, {
-        activeThreadId: Number(threadId),
-        preserveSearch: true
+      const nextThreadId = Number(threadId);
+      if (!Number.isFinite(nextThreadId) || nextThreadId <= 0) return;
+      shipmentThreadState.activeThreadId = nextThreadId;
+      shipmentThreadState.comments = getShipmentCommentsForThread(
+        shipmentThreadState.allComments,
+        nextThreadId,
+        shipmentThreadState.threads
+      );
+      paintShipmentThreadPanel(panel, offline);
+    });
+  });
+
+  panel.querySelectorAll('.ship-detail-thread-edit-inline').forEach(btn => {
+    btn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      if (offline) return;
+      const threadId = Number(btn.getAttribute('data-thread-edit-id'));
+      if (!Number.isFinite(threadId) || threadId <= 0) return;
+      const threadTitle = String(btn.getAttribute('data-thread-edit-title') || '');
+      shipmentThreadState.activeThreadId = threadId;
+      shipmentThreadState.comments = getShipmentCommentsForThread(
+        shipmentThreadState.allComments,
+        threadId,
+        shipmentThreadState.threads
+      );
+      paintShipmentThreadPanel(panel, offline);
+      window.requestAnimationFrame(() => {
+        openThreadEditForm(threadTitle);
       });
     });
   });
 
-  const editToggle = panel.querySelector('#ship-thread-edit-toggle');
   const editForm = panel.querySelector('#ship-thread-edit-form');
   const editInput = panel.querySelector('#ship-thread-edit-title');
   const editCancel = panel.querySelector('#ship-thread-edit-cancel');
   const editMessage = panel.querySelector('#ship-thread-edit-message');
-  const titleBlock = panel.querySelector('.ship-detail-thread-title');
 
   const closeEdit = () => {
     if (!editForm) return;
     editForm.classList.add('hidden');
-    if (titleBlock) titleBlock.classList.remove('hidden');
     if (editMessage) editMessage.textContent = '';
   };
-
-  if (editToggle && editForm) {
-    editToggle.addEventListener('click', () => {
-      if (offline) return;
-      editForm.classList.remove('hidden');
-      if (titleBlock) titleBlock.classList.add('hidden');
-      if (editInput) {
-        editInput.value = editForm.dataset.threadTitle || '';
-        editInput.focus();
-        editInput.select();
-      }
-    });
-  }
 
   if (editCancel) {
     editCancel.addEventListener('click', () => {
@@ -9248,32 +9695,13 @@ function bindShipmentThreadHandlers(panel, shipmentId, offline = false) {
     });
   }
 
-  const closeCommentMenus = () => {
-    panel.querySelectorAll('.ship-detail-thread-menu-popover').forEach(menu => {
-      menu.classList.add('hidden');
-    });
-  };
-
-  panel.querySelectorAll('.ship-detail-thread-menu-toggle').forEach(btn => {
-    btn.addEventListener('click', (evt) => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      const menuId = btn.getAttribute('data-comment-menu-toggle');
-      if (!menuId) return;
-      const menu = panel.querySelector(`[data-comment-menu-popover="${menuId}"]`);
-      if (!menu) return;
-      const shouldOpen = menu.classList.contains('hidden');
-      closeCommentMenus();
-      if (shouldOpen) {
-        menu.classList.remove('hidden');
-      }
-    });
-  });
-
   if (!panel.dataset.shipDetailMenuBound) {
     panel.addEventListener('click', (evt) => {
-      if (evt.target.closest('.ship-detail-thread-menu')) return;
-      closeCommentMenus();
+      if (!evt.target.closest('#ship-thread-search') &&
+        !evt.target.closest('#ship-thread-search-results')) {
+        const resultsEl = panel.querySelector('#ship-thread-search-results');
+        if (resultsEl) resultsEl.classList.add('hidden');
+      }
     });
     panel.dataset.shipDetailMenuBound = '1';
   }
@@ -9285,7 +9713,6 @@ function bindShipmentThreadHandlers(panel, shipmentId, offline = false) {
       const action = btn.getAttribute('data-comment-action');
       const commentId = btn.getAttribute('data-comment-id');
       if (!action || !commentId) return;
-      closeCommentMenus();
       if (action === 'undo') {
         const createdAtMs = btn.getAttribute('data-comment-created-at-ms');
         if (!isShipmentCommentUndoOpen(createdAtMs)) {
@@ -9314,6 +9741,8 @@ function bindShipmentThreadHandlers(panel, shipmentId, offline = false) {
       btn.classList.add('hidden');
     }, delay);
   });
+
+  renderShipmentThreadSearchResults(panel, shipmentId, offline);
 }
 
 async function submitShipmentComment(shipmentId) {

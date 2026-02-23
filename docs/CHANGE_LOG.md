@@ -1,5 +1,20 @@
 # Change Log
 
+- 2026-02-23: Backup operations were hardened with env-configurable schedule/retention/path (`BACKUP_*`), a new super-admin backup runtime status summary in Settings, and a `backup-health-check` script plus production backup runbook.
+- 2026-02-23: Kiosk admin shipment messages now use an inline pencil rename action in the left thread list (creator-only), replacing the standalone `Rename` button in the message header.
+- 2026-02-23: Desktop shipment messages now also use an inline pencil rename action in the left thread list (creator-only), replacing the standalone header `Edit` button.
+- 2026-02-23: Shipments Summary (desktop + kiosk admin) now includes an `Unread Comments` card sourced from unread shipment-comment notifications, grouped by shipment with unread counts; clicking a row opens that shipment directly on the `Comments` tab.
+- 2026-02-23: Kiosk Admin now includes a dedicated `Receipts` tab in the bottom navigation and sidebar with an upload-first reimbursement flow (`employee + project + vendor + amount + date + receipt`), plus a `View Pending Receipts` toggle to review receipt statuses.
+- 2026-02-23: Kiosk Admin reimbursement visibility is now scoped server-side: super admins and admins with payroll view access can see all uploaded receipts, while other kiosk admins only see receipts they personally uploaded.
+- 2026-02-23: Shipment message thread search (desktop + kiosk admin) now searches across all comments in the selected shipment, not just thread summary fields.
+- 2026-02-23: Shipment message search now shows clickable message-level results (thread + matching snippet) and jumps to the matched message bubble instead of re-rendering on each keypress.
+- 2026-02-23: Reimbursement statuses are now editable until paid: cancelled rows can be approved again, approved rows can still be cancelled, requested rows can be approved/rejected, and paid rows remain locked.
+- 2026-02-23: Removed the global top QuickBooks connection container from desktop pages; QuickBooks connect/disconnect and manual sync actions now live in Organization Settings > QuickBooks (super admin only).
+- 2026-02-23: Reimbursements Action column for approved rows now shows `Approved` while still keeping a `Cancel` action, and paid rows remain non-actionable (no cancel/reject option).
+- 2026-02-23: Reimbursements now support super-admin reject/cancel actions: requested rows can be rejected and approved rows can be cancelled to `cancelled` (optional reason captured in audit log), and these rows stay excluded from payroll.
+- 2026-02-23: Reimbursements page now includes Review Time Entries-style filters (employee, project, status, start/end date) with `Run Report` and `Clear`, and reimbursement loading now follows those filters instead of being auto-scoped to the active payroll period.
+- 2026-02-23: Reimbursements Action column now shows state labels (`Approved`, `Paid`, `Cancelled`) for non-requested rows instead of a dash.
+- 2026-02-23: Reimbursements desktop page now prioritizes review/approval with a table-first layout; creating a reimbursement moved into an `Add Reimbursement` modal instead of inline fields above the table.
 - 2026-02-23: Organization Settings > Kiosk Device Setup now shows geofence location context for each device (project geofence coordinates/radius) instead of `Last seen` time.
 - 2026-02-23: Receipt reimbursements now require super-admin approval before payroll inclusion: reimbursements flow `requested -> approved -> paid`, the Reimbursements page now supports approving requested receipts, payroll only includes approved reimbursements, and unpay returns paid reimbursements back to approved.
 - 2026-02-23: Fixed Reimbursements form button layout so `Request Reimbursement` text stays within the button instead of overflowing.
@@ -987,3 +1002,7 @@
 - 2026-02-05: Refined shipment detail overview layout with grouped cards, cleaner tabs, and clearer notes section.
 - 2026-02-05: Moved shipment detail line items into a dedicated Items tab.
 - 2026-02-23: Kiosk admin shipment messages now match desktop behavior with thread search, thread rename (creator-only), and 5-minute undo/delete comment actions.
+- 2026-02-23: Polished kiosk admin shipment messages layout with grouped toolbar controls, cleaner action-button hierarchy, and tighter mobile stacking.
+- 2026-02-23: Redesigned kiosk admin shipment messages to a desktop-style split pane with a collapsible left thread list to reduce vertical clutter.
+- 2026-02-23: Temporarily removed the kiosk shipment-message thread controls container (threads/search/new/refresh) to maximize chat space.
+- 2026-02-23: Reintroduced a compact collapsible left thread rail with search, refresh, and new-thread icon buttons while keeping the main chat pane dominant.

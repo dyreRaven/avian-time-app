@@ -757,138 +757,108 @@ function applyDashboardLinkVisibility() {
 /* ───────── 2. QUICKBOOKS STATUS & SYNC ───────── */
 
 async function checkStatus() {
+  const statusEl = document.getElementById('qb-status');
+  const disconnectBtn = document.getElementById('disconnect-quickbooks');
   try {
     const res = await fetch('/api/status', { credentials: 'same-origin' });
     if (res.status === 401 || res.status === 403) {
       updateDashboardQboBadge();
-      const disconnectBtn = document.getElementById('disconnect-quickbooks');
       if (disconnectBtn) {
         disconnectBtn.style.display = 'none';
+      }
+      if (statusEl) {
+        statusEl.textContent = 'QuickBooks status unavailable.';
+      }
+      const activeNav = document.querySelector('.nav-item.active');
+      if (activeNav && typeof updateQbCardForSection === 'function') {
+        updateQbCardForSection(activeNav.dataset.section);
       }
       return;
     }
     const data = await res.json();
     window.QBO_STATUS = data;
     updateDashboardQboBadge(data);
-    const disconnectBtn = document.getElementById('disconnect-quickbooks');
     if (disconnectBtn) {
       disconnectBtn.style.display = data.qbConnected ? '' : 'none';
     }
-    const el = document.getElementById('qb-status');
-    if (data.qbConnected) {
-      if (data.qbConnectionWarning) {
-        el.textContent = `🔗 Connected to QuickBooks, but last check failed: ${data.qbConnectionWarning}`;
+    if (statusEl) {
+      if (data.qbConnected) {
+        if (data.qbConnectionWarning) {
+          statusEl.textContent = `Connected to QuickBooks, but last check failed: ${data.qbConnectionWarning}`;
+        } else {
+          statusEl.textContent = 'Connected to QuickBooks. Use Connect to refresh authorization.';
+        }
       } else {
-        el.textContent = '🔗 Connected to QuickBooks. Click “Connect” to refresh authorization.';
-      }
-    } else {
-      if (data.qbConnectionWarning) {
-        el.textContent = `❌ ${data.qbConnectionWarning}`;
-      } else {
-        el.textContent = '❌ Not connected to QuickBooks. Click “Connect” to authorize.';
+        if (data.qbConnectionWarning) {
+          statusEl.textContent = data.qbConnectionWarning;
+        } else {
+          statusEl.textContent = 'Not connected to QuickBooks. Click Connect to authorize.';
+        }
       }
     }
   } catch (err) {
-    document.getElementById('qb-status').textContent =
-      'Error checking status: ' + err.message;
+    if (statusEl) {
+      statusEl.textContent = 'Error checking status: ' + err.message;
+    }
     updateDashboardQboBadge();
-    const disconnectBtn = document.getElementById('disconnect-quickbooks');
     if (disconnectBtn) {
       disconnectBtn.style.display = 'none';
     }
   }
+
+  const activeNav = document.querySelector('.nav-item.active');
+  if (activeNav && typeof updateQbCardForSection === 'function') {
+    updateQbCardForSection(activeNav.dataset.section);
+  }
 }
 
 function updateQbCardForSection(key) {
-  const qbCard        = document.querySelector('.qb-card');
-  const employeesBtn  = document.getElementById('sync-employees');
-  const vendorsBtn    = document.getElementById('sync-vendors');
-  const projectsBtn   = document.getElementById('sync-projects');
-  const accountsBtn   = document.getElementById('sync-accounts');
+  const employeesBtn = document.getElementById('sync-employees');
+  const vendorsBtn = document.getElementById('sync-vendors');
+  const projectsBtn = document.getElementById('sync-projects');
+  const accountsBtn = document.getElementById('sync-accounts');
+  const syncButtons = [employeesBtn, vendorsBtn, projectsBtn, accountsBtn].filter(Boolean);
 
-  // 🔹 Remove any previous accent highlighting
-  document.querySelectorAll('.card--accent').forEach(el => {
-    el.classList.remove('card--accent');
+  syncButtons.forEach(btn => {
+    btn.style.display = 'none';
+    btn.disabled = false;
+    btn.title = '';
+    btn.onclick = null;
   });
-
-  // 🔹 Baseline: hide the QB card and reset all buttons
-  if (qbCard) {
-    qbCard.style.display = 'none';   // 👈 hide by default on all sections
-  }
-
-  if (employeesBtn) {
-    employeesBtn.style.display = 'none';
-    employeesBtn.onclick = null;
-  }
-
-  if (vendorsBtn) {
-    vendorsBtn.style.display = 'none';
-    vendorsBtn.onclick = null;
-  }
-
-  if (projectsBtn) {
-    projectsBtn.style.display = 'none';
-    projectsBtn.onclick = null;
-  }
-
-  if (accountsBtn) {
-    accountsBtn.style.display = 'none';
-    accountsBtn.onclick = null;
-  }
 
   const onboardingBlocksQb =
     document.body.classList.contains('onboarding-first') && !window.ONBOARDING_SHOW_QB;
   if (onboardingBlocksQb) {
     return;
   }
-
-  // 🔹 Only show the QB card + relevant button on these tabs
-  switch (key) {
-    case 'employees':
-      if (qbCard) qbCard.style.display = ''; // show card
-      if (employeesBtn) {
-        employeesBtn.style.display = '';
-        employeesBtn.textContent = 'Sync Employees';
-        employeesBtn.onclick = () => syncRoute('/api/sync/employees');
-      }
-      break;
-
-    case 'vendors':
-      if (qbCard) qbCard.style.display = ''; // show card
-      if (vendorsBtn) {
-        vendorsBtn.style.display = '';
-        vendorsBtn.textContent = 'Sync Vendors';
-        vendorsBtn.onclick = () => syncRoute('/api/sync/vendors');
-      }
-      break;
-
-    case 'projects':
-      if (qbCard) qbCard.style.display = ''; // show card
-      if (projectsBtn) {
-        projectsBtn.style.display = '';
-        projectsBtn.textContent = 'Sync Projects';
-        projectsBtn.onclick = () => syncRoute('/api/sync/projects');
-      }
-      break;
-
-    case 'payroll':
-    case 'reimbursements':
-      // Show QB connection card on payroll/reimbursements so admins can sync accounts.
-      if (qbCard) qbCard.style.display = '';
-      if (accountsBtn) {
-        accountsBtn.style.display = '';
-        accountsBtn.textContent = 'Sync Payroll Accounts';
-        accountsBtn.onclick = () => syncRoute('/api/sync/payroll-accounts', async () => {
-          // Reload account options/settings after sync
-          if (typeof loadPayrollSettings === 'function') {
-            await loadPayrollSettings();
-          }
-        });
-      }
-      break;
-
-    // ...other cases unchanged
+  if (key !== 'settings') {
+    return;
   }
+  if (!window.CURRENT_IS_SUPER_ADMIN) {
+    return;
+  }
+
+  const qboConnected = !!window.QBO_STATUS?.qbConnected;
+  const disconnectedTitle = qboConnected ? '' : 'Connect QuickBooks first.';
+  const showSyncButton = (btn, text, onClick) => {
+    if (!btn) return;
+    btn.style.display = '';
+    btn.textContent = text;
+    btn.disabled = !qboConnected;
+    btn.title = disconnectedTitle;
+    btn.onclick = onClick;
+  };
+
+  showSyncButton(employeesBtn, 'Sync Employees', () => syncRoute('/api/sync/employees'));
+  showSyncButton(vendorsBtn, 'Sync Vendors', () => syncRoute('/api/sync/vendors'));
+  showSyncButton(projectsBtn, 'Sync Projects', () => syncRoute('/api/sync/projects'));
+  showSyncButton(accountsBtn, 'Sync Payroll Accounts', () =>
+    syncRoute('/api/sync/payroll-accounts', async () => {
+      if (typeof loadPayrollSettings === 'function') {
+        await loadPayrollSettings();
+      }
+    })
+  );
 }
 
 // Background payroll accounts sync so settings dropdowns are fresh when opened
@@ -3963,7 +3933,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initShipmentsReportUI();
   }
 
-    // 3b) Make QB card match the initially active tab (Dashboard on first load)
+    // 3b) Make QuickBooks settings actions match the initially active tab (Dashboard on first load)
   const activeNav = document.querySelector('.nav-item.active');
   if (activeNav && typeof updateQbCardForSection === 'function') {
     updateQbCardForSection(activeNav.dataset.section);
@@ -4191,10 +4161,13 @@ if (disconnectBtn) {
   const accountViewModeCard = document.getElementById('account-view-mode-card');
   const accountViewModeBtn = document.getElementById('account-view-mode-btn');
   const accountViewModeStatus = document.getElementById('account-view-mode-status');
+  const quickbooksSettingsCard = document.getElementById('settings-quickbooks-card');
   const backupCard = document.getElementById('settings-backup-card');
   const auditCard = document.getElementById('settings-audit-card');
   const backupBtn = document.getElementById('settings-backup-now');
   const backupStatus = document.getElementById('settings-backup-status');
+  const backupRuntime = document.getElementById('settings-backup-runtime');
+  const backupLatest = document.getElementById('settings-backup-latest');
   const deviceSetupCard = document.getElementById('settings-device-setup-card');
   const kioskCodeEl = document.getElementById('settings-kiosk-enrollment-code');
   const kioskRotateBtn = document.getElementById('settings-kiosk-rotate');
@@ -5460,6 +5433,84 @@ if (disconnectBtn) {
     backupStatus.style.color = color || '';
   }
 
+  function setBackupRuntime(text, color) {
+    if (!backupRuntime) return;
+    backupRuntime.textContent = text || '';
+    backupRuntime.style.color = color || '';
+  }
+
+  function setBackupLatest(text, color) {
+    if (!backupLatest) return;
+    backupLatest.textContent = text || '';
+    backupLatest.style.color = color || '';
+  }
+
+  function formatBackupBytes(bytes) {
+    const size = Number(bytes);
+    if (!Number.isFinite(size) || size < 0) return null;
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  function formatBackupTimestamp(value) {
+    if (!value) return null;
+    if (typeof formatDateTimeLocal === 'function') {
+      const formatted = formatDateTimeLocal(value);
+      if (formatted) return formatted;
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toLocaleString();
+  }
+
+  function describeBackupBucket(label, bucket) {
+    const count = Number(bucket?.count || 0);
+    const latest = bucket?.latest;
+    if (!latest || !latest.key) return `${label}: none (count ${count})`;
+    const parts = [];
+    const ts = formatBackupTimestamp(latest.db_modified_at);
+    const size = formatBackupBytes(latest.db_size_bytes);
+    if (ts) parts.push(ts);
+    if (size) parts.push(size);
+    const details = parts.length ? `, ${parts.join(' • ')}` : '';
+    return `${label}: ${latest.key}${details} (count ${count})`;
+  }
+
+  async function loadBackupRuntimeStatus() {
+    if (!window.CURRENT_IS_SUPER_ADMIN || !backupCard) return;
+    setBackupRuntime('Runtime status: loading…', '#6b7280');
+    setBackupLatest('Latest snapshots: loading…', '#6b7280');
+    try {
+      const res = await fetchJSON('/api/admin/backup-status');
+      const status = res?.status || {};
+      const autoEnabled = !!status.auto_enabled;
+      const intervalHours = Number(status.interval_hours || 24);
+      const startup = status.run_on_startup ? 'startup + interval' : 'interval only';
+      const dailyRetention = Number(status.retention_daily_count || 30);
+      const monthlyRetention = Number(status.retention_monthly_count || 12);
+      if (autoEnabled) {
+        setBackupRuntime(
+          `Runtime status: auto backups ON (${startup}, every ${intervalHours}h, retention ${dailyRetention} daily / ${monthlyRetention} monthly).`,
+          '#166534'
+        );
+      } else {
+        setBackupRuntime(
+          `Runtime status: auto backups OFF. Use Backup Now or an external scheduler.`,
+          '#92400e'
+        );
+      }
+      const daily = describeBackupBucket('Daily', status.daily || {});
+      const monthly = describeBackupBucket('Monthly', status.monthly || {});
+      setBackupLatest(`Latest snapshots: ${daily}; ${monthly}.`, '#374151');
+    } catch (err) {
+      console.error('Error loading backup status:', err);
+      setBackupRuntime(err?.message || 'Runtime status unavailable.', 'crimson');
+      setBackupLatest('Latest snapshots unavailable.', 'crimson');
+    }
+  }
+
   function setKioskStatus(text, color) {
     if (!kioskStatus) return;
     kioskStatus.textContent = text || '';
@@ -5671,6 +5722,15 @@ if (disconnectBtn) {
       deviceSetupCard.classList.remove('hidden');
     } else {
       deviceSetupCard.classList.add('hidden');
+    }
+  }
+
+  function applyQuickBooksSettingsVisibility() {
+    if (!quickbooksSettingsCard) return;
+    if (window.CURRENT_IS_SUPER_ADMIN) {
+      quickbooksSettingsCard.classList.remove('hidden');
+    } else {
+      quickbooksSettingsCard.classList.add('hidden');
     }
   }
 
@@ -6488,11 +6548,16 @@ if (disconnectBtn) {
           if (typeof applySuperAdminAccessToEmployees === 'function') {
             applySuperAdminAccessToEmployees(window.CURRENT_IS_SUPER_ADMIN);
           }
+          applyQuickBooksSettingsVisibility();
           applyBackupCardVisibility();
           applyAuditCardVisibility();
           applyDeviceSetupVisibility();
           applyRoleTemplatesVisibility();
           applyDashboardLinkVisibility();
+          const activeNavItem = document.querySelector('.nav-item.active');
+          if (activeNavItem && typeof updateQbCardForSection === 'function') {
+            updateQbCardForSection(activeNavItem.dataset.section);
+          }
           updateDashboardHero();
           updateDashboardQboBadge();
           refreshDashboardSnapshot();
@@ -6500,6 +6565,7 @@ if (disconnectBtn) {
             initAuditReports();
           }
           if (window.CURRENT_IS_SUPER_ADMIN) {
+            await loadBackupRuntimeStatus();
             await loadEnrollmentCode();
           }
         }
@@ -6845,6 +6911,7 @@ if (disconnectBtn) {
     try {
       await fetchJSON('/api/admin/backup', { method: 'POST' });
       setBackupStatus('Backup completed.', 'green');
+      await loadBackupRuntimeStatus();
     } catch (err) {
       console.error('Manual backup error:', err);
       setBackupStatus(err.message || 'Backup failed.', 'crimson');

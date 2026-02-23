@@ -6,10 +6,10 @@ require('dotenv').config();
 const fs = require('fs');
 const fsp = require('fs').promises;
 const path = require('path');
-const { DB_PATH } = require('../lib/config');
+const { DB_PATH, BACKUP_DIR } = require('../lib/config');
 
 const args = process.argv.slice(2);
-const backupRoot = path.join(__dirname, '..', 'backups');
+const backupRoot = BACKUP_DIR;
 let sourceDir = null;
 let force = false;
 

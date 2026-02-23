@@ -1,5 +1,10 @@
 # Decisions Log
 
+- 2026-02-23: Kiosk Admin receipts behavior is upload-first for all kiosk admins; receipt list visibility is permission-scoped so super admins or admins with `view_payroll` can see all receipts, while other kiosk admins can only see receipts they uploaded.
+- 2026-02-23: Reimbursement status remains editable until paid; super admins can re-approve cancelled reimbursements and can cancel non-paid reimbursements, but paid reimbursements stay immutable.
+- 2026-02-23: QuickBooks management UI lives in Organization Settings (`QuickBooks` accordion) for super admins; the cross-page top QuickBooks connection card is removed.
+- 2026-02-23: Super admins can reject/cancel reimbursements from the Reimbursements page; `requested` and `approved` rows can be moved to `cancelled` (with optional audit reason), while `paid` rows remain immutable.
+- 2026-02-23: Reimbursements desktop UX is table-first for review/approval, and creating a reimbursement is handled in a modal dialog (`Add Reimbursement`) instead of inline form fields.
 - 2026-02-23: Organization Settings > Kiosk Device Setup uses geofence location context (project geofence lat/lng/radius) in the device inventory instead of `last seen` time.
 - 2026-02-23: Receipt reimbursements now require a super-admin approval step before payroll inclusion (`requested` -> `approved` -> `paid`); payroll summary/preflight/create-checks include only approved reimbursements, and unpay returns paid reimbursements to approved.
 - 2026-02-23: Receipt upload/reimbursement request management now lives on a dedicated `Reimbursements` page under Time & Pay (separate from Payroll run/settings UI) while keeping the same reimbursement workflow and payroll integration.

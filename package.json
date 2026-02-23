@@ -10,6 +10,7 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "backup": "node scripts/backup-once.js",
+    "backup:health": "node scripts/backup-health-check.js",
     "migrate": "node scripts/migrate.js",
     "setup": "node scripts/migrate.js",
     "reset:test-data": "node scripts/reset-testing-data.js",

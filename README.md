@@ -45,9 +45,17 @@ Defaults in the shipped compose:
 
 ## Backups
 
-- Run a one-off backup with `node scripts/backup-once.js`.
-- Restore from `backups/daily/YYYY-MM-DD` or `backups/monthly/YYYY-MM` using `node scripts/restore.js --date YYYY-MM-DD` (add `--force` to overwrite).
-- Stop the server before restoring to avoid file locks.
+- One-off backup: `node scripts/backup-once.js`
+- Backup health check: `npm run backup:health -- --max-age-hours 30`
+- Restore snapshot: `node scripts/restore.js --date YYYY-MM-DD --force` (stop server first)
+- Backup behavior is configurable with:
+  - `ENABLE_IN_PROCESS_BACKUPS`
+  - `BACKUP_RUN_ON_STARTUP`
+  - `BACKUP_INTERVAL_HOURS`
+  - `BACKUP_DAILY_RETENTION_COUNT`
+  - `BACKUP_MONTHLY_RETENTION_COUNT`
+  - `BACKUP_DIR`
+- Production runbook: `docs/BACKUP_RUNBOOK.md`
 
 ## Scripts
 

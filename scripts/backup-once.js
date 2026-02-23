@@ -5,11 +5,16 @@ require('dotenv').config();
 
 const path = require('path');
 const db = require('../db');
-const { DB_PATH } = require('../lib/config');
+const {
+  DB_PATH,
+  BACKUP_DIR,
+  BACKUP_DAILY_RETENTION_COUNT,
+  BACKUP_MONTHLY_RETENTION_COUNT
+} = require('../lib/config');
 const createBackupHelper = require('../lib/backup');
 
 const dbPath = DB_PATH;
-const backupDir = path.join(__dirname, '..', 'backups');
+const backupDir = BACKUP_DIR;
 const secureUploadsRoot = path.join(__dirname, '..', 'secure_uploads');
 const legacyUploadsRoot = path.join(__dirname, '..', 'uploads');
 const legacyPublicUploadsRoot = path.join(__dirname, '..', 'public', 'uploads');
@@ -17,6 +22,8 @@ const { performDatabaseBackup } = createBackupHelper({
   db,
   dbPath,
   backupDir,
+  dailyRetentionCount: BACKUP_DAILY_RETENTION_COUNT,
+  monthlyRetentionCount: BACKUP_MONTHLY_RETENTION_COUNT,
   uploadsRoot: secureUploadsRoot,
   extraUploadsRoots: [
     { root: legacyUploadsRoot, label: 'uploads' },

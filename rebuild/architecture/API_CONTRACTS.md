@@ -81,6 +81,8 @@
 - DELETE `/api/permission-templates/:id` [super admin]
 - GET  `/api/settings` [view_payroll]
 - POST `/api/settings` [view_payroll]
+- POST `/api/admin/backup` [super admin]
+- GET  `/api/admin/backup-status` [super admin]
 - GET  `/api/kiosk/settings` [kiosk]
 
 ## Vendors
@@ -151,7 +153,11 @@
 - GET  `/api/payroll/reimbursements` [super admin]
 - POST `/api/payroll/reimbursements` [super admin]
 - POST `/api/payroll/reimbursements/:id/approve` [super admin]
+- POST `/api/payroll/reimbursements/:id/cancel` [super admin]
 - GET  `/api/payroll/reimbursements/:id/receipt` [super admin]
+- GET  `/api/kiosk/admin/reimbursements` [kiosk admin]
+- POST `/api/kiosk/admin/reimbursements` [kiosk admin]
+- GET  `/api/kiosk/admin/reimbursements/:id/receipt` [kiosk admin]
 - GET  `/api/payroll-summary` [super admin]
 - GET  `/api/payroll/time-entries` [super admin]
 - POST `/api/payroll/preflight-checks` [super admin]

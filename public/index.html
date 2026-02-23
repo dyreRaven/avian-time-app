@@ -146,73 +146,6 @@
     <!-- RIGHT CONTENT -->
    <main class="main">
  <div class="main-inner">
-  <!-- QUICKBOOKS CARD (top of the main content) -->
-  <section class="card qb-card">
-    <div class="card-header">
-      <div>
-        <h2>QuickBooks Connection</h2>
-        <p id="qb-status" class="card-sub">
-          Checking QuickBooks status…
-        </p>
-      </div>
-
-      <div class="qb-actions">
-        <!-- CONNECT BUTTON -->
-        <button id="connect" class="btn primary">Connect</button>
-        <button id="disconnect-quickbooks" class="btn secondary" style="display:none;">
-          Disconnect
-        </button>
-
-        <!-- EMPLOYEES SYNC BUTTON -->
-        <button
-          id="sync-employees"
-          class="btn secondary"
-          style="display: none;"
-        >
-          Sync Employees
-        </button>
-
-        <!-- VENDORS SYNC BUTTON -->
-        <button
-          id="sync-vendors"
-          class="btn secondary"
-          style="display: none;"
-        >
-          Sync Vendors
-        </button>
-
-        <!-- PROJECTS SYNC BUTTON -->
-          <button
-            id="sync-projects"
-            class="btn secondary"
-            style="display: none;"
-          >
-            Sync Projects
-          </button>
-
-          <!-- PAYROLL ACCOUNTS SYNC BUTTON -->
-          <button
-            id="sync-accounts"
-            class="btn secondary"
-            style="display: none;"
-          >
-            Sync Payroll Accounts
-          </button>
-
-          <!-- SPINNER / STATUS -->
-          <span
-            id="qb-sync-indicator"
-            class="sync-indicator"
-          aria-live="polite"
-          style="display: none;"
-        >
-          <span class="sync-indicator-dot" aria-hidden="true"></span>
-          <span>Syncing with QuickBooks…</span>
-        </span>
-      </div>
-    </div>
-  </section>
-
   <!-- DASHBOARD SECTION -->
   <section id="section-dashboard" class="section active">
     <div id="post-bootstrap-card" class="card onboarding-card hidden">
@@ -1361,6 +1294,39 @@
                 </div>
               </details>
 
+              <details id="settings-quickbooks-card" class="settings-accordion settings-card card settings-accordion--quickbooks hidden">
+                <summary class="settings-accordion-summary">
+                  <div class="settings-accordion-head">
+                    <h2>QuickBooks</h2>
+                    <p class="card-sub">Connect, disconnect, and run manual Sync Now actions.</p>
+                  </div>
+                  <div class="settings-accordion-right">
+                    <div class="settings-accordion-meta">
+                      <span class="settings-pill settings-pill--admin">Super admin</span>
+                      <span class="settings-pill">Integrations</span>
+                    </div>
+                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
+                  </div>
+                </summary>
+                <div class="settings-accordion-body">
+                  <div class="card-body">
+                    <p id="qb-status" class="card-sub">Checking QuickBooks status…</p>
+                    <div class="qb-actions" style="margin-top: 12px;">
+                      <button id="connect" class="btn primary" type="button">Connect</button>
+                      <button id="disconnect-quickbooks" class="btn secondary" type="button" style="display:none;">Disconnect</button>
+                      <button id="sync-employees" class="btn secondary" type="button" style="display:none;">Sync Employees</button>
+                      <button id="sync-vendors" class="btn secondary" type="button" style="display:none;">Sync Vendors</button>
+                      <button id="sync-projects" class="btn secondary" type="button" style="display:none;">Sync Projects</button>
+                      <button id="sync-accounts" class="btn secondary" type="button" style="display:none;">Sync Payroll Accounts</button>
+                      <span id="qb-sync-indicator" class="sync-indicator" aria-live="polite" style="display:none;">
+                        <span class="sync-indicator-dot" aria-hidden="true"></span>
+                        <span>Syncing with QuickBooks…</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </details>
+
               <details id="settings-device-setup-card" class="settings-accordion settings-card card settings-accordion--devices hidden">
                 <summary class="settings-accordion-summary">
                   <div class="settings-accordion-head">
@@ -1591,64 +1557,77 @@
                 </summary>
                 <div class="settings-accordion-body">
                   <div class="card-body">
-                    <div class="form-grid">
-                      <div class="form-field">
-                        <label for="settings-pay-period-length">Pay period length (days)</label>
-                        <input id="settings-pay-period-length" type="number" min="1" max="31" step="1" />
-                      </div>
-                      <div class="form-field">
-                        <label for="settings-pay-period-weekday">Pay period week starts on</label>
-                        <select id="settings-pay-period-weekday">
-                          <option value="0">Sunday</option>
-                          <option value="1">Monday</option>
-                          <option value="2">Tuesday</option>
-                          <option value="3">Wednesday</option>
-                          <option value="4">Thursday</option>
-                          <option value="5">Friday</option>
-                          <option value="6">Saturday</option>
-                        </select>
-                      </div>
-                      <div class="form-field">
-                        <label for="settings-pay-period-anchor">Pay period anchor date</label>
-                        <input id="settings-pay-period-anchor" type="date" />
-                      </div>
-                    </div>
-                    <p class="card-sub">If the pay period length is greater than 7 days, set an anchor date to define the cycle start.</p>
-                    <div class="form-grid">
-                      <div class="form-field">
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-overtime-enabled" />
-                          Overtime enabled
-                        </label>
-                      </div>
-                      <div class="form-field">
-                        <label for="settings-overtime-daily-threshold">Daily overtime threshold (hours)</label>
-                        <input id="settings-overtime-daily-threshold" type="number" min="0" step="0.01" />
-                      </div>
-                      <div class="form-field">
-                        <label for="settings-overtime-weekly-threshold">Weekly overtime threshold (hours)</label>
-                        <input id="settings-overtime-weekly-threshold" type="number" min="0" step="0.01" />
-                      </div>
-                      <div class="form-field">
-                        <label for="settings-overtime-multiplier">Overtime multiplier</label>
-                        <input id="settings-overtime-multiplier" type="number" min="1" step="0.01" />
-                      </div>
-                    </div>
-                    <div class="form-grid">
-                      <div class="form-field">
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-doubletime-enabled" />
-                          Double time enabled
-                        </label>
-                      </div>
-                      <div class="form-field">
-                        <label for="settings-doubletime-daily-threshold">Double-time daily threshold (hours)</label>
-                        <input id="settings-doubletime-daily-threshold" type="number" min="0" step="0.01" />
-                      </div>
-                      <div class="form-field">
-                        <label for="settings-doubletime-multiplier">Double-time multiplier</label>
-                        <input id="settings-doubletime-multiplier" type="number" min="1" step="0.01" />
-                      </div>
+                    <div class="payroll-rules-sections">
+                      <section class="payroll-rules-section">
+                        <h3 class="payroll-rules-section-title">Pay Period Rules</h3>
+                        <div class="form-grid payroll-rules-grid">
+                          <div class="form-field">
+                            <label for="settings-pay-period-length">Pay period length (days)</label>
+                            <input id="settings-pay-period-length" type="number" min="1" max="31" step="1" />
+                          </div>
+                          <div class="form-field">
+                            <label for="settings-pay-period-weekday">Pay period week starts on</label>
+                            <select id="settings-pay-period-weekday">
+                              <option value="0">Sunday</option>
+                              <option value="1">Monday</option>
+                              <option value="2">Tuesday</option>
+                              <option value="3">Wednesday</option>
+                              <option value="4">Thursday</option>
+                              <option value="5">Friday</option>
+                              <option value="6">Saturday</option>
+                            </select>
+                          </div>
+                          <div class="form-field">
+                            <label for="settings-pay-period-anchor">Pay period anchor date</label>
+                            <input id="settings-pay-period-anchor" type="date" />
+                          </div>
+                        </div>
+                        <p class="card-sub">If the pay period length is greater than 7 days, set an anchor date to define the cycle start.</p>
+                      </section>
+
+                      <section class="payroll-rules-section">
+                        <h3 class="payroll-rules-section-title">Overtime Rules</h3>
+                        <div class="form-grid payroll-rules-grid">
+                          <div class="form-field payroll-rules-toggle">
+                            <label class="checkbox-inline">
+                              <input type="checkbox" id="settings-overtime-enabled" />
+                              Overtime enabled
+                            </label>
+                          </div>
+                          <div class="form-field">
+                            <label for="settings-overtime-daily-threshold">Daily overtime threshold (hours)</label>
+                            <input id="settings-overtime-daily-threshold" type="number" min="0" step="0.01" />
+                          </div>
+                          <div class="form-field">
+                            <label for="settings-overtime-weekly-threshold">Weekly overtime threshold (hours)</label>
+                            <input id="settings-overtime-weekly-threshold" type="number" min="0" step="0.01" />
+                          </div>
+                          <div class="form-field">
+                            <label for="settings-overtime-multiplier">Overtime multiplier</label>
+                            <input id="settings-overtime-multiplier" type="number" min="1" step="0.01" />
+                          </div>
+                        </div>
+                      </section>
+
+                      <section class="payroll-rules-section">
+                        <h3 class="payroll-rules-section-title">Double-Time Rules</h3>
+                        <div class="form-grid payroll-rules-grid">
+                          <div class="form-field payroll-rules-toggle">
+                            <label class="checkbox-inline">
+                              <input type="checkbox" id="settings-doubletime-enabled" />
+                              Double time enabled
+                            </label>
+                          </div>
+                          <div class="form-field">
+                            <label for="settings-doubletime-daily-threshold">Double-time daily threshold (hours)</label>
+                            <input id="settings-doubletime-daily-threshold" type="number" min="0" step="0.01" />
+                          </div>
+                          <div class="form-field">
+                            <label for="settings-doubletime-multiplier">Double-time multiplier</label>
+                            <input id="settings-doubletime-multiplier" type="number" min="1" step="0.01" />
+                          </div>
+                        </div>
+                      </section>
                     </div>
                   </div>
                 </div>
@@ -1671,6 +1650,13 @@
                 <div class="settings-accordion-body">
                   <div class="card-body">
                     <p class="card-sub">Run a manual backup snapshot (DB + uploads).</p>
+                    <div class="settings-backup-help">
+                      <p class="card-sub"><strong>Automatic schedule:</strong> when <code>ENABLE_IN_PROCESS_BACKUPS=true</code>, backups run on startup (optional) and on a configured interval (default 24 hours).</p>
+                      <p class="card-sub"><strong>Enable it:</strong> set <code>ENABLE_IN_PROCESS_BACKUPS=true</code> in your runtime <code>.env</code> and restart the server. Default <code>.env.example</code> is <code>false</code>.</p>
+                      <p class="card-sub"><strong>Retention:</strong> defaults to 30 daily and 12 monthly snapshots (DB + uploads).</p>
+                      <p id="settings-backup-runtime" class="card-sub">Runtime status: loading…</p>
+                      <p id="settings-backup-latest" class="card-sub">Latest snapshot: loading…</p>
+                    </div>
                     <div class="settings-actions">
                       <button type="button" id="settings-backup-now" class="btn secondary">Backup Now</button>
                       <span id="settings-backup-status" class="message"></span>
@@ -2253,47 +2239,55 @@
               <div>
                 <h2>Reimbursements</h2>
                 <p class="card-sub">
-                  Upload employee receipts with a project and reimbursement amount. Requested receipts can be included as payroll line items.
+                  Review receipt reimbursements, approve requests, and include approved reimbursements in payroll.
                 </p>
+              </div>
+              <div class="card-header-actions">
+                <button id="payroll-reimbursement-open-modal" class="btn primary" type="button">
+                  + Add Reimbursement
+                </button>
               </div>
             </div>
             <div class="card-body">
-              <div class="form-grid payroll-reimbursement-grid">
-                <div class="form-field">
-                  <label for="payroll-reimbursement-employee">Employee</label>
-                  <select id="payroll-reimbursement-employee">
-                    <option value="">(select employee)</option>
-                  </select>
+              <div class="time-report-form payroll-reimbursements-filters">
+                <div class="form-row time-report-row">
+                  <label>
+                    Employee
+                    <select id="payroll-reimbursement-filter-employee">
+                      <option value="">All employees</option>
+                    </select>
+                  </label>
+                  <label>
+                    Project
+                    <select id="payroll-reimbursement-filter-project">
+                      <option value="">All projects</option>
+                    </select>
+                  </label>
+                  <label>
+                    Status
+                    <select id="payroll-reimbursement-filter-status">
+                      <option value="all" selected>All statuses</option>
+                      <option value="requested">Requested</option>
+                      <option value="approved">Approved</option>
+                      <option value="paid">Paid</option>
+                      <option value="cancelled">Cancelled</option>
+                    </select>
+                  </label>
+                  <label>
+                    Start date
+                    <input type="date" id="payroll-reimbursement-filter-start" />
+                  </label>
+                  <label>
+                    End date
+                    <input type="date" id="payroll-reimbursement-filter-end" />
+                  </label>
                 </div>
-                <div class="form-field">
-                  <label for="payroll-reimbursement-project">Project</label>
-                  <select id="payroll-reimbursement-project">
-                    <option value="">(select project)</option>
-                  </select>
-                </div>
-                <div class="form-field">
-                  <label for="payroll-reimbursement-amount">Amount</label>
-                  <input id="payroll-reimbursement-amount" type="number" min="0.01" step="0.01" placeholder="0.00" />
-                </div>
-                <div class="form-field">
-                  <label for="payroll-reimbursement-date">Purchase date</label>
-                  <input id="payroll-reimbursement-date" type="date" />
-                </div>
-                <div class="form-field">
-                  <label for="payroll-reimbursement-note">Note (optional)</label>
-                  <input id="payroll-reimbursement-note" type="text" placeholder="Materials purchased, etc." />
-                </div>
-                <div class="form-field">
-                  <label for="payroll-reimbursement-vendor">Vendor</label>
-                  <input id="payroll-reimbursement-vendor" type="text" placeholder="Vendor name" />
-                </div>
-                <div class="form-field">
-                  <label for="payroll-reimbursement-receipt">Receipt image/PDF</label>
-                  <input id="payroll-reimbursement-receipt" type="file" accept=".pdf,image/*" />
-                </div>
-                <div class="form-field form-field-button">
-                  <button id="payroll-reimbursement-submit" class="btn secondary" type="button">
-                    Request Reimbursement
+                <div class="form-actions time-report-actions">
+                  <button type="button" id="payroll-reimbursement-filter-apply" class="btn primary">
+                    Run Report
+                  </button>
+                  <button type="button" id="payroll-reimbursement-filter-clear" class="btn secondary">
+                    Clear
                   </button>
                 </div>
               </div>
@@ -2321,6 +2315,70 @@
             </div>
           </div>
         </section>
+
+        <div id="payroll-reimbursement-modal-backdrop" class="modal-backdrop hidden"></div>
+        <div
+          id="payroll-reimbursement-modal"
+          class="modal hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="payroll-reimbursement-modal-title"
+        >
+          <div class="modal-card payroll-reimbursement-modal-card">
+            <div class="modal-header">
+              <h3 id="payroll-reimbursement-modal-title">New Reimbursement</h3>
+              <button
+                id="payroll-reimbursement-modal-close"
+                class="icon-button"
+                type="button"
+                aria-label="Close reimbursement dialog"
+              >
+                ×
+              </button>
+            </div>
+            <div class="form-grid payroll-reimbursement-grid">
+              <div class="form-field">
+                <label for="payroll-reimbursement-employee">Employee</label>
+                <select id="payroll-reimbursement-employee">
+                  <option value="">(select employee)</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label for="payroll-reimbursement-project">Project</label>
+                <select id="payroll-reimbursement-project">
+                  <option value="">(select project)</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label for="payroll-reimbursement-amount">Amount</label>
+                <input id="payroll-reimbursement-amount" type="number" min="0.01" step="0.01" placeholder="0.00" />
+              </div>
+              <div class="form-field">
+                <label for="payroll-reimbursement-date">Purchase date</label>
+                <input id="payroll-reimbursement-date" type="date" />
+              </div>
+              <div class="form-field">
+                <label for="payroll-reimbursement-note">Note (optional)</label>
+                <input id="payroll-reimbursement-note" type="text" placeholder="Materials purchased, etc." />
+              </div>
+              <div class="form-field">
+                <label for="payroll-reimbursement-vendor">Vendor</label>
+                <input id="payroll-reimbursement-vendor" type="text" placeholder="Vendor name" />
+              </div>
+              <div class="form-field payroll-reimbursement-file-field">
+                <label for="payroll-reimbursement-receipt">Receipt image/PDF</label>
+                <input id="payroll-reimbursement-receipt" type="file" accept=".pdf,image/*" />
+              </div>
+            </div>
+            <p id="payroll-reimbursement-modal-message" class="message"></p>
+            <div class="modal-footer">
+              <button id="payroll-reimbursement-modal-cancel" class="btn secondary" type="button">Cancel</button>
+              <button id="payroll-reimbursement-submit" class="btn primary" type="button">
+                Request Reimbursement
+              </button>
+            </div>
+          </div>
+        </div>
 
 <!-- REPORTS SECTION (PAYROLL RUNS) -->
 <section id="section-reports" class="section">

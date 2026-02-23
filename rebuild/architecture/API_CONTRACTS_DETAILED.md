@@ -379,6 +379,10 @@ Note: clock_in_photo_required and payroll_rules may be set here by a super admin
 - Response (failure): `{ "ok": false, "error": "Backup failed." }` (500)
 Note: triggers a manual backup using the same job lock/retention as scheduled backups.
 
+### GET /api/admin/backup-status  [super admin]
+- Response: `{ "ok": true, "status": { "auto_enabled": false, "run_on_startup": true, "interval_hours": 24, "retention_daily_count": 30, "retention_monthly_count": 12, "daily": { "count": 12, "latest": { "key": "YYYY-MM-DD", "db_file": "rebuild.db", "db_size_bytes": 12345, "db_modified_at": "..." } }, "monthly": { "count": 4, "latest": { "key": "YYYY-MM", "db_file": "rebuild.db", "db_size_bytes": 12345, "db_modified_at": "..." } } } }`
+Note: reports runtime backup config and latest snapshot metadata for the Settings > Backups card.
+
 ### GET /api/kiosk/settings
 - Response: `{ "settings": { "clock_in_photo_required": true, ... } }`
 Note: clock_in_photo_required is org-level and set by super admin in Settings.
@@ -677,11 +681,34 @@ Note: new reimbursement requests are not payroll-eligible until a super admin ap
 ### POST /api/payroll/reimbursements/:id/approve  [super admin]
 - Request: no body required.
 - Response: `{ "ok": true, "reimbursement": { "id": 1, "status": "approved", "approved_at": "YYYY-MM-DD HH:MM:SS", "approved_by_employee_id": 12, "approved_by_name": "..." } }`
-Note: only `requested` reimbursements can be approved; `paid`/`cancelled` rows return 409.
+Note: approving `requested` or `cancelled` rows transitions them to `approved`; already-approved rows are treated as idempotent success. `paid` rows return 409.
+
+### POST /api/payroll/reimbursements/:id/cancel  [super admin]
+- Request: optional `{ "reason": "..." }` (audit note only; not persisted on reimbursement row)
+- Response: `{ "ok": true, "reimbursement": { "id": 1, "status": "cancelled", ... } }`
+Note: only `requested` or `approved` reimbursements can be cancelled/rejected. `paid` or already-`cancelled` rows return 409.
 
 ### GET /api/payroll/reimbursements/:id/receipt  [super admin]
 - Response: binary file download
 Note: file download is org-scoped and returns 404 when the row or file is missing.
+
+### GET /api/kiosk/admin/reimbursements  [kiosk admin]
+- Query: optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `status=requested|approved|paid|cancelled|all` (default `requested`; `pending` alias maps to `requested`), optional `employeeId`, `projectId`, `limit` (default 100, max 300)
+- Response: `{ "ok": true, "can_view_all": false, "rows": [ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested|approved|paid|cancelled", "requested_by_employee_id": 12, "requested_at": "YYYY-MM-DD HH:MM:SS", "requested_by_name": "...", "approved_at": null, "approved_by_employee_id": null, "approved_by_name": null, "paid_date": null, "payroll_run_id": null, "payroll_check_id": null, "original_filename": "...", "mime_type": "...", "receipt_url": "/api/kiosk/admin/reimbursements/1/receipt" } ] }`
+Note: requires kiosk admin auth and payroll section enabled.
+Note: `can_view_all=true` only for super admins or admins with `view_payroll`; otherwise rows are restricted to reimbursements where `requested_by_employee_id` equals the current kiosk admin.
+
+### POST /api/kiosk/admin/reimbursements  [kiosk admin]
+- Request: multipart/form-data with `receipt` (required file), `employee_id` (required), `project_id` (required), `vendor_name` (required), `amount` (required > 0), optional `expense_date` (`YYYY-MM-DD`), optional `note`.
+- Response: `{ "ok": true, "reimbursement": { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested", "requested_by_employee_id": 12, "receipt_url": "/api/kiosk/admin/reimbursements/1/receipt" } }`
+Note: requires kiosk admin auth and payroll section enabled.
+Note: upload validation and file-type rules are the same as desktop reimbursements.
+Note: `requested_by_employee_id` is always set to the authenticated kiosk admin.
+
+### GET /api/kiosk/admin/reimbursements/:id/receipt  [kiosk admin]
+- Response: binary file download
+Note: requires kiosk admin auth and payroll section enabled.
+Note: super admins and `view_payroll` admins can download any reimbursement receipt in-org; other kiosk admins can download only receipts they uploaded.
 
 ### GET /api/payroll-summary  [super admin]
 - Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `includePaid=true|false`, `includeOvertime=true|false` (default true), `includeReceiptReimbursements=true|false` (default true)
