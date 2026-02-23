@@ -67,9 +67,9 @@
 - Optional role_title can be stored per employee for labeling (e.g., Foreman, Superintendent).
 - Settings page is visible to desktop admins; access-control section is visible to super admins only.
 - All API endpoints are gated server-side by permissions.
-- view_payroll is read-only for payroll screens; modify_payroll is required to run checks or unpay.
+- Payroll (run payroll + payroll reports + QBO connect/disconnect) is super-admin only; `view_payroll`/`modify_payroll` are reserved for super admins (not configurable in Access Control / Employee Details).
 - Shipments access uses `see_shipments` for both desktop and kiosk admin; legacy `kiosk_can_view_shipments` is folded into this permission.
-- Timesheet visibility: admins without `view_all_timesheets` or `view_payroll` only see timesheets they created or are assigned; payroll admins and super admins can see all timesheets, and super admins can share timesheets across admins.
+- Timesheet visibility: admins without `view_all_timesheets` only see timesheets they created or are assigned; super admins can see all timesheets, and super admins can share timesheets across admins.
 
 ## Routes
 - /auth
@@ -85,7 +85,7 @@
 - /: requires desktop_access and ui_mode=desktop; if ui_mode=kiosk, redirect to /kiosk.
 - /kiosk: public shell; device must be enrolled to submit punches; worker PIN must have worker_timekeeping.
 - /kiosk-admin: requires kiosk_admin_access (PIN-gated on device or session).
-- /auth/qbo: requires a super admin session with view_payroll; callback validates OAuth state.
+- /auth/qbo: requires a super admin session; callback validates OAuth state.
 - /api/*: session + permissions or kiosk device secret as defined in API contracts; UI gating is not sufficient.
 
 ## Auth and Accounts
@@ -119,8 +119,8 @@
 - Reports: Time Entries Report, Payroll Reports, Shipment Verification Report.
 - Settings: Settings.
 - Nav items are visible but disabled when the user lacks permissions; tooltips explain required access.
-- Gating: Employees/Vendors/Projects/Payroll/Payroll Reports require view_payroll; Payroll actions (create checks, unpay, retries) require modify_payroll; Review Time Entries + Time Entries Report require view_time_reports or view_payroll; Shipments + Shipment Verification Report require see_shipments; Settings requires view_payroll; Access-control panel inside Settings requires is_super_admin.
-- Timesheets: super admins, view_payroll, and view_all_timesheets can see all timesheets; other admins only see timesheets they created or are assigned/shared to.
+- Gating: Payroll + Payroll Reports (and payroll actions like create checks/unpay/retries) require super admin; Review Time Entries + Time Entries Report require view_time_reports (or super admin); Shipments + Shipment Verification Report require see_shipments; Settings requires view_payroll (super admin); Access-control panel inside Settings requires is_super_admin.
+- Timesheets: super admins and view_all_timesheets can see all timesheets; other admins only see timesheets they created or are assigned/shared to.
 - Admin Home is available to any desktop_access user, but cards/actions hide or disable if the user lacks the underlying permission.
 
 ### QuickBooks Connection
@@ -131,7 +131,7 @@
 - Shows a syncing indicator while a sync request is in-flight; uses `/api/status` for connection state.
 - Show "Last synced at" timestamps per list (employees/vendors/projects/payroll accounts) sourced from `/api/status.lastSync`.
 - Show "Last synced at" per entity list; if never synced, show a warning and disable link/create actions with a "Sync Now" CTA.
-- Requires view_payroll to view or use.
+- Requires super admin to view or use.
 - Connect/disconnect are desktop-only and require super admin.
 - OAuth uses a server-stored state tied to org_id + user_id (10-minute TTL); callback validates state.
 - Callback stores access_token, refresh_token, expires_at, and realm_id in qbo_tokens for the org; failures keep the org disconnected.
@@ -160,7 +160,7 @@
 - Language is required for every employee; if missing/invalid, the UI defaults to English and shows an admin warning until corrected.
 - Employees list shows a missing-language count and a quick filter to view only employees with missing/invalid language.
 - Kiosk shipments access if enabled.
-- Rate changes require `modify_pay_rates` permission; viewing pay rates requires `view_payroll`; kiosk rate unlock is PIN + timeout gated (10-minute window).
+- Rate changes require `modify_pay_rates` permission; kiosk rate unlock is PIN + timeout gated (10-minute window). `modify_pay_rates` does not grant payroll access.
 - QBO linking and pending list: Sync Now pulls QBO employees into the list. Local-only employees (manual or kiosk-created) are flagged needs_qbo_sync and appear in a pending list (linking disabled unless QBO is connected).
 - Pending list shows the reason: missing IDs vs local dirty fields vs conflicts (use qbo_dirty_fields_json + qbo_conflict_fields_json).
 - Linking UI: searchable picker of synced QBO Employees/Vendors with manual ID entry fallback; suggested matches by name/email when available. If a manual ID is not found in the last sync list, show a warning but allow link. Optional "Create in QBO" creates the employee in QBO and links it.
@@ -232,11 +232,11 @@
 - Manual-entry exceptions: no punches linked, or hours mismatch (>= 0.10h / ~6 min).
 - Modify rules: punch edits must stay on the same day and <24h, and clock-in/out projects must match; time entry edits must be single-day with valid HH:MM times and hours between 0–24.
 - Resolve/unresolve flows are tracked separately from verification.
-- Payroll eligibility: all time entries require field review (resolved_status != open or resolved=1); entries with exceptions require approved/modified review. Payroll approval still requires approve_time (payroll permissions). Verify does not affect payroll eligibility.
+- Payroll eligibility: payroll approval is authoritative. Any unpaid entry with payroll approval (`approval_status=approved`) is eligible for payroll even when field review or punch exceptions are still open. Verify does not affect payroll eligibility.
 - Audit trail storage: time_exception_actions with source_type `punch` or `time_entry`, action (approve/modify/reject/resolve), actor, note, and before/after snapshots; retained for 1 year.
 
 ### Review Time Entries
-- Filters by employee, project, date range.
+- Filters by employee, project, date range, payroll approval (all vs not payroll approved only).
 - Manual time entry create (single-day; start/end times required; hours computed from times) requires a change note.
 - Manual time entry edit requires a change note; edits recalc total_pay using the current employee rate.
 - All time entries must include start_time/end_time (HH:MM, org timezone). Punch-based entries must derive and persist these times (see docs/TIME_ENTRY_INTEGRITY.md).
@@ -246,8 +246,8 @@
 - Pay fields (Total Pay/Paid/Paid Date) are omitted entirely unless view_payroll is granted.
 - Link entries to punches and show verification state.
 - Show field review status (pending/approved/modified/rejected) with reviewer + reviewed_at, plus payroll approval status (pending/approved) with approver + approved_at in the report.
-- Weekly approval required: after field review, a user with approve_time must approve all entries in the pay period before payroll can run.
-- Approval actions live in Review Time Entries with per-row approve (only after field review).
+- Weekly approval required: only entries approved by a user with approve_time are payroll-eligible. Unapproved entries remain excluded from payroll until approved. Field review is advisory; approving with field review pending must show a warning.
+- Approval actions live in Review Time Entries with per-row approve (warn if field review is pending); approving selected entries for payroll may also stamp field review/punch review approved so those entries become payroll-ready in one action.
 - Approving clean entries requires no note; approving entries with discrepancies or manual edits requires a note.
 - Any edit to a time entry (manual edit or exception modify) resets field review and payroll approval to pending and logs an audit record.
 - All edits recorded in an audit trail with before/after snapshots.
@@ -265,7 +265,7 @@
 - Uses the same time-entry visibility rules as Review Time Entries.
 
 ### Payroll
-- Settings: bank/expense accounts, memo/line templates.
+- Settings: bank/expense accounts, receipt reimbursement expense account (`receipt_expense_account_name`), memo/line templates, plus receipt reimbursement class default (`receipt_class_name`).
 - Date range selection (configurable by org).
 - Default date range uses the org pay period rules; admins can override manually.
 - When overtime is enabled, payroll totals apply the overtime rules (regular_hours * rate + overtime_hours * rate * overtime_multiplier).
@@ -276,7 +276,7 @@
 - Preflight validates QBO connection, payee links, expense accounts/classes, and returns per-employee ok/error; it also stores a preflight snapshot (preflight_id + time-entry snapshot) for create-checks.
 - Preflight surfaces missing QBO links (per-employee ok=false); UI must alert and list who is missing before running checks.
 - Preflight blocks if any QBO-linked employees have local dirty/conflict fields; admin must sync changes to QBO before payroll.
-- Payroll is blocked until all time entries in the selected period are approved by a user with approve_time (weekly approval requirement).
+- Payroll summary/preflight should surface unapproved entries as advisory warnings (with pending lists), while payroll still proceeds for approved selected entries only.
 - Create checks requires a valid preflight_id and must match the preflight payload (start/end + overrides/lines); reject if expired or mismatched.
 - Create checks validates that eligible time entries match the preflight snapshot; if changed, return a conflict and require a new preflight.
 - Create checks uses a DB lock + idempotency key and runs a backup before sending to QBO; if the backup fails or is skipped due to a lock, the run proceeds but returns a warning and logs PAYROLL_BACKUP_WARNING in payroll_audit_log.
@@ -292,6 +292,15 @@
 - Legacy /api/payroll/preview-checks is deprecated; use /api/payroll/preflight-checks only.
 - Support custom/additional payroll lines and memo overrides.
 - Memo/line templates support tokens ({start}, {end}, {dateRange}, {employee}, {project}, {hours}).
+- Receipt reimbursement requests: super admins can upload a receipt file (PDF/image), employee, project, required vendor name, amount, optional date/note; requests start as `requested`.
+- Reimbursements require one super-admin approval before payroll eligibility (`requested` -> `approved` -> `paid`).
+- Reimbursement request upload/list UI lives on a dedicated `Reimbursements` page under Time & Pay (separate from Payroll settings/run UI).
+- Payroll summary has an `Include receipt reimbursements` toggle (default on). When enabled, approved in-range reimbursements appear as separate payroll lines (0 hours, reimbursement amount, synthetic `project_id` like `receipt-<project_id>-<vendor-hash>`).
+- Reimbursements are payroll-integrated: if an employee has only reimbursements (no time-entry pay), payroll still creates a check for that employee when reimbursements are included.
+- Reimbursement lines use the receipt reimbursement expense default (`receipt_expense_account_name`, fallback `expense_account_name`) and reimbursement default class (`receipt_class_name`).
+- Reimbursement lines do not set customer/project references in QuickBooks; description format is `[Vendor] Reimbursement`.
+- If a check includes one or more reimbursement lines, append ` + Reimbursement` to the check memo/private note.
+- On successful create-checks, included reimbursement rows are marked `paid` and linked to `payroll_run_id`/`payroll_check_id`; unpay resets those rows back to `approved` and clears links.
 - Payroll lock prevents concurrent runs; run attempts + audit log retained.
 - Unpay flow for reversing runs where needed.
 - Unpay is run-scoped (payroll_run_id + employee_id + optional payroll_check_id) and clears paid flags only for entries in that run; it marks payroll_checks paid=0 with voided_at/voided_reason and recalculates run totals.
@@ -466,8 +475,9 @@
 - Audit log retention days (org-level, super admin only; org_settings.audit_log_retention_days; blank/0 = retain forever).
 - Shipment settings (default daily late fee: org_settings.storage_daily_late_fee_default for standard shipments, org_settings.storage_container_daily_late_fee_default for container shipments; defaults are null/0 until set).
 - Notification settings.
-- Kiosk enrollment code (super admin only): view/copy/rotate; rotation affects new enrollments only and does not invalidate existing devices.
-- Enrollment code is stored in org_settings.kiosk_enrollment_code (6-digit numeric; normalize by stripping non-digits).
+- Kiosk enrollment code (super admin only): view/copy/rotate; each successful enrollment-code use auto-rotates the code (single-use behavior) and does not invalidate existing enrolled devices.
+- Enrollment code is stored in org_settings.kiosk_enrollment_code (6-digit numeric; normalize by stripping non-digits); issuance metadata is stored in org_settings.kiosk_enrollment_code_issued_by_employee_id and org_settings.kiosk_enrollment_code_issued_at.
+- Device Setup shows a registered-device inventory (kiosk id/name, device_id, registered admin, registered timestamp, geofence location) for super admins.
 - Org settings store access rules, exception rule toggles, and org profile fields (name/email); org timezone is stored on `orgs`.
 - Legacy settings workers_see_shipments/workers_see_time are removed; use permissions instead.
 
@@ -500,6 +510,7 @@
 - device_id is generated locally and reused; device_secret is returned by the server and stored on the device for offline auth.
 - Kiosk uses the org timezone returned by registration for all “today” calculations (timesheets, daily UI).
 - The kiosk can re-check-in using device_id + device_secret to refresh kiosk config and timesheets; enrollment code is only needed for first-time enrollment or to re-key the device.
+- Successful enrollment-code use updates kiosk registration metadata (registered admin when known, registered_at/last_enrolled_at) and rotates the code for the next enrollment.
 - device_id is globally unique; a device cannot be enrolled into multiple orgs.
 - Pending PIN updates queued when offline.
 - GPS use is optional; missing GPS never blocks clock-in/out.
@@ -573,8 +584,8 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
     - shipment_filters_json: `{ enabled: true, statuses: [], project_ids: [] }`
     - payroll_filters_json: `{ enabled: true, event_types: [] }`
     - time_filters_json: `{ enabled: true, event_types: [] }`
-  - Schedules: remind_time + remind_every_days (org timezone).
-  - Clock-out alerts: clockout_enabled + clockout_time (org timezone).
+  - Schedules: remind_time + remind_every_days (org timezone) for scheduled alerts.
+  - Clock-out alerts: clockout_enabled (uses reminder schedule time/frequency).
 - Shipment reminders use shipment_notification_prefs filters (status/project/shipment), but deliveries still respect email/push toggles and category filters from notification_prefs.
 - Per-channel on/off toggles act as a global opt-out for that channel.
 - Store push subscriptions per user/device; allow revoke from Settings; browser permission required for push alerts.
@@ -582,7 +593,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - notification_deliveries logs per-channel attempts and errors.
 - Time notification event_types (time_filters_json): TIME_EXCEPTION_OPEN, TIME_EXCEPTION_REVIEWED, TIME_EXCEPTION_RESOLVED, TIME_ENTRY_MANUAL_CREATED, TIME_ENTRY_MANUAL_EDITED.
 - Payroll notification event_types (payroll_filters_json): PAYROLL_RUN_DUE, PAYROLL_RUN_STARTED, PAYROLL_RUN_SUCCESS, PAYROLL_RUN_PARTIAL, PAYROLL_RUN_FAILURE, PAYROLL_FATAL_ERROR, PAYROLL_QBO_ERROR, PAYROLL_UNPAY.
-- Daily summaries use remind_time/remind_every_days: send counts of open time exceptions and payroll runs due (if enabled in filters).
+- Reminder schedule is used for clock-out reminders; daily summary notifications are removed.
 - Recommended defaults: time_filters enabled with TIME_EXCEPTION_OPEN; payroll_filters enabled with PAYROLL_RUN_DUE + PAYROLL_RUN_FAILURE + PAYROLL_QBO_ERROR + PAYROLL_FATAL_ERROR.
 
 ## Timekeeping Rules (legacy defaults)

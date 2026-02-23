@@ -118,7 +118,7 @@ Note: qbConnected is true when the active org has valid tokens + realm_id; if re
 Note: lastSync values are null when never synced; they update after each successful Sync Now or payroll-accounts fetch.
 
 ### POST /api/qbo/connect
-- Requires view_payroll + super admin; returns `{ "ok": true, "url": "..." }` for Intuit OAuth redirect.
+- Requires super admin; returns `{ "ok": true, "url": "..." }` for Intuit OAuth redirect.
 Note: generates a server-stored OAuth state tied to org_id + user_id (10-minute TTL).
 
 ### GET /quickbooks/oauth/callback
@@ -126,7 +126,7 @@ Note: generates a server-stored OAuth state tied to org_id + user_id (10-minute 
 Note: expects code + state (+ realmId); on success stores access_token, refresh_token, expires_at, and realm_id for the org.
 Note: if error=access_denied or state is invalid/expired, return to admin with an error status and do not store tokens.
 
-### POST /api/qbo/disconnect  [view_payroll + super admin]
+### POST /api/qbo/disconnect  [super admin]
 - Response: `{ "ok": true }`
 Note: clears qbo_tokens for the active org; existing QBO IDs remain but syncing/linking is disabled until reconnect.
 
@@ -414,11 +414,15 @@ Note: this endpoint is used for geofence/timezone edits; qbo_id, name, customer_
 ## Kiosks
 ### GET /api/kiosks/enrollment-code  [super admin]
 - Response: `{ "code": "123456" }`
-Note: returns the current org enrollment code; if none exists, generate and persist a new one.
+Note: returns the current org enrollment code; if none exists, generate and persist a new one (issued to the current super admin).
 
 ### POST /api/kiosks/enrollment-code/rotate  [super admin]
 - Response: `{ "code": "654321" }`
-Note: rotates to a new enrollment code; existing enrolled devices remain valid.
+Note: rotates to a new enrollment code (issued to the current super admin); existing enrolled devices remain valid.
+
+### GET /api/kiosks/registry  [super admin]
+- Response: `{ "ok": true, "kiosks": [ { "id": 1, "name": "...", "location": "...", "device_id": "...", "created_at": "...", "registered_at": "...", "last_enrolled_at": "...", "registered_by_employee_id": 12, "registered_by_name": "...", "geofence_project_id": 5, "geofence_project_name": "...", "geofence_customer_name": "...", "geofence_lat": 18.4, "geofence_lng": -66.0, "geofence_radius": 120 } ] }`
+Note: used by org settings to show enrolled kiosk inventory (device + registration ownership + geofence location context).
 
 ### GET /api/kiosks  [view_payroll]
 - Response: `[ { "id": 1, "name": "...", "location": "...", "device_id": "...", "project_id": 5, "created_at": "...", "project_name": "...", "customer_name": "..." } ]`
@@ -430,12 +434,13 @@ Note: rotates to a new enrollment code; existing enrolled devices remain valid.
 ### POST /api/kiosks/register  [enrollment code or device secret]
 - Request (enroll): `{ "enrollment_code": "...", "device_id": "..." }`
 - Request (refresh): `{ "device_id": "...", "device_secret": "..." }`
-- Response: `{ "ok": true, "org_timezone": "America/...", "kiosk": { "id": 1, "name": "...", "device_id": "...", "device_secret": "...", "project_id": 5 }, "sessions": [ { "id": 10, "project_id": 5, "date": "YYYY-MM-DD", "ended_at": "YYYY-MM-DDTHH:MM:SSZ" } ], "active_session_id": 10 }`
+- Response: `{ "ok": true, "org_timezone": "America/...", "kiosk": { "id": 1, "name": "...", "device_id": "...", "device_secret": "...", "project_id": 5, "registered_by_employee_id": 12, "registered_at": "...", "last_enrolled_at": "..." }, "sessions": [ { "id": 10, "project_id": 5, "date": "YYYY-MM-DD", "ended_at": "YYYY-MM-DDTHH:MM:SSZ" } ], "active_session_id": 10 }`
 Note: no session required; enrollment code ties the device to the org and returns a device_secret for offline auth.
 Note: enrollment_code must be a 6-digit numeric string; server normalizes by stripping non-digits.
 Note: if the org is suspended/inactive, return 403 (Org access denied).
 Note: device_id is client-generated and globally unique; if already enrolled in a different org, return 409.
 Note: if the device is already enrolled in this org, return the existing kiosk + timesheets; enrollment_code is only required for first-time enrollment or device_secret rotation.
+Note: every successful enrollment-code use auto-rotates the org enrollment code (single-use code behavior).
 Note: unknown device_id without enrollment_code returns 400 (no placeholder kiosk creation).
 Note: if device_secret mismatches (or is missing), return 403/400 and require re-enrollment with the org enrollment code (device_secret is never returned on mismatch).
 Note: `sessions` in the response are today's timesheets (kiosk_sessions).
@@ -511,16 +516,16 @@ Note: foreman is stored per kiosk + date and is attached to punches/time entries
 Note: if no foreman is set, the first employee to clock in auto-sets the foreman for that day.
 
 ## Kiosk Rate Unlock
-### POST /api/kiosk/rates/unlock  [modify_pay_rates + view_payroll]
+### POST /api/kiosk/rates/unlock  [kiosk admin + modify_pay_rates]
 - Request: `{ "admin_id": 12, "pin": "1234" }`
 - Response: `{ "ok": true, "expires_in_ms": 600000 }`
 Note: unlock expires after 10 minutes or on sign-out; PIN must be 4 digits. Returns 401 for incorrect PIN, 403 if the admin lacks modify_pay_rates or has no PIN set.
 
-### GET /api/kiosk/rates  [modify_pay_rates + view_payroll]
+### GET /api/kiosk/rates  [kiosk admin + modify_pay_rates]
 - Response: `{ "employees": [ { "id": 1, "name": "...", "rate": 12.5 } ] }`
 Note: requires an active unlock; returns 403 if locked. Returns all active employees (including pending/unlinked).
 
-### POST /api/kiosk/rates/:id  [modify_pay_rates + view_payroll]
+### POST /api/kiosk/rates/:id  [kiosk admin + modify_pay_rates]
 - Request: `{ "rate": 15.0 }`
 - Response: `{ "ok": true, "rate": 15.0 }`
 Note: requires an active unlock; returns 403 if locked. Successful updates refresh the unlock timer.
@@ -543,11 +548,11 @@ Note: photo_base64 is used for clock-in only and stored as clock_in_photo_path; 
 Note: if the requester lacks `view_all_timesheets`, `view_payroll`, and is not a super admin, results are limited to open punches tied to timesheets they created, are assigned, or that are shared (legacy sessions without a creator are included).
 
 ### GET /api/time-entries  [view_time_reports or view_payroll]
-- Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id` (defaults to today if empty)
+- Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id`, optional `all_dates=1`, optional `hide_paid=1`, optional `hide_payroll_approved=1` (defaults to today if empty unless `all_dates=1`)
 - Response: `[ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "start_time": "08:00", "end_time": "16:00", "hours": 8, "total_pay": 120, "paid": 0, "paid_date": null, "verified": 0, "verified_at": null, "verified_by_employee_id": null, "resolved": 0, "resolved_status": "open|approved|modified|rejected", "resolved_note": null, "resolved_at": null, "resolved_by": null, "approval_status": "pending|approved", "approved_at": null, "approved_by_employee_id": null, "updated_at": "YYYY-MM-DDTHH:MM:SSZ", "has_geo_violation": 0, "has_auto_clock_out": 0, "punch_exception_resolved": 0 } ]`
 - Note: pay fields (`total_pay`, `paid`, `paid_date`) should be hidden unless `view_payroll` is granted.
-Note: approval_status must be approved by a user with approve_time (payroll permissions) before payroll can run; any edit resets approval to pending. Field review (resolved_status/resolved) is required before approval.
-Note: resolved_status/resolved track field review; entries start open and must be reviewed by a modify_time admin before payroll approval.
+Note: approval_status must be approved by a user with approve_time (payroll permissions) before payroll can run; any edit resets approval to pending. Field review (resolved_status/resolved) is advisory and is surfaced as a warning when approving/creating checks.
+Note: resolved_status/resolved track field review only; payroll eligibility is based on payroll approval (`approval_status=approved`) and unpaid status.
 Note: defaults to today when no filters are provided; response is capped (legacy limit 200).
 
 ### GET /api/time-entries/pending-count  [view_time_reports or view_payroll]
@@ -611,7 +616,7 @@ Note: if_match_updated_at is optional; when provided and stale, return 409 with 
 ### POST /api/time-entries/:id/approve  [modify_time + approve_time]
 - Request: `{ "note": "...", "actor_name": "...", "if_match_updated_at": "YYYY-MM-DDTHH:MM:SSZ" }`
 - Response: `{ "ok": true, "approval_status": "approved", "approved_at": "YYYY-MM-DDTHH:MM:SSZ", "approved_by_employee_id": 12 }`
-Note: field review (resolved_status/resolved) is required before approval. Note is required when the entry has discrepancies or was manually modified since last approval. Approvals are audited.
+Note: field review (resolved_status/resolved) is advisory; approvals can proceed with a warning when field review is pending. Approving for payroll also stamps the entry field-review status as approved and marks linked punch review flags approved so the entry is payroll-ready in one step. Note is required when the entry has discrepancies or was manually modified since last approval. Approvals are audited.
 Note: if_match_updated_at is optional; when provided and stale, return 409 with the current time entry snapshot.
 
 ### POST /api/time-entries/approve  [modify_time + approve_time]
@@ -640,34 +645,63 @@ Note: if_match_updated_at is optional; when provided and stale, return 409 with 
 Note: note is required; resolves punch exceptions without modifying times (equivalent to approve).
 
 ## Payroll
-### GET /api/payroll/account-options  [view_payroll]
+### GET /api/payroll/account-options  [super admin]
 - Response: `{ "ok": true, "bankAccounts": [ { "id": "...", "name": "...", "fullName": "...", "type": "..." } ], "expenseAccounts": [ { "id": "...", "name": "...", "fullName": "...", "type": "..." } ] }`
 
-### GET /api/payroll/classes  [view_payroll]
+### GET /api/payroll/classes  [super admin]
 - Response: `{ "ok": true, "classes": [ { "id": "...", "name": "...", "fullName": "...", "active": true } ] }`
 
-### GET /api/payroll/settings  [view_payroll]
-- Response: `{ "bank_account_name": "...", "expense_account_name": "...", "default_memo": "...", "line_description_template": "..." }`
+### GET /api/payroll/settings  [super admin]
+- Response: `{ "bank_account_name": "...", "expense_account_name": "...", "receipt_expense_account_name": "...", "receipt_class_name": "...", "default_memo": "...", "line_description_template": "..." }`
+Note: reimbursements use `receipt_expense_account_name` as their default expense account (fallback `expense_account_name` if unset); `receipt_class_name` is the reimbursement class default.
 
-### POST /api/payroll/settings  [modify_payroll]
-- Request: `{ "bank_account_name": "...", "expense_account_name": "...", "default_memo": "...", "line_description_template": "..." }`
+### POST /api/payroll/settings  [super admin]
+- Request: `{ "bank_account_name": "...", "expense_account_name": "...", "receipt_expense_account_name": "...", "receipt_class_name": "...", "default_memo": "...", "line_description_template": "..." }`
 - Response: `{ "ok": true }`
+Note: set `expense_account_name` for regular payroll lines, `receipt_expense_account_name` for reimbursement lines (fallback to main expense if blank), and `receipt_class_name` for reimbursement classes.
 
-### GET /api/payroll-summary  [view_payroll]
-- Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `includePaid=true|false`, `includeOvertime=true|false` (default true)
-- Response: `[ { "employee_id": 1, "employee_name": "...", "project_id": 5, "project_name": "...", "project_hours": 40, "project_pay": 1200, "any_paid": 0, "last_paid_date": null, "payroll_run_id": 10 } ]`
+### GET /api/payroll/reimbursements  [super admin]
+- Query: optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `status=requested|approved|paid|cancelled|all` (default `requested`), `employeeId`, `projectId`, `limit` (default 100, max 300)
+- Response: `{ "ok": true, "rows": [ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested|approved|paid|cancelled", "requested_at": "YYYY-MM-DD HH:MM:SS", "requested_by_name": "...", "approved_at": null, "approved_by_employee_id": null, "approved_by_name": null, "paid_date": null, "payroll_run_id": null, "payroll_check_id": null, "original_filename": "...", "mime_type": "...", "receipt_url": "/api/payroll/reimbursements/1/receipt" } ] }`
+Note: rows are org-scoped and ordered by expense_date DESC then id DESC.
+Note: date filters validate strict YYYY-MM-DD.
+
+### POST /api/payroll/reimbursements  [super admin]
+- Request: multipart/form-data with `receipt` (required file), `employee_id` (required), `project_id` (required), `vendor_name` (required), `amount` (required > 0), optional `expense_date` (`YYYY-MM-DD`), optional `note`.
+- Response: `{ "ok": true, "reimbursement": { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "project_customer_name": "...", "vendor_name": "...", "amount": 125.5, "expense_date": "YYYY-MM-DD", "note": "...", "status": "requested", "receipt_url": "/api/payroll/reimbursements/1/receipt" } }`
+Note: upload is stored under secure uploads (outside public root).
+Note: allowed file types are PDF and images (png/jpg/jpeg/gif/webp), max 10MB, and file content is validated by signature sniffing.
+Note: employee_id/project_id must belong to the same org.
+Note: new reimbursement requests are not payroll-eligible until a super admin approves them.
+
+### POST /api/payroll/reimbursements/:id/approve  [super admin]
+- Request: no body required.
+- Response: `{ "ok": true, "reimbursement": { "id": 1, "status": "approved", "approved_at": "YYYY-MM-DD HH:MM:SS", "approved_by_employee_id": 12, "approved_by_name": "..." } }`
+Note: only `requested` reimbursements can be approved; `paid`/`cancelled` rows return 409.
+
+### GET /api/payroll/reimbursements/:id/receipt  [super admin]
+- Response: binary file download
+Note: file download is org-scoped and returns 404 when the row or file is missing.
+
+### GET /api/payroll-summary  [super admin]
+- Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `includePaid=true|false`, `includeOvertime=true|false` (default true), `includeReceiptReimbursements=true|false` (default true)
+- Response: `{ "ok": true, "rows": [ { "employee_id": 1, "employee_name": "...", "project_id": 5, "project_name": "...", "project_hours": 40, "project_pay": 1200, "any_paid": 0, "last_paid_date": null, "payroll_run_id": 10, "is_receipt_reimbursement": 0, "reimbursement_count": 0, "expense_account_name": null, "class_name": null } ], "pending_approvals": { "pending_count": 2, "pending": [ { "id": 10, "employee_id": 1, "employee_name": "...", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "approval_status": "pending" } ] } }`
+Note: pending approvals are advisory in this response. The summary still loads, and only payroll-approved unpaid entries are included in `rows`.
 Note: when overtime is enabled and includeOvertime=true, totals in the summary/check preview apply payroll_rules overtime; time_entries.total_pay remains base pay.
+Note: when includeReceiptReimbursements=true, approved reimbursements in-range are added as separate line rows; receipt rows use synthetic `project_id` values (`receipt-<project_id>-<vendor-hash>`), `project_hours=0`, and `project_pay` from reimbursement totals.
+Note: receipt rows use `receipt_expense_account_name` (fallback `expense_account_name`) and `receipt_class_name`.
+Note: receipt rows use description format `[Vendor] Reimbursement` and do not map customer/project refs to QuickBooks line `CustomerRef`.
 
-### GET /api/payroll/time-entries  [view_payroll]
+### GET /api/payroll/time-entries  [super admin]
 - Query: `employeeId`, `start=YYYY-MM-DD`, `end=YYYY-MM-DD` (all required)
 - Response: `[ { "id": 1, "employee_id": 7, "project_id": 5, "project_name": "...", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "start_time": "08:00", "end_time": "16:00", "hours": 8, "total_pay": 120, "rate": 15, "resolved_status": "approved", "resolved_note": null, "punch_count": 2, "punch_exception_count": 0, "punch_exception_unapproved_count": 0, "punch_hours": 8 } ]`
-- Note: returns only entries eligible for payroll (field review complete; exceptions approved/modified or none); hours/total_pay are rounded for display.
+- Note: returns only payroll-approved unpaid entries for the selected period (`approval_status=approved`, paid=0); exception/review state does not block payroll eligibility. hours/total_pay are rounded for display.
 Note: total_pay reflects base pay for the entry; overtime adjustments are applied at payroll summary/run time.
 
-### POST /api/payroll/preflight-checks  [modify_payroll]
-- Request: `{ "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "bankAccountName": "...", "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "...", "includeOvertime": true, "overrides": [ { "employeeId": 1, "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "..." } ], "lineOverrides": [ { "employeeId": 1, "projectId": 5, "expenseAccountName": "...", "description": "...", "className": "..." } ], "customLines": [ { "employeeId": 1, "amount": 50, "description": "...", "expenseAccountName": "...", "className": "...", "projectId": 5 } ], "excludeEmployeeIds": [1, 2], "onlyEmployeeIds": [3] }`
-- Response: `{ "ok": true, "preview": true, "preflight_id": 42, "payload_hash": "sha256:...", "snapshot_hash": "sha256:...", "snapshot_count": 12, "results": [ { "employeeId": 1, "employeeName": "...", "totalHours": 40, "totalPay": 1200, "ok": true, "error": null, "warnings": [], "warningCodes": [], "previewOnly": true } ], "fatalQboError": null }`
-- Response (not connected): `{ "ok": false, "reason": "Not connected to QuickBooks (no access token or realmId).", "drafts": [ { "employee_id": 1, "employee_name": "...", "name_on_checks": "...", "vendor_qbo_id": "...", "employee_qbo_id": "...", "total_hours": 40, "total_pay": 1200, "memo": "...", "expense_account_name": "...", "lines": [ { "project_id": 5, "project_name": "...", "project_hours": 8, "project_pay": 240, "project_qbo_id": "...", "project_customer_name": "...", "description": "...", "is_custom": false } ] } ], "preview": true }`
+### POST /api/payroll/preflight-checks  [super admin]
+- Request: `{ "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "bankAccountName": "...", "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "...", "includeOvertime": true, "includeReceiptReimbursements": true, "overrides": [ { "employeeId": 1, "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "..." } ], "lineOverrides": [ { "employeeId": 1, "projectId": 5, "expenseAccountName": "...", "description": "...", "className": "..." } ], "customLines": [ { "employeeId": 1, "amount": 50, "description": "...", "expenseAccountName": "...", "className": "...", "projectId": 5 } ], "excludeEmployeeIds": [1, 2], "onlyEmployeeIds": [3] }`
+- Response: `{ "ok": true, "preview": true, "preflight_id": 42, "payload_hash": "sha256:...", "snapshot_hash": "sha256:...", "snapshot_count": 12, "pending_approvals": { "pending_count": 2, "pending": [ { "id": 10, "employee_id": 1, "employee_name": "...", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "approval_status": "pending" } ] }, "field_review": { "pending_count": 0, "pending": [] }, "results": [ { "employeeId": 1, "employeeName": "...", "totalHours": 40, "totalPay": 1200, "ok": true, "error": null, "warnings": [], "warningCodes": [], "previewOnly": true } ], "fatalQboError": null }`
+- Response (not connected): `{ "ok": false, "reason": "Not connected to QuickBooks (no access token or realmId).", "drafts": [ { "employee_id": 1, "employee_name": "...", "name_on_checks": "...", "vendor_qbo_id": "...", "employee_qbo_id": "...", "total_hours": 40, "total_pay": 1200, "memo": "...", "expense_account_name": "...", "lines": [ { "project_id": 5, "project_name": "...", "project_hours": 8, "project_pay": 240, "project_qbo_id": "...", "project_customer_name": "...", "description": "...", "is_custom": false } ] } ], "preview": true, "pending_approvals": { "pending_count": 2, "pending": [ ... ] }, "field_review": { "pending_count": 0, "pending": [] } }`
 Note: validates QBO connection, payee links, and account/class names; no QBO checks are created.
 Note: preflight stores a short-lived snapshot (preflight_id, payload_hash, snapshot_hash) tied to the payload and eligible time entries; create-checks must reference it (default TTL 30 minutes).
 Note: per-employee failures return ok=false with errors like missing payee, missing expense account/class, or no payable lines.
@@ -675,17 +709,19 @@ Note: class is required; if missing or not found in QBO, the employee result is 
 Note: validates start/end (YYYY-MM-DD) and enforces a max 31-day range.
 Note: excludeEmployeeIds removes those employees from the draft set; onlyEmployeeIds further limits to a subset (useful for retry).
 Note: missing QBO link yields ok=false with an error like "No QuickBooks payee linked"; UI should alert before create-checks.
-Note: if any time entries in the period are missing field review, return 409 with a list of pending reviews; if approvals are missing, return 409 with a list of pending approvals.
+Note: field review and pending approvals are advisory; include `field_review.pending_count` and `pending_approvals.pending_count` (with limited lists) so UI can warn while still allowing payroll for approved entries.
+Note: includeReceiptReimbursements controls whether approved receipt reimbursements are included in draft checks (including employees who have reimbursements but no time-entry pay in the period).
+Note: checks that include reimbursement lines append ` + Reimbursement` to the check memo/private note.
 
-### POST /api/payroll/create-checks  [modify_payroll]
-- Request: `{ "preflight_id": 42, "payload_hash": "sha256:...", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "bankAccountName": "...", "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "...", "includeOvertime": true, "overrides": [ { "employeeId": 1, "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "..." } ], "lineOverrides": [ { "employeeId": 1, "projectId": 5, "expenseAccountName": "...", "description": "...", "className": "..." } ], "customLines": [ { "employeeId": 1, "amount": 50, "description": "...", "expenseAccountName": "...", "className": "...", "projectId": 5 } ], "excludeEmployeeIds": [1, 2], "onlyEmployeeIds": [3], "isRetry": false, "originalPayrollRunId": 10, "fromAttemptId": 5, "idempotencyKey": "...", "run_type": "standard|adjustment", "adjustment_reason": "..." }`
+### POST /api/payroll/create-checks  [super admin]
+- Request: `{ "preflight_id": 42, "payload_hash": "sha256:...", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "bankAccountName": "...", "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "...", "includeOvertime": true, "includeReceiptReimbursements": true, "overrides": [ { "employeeId": 1, "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "..." } ], "lineOverrides": [ { "employeeId": 1, "projectId": 5, "expenseAccountName": "...", "description": "...", "className": "..." } ], "customLines": [ { "employeeId": 1, "amount": 50, "description": "...", "expenseAccountName": "...", "className": "...", "projectId": 5 } ], "excludeEmployeeIds": [1, 2], "onlyEmployeeIds": [3], "isRetry": false, "originalPayrollRunId": 10, "fromAttemptId": 5, "idempotencyKey": "...", "run_type": "standard|adjustment", "adjustment_reason": "..." }`
 - Response: `{ "ok": true, "status": "COMPLETED|PARTIAL", "payrollRunId": 10, "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "totalHours": 40, "totalPay": 1200, "results": [ { "employeeId": 1, "employeeName": "...", "totalHours": 40, "totalPay": 1200, "ok": true, "error": null, "warnings": [], "warningCodes": [], "qboTxnId": "..." } ], "attempt_id": 5, "idempotencyKey": "...", "fatal_qbo_error": null, "warnings": [ { "code": "backup_failed|backup_lock_busy", "message": "...", "error": "..." } ] }`
 Note: returns 409 if a payroll run is already in progress (DB lock).
 Note: if idempotencyKey was already completed for the same period and isRetry=false, returns ok=true with status=completed and no new checks.
 Note: if idempotencyKey exists for the same period and status is PENDING/IN_PROGRESS, return 409 (run already in progress). If status is FAILED/PARTIAL and isRetry=false, return 409 and require a retry flow or a new idempotency key.
 Note: create-checks requires a valid preflight_id + payload_hash that match the request; return 400 if missing, stale, or mismatched.
 Note: if the eligible time-entry snapshot changed since preflight, return 409 and require a new preflight.
-Note: if any time entries in the period are missing field review, return 409 with a list of pending reviews; if approvals are missing, return 409 with a list of pending approvals.
+Note: no period-wide approval hard block. Payroll processes approved unpaid entries only; pending approvals in the date range are left unpaid and should be surfaced as warnings by UI.
 Note: standard runs reject overlapping periods; adjustment runs are allowed only with explicit run_type=adjustment + adjustment_reason.
 Note: the system always creates new checks; it does not merge into existing queued checks.
 Note: per-employee failures return ok=false with an error message; successful employees are marked paid, failed employees remain unpaid.
@@ -698,17 +734,20 @@ Note: warnings may include backup_failed or backup_lock_busy when the pre-check 
 Note: DB errors after QBO creation return ok=false and require manual review in QBO.
 Note: non-retry runs validate start/end (max 31 days); retry runs only check date ordering and matching original period when originalPayrollRunId is provided.
 Note: run status is PARTIAL when any employee fails; COMPLETED requires all ok.
+Note: when includeReceiptReimbursements=true, successful employees also mark matching in-range approved reimbursements as paid and link them to payroll_run_id/payroll_check_id.
+Note: checks that include reimbursement lines append ` + Reimbursement` to the check memo/private note.
 
-### POST /api/payroll/preview-checks  [modify_payroll, deprecated]
+### POST /api/payroll/preview-checks  [super admin, deprecated]
 Legacy endpoint; do not implement in the rebuild. If kept for compatibility, it must behave exactly like /api/payroll/preflight-checks (previewOnly) and never create QBO checks (including includeOvertime handling).
 
-### POST /api/payroll/unpay  [modify_payroll]
+### POST /api/payroll/unpay  [super admin]
 - Request: `{ "payrollRunId": 10, "employeeId": 1, "reason": "...", "payrollCheckId": 123 }`
 - Response: `{ "ok": true, "payrollRunId": 10 }`
 Note: requires payrollRunId + employeeId. If payrollCheckId is provided, only that check is voided; otherwise all checks for the employee/run are voided.
 Note: clears time_entries.paid and paid_date for entries tied to the payroll_run_id, sets payroll_checks.paid=0 with voided_at + voided_reason, and recalculates payroll_runs totals.
+Note: resets linked paid receipt reimbursements for the employee/run back to approved and clears their payroll linkage.
 
-### GET /api/payroll/audit-log  [view_payroll]
+### GET /api/payroll/audit-log  [super admin]
 - Response: `{ "ok": true, "logs": [ { "id": 1, "event_type": "PAYROLL_RUN_STARTED", "payroll_run_id": 10, "actor_employee_id": 12, "message": "...", "details_json": "{...}", "created_at": "..." } ] }`
 Note: returns the latest 200 rows ordered by created_at DESC; no query params.
 Note: raw log (details_json is a string, not parsed). Use /api/reports/payroll-audit for a parsed, UI-friendly view.
@@ -716,7 +755,7 @@ Note: raw log (details_json is a string, not parsed). Use /api/reports/payroll-a
 ## Shipments
 ### GET /api/shipments  [see_shipments]
 - Query: `search`, `status`, `project_id`, `vendor_id`
-- Response: `{ "statuses": [ "Pre-Order", "Ordered", "..." ], "shipmentsByStatus": { "Pre-Order": [ { "id": 1, "title": "...", "status": "Pre-Order", "project_id": 5, "project_name": "...", "customer_name": "...", "vendor_name": "...", "items_verified": 0, "has_shippers_invoice_doc": 1, "has_bol_doc": 0 } ] } }`
+- Response: `{ "statuses": [ "Pre-Order", "Ordered", "..." ], "shipmentsByStatus": { "Pre-Order": [ { "id": 1, "title": "...", "status": "Pre-Order", "project_id": 5, "project_name": "...", "customer_name": "...", "vendor_name": "...", "items_verified": 0, "has_shippers_invoice_doc": 1, "has_bol_doc": 0, "personal_note": "...", "personal_note_completed": 0 } ] } }`
 Note: excludes archived rows by default; if status=Archived is selected, return archived rows (is_archived=1) and only archived shipments.
 Note: search applies to title, po_number, tracking_number, and bol_number (LIKE).
 Note: vendor_id filter matches vendor_id or vendor_name.
@@ -724,15 +763,16 @@ Note: statuses includes the known status list plus any extra status values found
 Note: results are sorted by updated_at DESC (fallback created_at), then created_at DESC.
 Note: has_shippers_invoice_doc and has_bol_doc are computed from shipment_documents (case-insensitive match on doc_type/doc_label for Shippers Invoice and BOL/Bill of Lading).
 Note: payment amount fields (vendor_paid_amount, shipper_paid_amount, customs_paid_amount, storage_paid_amount, total_paid) and paid-by fields (shipper_paid_by, customs_paid_by, storage_paid_by) are null unless the caller has view_payroll.
+Note: personal_note fields are private per-user notes (scoped to org_id + user_id) and only include the current session user's note for each shipment.
 
 ### GET /api/shipments/:id  [see_shipments]
-- Response: `{ "shipment": { "id": 1, "title": "...", "status": "Arrived", "project_id": 5, "project_name": "...", "customer_name": "...", "vendor_name": "...", "is_container": 0 }, "items": [ { "id": 10, "shipment_id": 1, "description": "...", "sku": "...", "quantity": 2, "unit_price": 10, "line_total": 20, "vendor_name": "...", "verified": 1, "notes": "...", "verification": { "status": "verified", "notes": "...", "storage_override": "" } } ] }`
+- Response: `{ "shipment": { "id": 1, "title": "...", "status": "Arrived", "project_id": 5, "project_name": "...", "customer_name": "...", "vendor_name": "...", "country_of_origin": "...", "requested_clearing": false, "requested_clearing_date": null, "is_container": 0 }, "items": [ { "id": 10, "shipment_id": 1, "description": "...", "sku": "...", "country_of_origin": "...", "quantity": 2, "unit_price": 10, "line_total": 20, "vendor_name": "...", "verified": 1, "notes": "...", "verification": { "status": "verified", "notes": "...", "storage_override": "" } } ] }`
 Note: returns the shipment regardless of is_archived. Items are sorted by id ASC.
 Note: verification is parsed from verification_json when present; fallback uses legacy verified/notes with storage_override="". When present, verification may also include verified_by, verified_at, verified_by_employee_id, verified_by_user_id, verified_via, verified_device_id, issue_type, and history.
 Note: payment amount fields (vendor_paid_amount, shipper_paid_amount, customs_paid_amount, storage_paid_amount, total_paid) and paid-by fields (shipper_paid_by, customs_paid_by, storage_paid_by) are null unless the caller has view_payroll.
 
 ### POST /api/shipments  [see_shipments]
-- Request: `{ "title": "...", "po_number": "...", "project_id": 1, "vendor_id": 2, "vendor_name": "...", "freight_forwarder": "...", "destination": "...", "sku": "...", "quantity": 10, "total_price": 1000, "price_per_item": 100, "expected_ship_date": "YYYY-MM-DD", "expected_arrival_date": "YYYY-MM-DD", "tracking_number": "...", "bol_number": "...", "is_container": false, "storage_due_date": "YYYY-MM-DD", "storage_daily_late_fee": 25, "picked_up_by": "...", "picked_up_date": "YYYY-MM-DD", "vendor_paid": true, "vendor_paid_amount": 500, "shipper_paid": true, "shipper_paid_amount": 200, "shipper_paid_by": "Company", "customs_paid": true, "customs_paid_amount": 150, "customs_paid_by": "Other: Broker", "storage_paid": true, "storage_paid_amount": 75, "storage_paid_by": "Company", "total_paid": 925, "items": [ { "description": "...", "sku": "...", "quantity": 1, "unit_price": 100, "line_total": 100, "vendor_name": "...", "verification": { "status": "verified", "notes": "...", "storage_override": "" } } ], "items_verified": true, "verified_by": "...", "verification_notes": "...", "website_url": "...", "notes": "...", "status": "Pre-Order" }`
+- Request: `{ "title": "...", "po_number": "...", "project_id": 1, "vendor_id": 2, "vendor_name": "...", "freight_forwarder": "...", "destination": "...", "sku": "...", "country_of_origin": "...", "quantity": 10, "total_price": 1000, "price_per_item": 100, "expected_ship_date": "YYYY-MM-DD", "expected_arrival_date": "YYYY-MM-DD", "tracking_number": "...", "bol_number": "...", "requested_clearing": true, "requested_clearing_date": "YYYY-MM-DD", "is_container": false, "storage_due_date": "YYYY-MM-DD", "storage_daily_late_fee": 25, "picked_up_by": "...", "picked_up_date": "YYYY-MM-DD", "vendor_paid": true, "vendor_paid_amount": 500, "shipper_paid": true, "shipper_paid_amount": 200, "shipper_paid_by": "Company", "customs_paid": true, "customs_paid_amount": 150, "customs_paid_by": "Other: Broker", "storage_paid": true, "storage_paid_amount": 75, "storage_paid_by": "Company", "total_paid": 925, "items": [ { "description": "...", "sku": "...", "country_of_origin": "...", "quantity": 1, "unit_price": 100, "line_total": 100, "vendor_name": "...", "verification": { "status": "verified", "notes": "...", "storage_override": "" } } ], "items_verified": true, "verified_by": "...", "verification_notes": "...", "website_url": "...", "notes": "...", "status": "Pre-Order" }`
 - Response: `{ "shipment": { "id": 12, "title": "...", "status": "Pre-Order", "project_id": 1 } }`
 Note: freight_forwarder is selected from vendors flagged as freight forwarders and stored as a name string.
 Note: total_price is stored as provided; the UI defaults it to the sum of line_total but allows manual override (override does not change line items).
@@ -769,6 +809,19 @@ Note: if employee_id is provided, picked_up_updated_by is set to the employee ni
 - Request: `{ "notes": "...", "employee_id": 12 }`
 - Response: `{ "shipment": { "id": 12, "notes": "..." } }`
 Note: kiosk-friendly update for shipment notes; blank strings are normalized to null.
+
+### GET /api/shipments/:id/personal-note  [see_shipments]
+- Response: `{ "note": { "shipment_id": 12, "note": "...", "is_completed": 0, "completed_at": null, "updated_at": "..." } }`
+Note: returns the current session user's private note for the shipment (scoped by org_id + user_id). If no note exists, note is null.
+
+### PUT /api/shipments/:id/personal-note  [see_shipments]
+- Request: `{ "note": "...", "is_completed": false }`
+- Response: `{ "ok": true }`
+Note: upserts the current session user's private note for the shipment. If is_completed is true, completed_at is stamped if not already set. If is_completed is false, completed_at is cleared.
+
+### DELETE /api/shipments/:id/personal-note  [see_shipments]
+- Response: `{ "ok": true }`
+Note: deletes the current session user's private note for the shipment.
 
 ### GET /api/shipments/:id/payments  [view_payroll]
 - Response: `{ "payments": [ { "id": 1, "shipment_id": 12, "type": "vendor", "amount": 500, "currency": "USD", "status": "Pending", "due_date": "YYYY-MM-DD", "paid_date": null, "invoice_number": "...", "notes": "...", "file_path": null, "created_by": 9, "created_at": "..." } ] }`
@@ -871,7 +924,7 @@ Note: duplicate client_id returns ok=true with alreadyProcessed=true.
 Note: does not change shipment status or create timeline entries.
 
 ### GET /api/shipments/templates  [see_shipments]
-- Response: `{ "templates": [ { "id": 1, "name": "...", "title": "...", "vendor_id": 2, "vendor_name": "...", "project_id": 5, "project_name": "...", "freight_forwarder": "...", "destination": "...", "sku": "...", "quantity": 10, "total_price": 1000, "price_per_item": 100, "website_url": "...", "notes": "...", "items": [ { "description": "...", "sku": "...", "quantity": 2, "unit_price": 100, "line_total": 200, "vendor_name": "..." } ], "created_at": "..." } ] }`
+- Response: `{ "templates": [ { "id": 1, "name": "...", "title": "...", "vendor_id": 2, "vendor_name": "...", "project_id": 5, "project_name": "...", "freight_forwarder": "...", "destination": "...", "sku": "...", "country_of_origin": "...", "quantity": 10, "total_price": 1000, "price_per_item": 100, "website_url": "...", "notes": "...", "items": [ { "description": "...", "sku": "...", "country_of_origin": "...", "quantity": 2, "unit_price": 100, "line_total": 200, "vendor_name": "..." } ], "created_at": "..." } ] }`
 Note: templates are per-org. vendor_name and project_name are resolved for display (join or snapshot).
 
 ### POST /api/shipments/templates  [see_shipments]
@@ -903,32 +956,32 @@ Note: notify_time must be HH:MM (24-hour) when provided.
 
 ## Reports
 ### GET /api/time-entries/export/:format  [view_time_reports or view_payroll]
-- Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id` (defaults to today if empty)
+- Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id`, optional `all_dates=1`, optional `hide_paid=1`, optional `hide_payroll_approved=1` (defaults to today if empty unless `all_dates=1`)
 - Response: CSV or PDF file download (`format` is `csv` or `pdf`)
 Note: CSV columns include Employee, Project, Start Date, End Date, Start Time, End Time, Hours, Total Pay, Paid, Paid Date, Geo Violation, Auto Clock-out.
 Note: PDF includes Date, Time, Employee, Project, Hours, Paid.
 Note: pay fields (Total Pay/Paid/Paid Date) are omitted entirely unless view_payroll is granted.
 
-### GET /api/reports/payroll-runs  [view_payroll]
+### GET /api/reports/payroll-runs  [super admin]
 - Response: `[ { "id": 10, "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "status": "PENDING|IN_PROGRESS|PARTIAL|COMPLETED|FAILED", "created_at": "...", "total_hours": 40, "total_pay": 1200, "check_count": 8, "paid_checks": 7 } ]`
 - Note: sorted by created_at DESC. `check_count` includes all checks for the run; `paid_checks` counts checks with `paid=1`.
 
-### GET /api/reports/payroll-runs/:id  [view_payroll]
+### GET /api/reports/payroll-runs/:id  [super admin]
 - Response: `[ { "id": 77, "employee_name": "...", "total_hours": 40, "total_pay": 1200, "check_number": "1024", "paid": 1, "paid_date": "YYYY-MM-DD HH:MM:SS" } ]`
 - Note: sorted by employee name (A-Z). `paid` is stored as 0/1; `paid_date` may be null when unpaid.
 
-### PATCH /api/reports/checks/:id  [modify_payroll]
+### PATCH /api/reports/checks/:id  [super admin]
 - Request: `{ "check_number": "1024", "paid": true }`
 - Response: `{ "ok": true, "paid": true, "paid_date": "YYYY-MM-DD HH:MM:SS" }`
 - Note: if `paid` changes, update payroll_checks.paid/paid_date, update time_entries paid flags for the employee/run, and recalc payroll_runs totals. If only `check_number` is updated, do not touch paid or paid_date.
 
-### GET /api/reports/payroll-audit  [view_payroll]
+### GET /api/reports/payroll-audit  [super admin]
 - Query: `limit=50` (default 50, max 500), optional `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `actor` (name or employee id)
 - Response: `[ { "id": 1, "event_type": "PAYROLL_RUN_STARTED", "message": "...", "payroll_run_id": 10, "created_at": "...", "details": { ... }, "actor_employee_id": 12, "actor_name": "..." } ]`
 - Note: sorted by created_at DESC, then id DESC. `details` is parsed from details_json; null if invalid JSON.
 - Note: event_type values include PAYROLL_RUN_STARTED, PAYROLL_QBO_COMPLETE, PAYROLL_QBO_ERROR, PAYROLL_RUN_SUCCESS, PAYROLL_RUN_PARTIAL, PAYROLL_RUN_FAILURE, PAYROLL_FATAL_ERROR, RETRY_STARTED, RETRY_QBO_COMPLETE, RETRY_SUCCESS, PAYROLL_UNPAY.
 
-### GET /api/reports/payroll-audit-log  [view_payroll]
+### GET /api/reports/payroll-audit-log  [super admin]
 - Query: `limit=200` (default 200, max 1000)
 - Response: `{ "ok": true, "logs": [ { "id": 1, "event_type": "PAYROLL_RUN_STARTED", "payroll_run_id": 10, "actor_employee_id": 12, "message": "...", "details_json": "{...}", "created_at": "..." } ] }`
 - Note: raw log; sorted by created_at DESC, then id DESC.
@@ -977,6 +1030,7 @@ Note: channels default to ["in_app"] when omitted. Push/email are skipped if dis
 Note: push_public_key may be empty when web push is not configured; the client uses it to register a push subscription.
 Note: shipment_filters/payroll_filters/time_filters are parsed from JSON blobs; empty objects when unset.
 Note: if no prefs exist, return defaults (email_enabled=true, push_enabled=true, empty filters, remind_time="", remind_every_days=1, clockout_enabled=false, clockout_time="").
+Note: remind_time/remind_every_days define the schedule for non-event alerts (e.g., clock-out reminders). clockout_time is legacy and currently ignored.
 Note: recommended filter shapes:
 - shipment_filters: `{ "enabled": true, "statuses": [], "project_ids": [] }`
 - payroll_filters: `{ "enabled": true, "event_types": [] }`
@@ -987,7 +1041,7 @@ Note: payroll event_types: PAYROLL_RUN_DUE, PAYROLL_RUN_STARTED, PAYROLL_RUN_SUC
 ### PUT /api/notifications/prefs  [auth]
 - Request: `{ "email_enabled": true, "push_enabled": true, "shipment_filters": { ... }, "payroll_filters": { ... }, "time_filters": { ... }, "remind_time": "09:00", "remind_every_days": 1, "clockout_enabled": false, "clockout_time": "17:00" }`
 - Response: `{ "ok": true, "prefs": { ... } }`
-Note: remind_time/clockout_time must be HH:MM (24-hour) when provided; remind_every_days coerced to >= 1.
+Note: remind_time/clockout_time must be HH:MM (24-hour) when provided; remind_every_days coerced to >= 1. clockout_time is legacy and currently ignored.
 
 ### POST /api/notifications/push/subscribe  [auth]
 - Request: `{ "endpoint": "...", "p256dh": "...", "auth": "...", "user_agent": "..." }`

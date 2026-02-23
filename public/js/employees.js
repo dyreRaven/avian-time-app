@@ -86,9 +86,6 @@ function applySuperAdminAccessToEmployees(isSuperAdmin) {
   [roleTitleInput, templateSelect, modalRoleTitleInput, modalTemplateSelect].forEach(el => {
     if (el) el.disabled = shouldLock;
   });
-  if (isSuperAdmin) {
-    loadPermissionTemplates({ force: true });
-  }
 }
 
 function forceSuperAdminPermissionChecks() {
@@ -98,8 +95,6 @@ function forceSuperAdminPermissionChecks() {
     'edit-employee-perm-view-time-reports',
     'edit-employee-perm-view-all-timesheets',
     'edit-employee-perm-assign-timesheets',
-    'edit-employee-perm-view-payroll',
-    'edit-employee-perm-modify-payroll',
     'edit-employee-perm-modify-pay-rates'
   ];
   ids.forEach(id => {
@@ -162,7 +157,54 @@ function updateEmployeeAdminLoginActionLabel() {
   if (hasPassword) {
     saveBtn.textContent = editingEmployeeAdminUser ? 'Save admin login' : 'Create admin login';
   } else {
-    saveBtn.textContent = editingEmployeeAdminUser ? 'Resend setup link' : 'Send setup link';
+    saveBtn.textContent = editingEmployeeAdminUser ? 'Resend admin invite' : 'Send admin invite link';
+  }
+}
+
+function getAdminUserId(adminUser) {
+  const raw = adminUser ? (adminUser.user_id ?? adminUser.id) : null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function syncEmployeeAdminLoginState() {
+  if (window.CURRENT_IS_SUPER_ADMIN !== true) return;
+  const desktopAccessCheckbox = document.getElementById('edit-employee-desktop-access');
+  const inactiveNote = document.getElementById('employee-admin-login-inactive-note');
+  const loginCard = document.getElementById('employee-admin-login-card');
+  const saveBtn = document.getElementById('employee-admin-login-save');
+  const emailInput = document.getElementById('employee-admin-login-email');
+  const passwordInput = document.getElementById('employee-admin-login-password');
+  const confirmInput = document.getElementById('employee-admin-login-password-confirm');
+  const hasAdminAccess = desktopAccessCheckbox ? !!desktopAccessCheckbox.checked : false;
+  const hasExistingLogin = !!editingEmployeeAdminUser;
+  const showLoginCard = hasAdminAccess || hasExistingLogin;
+  const lockLoginActions = !hasAdminAccess;
+
+  if (loginCard) {
+    loginCard.classList.toggle('hidden', !showLoginCard);
+  }
+
+  if (inactiveNote) {
+    if (hasAdminAccess) {
+      inactiveNote.classList.add('hidden');
+    } else if (hasExistingLogin) {
+      inactiveNote.textContent =
+        'This employee already has an admin login. Click Edit and re-enable "This employee is an admin" before sending another invite.';
+      inactiveNote.classList.remove('hidden');
+    } else {
+      inactiveNote.textContent = 'Click Edit, then turn on "This employee is an admin" above to send an invite link.';
+      inactiveNote.classList.remove('hidden');
+    }
+  }
+
+  [emailInput, passwordInput, confirmInput].forEach(input => {
+    if (input) input.disabled = lockLoginActions;
+  });
+
+  if (saveBtn) {
+    saveBtn.disabled = lockLoginActions;
+    saveBtn.title = lockLoginActions ? 'Enable "This employee is an admin" first.' : '';
   }
 }
 
@@ -229,6 +271,7 @@ function updateEmployeeAdminLoginSection({ emp, adminUser } = {}) {
   if (confirmInput) confirmInput.value = '';
   setEmployeeAdminLoginMessage('', '');
   updateEmployeeAdminLoginActionLabel();
+  syncEmployeeAdminLoginState();
 }
 
 async function refreshEmployeeAdminLoginSection(emp) {
@@ -253,6 +296,8 @@ function clearEmployeeAdminLoginSection() {
   const passwordInput = document.getElementById('employee-admin-login-password');
   const confirmInput = document.getElementById('employee-admin-login-password-confirm');
   const saveBtn = document.getElementById('employee-admin-login-save');
+  const inactiveNote = document.getElementById('employee-admin-login-inactive-note');
+  const loginCard = document.getElementById('employee-admin-login-card');
 
   if (section && window.CURRENT_IS_SUPER_ADMIN !== true) {
     section.classList.add('hidden');
@@ -264,11 +309,29 @@ function clearEmployeeAdminLoginSection() {
   if (emailInput) {
     emailInput.value = '';
     emailInput.readOnly = false;
+    emailInput.disabled = false;
     emailInput.classList.remove('readonly-field');
   }
-  if (passwordInput) passwordInput.value = '';
-  if (confirmInput) confirmInput.value = '';
-  if (saveBtn) saveBtn.textContent = 'Send setup link';
+  if (passwordInput) {
+    passwordInput.value = '';
+    passwordInput.disabled = false;
+  }
+  if (confirmInput) {
+    confirmInput.value = '';
+    confirmInput.disabled = false;
+  }
+  if (saveBtn) {
+    saveBtn.textContent = 'Send admin invite link';
+    saveBtn.disabled = false;
+    saveBtn.title = '';
+  }
+  if (inactiveNote) {
+    inactiveNote.textContent = 'Click Edit, then turn on "This employee is an admin" above to send an invite link.';
+    inactiveNote.classList.add('hidden');
+  }
+  if (loginCard) {
+    loginCard.classList.remove('hidden');
+  }
   setEmployeeAdminLoginMessage('', '');
 }
 
@@ -299,9 +362,13 @@ async function saveEmployeeAdminLogin() {
     setEmployeeAdminLoginMessage('Login email is required.', '#b45309');
     return;
   }
-  if (!currentEmployeeIsActive || !hasDesktop) {
+  if (!hasDesktop) {
+    setEmployeeAdminLoginMessage('Enable "This employee is an admin" before sending an invite.', '#b45309');
+    return;
+  }
+  if (!currentEmployeeIsActive) {
     setEmployeeAdminLoginMessage(
-      'Employee must be active with desktop access before creating a login.',
+      'Employee must be active before creating a login.',
       '#b45309'
     );
     return;
@@ -318,9 +385,20 @@ async function saveEmployeeAdminLogin() {
   }
 
   saveBtn.disabled = true;
-  setEmployeeAdminLoginMessage(sendInvite ? 'Sending setup link…' : 'Saving admin login…', '#6b7280');
+  setEmployeeAdminLoginMessage('Saving admin access…', '#6b7280');
 
   try {
+    await fetchJSON('/api/employees', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: editingEmployeeId,
+        desktop_access: 1
+      })
+    });
+
+    setEmployeeAdminLoginMessage(sendInvite ? 'Sending admin invite…' : 'Saving admin login…', '#6b7280');
+
     const payload = {
       email,
       employee_id: editingEmployeeId
@@ -335,7 +413,7 @@ async function saveEmployeeAdminLogin() {
 
     if (passwordInput) passwordInput.value = '';
     if (confirmInput) confirmInput.value = '';
-    setEmployeeAdminLoginMessage(sendInvite ? 'Setup link sent.' : 'Admin login saved.', 'green');
+    setEmployeeAdminLoginMessage(sendInvite ? 'Admin invite sent.' : 'Admin login saved.', 'green');
     updateEmployeeAdminLoginActionLabel();
 
     if (typeof window.refreshAdminUsersCache === 'function') {
@@ -365,7 +443,7 @@ async function saveEmployeeAdminLogin() {
   } catch (err) {
     setEmployeeAdminLoginMessage(err?.message || 'Failed to save admin login.', 'crimson');
   } finally {
-    saveBtn.disabled = false;
+    syncEmployeeAdminLoginState();
   }
 }
 
@@ -395,6 +473,17 @@ function setSuggestionDismissed(orgId, empId, dismissed) {
     }
   } catch {
     // ignore storage failures
+  }
+}
+
+function decodeURIComponentSafe(value) {
+  if (value == null) return '';
+  const raw = String(value);
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
   }
 }
 
@@ -436,18 +525,33 @@ function closeQboLinkConfirmModal() {
 }
 
 async function confirmQboLink({ empId, qboId, qboName } = {}) {
-  if (!empId || !qboId) return;
   const msg = document.getElementById('pending-employees-message');
+  const safeEmpId = String(empId || '').trim();
+  const safeQboId = String(qboId || '').trim();
+  if (!safeEmpId) {
+    if (msg) {
+      msg.textContent = 'Could not link this suggestion: employee record is missing.';
+      msg.style.color = 'crimson';
+    }
+    return;
+  }
+  if (!safeQboId) {
+    if (msg) {
+      msg.textContent = 'Could not link this suggestion: QuickBooks ID is missing. Enter an ID manually or create in QBO.';
+      msg.style.color = 'crimson';
+    }
+    return;
+  }
   try {
     if (msg) {
       msg.textContent = 'Linking to QuickBooks...';
       msg.style.color = 'black';
     }
-    await fetchJSON(`/api/employees/${empId}/link-qbo`, {
+    await fetchJSON(`/api/employees/${safeEmpId}/link-qbo`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
       body: JSON.stringify({
-        employee_qbo_id: qboId,
+        employee_qbo_id: safeQboId,
         allow_merge: true
       })
     });
@@ -487,6 +591,13 @@ function renderPermissionTemplateOptions() {
 }
 
 async function loadPermissionTemplates({ force = false } = {}) {
+  const hasTemplateSelect =
+    !!document.getElementById('employee-permission-template') ||
+    !!document.getElementById('edit-employee-template');
+  if (!hasTemplateSelect) {
+    permissionTemplates = [];
+    return permissionTemplates;
+  }
   if (window.CURRENT_IS_SUPER_ADMIN !== true) {
     permissionTemplates = [];
     renderPermissionTemplateOptions();
@@ -713,7 +824,7 @@ async function loadEmployeesTable() {
       /admin privileges required/i.test(errMsg) ||
       /access denied/i.test(errMsg);
     const hint = needsAccess
-      ? 'Payroll access required. Link your admin to an employee with desktop access and view payroll.'
+      ? 'Super admin access required. Payroll is restricted to super admins.'
       : errMsg;
     const safeMsg = typeof escapeHTML === 'function' ? escapeHTML(hint) : hint;
     tbody.innerHTML = `<tr><td colspan="6">${safeMsg}</td></tr>`;
@@ -820,7 +931,7 @@ async function loadPendingEmployees() {
   const badge = document.getElementById('pending-employees-count');
   if (!card || !body) return;
 
-  body.innerHTML = '<tr><td colspan="5">Loading…</td></tr>';
+  body.innerHTML = '<tr><td colspan="6">Loading…</td></tr>';
   try {
     const res = await fetchJSON('/api/employees?status=pending');
     pendingEmployees = Array.isArray(res) ? res : [];
@@ -838,7 +949,7 @@ async function loadPendingEmployees() {
     if (message) message.textContent = '';
   } catch (err) {
     console.error('Error loading pending employees:', err);
-    if (body) body.innerHTML = '<tr><td colspan="5">Failed to load pending employees.</td></tr>';
+    if (body) body.innerHTML = '<tr><td colspan="6">Failed to load pending employees.</td></tr>';
     if (message) {
       message.textContent = 'Could not load pending employees.';
       message.style.color = 'red';
@@ -896,6 +1007,7 @@ function renderPendingEmployees() {
     if (dirtyFields.length) statusLines.push(`Local changes: ${formatFieldList(dirtyFields)}`);
     if (conflictFields.length) statusLines.push(`Conflict in QBO: ${formatFieldList(conflictFields)}`);
     const reason = statusLines.length ? statusLines.join(' · ') : 'Needs QBO attention';
+    const escapedReason = escapeHTML(reason);
 
     const idLink = emp.id_document_uploaded_at
       ? `<a class="pending-id-link" href="/api/employees/${emp.id}/id-document" target="_blank" rel="noopener">View ID</a>`
@@ -906,63 +1018,101 @@ function renderPendingEmployees() {
     const docLinks = [idLink, photoLink].filter(Boolean).join('');
     const docBlock = docLinks ? `<div class="pending-doc-links">${docLinks}</div>` : '';
     const canCreate = isSuperAdmin && createStatus.enabled;
-    const createReason = isSuperAdmin ? createStatus.reason : 'Super admin required.';
-    const createButton = canCreate
-      ? `<button class="btn secondary btn-sm pending-create-btn" data-emp-id="${emp.id}">Create in QBO</button>`
-      : `<button class="btn secondary btn-sm pending-create-btn" data-emp-id="${emp.id}" disabled title="${createReason}">Create in QBO</button>`;
-    const linkDisabledAttr = isSuperAdmin ? '' : 'disabled';
-    const linkTitleAttr = isSuperAdmin ? '' : ' title="Super admin required."';
+    const createReason = createStatus.reason;
+    const createReasonEscaped = escapeHTML(createReason);
+    const createButton = !isSuperAdmin
+      ? ''
+      : canCreate
+        ? `<button class="btn secondary btn-sm pending-create-btn" data-emp-id="${emp.id}">Create in QBO</button>`
+        : `<button class="btn secondary btn-sm pending-create-btn" data-emp-id="${emp.id}" disabled title="${createReasonEscaped}">Create in QBO</button>`;
     const canSync = isSuperAdmin && !hasMissingLink && dirtyFields.length;
     const syncButton = canSync
       ? `<button class="btn primary btn-sm pending-sync-btn" data-emp-id="${emp.id}" ${conflictFields.length ? 'data-has-conflict="1"' : ''}>Sync changes to QBO</button>`
       : '';
+    const syncAction = syncButton || (
+      isSuperAdmin
+        ? '<span class="pending-sub pending-no-action">No immediate action.</span>'
+        : '<span class="pending-sub pending-no-action">Super admin required to sync changes.</span>'
+    );
     const suggestionNameAttr = primarySuggestion ? encodeURIComponent(primarySuggestion.name || '') : '';
+    const suggestionName = primarySuggestion ? escapeHTML(primarySuggestion.name || 'QuickBooks employee') : '';
+    const suggestionQboId = primarySuggestion?.employee_qbo_id
+      ? escapeHTML(primarySuggestion.employee_qbo_id)
+      : '';
     const suggestionBlock = primarySuggestion
       ? `
         <div class="pending-suggestion">
-          <div class="pending-sub">Suggested match</div>
-          <div class="pending-suggestion-row">
-            <span>${primarySuggestion.name || 'QuickBooks employee'}${primarySuggestion.employee_qbo_id ? ` (${primarySuggestion.employee_qbo_id})` : ''}</span>
+          <div class="pending-suggestion-head">
+            <span class="pending-sub pending-sub-label">Suggested match</span>
             <span class="${suggestionBadgeClass}">${suggestionBadge}</span>
           </div>
+          <div class="pending-suggestion-row">
+            <span>${suggestionName}${suggestionQboId ? ` (${suggestionQboId})` : ''}</span>
+          </div>
           <div class="pending-suggestion-actions">
-            <button class="btn primary btn-sm pending-suggest-confirm" data-emp-id="${emp.id}" data-qbo-id="${primarySuggestion.employee_qbo_id}" data-qbo-name="${escapeHTML(suggestionNameAttr)}">Confirm link</button>
-            <button class="btn tertiary btn-sm pending-suggest-dismiss" data-emp-id="${emp.id}">Not a match</button>
-            <button class="btn secondary btn-sm pending-suggest-choose" data-emp-id="${emp.id}" data-qbo-id="${primarySuggestion.employee_qbo_id}">Choose different</button>
+            ${
+              isSuperAdmin
+                ? `
+                  <button class="btn primary btn-sm pending-suggest-confirm" data-emp-id="${emp.id}" data-qbo-id="${escapeHTML(primarySuggestion.employee_qbo_id || '')}" data-qbo-name="${escapeHTML(suggestionNameAttr)}">Use suggested match</button>
+                  <button class="btn tertiary btn-sm pending-suggest-dismiss" data-emp-id="${emp.id}">Dismiss</button>
+                `
+                : '<span class="pending-sub pending-no-action">Super admin required to link this match.</span>'
+            }
           </div>
         </div>
       `
       : '';
+    const dirtyBy = emp.qbo_dirty_by_name ? ` by ${escapeHTML(emp.qbo_dirty_by_name)}` : '';
+    const dirtySource = emp.qbo_dirty_source ? ` (${escapeHTML(emp.qbo_dirty_source)})` : '';
+    const dirtyChangedText = emp.qbo_dirty_updated_at
+      ? `<div class="pending-sub">Changed ${escapeHTML(formatDateTimeLocal(emp.qbo_dirty_updated_at))}${dirtyBy}${dirtySource}</div>`
+      : '';
+    const statusText = hasMissingLink ? 'Link required' : (dirtyFields.length ? 'Ready to sync' : 'Up to date');
+    const statusClass = hasMissingLink || dirtyFields.length ? 'pill pill-warn' : 'pill pill-good';
+    const escapedName = escapeHTML(emp.name || '(no name)');
+    const escapedNickname = escapeHTML(emp.nickname || '');
+    const escapedNameOnChecks = escapeHTML(emp.name_on_checks || '');
+    const missingLinkActions = isSuperAdmin
+      ? `
+        <div class="pending-actions pending-actions-link">
+          <div class="pending-manual-link">
+            <label class="pending-manual-field">
+              <span>QBO employee ID</span>
+              <input type="text" placeholder="Employee ID" data-emp-id="${emp.id}" class="pending-qbo-emp" />
+            </label>
+            <label class="pending-manual-field">
+              <span>QBO vendor ID (optional)</span>
+              <input type="text" placeholder="Vendor ID" data-emp-id="${emp.id}" class="pending-qbo-vendor" />
+            </label>
+          </div>
+          <div class="pending-action-row">
+            <button class="btn primary btn-sm pending-link-btn" data-emp-id="${emp.id}">Mark linked</button>
+            ${createButton}
+          </div>
+        </div>
+      `
+      : '<div class="pending-actions pending-actions-sync"><span class="pending-sub pending-no-action">Super admin required to link QuickBooks IDs.</span></div>';
 
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>
-        <div>${emp.name || '(no name)'}</div>
-        <div class="pending-sub">${reason}</div>
+      <td class="pending-employee-cell">
+        <div class="pending-employee-name">${escapedName}</div>
+        <div class="pending-sub">${escapedReason}</div>
         ${suggestionBlock}
-        ${
-          emp.qbo_dirty_updated_at
-            ? `<div class="pending-sub">Changed ${formatDateTimeLocal(emp.qbo_dirty_updated_at)}${emp.qbo_dirty_by_name ? ` by ${emp.qbo_dirty_by_name}` : ''}${emp.qbo_dirty_source ? ` (${emp.qbo_dirty_source})` : ''}</div>`
-            : ''
-        }
+        ${dirtyChangedText}
         ${docBlock}
       </td>
       <td>$${Number(emp.rate || 0).toFixed(2)}</td>
-      <td>${emp.nickname || ''}</td>
-      <td>${emp.name_on_checks || ''}</td>
+      <td>${escapedNickname}</td>
+      <td>${escapedNameOnChecks}</td>
       <td class="pending-status">
-        ${hasMissingLink ? 'Link required' : (dirtyFields.length ? 'Ready to sync' : 'Review needed')}
+        <span class="${statusClass} pending-status-pill">${statusText}</span>
       </td>
-      <td class="pending-actions">
+      <td>
         ${
           hasMissingLink
-            ? `
-              <input type="text" placeholder="QBO Employee ID" data-emp-id="${emp.id}" class="pending-qbo-emp" ${linkDisabledAttr} />
-              <input type="text" placeholder="QBO Vendor ID (optional)" data-emp-id="${emp.id}" class="pending-qbo-vendor" ${linkDisabledAttr} />
-              <button class="btn primary btn-sm pending-link-btn" data-emp-id="${emp.id}" ${linkDisabledAttr}${linkTitleAttr}>Mark linked</button>
-              ${createButton}
-            `
-            : `${syncButton || ''}`
+            ? missingLinkActions
+            : `<div class="pending-actions pending-actions-sync">${syncAction}</div>`
         }
       </td>
     `;
@@ -1359,6 +1509,7 @@ function openEmployeeModal(emp) {
 
   if (desktopAccessCheckbox) desktopAccessCheckbox.checked = !!emp.desktop_access;
   if (kioskAdminAccessCheckbox) kioskAdminAccessCheckbox.checked = !!emp.kiosk_admin_access;
+  syncEmployeeAdminLoginState();
 
   if (permSeeShipments) permSeeShipments.checked = !!emp.see_shipments;
   if (permModifyTime) permModifyTime.checked = !!emp.modify_time;
@@ -1547,8 +1698,6 @@ async function saveEmployeeFromModal() {
     payload.view_time_reports = permViewTime && permViewTime.checked ? 1 : 0;
     payload.view_all_timesheets = permViewAllTimesheets && permViewAllTimesheets.checked ? 1 : 0;
     payload.assign_timesheets = permAssignTimesheets && permAssignTimesheets.checked ? 1 : 0;
-    payload.view_payroll = permViewPayroll && permViewPayroll.checked ? 1 : 0;
-    payload.modify_payroll = permModifyPayroll && permModifyPayroll.checked ? 1 : 0;
     payload.modify_pay_rates = permModifyRates && permModifyRates.checked ? 1 : 0;
     if (roleTitleInput) {
       payload.role_title = role_title || null;
@@ -1558,13 +1707,56 @@ async function saveEmployeeFromModal() {
     }
   }
 
+  let linkedAdminUser = null;
+  let linkedAdminUserId = null;
+  let hadLinkedLoginAtStart = false;
+  let hadEnabledLoginAtStart = false;
+  let disabledLoginBeforeSave = false;
+  let employeeSaved = false;
+
   try {
+    if (isSuperAdmin) {
+      linkedAdminUser =
+        editingEmployeeAdminUser ||
+        getAdminUserForEmployee(editingEmployeeId);
+      if (!linkedAdminUser) {
+        try {
+          linkedAdminUser = await loadAdminUserForEmployee(editingEmployeeId);
+        } catch (loadErr) {
+          console.warn('Failed to load admin login before employee save', loadErr);
+          linkedAdminUser = null;
+        }
+      }
+      linkedAdminUserId = getAdminUserId(linkedAdminUser);
+      hadLinkedLoginAtStart = !!linkedAdminUserId;
+      hadEnabledLoginAtStart = hadLinkedLoginAtStart && coerceAdminFlag(linkedAdminUser.login_enabled);
+
+      if (hadEnabledLoginAtStart && !desktop_access && linkedAdminUserId) {
+        if (msgEl) {
+          msgEl.textContent = 'Disabling admin login…';
+          msgEl.style.color = '#6b7280';
+        }
+        await fetchJSON(`/api/auth/users/${linkedAdminUserId}/disable`, { method: 'POST' });
+        disabledLoginBeforeSave = true;
+        linkedAdminUser = {
+          ...(linkedAdminUser || {}),
+          user_id: linkedAdminUserId,
+          login_enabled: 0
+        };
+        editingEmployeeAdminUser = linkedAdminUser;
+        if (typeof window.refreshAdminUsersCache === 'function') {
+          await window.refreshAdminUsersCache({ render: true });
+        }
+      }
+    }
+
     // Save base employee fields
     await fetchJSON('/api/employees', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+    employeeSaved = true;
 
     const nameOnChecksChanged =
       (editingEmployeeOriginalNameOnChecks || '') !== (name_on_checks || '');
@@ -1604,6 +1796,29 @@ async function saveEmployeeFromModal() {
       }
     }
 
+    if (
+      isSuperAdmin &&
+      hadLinkedLoginAtStart &&
+      !hadEnabledLoginAtStart &&
+      !!desktop_access &&
+      linkedAdminUserId
+    ) {
+      if (msgEl) {
+        msgEl.textContent = 'Employee updated. Re-enabling admin login…';
+        msgEl.style.color = '#6b7280';
+      }
+      await fetchJSON(`/api/auth/users/${linkedAdminUserId}/enable`, { method: 'POST' });
+      linkedAdminUser = {
+        ...(linkedAdminUser || {}),
+        user_id: linkedAdminUserId,
+        login_enabled: 1
+      };
+      editingEmployeeAdminUser = linkedAdminUser;
+      if (typeof window.refreshAdminUsersCache === 'function') {
+        await window.refreshAdminUsersCache({ render: true });
+      }
+    }
+
     if (msgEl) {
       msgEl.textContent = 'Employee updated.';
       msgEl.style.color = 'green';
@@ -1618,10 +1833,28 @@ async function saveEmployeeFromModal() {
     await refreshTimesheetAdminsIfAvailable();
     closeEmployeeEditModal();
   } catch (err) {
+    if (
+      isSuperAdmin &&
+      disabledLoginBeforeSave &&
+      !employeeSaved &&
+      linkedAdminUserId
+    ) {
+      try {
+        await fetchJSON(`/api/auth/users/${linkedAdminUserId}/enable`, { method: 'POST' });
+        if (typeof window.refreshAdminUsersCache === 'function') {
+          await window.refreshAdminUsersCache({ render: true });
+        }
+      } catch (rollbackErr) {
+        console.warn('Failed to roll back admin login state after save error', rollbackErr);
+      }
+    }
     if (msgEl) {
       msgEl.textContent = 'Error: ' + err.message;
       msgEl.style.color = 'red';
     }
+    refreshEmployeeAdminLoginSection({ id: editingEmployeeId, email }).catch(loadErr => {
+      console.warn('Failed to refresh admin login section after save error', loadErr);
+    });
   }
 }
 
@@ -1779,6 +2012,7 @@ function initEmployeeModalControls() {
   const adminLoginSaveBtn = document.getElementById('employee-admin-login-save');
   const adminLoginPassword = document.getElementById('employee-admin-login-password');
   const adminLoginPasswordConfirm = document.getElementById('employee-admin-login-password-confirm');
+  const adminAccessToggle = document.getElementById('edit-employee-desktop-access');
 
   // Close actions
   [closeBtn, xBtn, cancelBtn].forEach(btn => {
@@ -1839,6 +2073,15 @@ function initEmployeeModalControls() {
   if (adminLoginPasswordConfirm) {
     adminLoginPasswordConfirm.addEventListener('input', updateEmployeeAdminLoginActionLabel);
   }
+  if (adminAccessToggle) {
+    adminAccessToggle.addEventListener('change', () => {
+      if (!adminAccessToggle.checked) {
+        setEmployeeAdminLoginMessage('', '');
+      }
+      syncEmployeeAdminLoginState();
+      updateEmployeeAdminLoginActionLabel();
+    });
+  }
 }
 
 function clearEmployeeSearch() {
@@ -1848,7 +2091,12 @@ function clearEmployeeSearch() {
 
 document.addEventListener("DOMContentLoaded", () => {
   clearEmployeeSearch();
-  loadPermissionTemplates();
+  if (
+    document.getElementById('employee-permission-template') ||
+    document.getElementById('edit-employee-template')
+  ) {
+    loadPermissionTemplates();
+  }
 });
 window.addEventListener("load", () => {
   setTimeout(clearEmployeeSearch, 10);   // Chrome sneaky autofill pass #1
@@ -1904,16 +2152,27 @@ if (pendingCard) {
   pendingCard.addEventListener('click', async e => {
     const suggestConfirm = e.target.closest('.pending-suggest-confirm');
     if (suggestConfirm) {
-      const empId = suggestConfirm.dataset.empId;
-      const qboId = suggestConfirm.dataset.qboId;
-      const qboName = suggestConfirm.dataset.qboName
-        ? decodeURIComponent(suggestConfirm.dataset.qboName)
-        : '';
+      const msg = document.getElementById('pending-employees-message');
+      const empId = String(suggestConfirm.dataset.empId || '').trim();
+      const qboId = String(suggestConfirm.dataset.qboId || '').trim();
+      const qboName = decodeURIComponentSafe(suggestConfirm.dataset.qboName);
       const emp = pendingEmployees.find(item => String(item.id) === String(empId));
       const empName = emp?.name || 'this employee';
-      if (empId && qboId) {
-        openQboLinkConfirmModal({ empId, empName, qboId, qboName });
+      if (!empId) {
+        if (msg) {
+          msg.textContent = 'Could not link this suggestion: employee record is missing.';
+          msg.style.color = 'crimson';
+        }
+        return;
       }
+      if (!qboId) {
+        if (msg) {
+          msg.textContent = `Could not link ${empName}: suggested QuickBooks ID is missing. Enter an ID manually or create in QBO.`;
+          msg.style.color = 'crimson';
+        }
+        return;
+      }
+      openQboLinkConfirmModal({ empId, empName, qboId, qboName });
       return;
     }
 
@@ -1928,23 +2187,11 @@ if (pendingCard) {
       return;
     }
 
-    const suggestChoose = e.target.closest('.pending-suggest-choose');
-    if (suggestChoose) {
-      const empId = suggestChoose.dataset.empId;
-      const qboId = suggestChoose.dataset.qboId || '';
-      const row = suggestChoose.closest('tr');
-      const empInput = row ? row.querySelector('.pending-qbo-emp') : null;
-      if (empInput) {
-        if (qboId) empInput.value = qboId;
-        empInput.focus();
-      }
-      return;
-    }
-
     const createBtn = e.target.closest('.pending-create-btn');
     if (createBtn) {
       const empId = createBtn.dataset.empId;
       const msg = document.getElementById('pending-employees-message');
+      const row = createBtn.closest('tr');
       if (!empId) return;
 
       const emp = pendingEmployees.find(item => String(item.id) === String(empId));
@@ -1984,17 +2231,37 @@ if (pendingCard) {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
+          if (resp.status === 409 && data && data.duplicate_name) {
+            const matches = Array.isArray(data.matches) ? data.matches : [];
+            const firstMatch = matches.find(m => m && m.employee_qbo_id);
+            if (firstMatch && row) {
+              const empInput = row.querySelector('.pending-qbo-emp');
+              if (empInput) empInput.value = String(firstMatch.employee_qbo_id);
+            }
+            if (matches.length) {
+              const matchList = matches
+                .map(m => `${m.name || 'Unknown'}${m.employee_qbo_id ? ` (${m.employee_qbo_id})` : ''}`)
+                .join(', ');
+              throw new Error(`QuickBooks already has this name. Suggested existing record: ${matchList}. Employee ID was filled in; click Mark linked.`);
+            }
+            throw new Error(
+              data.error ||
+                'QuickBooks already has this name. Sync employees, then use suggested match or enter the existing Employee ID and click Mark linked.'
+            );
+          }
           if (resp.status === 409 && Array.isArray(data.matches) && data.matches.length) {
             const matchList = data.matches
               .map(m => `${m.name || 'Unknown'}${m.employee_qbo_id ? ` (${m.employee_qbo_id})` : ''}`)
               .join(', ');
-            throw new Error(`Potential duplicate in QuickBooks: ${matchList}`);
+            throw new Error(`QuickBooks already has this name: ${matchList}.`);
           }
           throw new Error(data.error || 'QuickBooks create failed.');
         }
 
         if (msg) {
-          msg.textContent = 'Created in QuickBooks and linked.';
+          msg.textContent = data && data.linked_existing
+            ? `QuickBooks already had this employee. Linked existing record${data.employee_qbo_id ? ` (${data.employee_qbo_id})` : ''}.`
+            : 'Created in QuickBooks and linked.';
           msg.style.color = 'green';
         }
         await loadPendingEmployees();

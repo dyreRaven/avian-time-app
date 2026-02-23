@@ -46,7 +46,8 @@ const {
   SMTP_FROM,
   NOTIFICATION_RETENTION_DAYS: NOTIFICATION_RETENTION_DAYS_ENV,
   PHOTO_RETENTION_DAYS: PHOTO_RETENTION_DAYS_ENV,
-  IDEMPOTENCY_RETENTION_DAYS: IDEMPOTENCY_RETENTION_DAYS_ENV
+  IDEMPOTENCY_RETENTION_DAYS: IDEMPOTENCY_RETENTION_DAYS_ENV,
+  SECTION_FEATURES
 } = require('./lib/config');
 const dbPath = DB_PATH;
 const backupDir = path.join(__dirname, 'backups');
@@ -63,6 +64,7 @@ const createBackupHelper = require('./lib/backup');
 const createShipmentUpload = require('./lib/uploads');
 const createEmployeeMediaUpload = require('./lib/employee-media-uploads');
 const createEmployeeDocsUpload = require('./lib/employee-docs-uploads');
+const createReimbursementUpload = require('./lib/reimbursement-uploads');
 const { normalizePayrollRules, applyOvertimeAllocations, roundCurrency } = require('./lib/payroll-utils');
 const IS_PROD = NODE_ENV === 'production';
 if (IS_PROD && SESSION_SECRET.length < 32) {
@@ -161,6 +163,24 @@ const requireViewTimeReports = requireAdminAccess(
 const requireModifyTime = requireAdminAccess(p => p.modify_time);
 const requireApproveTime = requireAdminAccess(p => p.approve_time);
 const requireSeeShipments = requireAdminAccess(p => p.see_shipments);
+function isSectionEnabled(sectionName) {
+  if (!SECTION_FEATURES || typeof SECTION_FEATURES !== 'object') return true;
+  return SECTION_FEATURES[sectionName] !== false;
+}
+function featureNotAvailable(sectionName) {
+  return {
+    ok: false,
+    error: `${sectionName} section is disabled for this deployment.`,
+    code: 'feature_not_enabled',
+    section: sectionName
+  };
+}
+function requireSectionEnabled(sectionName) {
+  return (req, res, next) => {
+    if (isSectionEnabled(sectionName)) return next();
+    return res.status(403).json(featureNotAvailable(sectionName));
+  };
+}
 const { performDatabaseBackup } = createBackupHelper({
   db,
   dbPath,
@@ -226,6 +246,12 @@ const {
   allowedMimes: employeeDocsAllowedMimes,
   allowedExts: employeeDocsAllowedExts
 } = createEmployeeDocsUpload(__dirname);
+const {
+  upload: uploadReimbursementReceipts,
+  resolveReimbursementReceiptPath,
+  allowedMimes: reimbursementReceiptAllowedMimes,
+  allowedExts: reimbursementReceiptAllowedExts
+} = createReimbursementUpload(__dirname);
 
 async function tableExists(tableName) {
   const row = await dbGet(
@@ -1317,12 +1343,30 @@ function normalizePayrollPayload(raw = {}) {
           includeOvertimeRaw === 1 ||
           includeOvertimeRaw === '1'
         );
+  const includeReceiptsRaw =
+    raw.includeReceiptReimbursements !== undefined
+      ? raw.includeReceiptReimbursements
+      : raw.include_receipt_reimbursements;
+  const includeReceiptReimbursements =
+    includeReceiptsRaw === undefined || includeReceiptsRaw === null
+      ? true
+      : (
+          includeReceiptsRaw === true ||
+          includeReceiptsRaw === 'true' ||
+          includeReceiptsRaw === 1 ||
+          includeReceiptsRaw === '1'
+        );
 
   return {
     start: normalizeString(raw.start),
     end: normalizeString(raw.end),
     bankAccountName: normalizeString(raw.bankAccountName),
     expenseAccountName: normalizeString(raw.expenseAccountName),
+    receiptExpenseAccountName: normalizeString(
+      raw.receiptExpenseAccountName !== undefined
+        ? raw.receiptExpenseAccountName
+        : raw.receipt_expense_account_name
+    ),
     memo: normalizeString(raw.memo),
     lineDescriptionTemplate: normalizeString(raw.lineDescriptionTemplate),
     overrides,
@@ -1335,6 +1379,7 @@ function normalizePayrollPayload(raw = {}) {
     fromAttemptId: normalizeId(raw.fromAttemptId),
     idempotencyKey: normalizeString(raw.idempotencyKey),
     include_overtime: includeOvertime,
+    include_receipt_reimbursements: includeReceiptReimbursements,
     run_type: runType,
     adjustment_reason: normalizeString(raw.adjustment_reason)
   };
@@ -1416,6 +1461,112 @@ async function purgeExpiredPayrollPreflights() {
   }
 }
 
+function parseBooleanFlag(rawValue, defaultValue = true) {
+  if (rawValue === undefined || rawValue === null) return defaultValue;
+  return (
+    rawValue === true ||
+    rawValue === 'true' ||
+    rawValue === 1 ||
+    rawValue === '1'
+  );
+}
+
+function isValidDateOnlyString(value) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return false;
+  return !!toDateOnly(String(value));
+}
+
+function normalizeReceiptVendorName(value) {
+  const raw = normalizeString(value);
+  return raw || null;
+}
+
+function buildReceiptLineProjectId(projectId, vendorName) {
+  const projectNum = Number(projectId) || 0;
+  const vendor = normalizeReceiptVendorName(vendorName) || 'vendor';
+  const vendorHash = crypto
+    .createHash('sha1')
+    .update(vendor.toLowerCase())
+    .digest('hex')
+    .slice(0, 8);
+  return `receipt-${projectNum}-${vendorHash}`;
+}
+
+async function loadApprovedReceiptReimbursementRollups({
+  orgId,
+  start,
+  end,
+  excludeEmployeeIds = [],
+  onlyEmployeeIds = []
+}) {
+  if (!orgId || !start || !end) return [];
+
+  let sql = `
+    SELECT
+      rr.employee_id,
+      COALESCE(e.name, '(Unknown employee)') AS employee_name,
+      e.name_on_checks AS employee_name_on_checks,
+      e.vendor_qbo_id AS employee_vendor_qbo_id,
+      e.employee_qbo_id AS employee_employee_qbo_id,
+      rr.project_id,
+      rr.vendor_name,
+      COALESCE(p.name, '(No project)') AS project_name,
+      COALESCE(p.name, '(No project)') AS project_name_raw,
+      p.qbo_id AS project_qbo_id,
+      p.customer_name AS project_customer_name,
+      COUNT(rr.id) AS receipt_count,
+      IFNULL(SUM(rr.amount), 0) AS receipt_amount
+    FROM payroll_receipt_reimbursements rr
+    JOIN employees e
+      ON e.id = rr.employee_id
+     AND e.org_id = rr.org_id
+    LEFT JOIN projects p
+      ON p.id = rr.project_id
+     AND p.org_id = rr.org_id
+    WHERE rr.org_id = ?
+      AND rr.status = 'approved'
+      AND rr.expense_date >= ?
+      AND rr.expense_date <= ?
+  `;
+  const params = [orgId, start, end];
+
+  const normalizedExclude = (Array.isArray(excludeEmployeeIds) ? excludeEmployeeIds : [])
+    .map(Number)
+    .filter(Number.isFinite);
+  if (normalizedExclude.length) {
+    sql += ` AND rr.employee_id NOT IN (${normalizedExclude.map(() => '?').join(',')})`;
+    params.push(...normalizedExclude);
+  }
+
+  const normalizedOnly = (Array.isArray(onlyEmployeeIds) ? onlyEmployeeIds : [])
+    .map(Number)
+    .filter(Number.isFinite);
+  if (normalizedOnly.length) {
+    sql += ` AND rr.employee_id IN (${normalizedOnly.map(() => '?').join(',')})`;
+    params.push(...normalizedOnly);
+  }
+
+  sql += `
+    GROUP BY
+      rr.employee_id,
+      e.name,
+      e.name_on_checks,
+      e.vendor_qbo_id,
+      e.employee_qbo_id,
+      rr.project_id,
+      rr.vendor_name,
+      p.name,
+      p.qbo_id,
+      p.customer_name
+    ORDER BY
+      employee_name,
+      project_name,
+      rr.vendor_name
+  `;
+
+  return dbAll(sql, params);
+}
+
 /* ───────── PAYROLL AUDIT LOG HELPER ───────── */
 
 async function logPayrollEvent({
@@ -1482,6 +1633,7 @@ const {
   getAccessToken,
   getRealmId,
   clearTokens,
+  verifyQuickBooksConnection,
   syncVendors,
   syncProjects,
   createChecksForPeriod,
@@ -1492,16 +1644,70 @@ const {
   createEmployeeInQuickBooks,
   updateEmployeeInQuickBooks,
   setPrintOnCheckName,
+  isQboReauthRequiredError,
   ensureNameOnChecksColumns
 } = require('./quickbooks');
 
 const QBO_OAUTH_STATE_TTL_MINUTES = 10;
+const QBO_OAUTH_STATE_RETURN_TO_MAX_LENGTH = 900;
+const qboOAuthStateReturnToMap = new Map();
 
-async function createQboOAuthState({ orgId, userId }) {
+function getRequestOrigin(req) {
+  const parseOrigin = value => {
+    const raw = String(value || '').split(',')[0].trim();
+    if (!raw) return '';
+    try {
+      const parsed = new URL(raw);
+      if (!/^https?:$/i.test(parsed.protocol)) return '';
+      return parsed.origin;
+    } catch {
+      return '';
+    }
+  };
+
+  const originHeader = req && typeof req.get === 'function' ? req.get('origin') : '';
+  const fromOrigin = parseOrigin(originHeader);
+  if (fromOrigin) return fromOrigin;
+
+  const refererHeader = req && typeof req.get === 'function' ? req.get('referer') : '';
+  const fromReferer = parseOrigin(refererHeader);
+  if (fromReferer) return fromReferer;
+
+  return parseOrigin(getRequestBaseUrl(req));
+}
+
+function normalizeQboConnectReturnTo(req, rawReturnTo) {
+  const requestOrigin = getRequestOrigin(req);
+  if (!requestOrigin) return '';
+
+  const fallback = `${requestOrigin}/`;
+  const raw = String(rawReturnTo || '').trim();
+  if (!raw) return fallback;
+  if (raw.length > QBO_OAUTH_STATE_RETURN_TO_MAX_LENGTH) return fallback;
+
+  try {
+    const parsed = new URL(raw, requestOrigin);
+    if (!/^https?:$/i.test(parsed.protocol)) return fallback;
+    if (parsed.origin !== requestOrigin) return fallback;
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return fallback;
+  }
+}
+
+async function createQboOAuthState({ orgId, userId, returnTo = '' }) {
   if (!orgId || !userId) {
     throw new Error('orgId and userId are required for OAuth state.');
   }
   const state = crypto.randomBytes(24).toString('hex');
+  const normalizedReturnTo = String(returnTo || '').trim();
+  if (normalizedReturnTo) {
+    qboOAuthStateReturnToMap.set(state, {
+      returnTo: normalizedReturnTo,
+      expiresAt: Date.now() + QBO_OAUTH_STATE_TTL_MINUTES * 60 * 1000
+    });
+  }
   await dbRun(
     `
       INSERT INTO qbo_oauth_states (org_id, user_id, state, expires_at)
@@ -1516,7 +1722,7 @@ async function consumeQboOAuthState(state) {
   if (!state) return null;
   const row = await dbGet(
     `
-      SELECT id, org_id, user_id
+      SELECT id, org_id, user_id, state
       FROM qbo_oauth_states
       WHERE state = ? AND expires_at > datetime('now')
       LIMIT 1
@@ -1525,7 +1731,13 @@ async function consumeQboOAuthState(state) {
   );
   if (!row) return null;
   await dbRun('DELETE FROM qbo_oauth_states WHERE id = ?', [row.id]);
-  return row;
+  const mapEntry = qboOAuthStateReturnToMap.get(row.state);
+  qboOAuthStateReturnToMap.delete(row.state);
+  const returnTo =
+    mapEntry && mapEntry.expiresAt > Date.now()
+      ? String(mapEntry.returnTo || '').trim()
+      : '';
+  return { ...row, return_to: returnTo };
 }
 
 async function purgeExpiredQboOAuthStates() {
@@ -1533,6 +1745,12 @@ async function purgeExpiredQboOAuthStates() {
     const res = await dbRun(
       `DELETE FROM qbo_oauth_states WHERE expires_at <= datetime('now')`
     );
+    const now = Date.now();
+    for (const [stateKey, entry] of qboOAuthStateReturnToMap.entries()) {
+      if (!entry || !entry.expiresAt || entry.expiresAt <= now) {
+        qboOAuthStateReturnToMap.delete(stateKey);
+      }
+    }
     if (res && res.changes) {
       console.log(`🧹 QBO OAuth states purged: ${res.changes} expired rows.`);
     }
@@ -1545,23 +1763,167 @@ function requireQboConfig(res, { expose = false } = {}) {
   if (qboConfigured) return true;
   const message = 'QuickBooks is not configured.';
   if (expose) {
-    res.status(500).json({ error: message, missing: qboConfigMissing });
+    res.status(500).json({ error: message, code: 'qbo_not_configured', missing: qboConfigMissing });
   } else {
     res.status(500).send(message);
   }
   return false;
 }
 
+function extractQboErrorMessage(err) {
+  const data = err && err.response ? err.response.data : null;
+  if (!data || typeof data !== 'object') return null;
+
+  const asText = value => {
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (text) return text;
+    }
+    return null;
+  };
+
+  const extractCode = source => {
+    if (!source || typeof source !== 'object') return null;
+    const codeCandidates = [
+      source.errorCode,
+      source.ErrorCode,
+      source.error_code,
+      source.code,
+      source.Code
+    ];
+    for (const value of codeCandidates) {
+      const text = asText(value);
+      if (text) return text;
+    }
+    if (source.error && typeof source.error === 'object' && !Array.isArray(source.error)) {
+      const nested = extractCode(source.error);
+      if (nested) return nested;
+    }
+    return null;
+  };
+
+  const appendCode = (message, source) => {
+    if (!message) return null;
+    const code = extractCode(source || data);
+    if (!code) return message;
+    const normalized = String(code).trim();
+    if (!normalized) return message;
+    return message.includes(`errorCode=${normalized}`) ? message : `${message} (errorCode=${normalized})`;
+  };
+
+  const firstArrayMessage = list => {
+    if (!Array.isArray(list) || !list.length) return null;
+    const first = list[0];
+    if (typeof first === 'string') return asText(first);
+    if (first && typeof first === 'object') {
+      const raw = asText(first.message) || asText(first.Message) || asText(first.detail) || asText(first.Detail) || asText(first.LongMessage);
+      return appendCode(raw, first);
+    }
+    return null;
+  };
+
+  const directFields = [
+    data.error_description,
+    data.error,
+    data.message,
+    data.description,
+    data.details,
+    data.metaData && data.metaData.Error
+  ];
+  for (const field of directFields) {
+    const msg = asText(field);
+    if (msg) return appendCode(msg, data);
+  }
+
+  const dataErrorMessage = firstArrayMessage(data.error);
+  if (dataErrorMessage) return dataErrorMessage;
+
+  const dataErrorsMessage = firstArrayMessage(data.errors);
+  if (dataErrorsMessage) return dataErrorsMessage;
+
+  if (data.error && typeof data.error === 'object' && !Array.isArray(data.error)) {
+    const nested = appendCode(
+      asText(data.error.message) ||
+        asText(data.error.Message) ||
+        asText(data.error.error) ||
+        asText(data.error.error_description) ||
+        asText(data.error.detail) ||
+        asText(data.error.Detail),
+      data.error
+    );
+    if (nested) return nested;
+  }
+
+  const parseFault = fault => {
+    if (!fault || typeof fault !== 'object') return null;
+    const firstError = firstArrayMessage(fault.Error) || firstArrayMessage(fault.errors) || firstArrayMessage(fault.error);
+    if (firstError) return appendCode(firstError, fault);
+    return appendCode(asText(fault.Message) || asText(fault.message) || asText(fault.type), fault);
+  };
+
+  const faultMessage = parseFault(data.Fault) || parseFault(data.fault);
+  if (faultMessage) {
+    return faultMessage;
+  }
+
+  if (data.Fault && Array.isArray(data.Fault.Error) && data.Fault.Error.length) {
+    const first = data.Fault.Error[0];
+    if (first && typeof first === 'object') {
+      const message = asText(first.Message);
+      if (message) {
+        const detail = asText(first.Detail) || asText(first.LongMessage);
+        const combined = detail ? `${message}: ${detail}` : message;
+        return appendCode(combined, first);
+      }
+    }
+  }
+
+  return null;
+}
+
 async function respondWithQboError(res, err, { orgId } = {}) {
-  const status = err && err.response ? err.response.status : null;
+  const status = err && err.response ? Number(err.response.status) : null;
   const retryAfter = err && err.response ? err.response.headers?.['retry-after'] : null;
-  const message = err?.message || 'QuickBooks request failed.';
+  const message =
+    extractQboErrorMessage(err) ||
+    err?.message ||
+    'QuickBooks request failed.';
+  const data = err && err.response ? err.response.data : null;
+  const responseCode = data && typeof data === 'object'
+    ? (typeof data.errorCode === 'string'
+        ? data.errorCode.trim()
+        : typeof data.ErrorCode === 'string'
+          ? data.ErrorCode.trim()
+          : typeof data.code === 'string'
+            ? data.code.trim()
+            : '')
+    : '';
+  const responseCodeFromMessage = responseCode
+    ? responseCode
+    : (typeof message === 'string'
+      ? (String(message).match(/errorCode\s*=\s*([0-9]{3,})/i)?.[1] || '')
+      : '');
+  const responseError = {
+    error: message,
+    qbo_error: message,
+    error_code: responseCode || responseCodeFromMessage || null,
+    retryable: false
+  };
+  const normalizedMessage = String(message || '').toLowerCase();
+  const shouldClearTokens = shouldClearQboTokens(status, {
+    message,
+    code: responseCode || responseCodeFromMessage
+  });
+  const looksLikeForbidden =
+    status === 403 &&
+    (shouldClearTokens ||
+      normalizedMessage.includes('request failed with status code 403'));
 
   if (message.includes('Not connected to QuickBooks')) {
     return res.status(400).json({ error: 'Not connected to QuickBooks.' });
   }
 
-  if (status === 401 || status === 403) {
+  if (status === 401 || looksLikeForbidden) {
     if (orgId) {
       try {
         await clearTokens(orgId);
@@ -1569,13 +1931,34 @@ async function respondWithQboError(res, err, { orgId } = {}) {
         console.warn('Failed to clear QBO tokens after auth error:', wipeErr.message || wipeErr);
       }
     }
-    return res.status(400).json({ error: 'Not connected to QuickBooks.' });
+    const unauthorizedMessage =
+      status === 403 &&
+      /(applicationauthorizationfailed|super admin access required|superadmin access required|reconnect using a quickbooks account admin|account admin must reconnect)/i.test(
+        message
+      )
+        ? 'QuickBooks app authorization was rejected for this company. Reconnect using a QuickBooks Account Admin.'
+        : 'Not connected to QuickBooks.';
+    return res.status(status === 401 ? 400 : 403).json({
+      ...responseError,
+      error: unauthorizedMessage,
+      qbo_error: unauthorizedMessage,
+      reason: 'qbo_forbidden'
+    });
+  }
+
+  if (status === 403) {
+    return res.status(403).json({
+      ...responseError,
+      reason: 'qbo_forbidden',
+      retryable: false
+    });
   }
 
   if (status === 429) {
     if (retryAfter) res.setHeader('Retry-After', retryAfter);
     return res.status(503).json({
       error: 'QuickBooks rate limit reached. Please retry after a short delay.',
+      qbo_error: 'QuickBooks rate limit reached. Please retry after a short delay.',
       retryable: true
     });
   }
@@ -1583,14 +1966,16 @@ async function respondWithQboError(res, err, { orgId } = {}) {
   if (status && status >= 500) {
     return res.status(503).json({
       error: 'QuickBooks is temporarily unavailable. Please retry later.',
+      qbo_error: 'QuickBooks is temporarily unavailable. Please retry later.',
       retryable: true
     });
   }
 
-  return res.status(502).json({
-    error: message,
-    retryable: false
-  });
+  return res.status(502).json(responseError);
+}
+
+function shouldClearQboTokens(status, { message = '', code = '' } = {}) {
+  return isQboReauthRequiredError({ status, message, errorCode: code });
 }
 
 function parseJsonArray(raw) {
@@ -1659,6 +2044,34 @@ function splitName(fullName) {
   return { given: parts[0], family: parts.slice(1).join(' ') };
 }
 
+function isEmployeeNameConstraintError(err) {
+  const msg = String((err && err.message) || '');
+  if (!msg) return false;
+  return (
+    msg.includes('idx_employees_org_name_unique') ||
+    msg.includes("index 'idx_employees_org_name_unique'") ||
+    msg.includes('employees.org_id, lower(trim(name))')
+  );
+}
+
+async function findEmployeeNameConflict({ orgId, name, excludeEmployeeId = null }) {
+  const normalizedName = normalizeString(name);
+  if (!orgId || !normalizedName) return null;
+  const params = [orgId, normalizedName];
+  let sql = `
+    SELECT id, name
+    FROM employees
+    WHERE org_id = ?
+      AND lower(trim(name)) = lower(trim(?))
+  `;
+  if (excludeEmployeeId) {
+    sql += ' AND id != ?';
+    params.push(Number(excludeEmployeeId));
+  }
+  sql += ' LIMIT 1';
+  return dbGet(sql, params);
+}
+
 async function markEmployeeQboDirty({ orgId, employeeId, fields, actorEmployeeId, source }) {
   if (!orgId || !employeeId || !Array.isArray(fields) || !fields.length) return;
   const row = await dbGet(
@@ -1719,9 +2132,17 @@ async function loadQboDirtyConflicts({ orgId }) {
 /* ───────── KIOSK HELPERS ───────── */
 
 const ENROLLMENT_CODE_KEY = 'kiosk_enrollment_code';
+const ENROLLMENT_CODE_ISSUED_BY_KEY = 'kiosk_enrollment_code_issued_by_employee_id';
+const ENROLLMENT_CODE_ISSUED_AT_KEY = 'kiosk_enrollment_code_issued_at';
 
 function normalizeEnrollmentCode(raw) {
   return String(raw || '').replace(/\D/g, '');
+}
+
+function parsePositiveInt(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return Math.trunc(num);
 }
 
 async function generateUniqueEnrollmentCode() {
@@ -1809,9 +2230,67 @@ async function loadEnrollmentCode(orgId, { createIfMissing = false } = {}) {
   return code;
 }
 
-async function rotateEnrollmentCode(orgId) {
+async function persistEnrollmentCodeMetadata(
+  orgId,
+  { issuedByEmployeeId = null, issuedAt = null } = {}
+) {
+  const issuedBy = parsePositiveInt(issuedByEmployeeId);
+  const timestamp = issuedAt || new Date().toISOString();
+  await upsertOrgSetting(
+    orgId,
+    ENROLLMENT_CODE_ISSUED_BY_KEY,
+    issuedBy ? String(issuedBy) : null
+  );
+  await upsertOrgSetting(orgId, ENROLLMENT_CODE_ISSUED_AT_KEY, timestamp);
+}
+
+async function loadEnrollmentCodeContextByCode(code) {
+  const row = await dbGet(
+    `
+      SELECT
+        ec.org_id,
+        o.status AS org_status,
+        ecb.value AS issued_by_employee_id,
+        eca.value AS issued_at
+      FROM org_settings ec
+      JOIN orgs o
+        ON o.id = ec.org_id
+      LEFT JOIN org_settings ecb
+        ON ecb.org_id = ec.org_id
+       AND ecb.key = ?
+      LEFT JOIN org_settings eca
+        ON eca.org_id = ec.org_id
+       AND eca.key = ?
+      WHERE ec.key = ?
+        AND ec.value = ?
+      LIMIT 1
+    `,
+    [
+      ENROLLMENT_CODE_ISSUED_BY_KEY,
+      ENROLLMENT_CODE_ISSUED_AT_KEY,
+      ENROLLMENT_CODE_KEY,
+      code
+    ]
+  );
+  if (!row) return null;
+  return {
+    org_id: row.org_id,
+    org_status: row.org_status,
+    issued_by_employee_id: parsePositiveInt(row.issued_by_employee_id),
+    issued_at: row.issued_at || null
+  };
+}
+
+async function rotateEnrollmentCode(
+  orgId,
+  { issuedByEmployeeId = null, issuedAt = null } = {}
+) {
   const code = await generateUniqueEnrollmentCode();
   await upsertOrgSetting(orgId, ENROLLMENT_CODE_KEY, code);
+  await persistEnrollmentCodeMetadata(orgId, {
+    issuedByEmployeeId,
+    issuedAt
+  });
   return code;
 }
 
@@ -2217,6 +2696,25 @@ app.use((req, res, next) => {
 
 // Static assets (CSS, JS, etc.)
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Section-level feature gates: disable whole modules when disabled in config.
+app.use('/api/time', requireSectionEnabled('time'));
+app.use('/api/reports/time', requireSectionEnabled('time'));
+app.use('/api/kiosk/time-entries', requireSectionEnabled('time'));
+app.use('/api/kiosk/punch', requireSectionEnabled('time'));
+app.use('/api/kiosk/projects', requireSectionEnabled('time'));
+app.use('/api/kiosk/open-punch', requireSectionEnabled('time'));
+app.use('/api/kiosks', requireSectionEnabled('time'));
+app.use('/api/kiosk-sessions', requireSectionEnabled('time'));
+app.use('/api/time-exceptions', requireSectionEnabled('time'));
+app.use('/api/time-punches', requireSectionEnabled('time'));
+app.use('/api/time-entries', requireSectionEnabled('time'));
+
+app.use('/api/payroll', requireSectionEnabled('payroll'));
+app.use('/api/reports/payroll', requireSectionEnabled('payroll'));
+
+app.use('/api/shipments', requireSectionEnabled('shipments'));
+app.use('/api/reports/shipment', requireSectionEnabled('shipments'));
 
 /* ───────── KIOSK PAGE ───────── */
 
@@ -2799,6 +3297,8 @@ app.post('/api/auth/bootstrap', bootstrapRateLimiter, async (req, res) => {
       [orgId, adminName, userEmail]
     );
     const employeeId = employeeRes.lastID;
+    await upsertOrgSetting(orgId, ENROLLMENT_CODE_ISSUED_BY_KEY, String(employeeId));
+    await upsertOrgSetting(orgId, ENROLLMENT_CODE_ISSUED_AT_KEY, new Date().toISOString());
 
     const createTemplate = async (template) => {
       const res = await dbRun(
@@ -3433,6 +3933,7 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
     const user = await dbGet('SELECT id, email FROM users WHERE id = ?', [
       userId
     ]);
+    const sectionFeatures = SECTION_FEATURES || {};
     if (!user) {
       return res.status(404).json({ ok: false, error: 'User not found.' });
     }
@@ -3444,7 +3945,12 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
           ok: true,
           user: { id: user.id, email: user.email },
           pending_bootstrap: true,
-          ui_mode: req.session && req.session.ui_mode ? req.session.ui_mode : 'desktop'
+          ui_mode: req.session && req.session.ui_mode ? req.session.ui_mode : 'desktop',
+          features: {
+            time: sectionFeatures.time,
+            payroll: sectionFeatures.payroll,
+            shipments: sectionFeatures.shipments
+          }
         });
       }
 
@@ -3459,13 +3965,18 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
           error: 'No active desktop super admin membership found.'
         });
       }
-      return res.status(409).json({
-        ok: false,
-        requires_org_selection: true,
-        orgs: eligibleOrgs.map(org => ({
-          id: org.id,
-          name: org.name,
-          timezone: org.timezone
+        return res.status(409).json({
+          ok: false,
+          requires_org_selection: true,
+          features: {
+            time: sectionFeatures.time,
+            payroll: sectionFeatures.payroll,
+            shipments: sectionFeatures.shipments
+          },
+          orgs: eligibleOrgs.map(org => ({
+            id: org.id,
+            name: org.name,
+            timezone: org.timezone
         }))
       });
     }
@@ -3540,6 +4051,11 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
             created_at: org.created_at || null
           }
         : null,
+      features: {
+        time: sectionFeatures.time,
+        payroll: sectionFeatures.payroll,
+        shipments: sectionFeatures.shipments
+      },
       membership: membership
         ? {
             is_super_admin: !!membership.is_super_admin,
@@ -4156,11 +4672,29 @@ app.get('/api/status', requireAdminAccess(p => p.view_payroll), async (req, res)
     const orgId = req.session && req.session.orgId;
     const token = await getAccessToken(orgId);
     const realmId = await getRealmId(orgId);
-    const qbConnected = !!token && !!realmId;
+    let qbConnected = !!token && !!realmId;
+    let qbConnectionWarning = '';
+
+    if (qbConnected) {
+      const verification = await verifyQuickBooksConnection(orgId);
+      qbConnected = !!verification?.ok;
+      qbConnectionWarning = qbConnected ? '' : (verification?.reason || '');
+      if (!qbConnected && orgId && verification?.invalidate) {
+        try {
+          await clearTokens(orgId);
+        } catch (wipeErr) {
+          console.warn(
+            'Failed to clear QBO tokens after status validation failure:',
+            wipeErr.message || wipeErr
+          );
+        }
+      }
+    }
     const lastSync = await loadOrgSyncStatus(orgId);
     res.json({
       qbConnected,
-      qbRealmId: realmId || null,
+      qbRealmId: qbConnected ? (realmId || null) : null,
+      qbConnectionWarning,
       lastSync
     });
   } catch (err) {
@@ -4168,6 +4702,7 @@ app.get('/api/status', requireAdminAccess(p => p.view_payroll), async (req, res)
     res.json({
       qbConnected: false,
       qbRealmId: null,
+      qbConnectionWarning: null,
       lastSync: {
         employees: null,
         vendors: null,
@@ -4178,7 +4713,7 @@ app.get('/api/status', requireAdminAccess(p => p.view_payroll), async (req, res)
   }
 });
 
-app.post('/api/qbo/connect', requireAdminAccess(p => p.view_payroll), requireSuperAdmin, async (req, res) => {
+app.post('/api/qbo/connect', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   try {
     const orgId = req.session && req.session.orgId;
     const userId = req.session && req.session.userId;
@@ -4188,42 +4723,156 @@ app.post('/api/qbo/connect', requireAdminAccess(p => p.view_payroll), requireSup
     if (!requireQboConfig(res, { expose: true })) {
       return;
     }
-    const state = await createQboOAuthState({ orgId, userId });
+    const returnTo = normalizeQboConnectReturnTo(req, req.body && req.body.return_to);
+    const state = await createQboOAuthState({ orgId, userId, returnTo });
     const url = getAuthUrl(state);
     return res.json({ ok: true, url });
   } catch (err) {
-    console.error('QuickBooks auth error:', err.message || err);
-    return res.status(500).json({ error: 'Failed to start QuickBooks auth.' });
+    const message = err && err.message ? err.message : 'Failed to start QuickBooks auth.';
+    console.error('QuickBooks auth error:', message);
+    return res.status(500).json({ error: message, code: 'qbo_connect_error' });
   }
 });
 
-app.get('/auth/qbo', requireAdminAccess(p => p.view_payroll), requireSuperAdmin, async (req, res) => {
+app.get('/auth/qbo', requireSuperAdmin, async (req, res) => {
   return res.status(405).json({ error: 'Use POST /api/qbo/connect to start QuickBooks auth.' });
 });
 
-// QuickBooks OAuth callback
-app.get('/quickbooks/oauth/callback', async (req, res) => {
-  const { code, realmId, state, error } = req.query;
-
-  if (error === 'access_denied') {
-    return res.status(400).send('QuickBooks access was denied.');
+function buildQboCallbackRedirect({
+  status = 'connected',
+  reason = '',
+  message = '',
+  baseUrl = ''
+} = {}) {
+  let resolvedBaseUrl = String(baseUrl || '').trim();
+  if (!resolvedBaseUrl) {
+    const redirectUri = QBO_REDIRECT_URI || '';
+    resolvedBaseUrl = '/';
+    try {
+      const parsed = new URL(redirectUri);
+      const cleanedPath = parsed.pathname
+        .replace(/\/quickbooks\/oauth\/callback$/i, '')
+        .trim();
+      parsed.pathname = cleanedPath || '/';
+      resolvedBaseUrl = parsed.toString().replace(/\/$/, '');
+      if (!resolvedBaseUrl) {
+        resolvedBaseUrl = '/';
+      }
+    } catch (err) {
+      const fallback = String(redirectUri).trim();
+      resolvedBaseUrl =
+        fallback
+          ? fallback.replace(/\/quickbooks\/oauth\/callback$/i, '').trim() || '/'
+          : '/';
+    }
   }
+  const params = new URLSearchParams({
+    qbo: status || 'connected'
+  });
 
-  if (!requireQboConfig(res)) {
-    return;
+  if (reason) {
+    params.set('qbo_reason', String(reason));
   }
-
-  if (!code || !state) {
-    return res.status(400).send('Missing OAuth code or state.');
+  if (message) {
+    params.set('qbo_message', String(message).trim().slice(0, 240));
   }
 
   try {
-    const stateRow = await consumeQboOAuthState(String(state));
+    const targetUrl = new URL(resolvedBaseUrl);
+    params.forEach((value, key) => targetUrl.searchParams.set(key, value));
+    return targetUrl.toString();
+  } catch {
+    const connector = resolvedBaseUrl.includes('?')
+      ? (resolvedBaseUrl.endsWith('?') || resolvedBaseUrl.endsWith('&') ? '' : '&')
+      : '?';
+    return `${resolvedBaseUrl}${connector}${params.toString()}`;
+  }
+}
+
+// QuickBooks OAuth callback
+app.get('/quickbooks/oauth/callback', async (req, res) => {
+  const { code, realmId, state, error, error_description, error_uri } = req.query;
+  const oauthError = String(error || '').trim();
+  const oauthErrorMessage = String(error_description || '').trim();
+  const oauthErrorUri = String(error_uri || '').trim();
+  const oauthState = String(state || '').trim();
+
+  let stateRow = null;
+  let callbackBaseUrl = '';
+  if (oauthState) {
+    try {
+      stateRow = await consumeQboOAuthState(oauthState);
+      if (stateRow && stateRow.return_to) {
+        callbackBaseUrl = String(stateRow.return_to || '').trim();
+      }
+    } catch (stateErr) {
+      console.warn('Failed to consume QBO OAuth state:', stateErr.message || stateErr);
+      stateRow = null;
+      callbackBaseUrl = '';
+    }
+  }
+
+  const redirectWithState = ({ status = 'connected', reason = '', message = '' } = {}) =>
+    res.redirect(
+      buildQboCallbackRedirect({
+        status,
+        reason,
+        message,
+        baseUrl: callbackBaseUrl
+      })
+    );
+
+  if (oauthError) {
+    const messageParts = [];
+    if (oauthErrorMessage) {
+      messageParts.push(oauthErrorMessage);
+    }
+    if (oauthErrorUri) {
+      messageParts.push(`More info: ${oauthErrorUri}`);
+    }
+    if (!messageParts.length) {
+      messageParts.push(oauthError === 'access_denied'
+        ? 'You canceled the QuickBooks authorization.'
+        : `QuickBooks returned error: ${oauthError}`);
+    }
+
+    return redirectWithState({
+      status: 'error',
+      reason: oauthError || 'oauth_error',
+      message: messageParts.join(' ')
+    });
+  }
+
+  if (!qboConfigured) {
+    return redirectWithState({
+      status: 'error',
+      reason: 'qbo_not_configured',
+      message: `QuickBooks not configured. Missing: ${qboConfigMissing.join(', ')}`
+    });
+  }
+
+  if (!code || !oauthState) {
+    return redirectWithState({
+      status: 'error',
+      reason: 'missing_code_or_state',
+      message: 'Missing OAuth code or state.'
+    });
+  }
+
+  try {
     if (!stateRow) {
-      return res.status(400).send('OAuth state is invalid or expired.');
+      return redirectWithState({
+        status: 'error',
+        reason: 'invalid_state',
+        message: 'OAuth state is invalid or expired.'
+      });
     }
     if (!realmId) {
-      return res.status(400).send('Missing realmId in callback URL.');
+      return redirectWithState({
+        status: 'error',
+        reason: 'missing_realm',
+        message: 'Missing realmId in callback URL.'
+      });
     }
 
     await exchangeCodeForTokens(code, {
@@ -4231,18 +4880,66 @@ app.get('/quickbooks/oauth/callback', async (req, res) => {
       realmId: String(realmId)
     });
 
+    const verification = await verifyQuickBooksConnection(stateRow.org_id);
+    if (!verification?.ok) {
+      if (stateRow.org_id && verification?.invalidate) {
+        try {
+          await clearTokens(stateRow.org_id);
+        } catch (wipeErr) {
+          console.warn(
+            'Failed to clear QBO tokens after callback verification failure:',
+            wipeErr.message || wipeErr
+          );
+        }
+      }
+
+      const verifyMessage = verification?.reason || 'QuickBooks connection verification failed.';
+      return redirectWithState({
+        status: 'error',
+        reason: 'qbo_verification_failed',
+        message: `QuickBooks authorization check failed: ${verifyMessage}`.slice(0, 240)
+      });
+    }
+
     // Restore session from the OAuth state so strict SameSite cookies don't log the user out.
     let membership = null;
     if (req.session) {
       try {
         membership = await dbGet(
-          'SELECT employee_id, is_super_admin FROM user_orgs WHERE user_id = ? AND org_id = ?',
+          `
+            SELECT
+              o.status AS org_status,
+              uo.employee_id,
+              uo.is_super_admin,
+              uo.login_enabled,
+              e.active AS employee_active,
+              e.desktop_access AS employee_desktop_access
+            FROM user_orgs uo
+            JOIN orgs o ON o.id = uo.org_id
+            LEFT JOIN employees e
+              ON e.id = uo.employee_id
+              AND e.org_id = uo.org_id
+            WHERE uo.user_id = ? AND uo.org_id = ?
+          `,
           [stateRow.user_id, stateRow.org_id]
         );
+
+        if (
+          !membership ||
+          !membership.is_super_admin ||
+          !isTruthyFlag(membership.login_enabled) ||
+          (membership.org_status && membership.org_status !== 'active') ||
+          !membership.employee_id ||
+          !isActiveFlag(membership.employee_active) ||
+          !isTruthyFlag(membership.employee_desktop_access)
+        ) {
+          throw new Error('Membership is no longer valid for this QuickBooks session.');
+        }
+
         req.session.userId = stateRow.user_id;
         req.session.orgId = stateRow.org_id;
-        req.session.employeeId = membership ? membership.employee_id : null;
-        req.session.isSuperAdmin = membership && membership.is_super_admin ? 1 : 0;
+        req.session.employeeId = membership.employee_id;
+        req.session.isSuperAdmin = isTruthyFlag(membership.is_super_admin) ? 1 : 0;
         req.session.pending_bootstrap_user_id = null;
         applyRememberCookie(req, false);
         ensureCsrfToken(req, res);
@@ -4262,29 +4959,21 @@ app.get('/quickbooks/oauth/callback', async (req, res) => {
       note: 'QuickBooks connected.'
     });
 
-    // Figure out base URL from redirect URI
-    const redirectUri = QBO_REDIRECT_URI || '';
-    const baseUrl = redirectUri.replace('/quickbooks/oauth/callback', '') || '/';
-
-    let redirectTarget = baseUrl;
-    try {
-      const targetUrl = new URL(baseUrl);
-      targetUrl.searchParams.set('qbo', 'connected');
-      redirectTarget = targetUrl.toString();
-    } catch {
-      redirectTarget = baseUrl.includes('?')
-        ? `${baseUrl}&qbo=connected`
-        : `${baseUrl}?qbo=connected`;
-    }
-
-    return res.redirect(redirectTarget);
+    return redirectWithState({
+      status: 'connected'
+    });
   } catch (err) {
-    console.error('Callback error:', err.message);
-    res.status(500).send('Error connecting to QuickBooks.');
+    const message = err && err.message ? err.message : 'Error connecting to QuickBooks.';
+    console.error('Callback error:', message);
+    return redirectWithState({
+      status: 'error',
+      reason: 'callback_error',
+      message: message.slice(0, 240)
+    });
   }
 });
 
-app.post('/api/qbo/disconnect', requireAdminAccess(p => p.view_payroll), requireSuperAdmin, async (req, res) => {
+app.post('/api/qbo/disconnect', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   try {
     const orgId = req.session && req.session.orgId;
     if (!orgId) {
@@ -4317,7 +5006,7 @@ app.post('/api/qbo/disconnect', requireAdminAccess(p => p.view_payroll), require
 /* ───────── 4. PAYROLL SETTINGS & LOOKUPS ───────── */
 
 // Get available QuickBooks accounts for payroll setup (bank + expense)
-app.get('/api/payroll/account-options', requireAdminAccess(p => p.view_payroll), async (req, res) => {
+app.get('/api/payroll/account-options', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
 
   try {
     const orgId = req.session && req.session.orgId;
@@ -4345,7 +5034,7 @@ app.get('/api/payroll/account-options', requireAdminAccess(p => p.view_payroll),
 });
 
 // Get QuickBooks Classes for use on payroll lines
-app.get('/api/payroll/classes', requireAdminAccess(p => p.view_payroll), async (req, res) => {
+app.get('/api/payroll/classes', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   try {
     const orgId = req.session && req.session.orgId;
     const classes = await listClasses(orgId);
@@ -4366,7 +5055,7 @@ app.get('/api/payroll/classes', requireAdminAccess(p => p.view_payroll), async (
 });
 
 // Get payroll defaults
-app.get('/api/payroll/settings', requireAdminAccess(p => p.view_payroll), (req, res) => {
+app.get('/api/payroll/settings', requireSectionEnabled('payroll'), requireSuperAdmin, (req, res) => {
   const orgId = req.session && req.session.orgId;
   if (!orgId) {
     return res.status(401).json({ error: 'Not authenticated.' });
@@ -4375,6 +5064,8 @@ app.get('/api/payroll/settings', requireAdminAccess(p => p.view_payroll), (req, 
     `SELECT
        bank_account_name,
        expense_account_name,
+       receipt_expense_account_name,
+       receipt_class_name,
        default_memo,
        line_description_template
      FROM payroll_settings
@@ -4391,6 +5082,8 @@ app.get('/api/payroll/settings', requireAdminAccess(p => p.view_payroll), (req, 
         row || {
           bank_account_name: null,
           expense_account_name: null,
+          receipt_expense_account_name: null,
+          receipt_class_name: null,
           default_memo: 'Payroll {start} – {end}',
           line_description_template: 'Labor {hours} hrs – {project}'
         }
@@ -4400,10 +5093,12 @@ app.get('/api/payroll/settings', requireAdminAccess(p => p.view_payroll), (req, 
 });
 
 // Update payroll defaults
-app.post('/api/payroll/settings', requireAdminAccess(p => p.modify_payroll), async (req, res) => {
+app.post('/api/payroll/settings', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   const {
     bank_account_name,
     expense_account_name,
+    receipt_expense_account_name,
+    receipt_class_name,
     default_memo,
     line_description_template
   } = req.body || {};
@@ -4419,6 +5114,8 @@ app.post('/api/payroll/settings', requireAdminAccess(p => p.modify_payroll), asy
         SELECT
           bank_account_name,
           expense_account_name,
+          receipt_expense_account_name,
+          receipt_class_name,
           default_memo,
           line_description_template
         FROM payroll_settings
@@ -4432,6 +5129,8 @@ app.post('/api/payroll/settings', requireAdminAccess(p => p.modify_payroll), asy
     const nextRow = {
       bank_account_name: bank_account_name || null,
       expense_account_name: expense_account_name || null,
+      receipt_expense_account_name: receipt_expense_account_name || null,
+      receipt_class_name: receipt_class_name || null,
       default_memo: default_memo || null,
       line_description_template: line_description_template || null
     };
@@ -4441,6 +5140,8 @@ app.post('/api/payroll/settings', requireAdminAccess(p => p.modify_payroll), asy
         UPDATE payroll_settings
         SET bank_account_name = ?,
             expense_account_name = ?,
+            receipt_expense_account_name = ?,
+            receipt_class_name = ?,
             default_memo = ?,
             line_description_template = ?
         WHERE org_id = ?
@@ -4448,6 +5149,8 @@ app.post('/api/payroll/settings', requireAdminAccess(p => p.modify_payroll), asy
       [
         nextRow.bank_account_name,
         nextRow.expense_account_name,
+        nextRow.receipt_expense_account_name,
+        nextRow.receipt_class_name,
         nextRow.default_memo,
         nextRow.line_description_template,
         orgId
@@ -4458,13 +5161,23 @@ app.post('/api/payroll/settings', requireAdminAccess(p => p.modify_payroll), asy
       await dbRun(
         `
           INSERT INTO payroll_settings
-            (org_id, bank_account_name, expense_account_name, default_memo, line_description_template)
-          VALUES (?, ?, ?, ?, ?)
+            (
+              org_id,
+              bank_account_name,
+              expense_account_name,
+              receipt_expense_account_name,
+              receipt_class_name,
+              default_memo,
+              line_description_template
+            )
+          VALUES (?, ?, ?, ?, ?, ?, ?)
         `,
         [
           orgId,
           nextRow.bank_account_name,
           nextRow.expense_account_name,
+          nextRow.receipt_expense_account_name,
+          nextRow.receipt_class_name,
           nextRow.default_memo,
           nextRow.line_description_template
         ]
@@ -4475,6 +5188,8 @@ app.post('/api/payroll/settings', requireAdminAccess(p => p.modify_payroll), asy
       ? {
           bank_account_name: beforeRow.bank_account_name || null,
           expense_account_name: beforeRow.expense_account_name || null,
+          receipt_expense_account_name: beforeRow.receipt_expense_account_name || null,
+          receipt_class_name: beforeRow.receipt_class_name || null,
           default_memo: beforeRow.default_memo || null,
           line_description_template: beforeRow.line_description_template || null
         }
@@ -4499,9 +5214,536 @@ app.post('/api/payroll/settings', requireAdminAccess(p => p.modify_payroll), asy
   }
 });
 
+// List payroll receipt reimbursements
+app.get('/api/payroll/reimbursements', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+
+  const start = normalizeString(req.query?.start);
+  const end = normalizeString(req.query?.end);
+  const employeeId = Number(req.query?.employeeId || 0);
+  const projectId = Number(req.query?.projectId || 0);
+  const rawLimit = Number(req.query?.limit || 100);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 300) : 100;
+  const rawStatus = normalizeString(req.query?.status);
+  const allowedStatuses = new Set(['requested', 'approved', 'paid', 'cancelled', 'all']);
+  const statusFilter = allowedStatuses.has(rawStatus || '') ? rawStatus : 'requested';
+
+  if (start && !isValidDateOnlyString(start)) {
+    return res.status(400).json({ error: 'start must be YYYY-MM-DD.' });
+  }
+  if (end && !isValidDateOnlyString(end)) {
+    return res.status(400).json({ error: 'end must be YYYY-MM-DD.' });
+  }
+
+  try {
+    let sql = `
+      SELECT
+        rr.id,
+        rr.employee_id,
+        rr.project_id,
+        rr.vendor_name,
+        rr.amount,
+        rr.expense_date,
+        rr.note,
+        rr.status,
+        rr.requested_at,
+        rr.approved_at,
+        rr.approved_by_employee_id,
+        rr.paid_date,
+        rr.payroll_run_id,
+        rr.payroll_check_id,
+        rr.original_filename,
+        rr.mime_type,
+        e.name AS employee_name,
+        COALESCE(p.name, '(No project)') AS project_name,
+        p.customer_name AS project_customer_name,
+        rb.name AS requested_by_name,
+        ab.name AS approved_by_name
+      FROM payroll_receipt_reimbursements rr
+      JOIN employees e
+        ON e.id = rr.employee_id
+       AND e.org_id = rr.org_id
+      LEFT JOIN projects p
+        ON p.id = rr.project_id
+       AND p.org_id = rr.org_id
+      LEFT JOIN employees rb
+        ON rb.id = rr.requested_by_employee_id
+       AND rb.org_id = rr.org_id
+      LEFT JOIN employees ab
+        ON ab.id = rr.approved_by_employee_id
+       AND ab.org_id = rr.org_id
+      WHERE rr.org_id = ?
+    `;
+    const params = [orgId];
+
+    if (statusFilter && statusFilter !== 'all') {
+      sql += ' AND rr.status = ?';
+      params.push(statusFilter);
+    }
+    if (start) {
+      sql += ' AND rr.expense_date >= ?';
+      params.push(start);
+    }
+    if (end) {
+      sql += ' AND rr.expense_date <= ?';
+      params.push(end);
+    }
+    if (employeeId) {
+      sql += ' AND rr.employee_id = ?';
+      params.push(employeeId);
+    }
+    if (projectId) {
+      sql += ' AND rr.project_id = ?';
+      params.push(projectId);
+    }
+
+    sql += ' ORDER BY rr.expense_date DESC, rr.id DESC LIMIT ?';
+    params.push(limit);
+
+    const rows = await dbAll(sql, params);
+    const payloadRows = (rows || []).map(row => ({
+      id: row.id,
+      employee_id: row.employee_id,
+      employee_name: row.employee_name,
+      project_id: row.project_id,
+      project_name: row.project_name,
+      project_customer_name: row.project_customer_name,
+      vendor_name: row.vendor_name || null,
+      amount: Number(row.amount || 0),
+      expense_date: row.expense_date,
+      note: row.note || null,
+      status: row.status || 'requested',
+      requested_at: row.requested_at || null,
+      requested_by_name: row.requested_by_name || null,
+      approved_at: row.approved_at || null,
+      approved_by_employee_id: row.approved_by_employee_id || null,
+      approved_by_name: row.approved_by_name || null,
+      paid_date: row.paid_date || null,
+      payroll_run_id: row.payroll_run_id || null,
+      payroll_check_id: row.payroll_check_id || null,
+      original_filename: row.original_filename || null,
+      mime_type: row.mime_type || null,
+      receipt_url: `/api/payroll/reimbursements/${row.id}/receipt`
+    }));
+
+    return res.json({ ok: true, rows: payloadRows });
+  } catch (err) {
+    console.error('Error loading payroll reimbursements:', err);
+    return res.status(500).json({ error: 'Failed to load payroll reimbursements.' });
+  }
+});
+
+// Create payroll receipt reimbursement request
+app.post(
+  '/api/payroll/reimbursements',
+  requireSectionEnabled('payroll'),
+  requireSuperAdmin,
+  wrapUpload(uploadReimbursementReceipts.single('receipt')),
+  async (req, res) => {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: 'Receipt file is required.' });
+    }
+
+    const cleanupFile = async () => {
+      await cleanupUploadedFiles([file]);
+    };
+
+    const employeeId = Number(req.body?.employee_id || 0);
+    const projectId = Number(req.body?.project_id || 0);
+    const amount = Number(req.body?.amount);
+    const vendorName = normalizeReceiptVendorName(req.body?.vendor_name);
+    const note = normalizeString(req.body?.note);
+    const providedExpenseDate = normalizeString(req.body?.expense_date);
+    const defaultExpenseDate = new Date().toISOString().slice(0, 10);
+    const expenseDate = providedExpenseDate || defaultExpenseDate;
+
+    if (!employeeId || !projectId || !Number.isFinite(amount) || amount <= 0 || !vendorName) {
+      await cleanupFile();
+      return res.status(400).json({
+        error: 'employee_id, project_id, vendor_name, and amount (> 0) are required.'
+      });
+    }
+    if (!isValidDateOnlyString(expenseDate)) {
+      await cleanupFile();
+      return res.status(400).json({ error: 'expense_date must be YYYY-MM-DD.' });
+    }
+
+    try {
+      const uploadValidation = await validateStoredUpload(
+        file.path,
+        reimbursementReceiptAllowedMimes,
+        reimbursementReceiptAllowedExts
+      );
+      if (!uploadValidation.ok) {
+        await cleanupFile();
+        return res.status(400).json({ error: uploadValidation.error || 'Unsupported file type.' });
+      }
+
+      const employeeRow = await dbGet(
+        `
+          SELECT id, name
+          FROM employees
+          WHERE id = ? AND org_id = ?
+          LIMIT 1
+        `,
+        [employeeId, orgId]
+      );
+      if (!employeeRow) {
+        await cleanupFile();
+        return res.status(400).json({ error: 'Employee not found.' });
+      }
+
+      const projectRow = await dbGet(
+        `
+          SELECT id, name, customer_name
+          FROM projects
+          WHERE id = ? AND org_id = ?
+          LIMIT 1
+        `,
+        [projectId, orgId]
+      );
+      if (!projectRow) {
+        await cleanupFile();
+        return res.status(400).json({ error: 'Project not found.' });
+      }
+
+      const relPath = `payroll_receipts/${file.filename}`;
+      const insertRes = await dbRun(
+        `
+          INSERT INTO payroll_receipt_reimbursements (
+            org_id,
+            employee_id,
+            project_id,
+            amount,
+            expense_date,
+            vendor_name,
+            note,
+            file_path,
+            original_filename,
+            mime_type,
+            status,
+            requested_by_employee_id,
+            requested_at,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, datetime('now'), datetime('now'))
+        `,
+        [
+          orgId,
+          employeeId,
+          projectId,
+          roundCurrency(amount),
+          expenseDate,
+          vendorName,
+          note,
+          relPath,
+          file.originalname || null,
+          uploadValidation.mime || file.mimetype || null,
+          req.session && req.session.employeeId ? req.session.employeeId : null
+        ]
+      );
+
+      const reimbursementId = insertRes?.lastID;
+      await logAuditEvent({
+        req,
+        orgId,
+        action: 'payroll.reimbursement.create',
+        entityType: 'payroll_reimbursement',
+        entityId: reimbursementId || null,
+        after: {
+          employee_id: employeeId,
+          employee_name: employeeRow.name || null,
+          project_id: projectId,
+          project_name: projectRow.name || null,
+          vendor_name: vendorName,
+          amount: roundCurrency(amount),
+          expense_date: expenseDate,
+          note: note || null
+        },
+        note: 'Receipt reimbursement requested.'
+      });
+
+      return res.json({
+        ok: true,
+        reimbursement: {
+          id: reimbursementId,
+          employee_id: employeeId,
+          employee_name: employeeRow.name || null,
+          project_id: projectId,
+          project_name: projectRow.name || null,
+          project_customer_name: projectRow.customer_name || null,
+          vendor_name: vendorName,
+          amount: roundCurrency(amount),
+          expense_date: expenseDate,
+          note: note || null,
+          status: 'requested',
+          receipt_url: `/api/payroll/reimbursements/${reimbursementId}/receipt`
+        }
+      });
+    } catch (err) {
+      console.error('Error creating payroll reimbursement:', err);
+      await cleanupFile();
+      return res.status(500).json({ error: 'Failed to create reimbursement request.' });
+    }
+  }
+);
+
+// Approve payroll receipt reimbursement request
+app.post('/api/payroll/reimbursements/:id/approve', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  const reimbursementId = Number(req.params.id || 0);
+  const orgId = req.session && req.session.orgId;
+  const actorEmployeeId = req.session && req.session.employeeId ? Number(req.session.employeeId) : null;
+
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+  if (!Number.isFinite(reimbursementId) || reimbursementId <= 0) {
+    return res.status(400).json({ error: 'Invalid reimbursement id.' });
+  }
+
+  try {
+    const existing = await dbGet(
+      `
+        SELECT
+          rr.id,
+          rr.employee_id,
+          rr.project_id,
+          rr.vendor_name,
+          rr.amount,
+          rr.expense_date,
+          rr.note,
+          rr.status,
+          rr.requested_at,
+          rr.requested_by_employee_id,
+          rr.approved_at,
+          rr.approved_by_employee_id,
+          rr.paid_date,
+          rr.payroll_run_id,
+          rr.payroll_check_id,
+          e.name AS employee_name,
+          p.name AS project_name,
+          p.customer_name AS project_customer_name,
+          rb.name AS requested_by_name,
+          ab.name AS approved_by_name
+        FROM payroll_receipt_reimbursements rr
+        JOIN employees e
+          ON e.id = rr.employee_id
+         AND e.org_id = rr.org_id
+        LEFT JOIN projects p
+          ON p.id = rr.project_id
+         AND p.org_id = rr.org_id
+        LEFT JOIN employees rb
+          ON rb.id = rr.requested_by_employee_id
+         AND rb.org_id = rr.org_id
+        LEFT JOIN employees ab
+          ON ab.id = rr.approved_by_employee_id
+         AND ab.org_id = rr.org_id
+        WHERE rr.id = ?
+          AND rr.org_id = ?
+        LIMIT 1
+      `,
+      [reimbursementId, orgId]
+    );
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Reimbursement not found.' });
+    }
+
+    const currentStatus = String(existing.status || '').toLowerCase();
+    if (currentStatus === 'paid') {
+      return res.status(409).json({ error: 'Paid reimbursements cannot be re-approved.' });
+    }
+    if (currentStatus !== 'requested' && currentStatus !== 'approved') {
+      return res.status(409).json({ error: 'Only requested reimbursements can be approved.' });
+    }
+
+    let updateRes = null;
+    if (currentStatus !== 'approved') {
+      updateRes = await dbRun(
+        `
+          UPDATE payroll_receipt_reimbursements
+          SET
+            status = 'approved',
+            approved_by_employee_id = ?,
+            approved_at = datetime('now'),
+            updated_at = datetime('now')
+          WHERE id = ?
+            AND org_id = ?
+            AND status = 'requested'
+        `,
+        [actorEmployeeId, reimbursementId, orgId]
+      );
+    }
+
+    const updated = await dbGet(
+      `
+        SELECT
+          rr.id,
+          rr.employee_id,
+          rr.project_id,
+          rr.vendor_name,
+          rr.amount,
+          rr.expense_date,
+          rr.note,
+          rr.status,
+          rr.requested_at,
+          rr.requested_by_employee_id,
+          rr.approved_at,
+          rr.approved_by_employee_id,
+          rr.paid_date,
+          rr.payroll_run_id,
+          rr.payroll_check_id,
+          e.name AS employee_name,
+          p.name AS project_name,
+          p.customer_name AS project_customer_name,
+          rb.name AS requested_by_name,
+          ab.name AS approved_by_name
+        FROM payroll_receipt_reimbursements rr
+        JOIN employees e
+          ON e.id = rr.employee_id
+         AND e.org_id = rr.org_id
+        LEFT JOIN projects p
+          ON p.id = rr.project_id
+         AND p.org_id = rr.org_id
+        LEFT JOIN employees rb
+          ON rb.id = rr.requested_by_employee_id
+         AND rb.org_id = rr.org_id
+        LEFT JOIN employees ab
+          ON ab.id = rr.approved_by_employee_id
+         AND ab.org_id = rr.org_id
+        WHERE rr.id = ?
+          AND rr.org_id = ?
+        LIMIT 1
+      `,
+      [reimbursementId, orgId]
+    );
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Reimbursement not found.' });
+    }
+    if (String(updated.status || '').toLowerCase() !== 'approved') {
+      return res.status(409).json({ error: 'Reimbursement can no longer be approved.' });
+    }
+
+    if (currentStatus === 'requested' && Number(updateRes?.changes || 0) > 0) {
+      await logAuditEvent({
+        req,
+        orgId,
+        action: 'payroll.reimbursement.approve',
+        entityType: 'payroll_reimbursement',
+        entityId: reimbursementId,
+        before: {
+          status: existing.status || 'requested',
+          approved_at: existing.approved_at || null,
+          approved_by_employee_id: existing.approved_by_employee_id || null
+        },
+        after: {
+          status: updated.status || 'approved',
+          approved_at: updated.approved_at || null,
+          approved_by_employee_id: updated.approved_by_employee_id || null,
+          approved_by_name: updated.approved_by_name || null
+        },
+        note: 'Receipt reimbursement approved for payroll.'
+      });
+    }
+
+    return res.json({
+      ok: true,
+      reimbursement: {
+        id: updated.id,
+        employee_id: updated.employee_id,
+        employee_name: updated.employee_name || null,
+        project_id: updated.project_id,
+        project_name: updated.project_name || null,
+        project_customer_name: updated.project_customer_name || null,
+        vendor_name: updated.vendor_name || null,
+        amount: Number(updated.amount || 0),
+        expense_date: updated.expense_date,
+        note: updated.note || null,
+        status: updated.status || 'approved',
+        requested_at: updated.requested_at || null,
+        requested_by_name: updated.requested_by_name || null,
+        approved_at: updated.approved_at || null,
+        approved_by_employee_id: updated.approved_by_employee_id || null,
+        approved_by_name: updated.approved_by_name || null,
+        paid_date: updated.paid_date || null,
+        payroll_run_id: updated.payroll_run_id || null,
+        payroll_check_id: updated.payroll_check_id || null,
+        receipt_url: `/api/payroll/reimbursements/${updated.id}/receipt`
+      }
+    });
+  } catch (err) {
+    console.error('Error approving payroll reimbursement:', err);
+    return res.status(500).json({ error: 'Failed to approve reimbursement.' });
+  }
+});
+
+// Download reimbursement receipt file
+app.get('/api/payroll/reimbursements/:id/receipt', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  const reimbursementId = Number(req.params.id);
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+  if (!reimbursementId) {
+    return res.status(400).json({ error: 'Invalid reimbursement id.' });
+  }
+
+  try {
+    const row = await dbGet(
+      `
+        SELECT id, file_path, original_filename, mime_type
+        FROM payroll_receipt_reimbursements
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [reimbursementId, orgId]
+    );
+    if (!row || !row.file_path) {
+      return res.status(404).json({ error: 'Receipt not found.' });
+    }
+
+    const absPath = resolveReimbursementReceiptPath(row.file_path);
+    if (!absPath) {
+      return res.status(404).json({ error: 'Receipt not found.' });
+    }
+    try {
+      await fsp.access(absPath, fs.constants.R_OK);
+    } catch {
+      return res.status(404).json({ error: 'Receipt not found.' });
+    }
+
+    const fileName =
+      normalizeString(row.original_filename) ||
+      path.basename(absPath) ||
+      `receipt-${reimbursementId}`;
+    const mime = normalizeString(row.mime_type) || 'application/octet-stream';
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Type', mime);
+    return res.download(absPath, fileName);
+  } catch (err) {
+    console.error('Error downloading payroll reimbursement receipt:', err);
+    return res.status(500).json({ error: 'Failed to download receipt.' });
+  }
+});
+
 // PAYROLL SUMMARY ENDPOINT (UNPAID ONLY)
-app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (req, res) => {
-  const { start, end, includePaid, includeOvertime } = req.query;
+app.get('/api/payroll-summary', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  const {
+    start,
+    end,
+    includePaid,
+    includeOvertime,
+    includeReceiptReimbursements
+  } = req.query;
   const includePaidBool =
     includePaid === '1' ||
     includePaid === 'true' ||
@@ -4514,6 +5756,10 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
           includeOvertime === 'true' ||
           includeOvertime === true
         );
+  const includeReceiptReimbursementsBool = parseBooleanFlag(
+    includeReceiptReimbursements,
+    true
+  );
 
   if (!start || !end) {
     return res
@@ -4533,6 +5779,33 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
     if (!orgId) {
       return res.status(401).json({ error: 'Not authenticated.' });
     }
+
+    const pendingApprovals = await loadPendingTimeEntryApprovals({
+      orgId,
+      start,
+      end
+    });
+
+    const payrollSettingsRow = await dbGet(
+      `
+        SELECT
+          expense_account_name,
+          receipt_expense_account_name,
+          receipt_class_name
+        FROM payroll_settings
+        WHERE org_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `,
+      [orgId]
+    );
+    const receiptExpenseDefault =
+      payrollSettingsRow?.receipt_expense_account_name ||
+      payrollSettingsRow?.expense_account_name ||
+      null;
+    const receiptClassDefault =
+      payrollSettingsRow?.receipt_class_name || null;
+
     const orgTimezone = await getOrgTimezone(orgId);
 
     const rulesMap = await loadExceptionRulesMap(orgId);
@@ -4601,11 +5874,14 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
       );
     }
 
-    const punchExceptionCase = punchExceptionConditions.length
-      ? `CASE ${punchExceptionConditions.map(c => `WHEN ${c} THEN 1`).join(' ')} ELSE 0 END`
+    const guardedPunchExceptionConditions = punchExceptionConditions.map(
+      c => `(tp.id IS NOT NULL AND (${c}))`
+    );
+    const punchExceptionCase = guardedPunchExceptionConditions.length
+      ? `CASE ${guardedPunchExceptionConditions.map(c => `WHEN ${c} THEN 1`).join(' ')} ELSE 0 END`
       : '0';
-    const punchExceptionUnapprovedCase = punchExceptionConditions.length
-      ? `CASE ${punchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
+    const punchExceptionUnapprovedCase = guardedPunchExceptionConditions.length
+      ? `CASE ${guardedPunchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
       : '0';
 
     const HOURS_EPSILON = 0.1; // keep in sync with payroll filtering
@@ -4652,6 +5928,7 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
       LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
       LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
       WHERE t.org_id = ? AND t.start_date >= ? AND t.end_date <= ?
+        AND LOWER(COALESCE(t.approval_status, 'pending')) = 'approved'
         ${paidClause}
       GROUP BY
         t.id,
@@ -4669,19 +5946,9 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
         t.resolved_status
     ),
     eligible_entries AS (
+      -- Payroll approval is authoritative for payroll eligibility.
       SELECT *
-      FROM entry_flags f
-      WHERE
-        LOWER(COALESCE(f.resolved_status, 'open')) != 'rejected'
-        AND
-        (
-          ${entryExceptionExpr} = 0
-          OR LOWER(COALESCE(f.resolved_status, 'open')) IN ('approved', 'modified')
-        )
-        AND (
-          IFNULL(f.punch_exception_count, 0) = 0
-          OR IFNULL(f.punch_exception_unapproved_count, 0) = 0
-        )
+      FROM entry_flags
     )
     SELECT
       f.id AS time_entry_id,
@@ -4720,26 +5987,7 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
     const payrollRules = normalizePayrollRules(payrollRulesRaw);
     let rows = await dbAll(sql, params);
 
-    if (ruleWeeklyHours && weeklyHoursThreshold && rows && rows.length) {
-      const weeklyCounts = await loadWeeklyHoursExceptionCounts({
-        orgId,
-        start,
-        end,
-        orgTimezone,
-        weeklyHoursThreshold
-      });
-      const eligibleRows = [];
-      for (const row of rows) {
-        const entryId = Number(row.time_entry_id || 0);
-        if (!entryId) continue;
-        const counts = weeklyCounts.perEntry.get(entryId);
-        if (counts && counts.unapproved > 0) {
-          continue;
-        }
-        eligibleRows.push(row);
-      }
-      rows = eligibleRows;
-    }
+    // Payroll approval is authoritative for payroll eligibility.
 
     const entriesByEmployee = new Map();
     rows.forEach(row => {
@@ -4836,6 +6084,63 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
       });
     });
 
+    if (includeReceiptReimbursementsBool) {
+      const reimbursementRollups = await loadApprovedReceiptReimbursementRollups({
+        orgId,
+        start,
+        end
+      });
+
+      reimbursementRollups.forEach(row => {
+        const employeeId = Number(row.employee_id || 0);
+        const rawProjectId = Number(row.project_id || 0);
+        const vendorName = normalizeReceiptVendorName(row.vendor_name) || 'Unknown Vendor';
+        if (!employeeId || !rawProjectId) return;
+
+        const lineProjectId = buildReceiptLineProjectId(rawProjectId, vendorName);
+        const lineKey = `receipt:${employeeId}:${lineProjectId}`;
+        if (!lineMap.has(lineKey)) {
+          lineMap.set(lineKey, {
+            employee_id: employeeId,
+            employee_name: row.employee_name || '(Unknown employee)',
+            employee_vendor_qbo_id: row.employee_vendor_qbo_id || null,
+            employee_employee_qbo_id: row.employee_employee_qbo_id || null,
+            project_id: lineProjectId,
+            project_name: '',
+            project_qbo_id: null,
+            project_customer_name: null,
+            project_name_raw: '',
+            source_project_id: rawProjectId,
+            vendor_name: vendorName,
+            any_paid: 0,
+            last_paid_date: null,
+            payroll_run_id: null,
+            line_paid: 0,
+            line_paid_date: null,
+            project_hours: 0,
+            project_pay: 0,
+            class_name: receiptClassDefault,
+            expense_account_name: receiptExpenseDefault,
+            is_receipt_reimbursement: 1,
+            reimbursement_count: 0
+          });
+        }
+
+        const line = lineMap.get(lineKey);
+        line.project_pay += Number(row.receipt_amount || 0);
+        line.reimbursement_count += Number(row.receipt_count || 0);
+        line.vendor_name = vendorName;
+
+        if (!employeeStatus.has(employeeId)) {
+          employeeStatus.set(employeeId, {
+            any_paid: false,
+            payroll_run_id: null,
+            last_paid_date: null
+          });
+        }
+      });
+    }
+
     const response = Array.from(lineMap.values()).map(line => {
       const status = employeeStatus.get(line.employee_id) || {};
       return {
@@ -4848,14 +6153,21 @@ app.get('/api/payroll-summary', requireAdminAccess(p => p.view_payroll), async (
       };
     });
 
-    res.json(response);
+    return res.json({
+      ok: true,
+      rows: response,
+      pending_approvals: {
+        pending_count: pendingApprovals.length,
+        pending: pendingApprovals.slice(0, 200)
+      }
+    });
   } catch (err) {
     console.error('Error loading payroll summary:', err);
     return res.status(500).json({ error: err.message || 'Failed to load payroll summary.' });
   }
 });
 // Mark checks/time entries as unpaid for an employee in a period (to allow resend)
-app.post('/api/payroll/unpay', requireAdminAccess(p => p.modify_payroll), async (req, res) => {
+app.post('/api/payroll/unpay', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   const {
     payrollRunId,
     employeeId,
@@ -4942,6 +6254,23 @@ app.post('/api/payroll/unpay', requireAdminAccess(p => p.modify_payroll), async 
       [new Date().toISOString(), empIdNum, runId, orgId]
     );
 
+    await dbRun(
+      `
+        UPDATE payroll_receipt_reimbursements
+        SET
+          status = 'approved',
+          paid_date = NULL,
+          payroll_run_id = NULL,
+          payroll_check_id = NULL,
+          updated_at = datetime('now')
+        WHERE org_id = ?
+          AND employee_id = ?
+          AND payroll_run_id = ?
+          AND status = 'paid'
+      `,
+      [orgId, empIdNum, runId]
+    );
+
     await logPayrollEvent({
       orgId: req.session && req.session.orgId,
       actor_employee_id: req.session && req.session.employeeId ? req.session.employeeId : null,
@@ -4972,7 +6301,7 @@ app.post('/api/payroll/unpay', requireAdminAccess(p => p.modify_payroll), async 
 });
 
 // Get raw time entries for an employee in a date range (for payroll UI)
-app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), async (req, res) => {
+app.get('/api/payroll/time-entries', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   const employeeId = parseInt(req.query.employeeId, 10);
   const { start, end } = req.query || {};
   const orgId = req.session && req.session.orgId;
@@ -5055,11 +6384,14 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
     }
     // Weekly overtime is handled in the time exception report only; not enforced per punch here
 
-    const punchExceptionCase = punchExceptionConditions.length
-      ? `CASE ${punchExceptionConditions.map(c => `WHEN ${c} THEN 1`).join(' ')} ELSE 0 END`
+    const guardedPunchExceptionConditions = punchExceptionConditions.map(
+      c => `(tp.id IS NOT NULL AND (${c}))`
+    );
+    const punchExceptionCase = guardedPunchExceptionConditions.length
+      ? `CASE ${guardedPunchExceptionConditions.map(c => `WHEN ${c} THEN 1`).join(' ')} ELSE 0 END`
       : '0';
-    const punchExceptionUnapprovedCase = punchExceptionConditions.length
-      ? `CASE ${punchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
+    const punchExceptionUnapprovedCase = guardedPunchExceptionConditions.length
+      ? `CASE ${guardedPunchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
       : '0';
 
     const sql = `
@@ -5090,11 +6422,11 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
       LEFT JOIN projects p ON t.project_id = p.id AND p.org_id = t.org_id
       LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
       LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = tp.org_id
-      LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = t.org_id
       WHERE t.employee_id = ?
         AND t.org_id = ?
         AND t.start_date >= ?
         AND t.end_date <= ?
+        AND LOWER(COALESCE(t.approval_status, 'pending')) = 'approved'
       GROUP BY
         t.id,
         t.employee_id,
@@ -5111,62 +6443,8 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
       ORDER BY project_name, t.start_date, t.id
     `;
 
-    let rows = await dbAll(sql, [employeeId, orgId, start, end]);
-    let weeklyBlocked = new Set();
-    if (ruleWeeklyHours && weeklyHoursThreshold && rows && rows.length) {
-      const weeklyCounts = await loadWeeklyHoursExceptionCounts({
-        orgId,
-        start,
-        end,
-        orgTimezone,
-        weeklyHoursThreshold
-      });
-      weeklyBlocked = new Set(
-        rows
-          .map(r => Number(r.id || 0))
-          .filter(id => id && weeklyCounts.perEntry.get(id)?.unapproved > 0)
-      );
-    }
-
-    const HOURS_EPSILON = 0.1; // ~6 minutes
-
-    const eligible = rows.filter(r => {
-      const entryId = Number(r.id || 0);
-      if (entryId && weeklyBlocked.has(entryId)) {
-        return false;
-      }
-      const punchCount = Number(r.punch_count || 0);
-      const entryHours =
-        r.hours != null && !Number.isNaN(Number(r.hours))
-          ? Number(r.hours)
-          : null;
-      const punchHours =
-        r.punch_hours != null && !Number.isNaN(Number(r.punch_hours))
-          ? Number(r.punch_hours)
-          : 0;
-
-      const entryException =
-        (ruleManualNoPunches && (!punchCount)) ||
-        (ruleManualHoursMismatch &&
-          (entryHours == null ||
-            Math.abs(punchHours - entryHours) >= HOURS_EPSILON));
-
-      const status = (r.resolved_status || '').toLowerCase();
-      if (status === 'rejected') {
-        return false;
-      }
-      const isApproved = status === 'approved' || status === 'modified';
-      const isReviewed = !!r.resolved || (status && status !== 'open');
-
-      const hasPunchException =
-        Number(r.punch_exception_count || 0) > 0;
-      const punchExceptionsApproved =
-        Number(r.punch_exception_unapproved_count || 0) === 0;
-
-      const entryOk = entryException ? isApproved : isReviewed;
-      const punchesOk = !hasPunchException || punchExceptionsApproved;
-      return entryOk && punchesOk;
-    });
+    const rows = await dbAll(sql, [employeeId, orgId, start, end]);
+    const eligible = Array.isArray(rows) ? rows : [];
 
     const withRate = eligible.map(r => {
       const rawHours = Number(r.hours || 0);
@@ -5203,12 +6481,13 @@ app.get('/api/payroll/time-entries', requireAdminAccess(p => p.view_payroll), as
 });
 
 // Preview payroll checks (compatibility path; mirrors preflight behavior)
-app.post('/api/payroll/preview-checks', requireAdminAccess(p => p.modify_payroll), async (req, res) => {
+app.post('/api/payroll/preview-checks', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   const {
     start,
     end,
     bankAccountName,
     expenseAccountName,
+    receiptExpenseAccountName,
     memo,
     lineDescriptionTemplate,
     overrides = [],
@@ -5240,67 +6519,38 @@ app.post('/api/payroll/preview-checks', requireAdminAccess(p => p.modify_payroll
     });
   }
 
+  const { normalized, payloadJson, payloadHash } = hashPayrollPayload(req.body || {});
+  let pendingApprovals = [];
+  let pendingFieldReviews = [];
   try {
-    const pendingApprovals = await loadPendingTimeEntryApprovals({
+    pendingApprovals = await loadPendingTimeEntryApprovals({
+      orgId,
+      start,
+      end,
+      includeEmployeeIds: normalized.onlyEmployeeIds,
+      excludeEmployeeIds: normalized.excludeEmployeeIds
+    });
+    pendingFieldReviews = await loadPendingTimeEntryFieldReviews({
       orgId,
       start,
       end
     });
-    const pendingFieldReviews = await loadPendingTimeEntryFieldReviews({
-      orgId,
-      start,
-      end
-    });
-    if (pendingFieldReviews.length) {
-      return res.status(409).json({
-        ok: false,
-        error: 'Time entry field reviews are required before running payroll.',
-        pending: pendingFieldReviews
-      });
-    }
-    if (pendingApprovals.length) {
-      return res.status(409).json({
-        ok: false,
-        error: 'Time entry approvals are required before running payroll.',
-        pending: pendingApprovals
-      });
-    }
-    const unresolved = await loadPayrollUnresolvedExceptions({
-      orgId,
-      start,
-      end
-    });
-    if (unresolved.length) {
-      return res.status(409).json({
-        ok: false,
-        error: 'Time exceptions must be reviewed before running payroll.',
-        unresolved
-      });
-    }
-
-    const qboChanges = await loadQboDirtyConflicts({ orgId });
-    if (qboChanges.length) {
-      return res.status(409).json({
-        ok: false,
-        error: 'QuickBooks employee changes must be synced before running payroll.',
-        qbo_changes: qboChanges
-      });
-    }
   } catch (err) {
     console.error('Pending approvals check failed:', err);
   }
 
   try {
-    const { normalized, payloadJson, payloadHash } = hashPayrollPayload(req.body || {});
     const snapshot = await computePayrollDraftsSnapshot(start, end, {
       excludeEmployeeIds: normalized.excludeEmployeeIds,
       onlyEmployeeIds: normalized.onlyEmployeeIds,
       includeOvertime: normalized.include_overtime,
+      includeReceiptReimbursements: normalized.include_receipt_reimbursements,
       orgId
     });
     const qbResult = await createChecksForPeriod(start, end, {
       bankAccountName,
       expenseAccountName,
+      receiptExpenseAccountName,
       memo,
       lineDescriptionTemplate,
       includeOvertime: normalized.include_overtime,
@@ -5309,11 +6559,23 @@ app.post('/api/payroll/preview-checks', requireAdminAccess(p => p.modify_payroll
       customLines,
       excludeEmployeeIds,
       onlyEmployeeIds,
+      includeReceiptReimbursements: normalized.include_receipt_reimbursements,
       previewOnly: true,
       orgId
     });
     if (qbResult && qbResult.ok === false) {
-      return res.json({ ...qbResult, preview: true });
+      return res.json({
+        ...qbResult,
+        preview: true,
+        pending_approvals: {
+          pending_count: pendingApprovals.length,
+          pending: pendingApprovals.slice(0, 200)
+        },
+        field_review: {
+          pending_count: pendingFieldReviews.length,
+          pending: pendingFieldReviews.slice(0, 200)
+        }
+      });
     }
     const preflightId = await storePayrollPreflight({
       orgId,
@@ -5344,7 +6606,15 @@ app.post('/api/payroll/preview-checks', requireAdminAccess(p => p.modify_payroll
       preflight_id: preflightId,
       payload_hash: payloadHash,
       snapshot_hash: snapshot.snapshot_hash,
-      snapshot_count: snapshot.snapshot_count
+      snapshot_count: snapshot.snapshot_count,
+      pending_approvals: {
+        pending_count: pendingApprovals.length,
+        pending: pendingApprovals.slice(0, 200)
+      },
+      field_review: {
+        pending_count: pendingFieldReviews.length,
+        pending: pendingFieldReviews.slice(0, 200)
+      }
     });
   } catch (err) {
     console.error('Preview checks error:', err);
@@ -5352,12 +6622,13 @@ app.post('/api/payroll/preview-checks', requireAdminAccess(p => p.modify_payroll
   }
 });
 
-app.post('/api/payroll/preflight-checks', requireAdminAccess(p => p.modify_payroll), async (req, res) => {
+app.post('/api/payroll/preflight-checks', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   const {
     start,
     end,
     bankAccountName,
     expenseAccountName,
+    receiptExpenseAccountName,
     memo,
     lineDescriptionTemplate,
     overrides = [],
@@ -5379,43 +6650,19 @@ app.post('/api/payroll/preflight-checks', requireAdminAccess(p => p.modify_payro
       return res.status(401).json({ ok: false, error: 'Not authenticated.' });
     }
 
+    const { normalized, payloadJson, payloadHash } = hashPayrollPayload(req.body || {});
     const pendingApprovals = await loadPendingTimeEntryApprovals({
       orgId,
       start,
-      end
+      end,
+      includeEmployeeIds: normalized.onlyEmployeeIds,
+      excludeEmployeeIds: normalized.excludeEmployeeIds
     });
     const pendingFieldReviews = await loadPendingTimeEntryFieldReviews({
       orgId,
       start,
       end
     });
-    if (pendingFieldReviews.length) {
-      return res.status(409).json({
-        ok: false,
-        error: 'Time entry field reviews are required before running payroll.',
-        pending: pendingFieldReviews
-      });
-    }
-    if (pendingApprovals.length) {
-      return res.status(409).json({
-        ok: false,
-        error: 'Time entry approvals are required before running payroll.',
-        pending: pendingApprovals
-      });
-    }
-    const unresolved = await loadPayrollUnresolvedExceptions({
-      orgId,
-      start,
-      end
-    });
-    if (unresolved.length) {
-      return res.status(409).json({
-        ok: false,
-        error: 'Time exceptions must be reviewed before running payroll.',
-        unresolved
-      });
-    }
-
     const qboChanges = await loadQboDirtyConflicts({ orgId });
     if (qboChanges.length) {
       return res.status(409).json({
@@ -5425,16 +6672,17 @@ app.post('/api/payroll/preflight-checks', requireAdminAccess(p => p.modify_payro
       });
     }
 
-    const { normalized, payloadJson, payloadHash } = hashPayrollPayload(req.body || {});
     const snapshot = await computePayrollDraftsSnapshot(start, end, {
       excludeEmployeeIds: normalized.excludeEmployeeIds,
       onlyEmployeeIds: normalized.onlyEmployeeIds,
       includeOvertime: normalized.include_overtime,
+      includeReceiptReimbursements: normalized.include_receipt_reimbursements,
       orgId
     });
     const qbResult = await createChecksForPeriod(start, end, {
       bankAccountName,
       expenseAccountName,
+      receiptExpenseAccountName,
       memo,
       lineDescriptionTemplate,
       includeOvertime: normalized.include_overtime,
@@ -5443,11 +6691,23 @@ app.post('/api/payroll/preflight-checks', requireAdminAccess(p => p.modify_payro
       customLines,
       excludeEmployeeIds,
       onlyEmployeeIds,
+      includeReceiptReimbursements: normalized.include_receipt_reimbursements,
       previewOnly: true,
       orgId
     });
     if (qbResult && qbResult.ok === false) {
-      return res.json({ ...qbResult, preview: true });
+      return res.json({
+        ...qbResult,
+        preview: true,
+        pending_approvals: {
+          pending_count: pendingApprovals.length,
+          pending: pendingApprovals.slice(0, 200)
+        },
+        field_review: {
+          pending_count: pendingFieldReviews.length,
+          pending: pendingFieldReviews.slice(0, 200)
+        }
+      });
     }
     const preflightId = await storePayrollPreflight({
       orgId,
@@ -5478,7 +6738,15 @@ app.post('/api/payroll/preflight-checks', requireAdminAccess(p => p.modify_payro
       preflight_id: preflightId,
       payload_hash: payloadHash,
       snapshot_hash: snapshot.snapshot_hash,
-      snapshot_count: snapshot.snapshot_count
+      snapshot_count: snapshot.snapshot_count,
+      pending_approvals: {
+        pending_count: pendingApprovals.length,
+        pending: pendingApprovals.slice(0, 200)
+      },
+      field_review: {
+        pending_count: pendingFieldReviews.length,
+        pending: pendingFieldReviews.slice(0, 200)
+      }
     });
   } catch (err) {
     console.error('Preflight checks error:', err);
@@ -5487,7 +6755,7 @@ app.post('/api/payroll/preflight-checks', requireAdminAccess(p => p.modify_payro
   }
 });
 
-app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll), async (req, res) => {
+app.post('/api/payroll/create-checks', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   let {
     preflight_id: preflightIdRaw,
     payload_hash: payloadHashRaw,
@@ -5495,6 +6763,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     end,
     bankAccountName,
     expenseAccountName,
+    receiptExpenseAccountName,
     memo,
     lineDescriptionTemplate,
     overrides = [],
@@ -5620,23 +6889,11 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     });
   }
 
-  const pendingApprovals = await loadPendingTimeEntryApprovals({
-    orgId,
-    start,
-    end
-  });
-  if (pendingApprovals.length) {
-    return res.status(409).json({
-      ok: false,
-      error: 'Time entry approvals are required before running payroll.',
-      pending: pendingApprovals
-    });
-  }
-
   const currentSnapshot = await computePayrollDraftsSnapshot(start, end, {
     excludeEmployeeIds: normalized.excludeEmployeeIds,
     onlyEmployeeIds: normalized.onlyEmployeeIds,
     includeOvertime: normalized.include_overtime,
+    includeReceiptReimbursements: normalized.include_receipt_reimbursements,
     orgId
   });
   if (currentSnapshot.snapshot_hash !== preflightRow.snapshot_hash) {
@@ -5926,6 +7183,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
           end,
           bankAccountName,
           expenseAccountName,
+          receiptExpenseAccountName,
           onlyEmployeeIds,
           run_type: runType,
           adjustment_reason: adjustmentReason
@@ -5986,9 +7244,11 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     const qbResult = await createChecksForPeriod(start, end, {
       bankAccountName,
       expenseAccountName,
+      receiptExpenseAccountName,
       memo,
       lineDescriptionTemplate,
       includeOvertime: normalized.include_overtime,
+      includeReceiptReimbursements: normalized.include_receipt_reimbursements,
       overrides,
       lineOverrides,
       customLines,
@@ -6160,13 +7420,6 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
     });
 
     // 4) Persist this payroll run + checks in a transaction.
-    const nextTotalPrice = canViewPayroll
-      ? (total_price != null ? total_price : null)
-      : existing.total_price;
-    const nextPricePerItem = canViewPayroll
-      ? (price_per_item != null ? price_per_item : null)
-      : existing.price_per_item;
-
     await dbRun('BEGIN TRANSACTION');
 
     try {
@@ -6312,6 +7565,26 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
   `,
   [paidAt, payrollRunId, payrollCheckId, new Date().toISOString(), empId, orgId, start, end]
 );
+
+          if (normalized.include_receipt_reimbursements) {
+            await dbRun(
+              `
+                UPDATE payroll_receipt_reimbursements
+                SET
+                  status = 'paid',
+                  paid_date = ?,
+                  payroll_run_id = ?,
+                  payroll_check_id = ?,
+                  updated_at = datetime('now')
+                WHERE org_id = ?
+                  AND employee_id = ?
+                  AND status = 'approved'
+                  AND expense_date >= ?
+                  AND expense_date <= ?
+              `,
+              [paidAt, payrollRunId, payrollCheckId, orgId, empId, start, end]
+            );
+          }
         }
 
         console.log('✅ Marked time entries as paid for this payroll run.');
@@ -6474,7 +7747,7 @@ app.post('/api/payroll/create-checks', requireAdminAccess(p => p.modify_payroll)
   }
 });
 
-app.get('/api/payroll/audit-log', requireAdminAccess(p => p.view_payroll), async (req, res) => {
+app.get('/api/payroll/audit-log', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   try {
     const orgId = req.session && req.session.orgId;
     if (!orgId) {
@@ -6897,6 +8170,7 @@ app.get('/api/kiosk/employees', async (req, res) => {
       language,
       worker_timekeeping,
       kiosk_admin_access,
+      kiosk_admin_access AS is_admin,
       pin_hash,
       p.see_shipments,
       p.modify_time,
@@ -7062,11 +8336,17 @@ app.get('/api/kiosk/admin/account', async (req, res) => {
     if (!ctx.ok) {
       return res.status(ctx.status || 403).json({ error: ctx.error || 'Not authorized' });
     }
+    const sectionFeatures = SECTION_FEATURES || {};
 
     return res.json({
       ok: true,
       user: { id: ctx.user.id, email: ctx.user.email },
-      employee: { id: ctx.employee.id, name: ctx.employee.name || '' }
+      employee: { id: ctx.employee.id, name: ctx.employee.name || '' },
+      features: {
+        time: sectionFeatures.time,
+        payroll: sectionFeatures.payroll,
+        shipments: sectionFeatures.shipments
+      }
     });
   } catch (err) {
     console.error('Error loading kiosk admin account:', err);
@@ -7456,7 +8736,7 @@ async function resolveKioskRateContext(req) {
   }
 
   const perms = await getAdminAccessPerms({ employeeId: adminId, orgId });
-  if (!perms.modify_pay_rates || !perms.view_payroll) {
+  if (!perms.modify_pay_rates) {
     return { ok: false, status: 403, error: 'This admin cannot modify pay rates.' };
   }
 
@@ -7498,7 +8778,7 @@ function normalizeTemplatePerms(raw) {
   if (normalized.approve_time) {
     normalized.modify_time = true;
   }
-  if (normalized.modify_pay_rates || normalized.modify_payroll) {
+  if (normalized.modify_payroll) {
     normalized.view_payroll = true;
   }
   return normalized;
@@ -7568,7 +8848,7 @@ app.post('/api/kiosk/rates/unlock', kioskPinRateLimiter, async (req, res) => {
     }
 
     const perms = await getAdminAccessPerms({ employeeId: admin.id, orgId });
-    if (!perms.modify_pay_rates || !perms.view_payroll) {
+    if (!perms.modify_pay_rates) {
       return res.status(403).json({ error: 'This admin cannot modify pay rates.' });
     }
 
@@ -7822,6 +9102,17 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
       if (!displayName) {
         return res.status(400).json({ error: 'Name is required.' });
       }
+      const nameConflict = await findEmployeeNameConflict({
+        orgId,
+        name: displayName
+      });
+      if (nameConflict) {
+        return res.status(409).json({
+          error: 'Employee name already exists.',
+          conflict_employee_id: nameConflict.id,
+          conflict_employee_name: nameConflict.name
+        });
+      }
       if (rateValue === null || Number.isNaN(rateValue)) {
         return res.status(400).json({ error: 'A numeric rate is required.' });
       }
@@ -7942,7 +9233,7 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
         permPayload ? permPayload.view_time_reports : 0,
         permPayload ? permPayload.view_all_timesheets : 0,
         permPayload ? permPayload.assign_timesheets : 0,
-        permPayload ? (permPayload.view_payroll || permPayload.modify_payroll || permPayload.modify_pay_rates ? 1 : 0) : 0,
+        permPayload ? (permPayload.view_payroll || permPayload.modify_payroll ? 1 : 0) : 0,
         permPayload ? permPayload.modify_payroll : 0,
         permPayload ? permPayload.modify_pay_rates : 0
       ]
@@ -8038,6 +9329,7 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
 
     const updates = [];
     const params = [];
+    let nextDisplayName = null;
 
     const dirtyFields = [];
     let needsQboSyncUpdate = null;
@@ -8074,6 +9366,7 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
         normalizeNameValue(name) ||
         existing.name ||
         null;
+      nextDisplayName = combinedName;
       updates.push('name = ?');
       params.push(combinedName);
       if (normalizeNameValue(existing.given_name) !== normalizeNameValue(nextGiven)) {
@@ -8173,6 +9466,21 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
       params.push(needsQboSyncUpdate);
     }
 
+    if (nextDisplayName) {
+      const nameConflict = await findEmployeeNameConflict({
+        orgId,
+        name: nextDisplayName,
+        excludeEmployeeId: id
+      });
+      if (nameConflict) {
+        return res.status(409).json({
+          error: 'Employee name already exists.',
+          conflict_employee_id: nameConflict.id,
+          conflict_employee_name: nameConflict.name
+        });
+      }
+    }
+
     if (updates.length) {
       params.push(id, orgId);
       await dbRun(
@@ -8198,8 +9506,7 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
     if (permPayload) {
       const normalizedPerms = {
         ...permPayload,
-        view_payroll:
-          permPayload.view_payroll || permPayload.modify_payroll || permPayload.modify_pay_rates ? 1 : 0
+        view_payroll: permPayload.view_payroll || permPayload.modify_payroll ? 1 : 0
       };
       if (normalizedPerms.approve_time) {
         normalizedPerms.modify_time = 1;
@@ -8263,6 +9570,9 @@ app.post('/api/employees', requireViewPayroll, async (req, res) => {
 
     return res.json({ ok: true, id });
   } catch (err) {
+    if (isEmployeeNameConstraintError(err)) {
+      return res.status(409).json({ error: 'Employee name already exists.' });
+    }
     console.error('Error in /api/employees:', err);
     return res.status(500).json({ error: 'Internal server error.' });
   }
@@ -8640,6 +9950,88 @@ app.post('/api/employees/:id/qbo-create', requireViewPayroll, requireSuperAdmin,
 
     if (!qboRes || qboRes.ok !== true) {
       const message = qboRes && qboRes.error ? qboRes.error : 'QuickBooks create failed.';
+      const normalizedMessage = String(message || '').toLowerCase();
+      const isDuplicateNameError =
+        normalizedMessage.includes('duplicate name exists') ||
+        normalizedMessage.includes('name supplied already exists') ||
+        normalizedMessage.includes('errorcode=6240') ||
+        normalizedMessage.includes('error code 6240') ||
+        normalizedMessage.includes('error code = 6240') ||
+        normalizedMessage.includes('6240');
+
+      if (isDuplicateNameError) {
+        let syncLockKey = null;
+        let syncLockRefresh = null;
+        let syncInProgress = false;
+        try {
+          syncLockKey = await acquireQboSyncLock('employees', orgId);
+          if (!syncLockKey) {
+            syncInProgress = true;
+          } else {
+            syncLockRefresh = setInterval(() => {
+              refreshQboSyncLock(syncLockKey);
+            }, Math.floor(QBO_SYNC_LOCK_TTL_MS / 2));
+            await ensureNameOnChecksColumns();
+            await syncEmployeesFromQuickBooks(orgId);
+            await upsertOrgSetting(orgId, 'qbo_last_sync_employees_at', new Date().toISOString());
+          }
+        } catch (syncErr) {
+          console.warn('QBO duplicate create fallback sync failed:', syncErr.message || syncErr);
+        } finally {
+          if (syncLockRefresh) clearInterval(syncLockRefresh);
+          if (syncLockKey) {
+            await releaseQboSyncLock(syncLockKey);
+          }
+        }
+
+        const refreshedEmp = await dbGet(
+          `
+            SELECT id, name, employee_qbo_id
+            FROM employees
+            WHERE id = ? AND org_id = ?
+            LIMIT 1
+          `,
+          [id, orgId]
+        );
+        if (refreshedEmp && refreshedEmp.employee_qbo_id) {
+          await logEmployeeAuditUpdate({
+            req,
+            orgId,
+            employeeId: id,
+            action: 'qbo.link.existing',
+            beforeSnapshot: beforeAudit
+          });
+          return res.json({
+            ok: true,
+            linked_existing: true,
+            employee_qbo_id: String(refreshedEmp.employee_qbo_id),
+            employee_qbo_name: normalizeString(refreshedEmp.name) || fullName
+          });
+        }
+
+        const duplicateMatches = await dbAll(
+          `
+            SELECT employee_qbo_id, name
+            FROM employees
+            WHERE org_id = ?
+              AND employee_qbo_id IS NOT NULL
+              AND lower(trim(name)) = lower(trim(?))
+          `,
+          [orgId, fullName]
+        );
+        const duplicateMessage = syncInProgress
+          ? 'A QuickBooks employee with this name already exists. Employee sync is already running; retry in a moment, then link the existing ID.'
+          : 'A QuickBooks employee with this name already exists. Sync employees, then link the existing employee ID.';
+        return res.status(409).json({
+          error: duplicateMessage,
+          duplicate_name: true,
+          matches: (duplicateMatches || []).map(m => ({
+            employee_qbo_id: m.employee_qbo_id,
+            name: m.name
+          }))
+        });
+      }
+
       return res.status(400).json({ error: message });
     }
 
@@ -8805,6 +10197,19 @@ app.post('/api/employees/:id/name', async (req, res) => {
       return res.status(404).json({ error: 'Employee not found.' });
     }
 
+    const nameConflict = await findEmployeeNameConflict({
+      orgId,
+      name,
+      excludeEmployeeId: id
+    });
+    if (nameConflict) {
+      return res.status(409).json({
+        error: 'Employee name already exists.',
+        conflict_employee_id: nameConflict.id,
+        conflict_employee_name: nameConflict.name
+      });
+    }
+
     const derived = splitName(name);
     const nextGiven = normalizeString(derived.given);
     const nextFamily = normalizeString(derived.family);
@@ -8844,6 +10249,9 @@ app.post('/api/employees/:id/name', async (req, res) => {
 
     res.json({ ok: true, id, name });
   } catch (err) {
+    if (isEmployeeNameConstraintError(err)) {
+      return res.status(409).json({ error: 'Employee name already exists.' });
+    }
     console.error('Error updating name:', err);
     return res.status(500).json({ error: 'Failed to update name.' });
   }
@@ -10657,7 +12065,20 @@ app.post('/api/sync/projects', requireViewPayroll, async (req, res) => {
       refreshQboSyncLock(lockKey);
     }, Math.floor(QBO_SYNC_LOCK_TTL_MS / 2));
 
-    const count = await syncProjects(orgId);
+    const syncResult = await syncProjects(orgId);
+    const count = Number(
+      typeof syncResult === 'number' ? syncResult : syncResult?.count || 0
+    );
+    const skippedTopLevelCustomers = Number(
+      typeof syncResult === 'object' && syncResult
+        ? syncResult.skipped_top_level_customers || 0
+        : 0
+    );
+    const totalQboCustomers = Number(
+      typeof syncResult === 'object' && syncResult
+        ? syncResult.total_qbo_customers || 0
+        : count
+    );
     const syncedAt = new Date().toISOString();
     await upsertOrgSetting(orgId, 'qbo_last_sync_projects_at', syncedAt);
     await logAuditEvent({
@@ -10666,10 +12087,25 @@ app.post('/api/sync/projects', requireViewPayroll, async (req, res) => {
       action: 'qbo.sync.projects',
       entityType: 'org',
       entityId: orgId,
-      after: { count, synced_at: syncedAt },
+      after: {
+        count,
+        skipped_top_level_customers: skippedTopLevelCustomers,
+        total_qbo_customers: totalQboCustomers,
+        synced_at: syncedAt
+      },
       note: 'QuickBooks project sync completed.'
     });
-    res.json({ ok: true, count, synced_at: syncedAt });
+    const message = skippedTopLevelCustomers > 0
+      ? `Synced ${count} project/job records. Skipped ${skippedTopLevelCustomers} top-level customers.`
+      : `Synced ${count} project/job records.`;
+    res.json({
+      ok: true,
+      count,
+      skipped_top_level_customers: skippedTopLevelCustomers,
+      total_qbo_customers: totalQboCustomers,
+      message,
+      synced_at: syncedAt
+    });
   } catch (err) {
     console.error('Sync projects error:', err.message);
     return respondWithQboError(res, err, { orgId });
@@ -10682,7 +12118,11 @@ app.post('/api/sync/projects', requireViewPayroll, async (req, res) => {
 });
 
 // Sync payroll accounts (bank/expense) for settings dropdowns
-app.post('/api/sync/payroll-accounts', requireViewPayroll, async (req, res) => {
+app.post(
+  '/api/sync/payroll-accounts',
+  requireSectionEnabled('payroll'),
+  requireViewPayroll,
+  async (req, res) => {
   const orgId = req.session && req.session.orgId;
   let lockKey = null;
   let lockRefresh = null;
@@ -10738,6 +12178,8 @@ app.post('/api/sync/payroll-accounts', requireViewPayroll, async (req, res) => {
 app.post('/api/projects', requireViewPayroll, async (req, res) => {
   const {
     id,
+    name,
+    customer_name,
     project_timezone,
     geo_lat,
     geo_lng,
@@ -10746,9 +12188,14 @@ app.post('/api/projects', requireViewPayroll, async (req, res) => {
   const orgId = req.session && req.session.orgId;
 
   const DEFAULT_RADIUS = 120; // 120 meters ≈ 400 feet
+  const hasNameInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
+  const hasCustomerNameInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'customer_name');
   const hasLatInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'geo_lat');
   const hasLngInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'geo_lng');
   const hasRadiusInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'geo_radius');
+
+  const nameInput = hasNameInput ? String(name || '').trim() : null;
+  const customerNameInput = hasCustomerNameInput ? String(customer_name || '').trim() : null;
 
   const latInput =
     !hasLatInput || geo_lat === '' || geo_lat === null || geo_lat === undefined
@@ -10792,11 +12239,23 @@ app.post('/api/projects', requireViewPayroll, async (req, res) => {
   try {
     if (id) {
       const existing = await dbGet(
-        `SELECT geo_lat, geo_lng, geo_radius, project_timezone FROM projects WHERE id = ? AND org_id = ?`,
+        `SELECT name, customer_name, geo_lat, geo_lng, geo_radius, project_timezone FROM projects WHERE id = ? AND org_id = ?`,
         [id, orgId]
       );
       if (!existing) {
         return res.status(404).json({ error: 'Project not found.' });
+      }
+
+      const finalName = hasNameInput ? nameInput : String(existing.name || '').trim();
+      const finalCustomerName = hasCustomerNameInput
+        ? customerNameInput
+        : String(existing.customer_name || '').trim();
+
+      if (!finalName) {
+        return res.status(400).json({ error: 'Project name is required.' });
+      }
+      if (!finalCustomerName) {
+        return res.status(400).json({ error: 'Customer name is required.' });
       }
 
       const finalLat = hasLatInput ? latInput : existing.geo_lat;
@@ -10827,10 +12286,10 @@ app.post('/api/projects', requireViewPayroll, async (req, res) => {
       const updateRes = await dbRun(
         `
           UPDATE projects
-          SET geo_lat = ?, geo_lng = ?, geo_radius = ?, project_timezone = ?
+          SET name = ?, customer_name = ?, geo_lat = ?, geo_lng = ?, geo_radius = ?, project_timezone = ?
           WHERE id = ? AND org_id = ?
         `,
-        [finalLat, finalLng, finalRadius, project_timezone || null, id, orgId]
+        [finalName, finalCustomerName, finalLat, finalLng, finalRadius, project_timezone || null, id, orgId]
       );
 
       if (!updateRes || updateRes.changes === 0) {
@@ -10850,12 +12309,16 @@ app.post('/api/projects', requireViewPayroll, async (req, res) => {
       }
 
       const beforeAudit = {
+        name: existing.name || '',
+        customer_name: existing.customer_name || '',
         geo_lat: existing.geo_lat,
         geo_lng: existing.geo_lng,
         geo_radius: existing.geo_radius,
         project_timezone: existing.project_timezone || null
       };
       const afterAudit = {
+        name: finalName,
+        customer_name: finalCustomerName,
         geo_lat: finalLat,
         geo_lng: finalLng,
         geo_radius: finalRadius,
@@ -10928,7 +12391,15 @@ app.get('/api/settings', requireViewPayroll, async (req, res) => {
       data[r.key] = r.value;
     });
 
-    res.json({ settings: data });
+    const sectionFeatures = SECTION_FEATURES || {};
+    res.json({
+      settings: data,
+      features: {
+        time: sectionFeatures.time,
+        payroll: sectionFeatures.payroll,
+        shipments: sectionFeatures.shipments
+      }
+    });
   } catch (err) {
     console.error('Error loading settings:', err);
     res.status(500).json({ error: 'Failed to load settings.' });
@@ -11149,7 +12620,15 @@ app.get('/api/kiosk/settings', async (req, res) => {
           r.value === 'true';
       }
     });
-    res.json({ settings: data });
+    const sectionFeatures = SECTION_FEATURES || {};
+    res.json({
+      settings: data,
+      features: {
+        time: sectionFeatures.time,
+        payroll: sectionFeatures.payroll,
+        shipments: sectionFeatures.shipments
+      }
+    });
   } catch (err) {
     console.error('Error loading kiosk settings:', err);
     res.status(500).json({ error: 'Failed to load settings.' });
@@ -11160,7 +12639,16 @@ app.get('/api/kiosk/settings', async (req, res) => {
 app.get('/api/kiosks/enrollment-code', requireSuperAdmin, async (req, res) => {
   try {
     const orgId = req.session && req.session.orgId;
+    const employeeId = req.session && req.session.employeeId;
     const code = await loadEnrollmentCode(orgId, { createIfMissing: true });
+    const existingIssuer = parsePositiveInt(
+      await loadOrgSettingValue(orgId, ENROLLMENT_CODE_ISSUED_BY_KEY)
+    );
+    if (!existingIssuer && employeeId) {
+      await persistEnrollmentCodeMetadata(orgId, {
+        issuedByEmployeeId: employeeId
+      });
+    }
     res.json({ code });
   } catch (err) {
     console.error('Error loading kiosk enrollment code:', err);
@@ -11171,7 +12659,10 @@ app.get('/api/kiosks/enrollment-code', requireSuperAdmin, async (req, res) => {
 app.post('/api/kiosks/enrollment-code/rotate', requireSuperAdmin, async (req, res) => {
   try {
     const orgId = req.session && req.session.orgId;
-    const code = await rotateEnrollmentCode(orgId);
+    const employeeId = req.session && req.session.employeeId;
+    const code = await rotateEnrollmentCode(orgId, {
+      issuedByEmployeeId: employeeId
+    });
     await logAuditEvent({
       req,
       orgId,
@@ -11184,6 +12675,59 @@ app.post('/api/kiosks/enrollment-code/rotate', requireSuperAdmin, async (req, re
   } catch (err) {
     console.error('Error rotating kiosk enrollment code:', err);
     res.status(500).json({ error: 'Failed to rotate enrollment code.' });
+  }
+});
+
+app.get('/api/kiosks/registry', requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const rows = await dbAll(
+      `
+        SELECT
+          k.id,
+          k.name,
+          k.location,
+          k.device_id,
+          k.created_at,
+          COALESCE(k.registered_at, k.created_at) AS registered_at,
+          k.last_enrolled_at,
+          k.registered_by_employee_id,
+          e.name AS registered_by_name,
+          COALESCE(k.project_id, ks_latest.project_id) AS geofence_project_id,
+          p.name AS geofence_project_name,
+          p.customer_name AS geofence_customer_name,
+          p.geo_lat AS geofence_lat,
+          p.geo_lng AS geofence_lng,
+          p.geo_radius AS geofence_radius
+        FROM kiosks k
+        LEFT JOIN employees e
+          ON e.id = k.registered_by_employee_id
+         AND e.org_id = k.org_id
+        LEFT JOIN kiosk_sessions ks_latest
+          ON ks_latest.id = (
+            SELECT ks2.id
+            FROM kiosk_sessions ks2
+            WHERE ks2.org_id = k.org_id
+              AND ks2.kiosk_id = k.id
+            ORDER BY ks2.id DESC
+            LIMIT 1
+          )
+        LEFT JOIN projects p
+          ON p.id = COALESCE(k.project_id, ks_latest.project_id)
+         AND p.org_id = k.org_id
+        WHERE k.org_id = ?
+        ORDER BY k.created_at DESC, k.id DESC
+      `,
+      [orgId]
+    );
+
+    return res.json({
+      ok: true,
+      kiosks: rows || []
+    });
+  } catch (err) {
+    console.error('Error loading kiosk registry:', err);
+    return res.status(500).json({ error: 'Failed to load kiosk registry.' });
   }
 });
 
@@ -11535,8 +13079,11 @@ async function loadTimeEntryApprovalRows({
     );
   }
 
-  const punchExceptionExpr = punchExceptionConditions.length
-    ? `SUM(CASE WHEN ${punchExceptionConditions.join(' OR ')} THEN 1 ELSE 0 END)`
+  const guardedPunchExceptionConditions = punchExceptionConditions.map(
+    c => `(tp.id IS NOT NULL AND (${c}))`
+  );
+  const punchExceptionExpr = guardedPunchExceptionConditions.length
+    ? `SUM(CASE WHEN ${guardedPunchExceptionConditions.join(' OR ')} THEN 1 ELSE 0 END)`
     : '0';
 
   const where = ['t.org_id = ?'];
@@ -11658,7 +13205,38 @@ async function loadTimeEntryApprovalRows({
   };
 }
 
-async function loadPendingTimeEntryApprovals({ orgId, start, end }) {
+async function loadPendingTimeEntryApprovals({
+  orgId,
+  start,
+  end,
+  includeEmployeeIds = [],
+  excludeEmployeeIds = []
+}) {
+  const includeIds = Array.isArray(includeEmployeeIds)
+    ? [...new Set(includeEmployeeIds.map(Number).filter(Number.isFinite))]
+    : [];
+  const excludeIds = Array.isArray(excludeEmployeeIds)
+    ? [...new Set(excludeEmployeeIds.map(Number).filter(Number.isFinite))]
+    : [];
+
+  const where = [
+    't.org_id = ?',
+    't.start_date >= ?',
+    't.end_date <= ?',
+    "LOWER(COALESCE(t.resolved_status, 'open')) != 'rejected'",
+    "LOWER(COALESCE(t.approval_status, 'pending')) != 'approved'"
+  ];
+  const params = [orgId, start, end];
+
+  if (includeIds.length) {
+    where.push(`t.employee_id IN (${includeIds.map(() => '?').join(',')})`);
+    params.push(...includeIds);
+  }
+  if (excludeIds.length) {
+    where.push(`t.employee_id NOT IN (${excludeIds.map(() => '?').join(',')})`);
+    params.push(...excludeIds);
+  }
+
   const rows = await dbAll(
     `
       SELECT
@@ -11670,14 +13248,10 @@ async function loadPendingTimeEntryApprovals({ orgId, start, end }) {
         t.approval_status
       FROM time_entries t
       LEFT JOIN employees e ON e.id = t.employee_id AND e.org_id = t.org_id
-      WHERE t.org_id = ?
-        AND t.start_date >= ?
-        AND t.end_date <= ?
-        AND LOWER(COALESCE(t.resolved_status, 'open')) != 'rejected'
-        AND LOWER(COALESCE(t.approval_status, 'pending')) != 'approved'
+      WHERE ${where.join(' AND ')}
       ORDER BY t.start_date ASC, t.id ASC
     `,
-    [orgId, start, end]
+    params
   );
   return rows || [];
 }
@@ -11952,8 +13526,11 @@ async function loadPayrollUnresolvedExceptions({ orgId, start, end }) {
     );
   }
 
-  const punchExceptionUnapprovedCase = punchExceptionConditions.length
-    ? `CASE ${punchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
+  const guardedPunchExceptionConditions = punchExceptionConditions.map(
+    c => `(tp.id IS NOT NULL AND (${c}))`
+  );
+  const punchExceptionUnapprovedCase = guardedPunchExceptionConditions.length
+    ? `CASE ${guardedPunchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
     : '0';
 
   const HOURS_EPSILON = 0.1; // keep in sync with payroll filtering
@@ -13795,7 +15372,16 @@ app.get('/api/projects', requireViewPayrollOrSeeShipments, (req, res) => {
   const status = req.query.status || 'active'; // 'active' | 'inactive' | 'all'
   const orgId = req.session && req.session.orgId;
 
-  let whereClause = 'WHERE org_id = ?';
+  // Only expose actual projects/jobs:
+  // - keep non-QBO rows (qbo_id IS NULL), even if missing customer name (manual fixes)
+  // - keep QBO rows only when they have a customer_name (excludes top-level customers synced as pseudo-projects)
+  let whereClause = `
+    WHERE org_id = ?
+      AND (
+        qbo_id IS NULL
+        OR TRIM(IFNULL(customer_name, '')) <> ''
+      )
+  `;
   const params = [orgId];
 
   if (status === 'active') {
@@ -13842,7 +15428,14 @@ app.get('/api/kiosk/projects', async (req, res) => {
 
   const status = req.query.status || 'active'; // 'active' | 'inactive' | 'all'
 
-  let whereClause = 'WHERE org_id = ?';
+  // Keep kiosk project lists aligned with desktop project-only filtering.
+  let whereClause = `
+    WHERE org_id = ?
+      AND (
+        qbo_id IS NULL
+        OR TRIM(IFNULL(customer_name, '')) <> ''
+      )
+  `;
   const params = [orgId];
 
   if (status === 'active') {
@@ -15616,14 +17209,9 @@ app.post('/api/time-entries/:id/approve', requireModifyTime, requireApproveTime,
       });
     }
 
-    if (isFieldReviewRejected(row)) {
-      return res.status(409).json({
-        error: 'Rejected time entries cannot be approved for payroll.'
-      });
-    }
-
+    const noteVal = note && note.trim() ? note.trim() : null;
     const requiresNote = computeTimeEntryRequiresNote(row, ruleFlags);
-    if (requiresNote && (!note || !note.trim())) {
+    if (requiresNote && !noteVal) {
       return res.status(400).json({
         error: 'A note is required to approve entries with discrepancies or manual edits.'
       });
@@ -15639,26 +17227,82 @@ app.post('/api/time-entries/:id/approve', requireModifyTime, requireApproveTime,
     }
 
     const nowIso = new Date().toISOString();
-    await dbRun(
-      `
-        UPDATE time_entries
-        SET approval_status = ?,
-            approved_at = ?,
-            approved_by_employee_id = ?,
-            approval_note = ?,
-            updated_at = ?
-        WHERE id = ? AND org_id = ?
-      `,
-      [
-        'approved',
-        nowIso,
-        approverId,
-        note && note.trim() ? note.trim() : null,
-        nowIso,
-        id,
-        orgId
-      ]
-    );
+    const { actorName } = await getExceptionActor(req, null);
+    const reviewActorName = actorName || `employee:${approverId}`;
+
+    await dbRun('BEGIN TRANSACTION');
+    try {
+      await dbRun(
+        `
+          UPDATE time_entries
+          SET approval_status = ?,
+              approved_at = ?,
+              approved_by_employee_id = ?,
+              approval_note = ?,
+              resolved = ?,
+              resolved_at = ?,
+              resolved_by = ?,
+              resolved_status = ?,
+              resolved_note = ?,
+              updated_at = ?
+          WHERE id = ? AND org_id = ?
+        `,
+        [
+          'approved',
+          nowIso,
+          approverId,
+          noteVal,
+          1,
+          nowIso,
+          reviewActorName,
+          'approved',
+          noteVal,
+          nowIso,
+          id,
+          orgId
+        ]
+      );
+
+      await dbRun(
+        `
+          UPDATE time_punches
+          SET exception_resolved = 1,
+              exception_resolved_at = ?,
+              exception_resolved_by = ?,
+              exception_review_status = ?,
+              exception_review_note = COALESCE(?, exception_review_note),
+              exception_reviewed_by = ?,
+              exception_reviewed_at = ?,
+              updated_at = ?
+          WHERE org_id = ?
+            AND time_entry_id = ?
+            AND (
+              IFNULL(exception_resolved, 0) = 0
+              OR LOWER(COALESCE(exception_review_status, 'open')) NOT IN ('approved', 'modified')
+            )
+        `,
+        [
+          nowIso,
+          reviewActorName,
+          'approved',
+          noteVal,
+          reviewActorName,
+          nowIso,
+          nowIso,
+          orgId,
+          id
+        ]
+      );
+
+      await dbRun('COMMIT');
+    } catch (txErr) {
+      try {
+        await dbRun('ROLLBACK');
+      } catch {
+        // ignore rollback errors
+      }
+      throw txErr;
+    }
 
     const afterRow = await dbGet(
       'SELECT * FROM time_entries WHERE id = ? AND org_id = ?',
@@ -15728,6 +17372,10 @@ app.post('/api/time-entries/approve', requireModifyTime, requireApproveTime, asy
       }
       if (isFieldReviewRejected(row)) {
         skipped.push({ id: row.id, reason: 'rejected' });
+        continue;
+      }
+      if (!isFieldReviewComplete(row)) {
+        skipped.push({ id: row.id, reason: 'needs_field_review' });
         continue;
       }
       const requiresNote = computeTimeEntryRequiresNote(row, ruleFlags);
@@ -15917,26 +17565,6 @@ app.post('/api/kiosk/punch', async (req, res) => {
     return res.status(400).json({ error: 'device_timestamp is too far in the future.' });
   }
 
-  const enforceActiveProject = !queuedAt;
-
-  if (enforceActiveProject) {
-    const activeProjectId =
-      kioskRow.project_id && Number(kioskRow.project_id) > 0
-        ? Number(kioskRow.project_id)
-        : null;
-    if (!activeProjectId) {
-      return res.status(400).json({
-        error: 'Project not set for this device. Have a supervisor set today’s project first.'
-      });
-    }
-    if (requestedProjectId !== activeProjectId) {
-      return res.status(409).json({
-        error: 'Active project has changed. Punches must use the active timesheet.',
-        active_project_id: activeProjectId
-      });
-    }
-  }
-
   const clockInLocalDate = getIsoDateInTimezone(punchTime, orgTimezone);
   const sessionDate = clockInLocalDate || getTodayIsoDate(orgTimezone);
 
@@ -15968,6 +17596,25 @@ app.post('/api/kiosk/punch', async (req, res) => {
     `,
     [orgId, employeeId]
   );
+
+  const enforceActiveProject = !queuedAt;
+  if (enforceActiveProject && !open) {
+    const activeProjectId =
+      kioskRow.project_id && Number(kioskRow.project_id) > 0
+        ? Number(kioskRow.project_id)
+        : null;
+    if (!activeProjectId) {
+      return res.status(400).json({
+        error: 'Project not set for this device. Have a supervisor set today’s project first.'
+      });
+    }
+    if (requestedProjectId !== activeProjectId) {
+      return res.status(409).json({
+        error: 'Active project has changed. Punches must use the active timesheet.',
+        active_project_id: activeProjectId
+      });
+    }
+  }
 
   if (open && intendedMode === 'clock_in') {
     const openTs = open.clock_in_ts ? new Date(open.clock_in_ts) : null;
@@ -16473,6 +18120,7 @@ app.post('/api/kiosks', async (req, res) => {
   }
 
   const projectIdVal = project_id || null;
+  const nowIso = new Date().toISOString();
 
   try {
     if (id) {
@@ -16495,10 +18143,25 @@ app.post('/api/kiosks', async (req, res) => {
       const updateRes = await dbRun(
         `
           UPDATE kiosks
-          SET name = ?, location = ?, device_id = ?, project_id = ?
+          SET
+            name = ?,
+            location = ?,
+            device_id = ?,
+            project_id = ?,
+            registered_by_employee_id = COALESCE(registered_by_employee_id, ?),
+            registered_at = COALESCE(registered_at, ?)
           WHERE id = ? AND org_id = ?
         `,
-        [name, location || null, device_id || null, projectIdVal, id, orgId]
+        [
+          name,
+          location || null,
+          device_id || null,
+          projectIdVal,
+          isAdmin ? adminCtx.adminId || null : null,
+          nowIso,
+          id,
+          orgId
+        ]
       );
 
       if (!updateRes || updateRes.changes === 0) {
@@ -16538,10 +18201,26 @@ app.post('/api/kiosks', async (req, res) => {
 
     const insertRes = await dbRun(
       `
-        INSERT INTO kiosks (org_id, name, location, device_id, project_id)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO kiosks (
+          org_id,
+          name,
+          location,
+          device_id,
+          project_id,
+          registered_by_employee_id,
+          registered_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `,
-      [orgId, name, location || null, device_id || null, projectIdVal]
+      [
+        orgId,
+        name,
+        location || null,
+        device_id || null,
+        projectIdVal,
+        isAdmin ? adminCtx.adminId || null : null,
+        nowIso
+      ]
     );
 
     const kioskId = insertRes.lastID;
@@ -16581,9 +18260,10 @@ app.post('/api/kiosks/register', async (req, res) => {
   const deviceId = String(device_id || '').trim();
   const providedSecret = String(device_secret || '').trim();
   const enrollmentCode = normalizeEnrollmentCode(enrollment_code);
-  let secretMismatch = false;
   let includeDeviceSecret = false;
   let usedEnrollment = false;
+  let enrollmentIssuedByEmployeeId = null;
+  let enrollmentUsedAt = null;
 
   if (!deviceId) {
     return res.status(400).json({ error: 'device_id is required.' });
@@ -16595,16 +18275,7 @@ app.post('/api/kiosks/register', async (req, res) => {
 
   let enrollmentOrgId = null;
   if (enrollmentCode) {
-    const row = await dbGet(
-      `
-        SELECT os.org_id, o.status AS org_status
-        FROM org_settings os
-        JOIN orgs o ON o.id = os.org_id
-        WHERE os.key = ? AND os.value = ?
-        LIMIT 1
-      `,
-      [ENROLLMENT_CODE_KEY, enrollmentCode]
-    );
+    const row = await loadEnrollmentCodeContextByCode(enrollmentCode);
     if (!row) {
       return res.status(400).json({ error: 'Invalid enrollment code.' });
     }
@@ -16612,6 +18283,18 @@ app.post('/api/kiosks/register', async (req, res) => {
       return res.status(403).json({ error: 'Org access denied.' });
     }
     enrollmentOrgId = row.org_id;
+    enrollmentIssuedByEmployeeId = parsePositiveInt(row.issued_by_employee_id);
+    if (!enrollmentIssuedByEmployeeId) {
+      const desktopCtx = await requireActiveDesktopSession(req);
+      if (
+        desktopCtx.ok &&
+        Number(desktopCtx.orgId) === Number(enrollmentOrgId) &&
+        desktopCtx.employeeId
+      ) {
+        enrollmentIssuedByEmployeeId = Number(desktopCtx.employeeId);
+      }
+    }
+    enrollmentUsedAt = new Date().toISOString();
     usedEnrollment = true;
   }
 
@@ -16643,10 +18326,28 @@ app.post('/api/kiosks/register', async (req, res) => {
     const defaultName = `Kiosk ${deviceId.slice(-4)}`;
     const insertRes = await dbRun(
       `
-        INSERT INTO kiosks (org_id, name, location, device_id, device_secret)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO kiosks (
+          org_id,
+          name,
+          location,
+          device_id,
+          device_secret,
+          registered_by_employee_id,
+          registered_at,
+          last_enrolled_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      [enrollmentOrgId, defaultName, null, deviceId, newSecret]
+      [
+        enrollmentOrgId,
+        defaultName,
+        null,
+        deviceId,
+        newSecret,
+        enrollmentIssuedByEmployeeId || null,
+        enrollmentUsedAt,
+        enrollmentUsedAt
+      ]
     );
 
     kioskRow = await dbGet(
@@ -16667,11 +18368,31 @@ app.post('/api/kiosks/register', async (req, res) => {
 
     if (enrollmentOrgId) {
       const newSecret = crypto.randomBytes(24).toString('hex');
-      await dbRun('UPDATE kiosks SET device_secret = ? WHERE id = ?', [
-        newSecret,
-        kioskRow.id
-      ]);
+      await dbRun(
+        `
+          UPDATE kiosks
+          SET
+            device_secret = ?,
+            registered_by_employee_id = COALESCE(?, registered_by_employee_id),
+            registered_at = COALESCE(registered_at, created_at, ?),
+            last_enrolled_at = ?
+          WHERE id = ?
+        `,
+        [
+          newSecret,
+          enrollmentIssuedByEmployeeId || null,
+          enrollmentUsedAt,
+          enrollmentUsedAt,
+          kioskRow.id
+        ]
+      );
       kioskRow.device_secret = newSecret;
+      if (enrollmentIssuedByEmployeeId) {
+        kioskRow.registered_by_employee_id = enrollmentIssuedByEmployeeId;
+      }
+      kioskRow.registered_at =
+        kioskRow.registered_at || kioskRow.created_at || enrollmentUsedAt;
+      kioskRow.last_enrolled_at = enrollmentUsedAt;
       includeDeviceSecret = true;
     } else {
       if (!providedSecret) {
@@ -16683,7 +18404,6 @@ app.post('/api/kiosks/register', async (req, res) => {
           error: 'Device secret missing. Re-enroll this kiosk with the enrollment code.'
         });
       } else if (kioskRow.device_secret !== providedSecret) {
-        secretMismatch = true;
         return res.status(403).json({
           error: 'Device secret mismatch. Re-enroll this kiosk with the enrollment code.'
         });
@@ -16773,6 +18493,24 @@ app.post('/api/kiosks/register', async (req, res) => {
       },
       note: usedEnrollment ? 'Enrollment code used.' : null
     });
+  }
+
+  if (usedEnrollment && enrollmentOrgId) {
+    try {
+      await rotateEnrollmentCode(enrollmentOrgId, {
+        issuedByEmployeeId: enrollmentIssuedByEmployeeId || null
+      });
+      await logAuditEvent({
+        orgId: enrollmentOrgId,
+        action: 'kiosk.enrollment.rotate',
+        entityType: 'org',
+        entityId: enrollmentOrgId,
+        actorName: deviceId ? `kiosk:${deviceId}` : 'kiosk',
+        note: 'Kiosk enrollment code auto-rotated after enrollment.'
+      });
+    } catch (rotateErr) {
+      console.error('Failed to auto-rotate enrollment code after kiosk registration:', rotateErr);
+    }
   }
 
   return res.json({
@@ -18810,19 +20548,25 @@ function coerceBooleanFlag(value) {
 
 async function ensureShipmentAccess(req) {
   // 1) Try session-based auth first (desktop admins with see_shipments)
-  if (req.session && req.session.employeeId && req.session.orgId) {
-    const employeeId = req.session.employeeId;
-    const orgId = req.session.orgId;
-    const orgStatus = await getOrgStatus(orgId);
-    if (orgStatus && orgStatus !== 'active') {
-      return { ok: false, status: 403, error: 'Org access denied.' };
+  if (req.session && req.session.userId && req.session.orgId) {
+    const status = await requireActiveDesktopSession(req);
+    if (!status.ok) {
+      return {
+        ok: false,
+        status: status.status || 403,
+        error: status.error || 'Not authorized'
+      };
     }
+
+    const employeeId = status.employeeId;
+    const orgId = status.orgId;
 
     const emp = await dbGet(
       `
         SELECT id, name, desktop_access, kiosk_admin_access, IFNULL(active, 1) AS active
         FROM employees
         WHERE id = ? AND org_id = ?
+        LIMIT 1
       `,
       [employeeId, orgId]
     );
@@ -20722,6 +22466,7 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
       destination,
       project_id,
       sku,
+      country_of_origin,
       quantity,
       total_price,
       price_per_item,
@@ -20729,6 +22474,8 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
       expected_arrival_date,
       tracking_number,
       bol_number,
+      requested_clearing,
+      requested_clearing_date,
       is_container,
       items,
 
@@ -20814,6 +22561,15 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
     }
 
     const isContainerFlag = coerceBooleanFlag(is_container) ? 1 : 0;
+    const normalizeText = (val) => {
+      if (val === undefined || val === null) return null;
+      const s = String(val).trim();
+      return s === '' ? null : s;
+    };
+    const requestedClearingFlag = coerceBooleanFlag(requested_clearing) ? 1 : 0;
+    const requestedClearingDate = requestedClearingFlag
+      ? normalizeText(requested_clearing_date)
+      : null;
 
     let resolvedStorageDailyLateFee = storage_daily_late_fee;
     if (resolvedStorageDailyLateFee == null) {
@@ -20878,6 +22634,7 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
         project_id,
         project_name_snapshot,
         sku,
+        country_of_origin,
         vendor_name,
         freight_forwarder,
         quantity,
@@ -20887,6 +22644,8 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
         expected_arrival_date,
         tracking_number,
         bol_number,
+        requested_clearing,
+        requested_clearing_date,
         is_container,
         storage_due_date,
         storage_daily_late_fee,
@@ -20916,7 +22675,7 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
         created_at,
         updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
 
       `,
@@ -20929,6 +22688,7 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
         project_id || null,
         projectNameSnapshot || null,
         sku || null,
+        country_of_origin || null,
         finalVendorName || null,
         freight_forwarder || null,
         quantity != null ? quantity : null,
@@ -20938,6 +22698,8 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
         expected_arrival_date || null,
         tracking_number || null,
         bol_number || null,
+        requestedClearingFlag,
+        requestedClearingDate,
         isContainerFlag,
         storage_due_date || null,
         canViewPayroll && resolvedStorageDailyLateFee != null ? resolvedStorageDailyLateFee : null,
@@ -20981,6 +22743,7 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
   shipment_id,
   description,
   sku,
+  country_of_origin,
   quantity,
   unit_price,
   line_total,
@@ -20988,13 +22751,14 @@ app.post('/api/shipments', requireSeeShipments, async (req, res) => {
   verified,
   notes,
   verification_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 [
   orgId,
   id,
   it.description || null,
   it.sku || null,
+  it.country_of_origin || null,
   it.quantity != null ? it.quantity : 0,
   canViewPayroll && it.unit_price != null ? it.unit_price : null,
   canViewPayroll && it.line_total != null ? it.line_total : null,
@@ -21101,11 +22865,16 @@ app.get('/api/shipments', requireSeeShipments, async (req, res) => {
     } = req.query || {};
 
     const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
     if (!orgId) {
       return res.status(401).json({ error: 'Not authenticated.' });
     }
+    if (!userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
 
-    const params = [orgId];
+    // Params order matters because we join per-user personal notes before the org-scoped WHERE.
+    const params = [orgId, userId, orgId];
     let where = 'WHERE s.org_id = ? ';
 
     const limitVal = Number.parseInt(limit, 10);
@@ -21158,6 +22927,10 @@ app.get('/api/shipments', requireSeeShipments, async (req, res) => {
       `
       SELECT
         s.*,
+        pn.note AS personal_note,
+        pn.is_completed AS personal_note_completed,
+        pn.completed_at AS personal_note_completed_at,
+        pn.updated_at AS personal_note_updated_at,
         COALESCE(s.vendor_name, v.name) AS vendor_name,
         COALESCE(s.project_name_snapshot, p.name) AS project_name,
         p.customer_name,
@@ -21189,7 +22962,40 @@ app.get('/api/shipments', requireSeeShipments, async (req, res) => {
               OR lower(trim(IFNULL(d.doc_label, ''))) IN ('bol', 'bill of lading')
             )
         ) AS has_bol_doc
+        ,
+        (
+          SELECT COUNT(*)
+          FROM shipment_items si
+          WHERE si.shipment_id = s.id AND si.org_id = s.org_id
+        ) AS items_total,
+        (
+          SELECT COUNT(*)
+          FROM shipment_items si
+          WHERE si.shipment_id = s.id
+            AND si.org_id = s.org_id
+            AND TRIM(IFNULL(si.country_of_origin, '')) <> ''
+        ) AS items_with_coo,
+        (
+          SELECT COUNT(DISTINCT TRIM(IFNULL(si.country_of_origin, '')))
+          FROM shipment_items si
+          WHERE si.shipment_id = s.id
+            AND si.org_id = s.org_id
+            AND TRIM(IFNULL(si.country_of_origin, '')) <> ''
+        ) AS distinct_item_coo,
+        (
+          SELECT TRIM(IFNULL(si.country_of_origin, ''))
+          FROM shipment_items si
+          WHERE si.shipment_id = s.id
+            AND si.org_id = s.org_id
+            AND TRIM(IFNULL(si.country_of_origin, '')) <> ''
+          ORDER BY si.id ASC
+          LIMIT 1
+        ) AS coo_value
       FROM shipments s
+      LEFT JOIN shipment_personal_notes pn
+        ON pn.shipment_id = s.id
+       AND pn.org_id = ?
+       AND pn.user_id = ?
       LEFT JOIN vendors  v ON v.id = s.vendor_id AND v.org_id = s.org_id
       LEFT JOIN projects p ON p.id = s.project_id AND p.org_id = s.org_id
       ${where}
@@ -21285,6 +23091,7 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
       destination,
       project_id,
       sku,
+      country_of_origin,
       quantity,
       total_price,
       price_per_item,
@@ -21292,6 +23099,8 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
       expected_arrival_date,
       tracking_number,
       bol_number,
+      requested_clearing,
+      requested_clearing_date,
       is_container,
       items,
       storage_due_date,
@@ -21426,6 +23235,31 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
       if (/^other\s*:?\s*$/i.test(s)) return null;
       return s;
     };
+    const skuProvided = Object.prototype.hasOwnProperty.call(body, 'sku');
+    const nextSku = skuProvided ? normalizeText(sku) : existing.sku;
+    const countryOriginProvided = Object.prototype.hasOwnProperty.call(
+      body,
+      'country_of_origin'
+    );
+    const nextCountryOfOrigin = countryOriginProvided
+      ? normalizeText(country_of_origin)
+      : existing.country_of_origin;
+    const requestedClearingProvided = Object.prototype.hasOwnProperty.call(
+      body,
+      'requested_clearing'
+    );
+    const requestedClearingDateProvided = Object.prototype.hasOwnProperty.call(
+      body,
+      'requested_clearing_date'
+    );
+    const nextRequestedClearing = requestedClearingProvided
+      ? (coerceBooleanFlag(requested_clearing) ? 1 : 0)
+      : (existing.requested_clearing ? 1 : 0);
+    const nextRequestedClearingDate = nextRequestedClearing
+      ? (requestedClearingDateProvided
+        ? normalizeText(requested_clearing_date)
+        : existing.requested_clearing_date)
+      : null;
 
     const vendorPaidProvided = Object.prototype.hasOwnProperty.call(
       body,
@@ -21649,6 +23483,7 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
           project_id            = ?,
           project_name_snapshot = ?,
           sku                   = ?,
+          country_of_origin     = ?,
           vendor_name           = ?,
           freight_forwarder     = ?,
           quantity              = ?,
@@ -21658,6 +23493,8 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
           expected_arrival_date = ?,
           tracking_number       = ?,
           bol_number            = ?,
+          requested_clearing    = ?,
+          requested_clearing_date = ?,
           is_container          = ?,
           storage_due_date      = ?,
           storage_daily_late_fee = ?,
@@ -21695,7 +23532,8 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
         destination || null,
         project_id || null,
         projectNameSnapshot || null,
-        sku || null,
+        nextSku,
+        nextCountryOfOrigin,
         finalVendorName || null,
         freight_forwarder || null,
         quantity != null ? quantity : null,
@@ -21705,6 +23543,8 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
         expected_arrival_date || null,
         tracking_number || null,
         bol_number || null,
+        nextRequestedClearing,
+        nextRequestedClearingDate,
         nextIsContainer,
         storage_due_date || null,
         nextStorageDailyLateFee,
@@ -21773,6 +23613,7 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
     shipment_id,
     description,
     sku,
+    country_of_origin,
     quantity,
     unit_price,
     line_total,
@@ -21780,13 +23621,14 @@ app.put('/api/shipments/:id', requireSeeShipments, async (req, res) => {
     verified,
     notes,
     verification_json
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `,
             [
     orgId,
     id,
     it.description || null,
     it.sku || null,
+    it.country_of_origin || null,
     it.quantity != null ? it.quantity : 0,
     it.unit_price != null ? it.unit_price : 0,
     it.line_total != null ? it.line_total : 0,
@@ -22037,6 +23879,7 @@ app.get('/api/shipments/:id', requireSeeShipments, async (req, res) => {
       shipment_id,
       description,
       sku,
+      country_of_origin,
       quantity,
       unit_price,
       line_total,
@@ -22108,6 +23951,138 @@ const normalizedItems = items.map(it => {
   } catch (err) {
     console.error('Error loading shipment:', err);
     res.status(500).json({ error: 'Error loading shipment.' });
+  }
+});
+
+app.get('/api/shipments/:id/personal-note', requireSeeShipments, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const shipmentId = Number(req.params.id);
+    if (!shipmentId) {
+      return res.status(400).json({ error: 'Invalid shipment id.' });
+    }
+
+    const shipmentRow = await dbGet(
+      'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+      [shipmentId, orgId]
+    );
+    if (!shipmentRow) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
+
+    const row = await dbGet(
+      `
+        SELECT shipment_id, note, is_completed, completed_at, updated_at
+        FROM shipment_personal_notes
+        WHERE org_id = ? AND shipment_id = ? AND user_id = ?
+      `,
+      [orgId, shipmentId, userId]
+    );
+
+    res.json({ note: row || null });
+  } catch (err) {
+    console.error('Error loading shipment personal note:', err);
+    res.status(500).json({ error: 'Failed to load personal note.' });
+  }
+});
+
+app.put('/api/shipments/:id/personal-note', requireSeeShipments, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const shipmentId = Number(req.params.id);
+    if (!shipmentId) {
+      return res.status(400).json({ error: 'Invalid shipment id.' });
+    }
+
+    const shipmentRow = await dbGet(
+      'SELECT id FROM shipments WHERE id = ? AND org_id = ?',
+      [shipmentId, orgId]
+    );
+    if (!shipmentRow) {
+      return res.status(404).json({ error: 'Shipment not found.' });
+    }
+
+    const body = req.body || {};
+    const rawNote = body.note != null ? String(body.note) : '';
+    const note = rawNote.trim() ? rawNote.trim() : null;
+    const isCompleted = coerceBooleanFlag(body.is_completed) ? 1 : 0;
+
+    if (!note && !isCompleted) {
+      await dbRun(
+        `DELETE FROM shipment_personal_notes WHERE org_id = ? AND shipment_id = ? AND user_id = ?`,
+        [orgId, shipmentId, userId]
+      );
+      return res.json({ ok: true, deleted: true });
+    }
+
+    await dbRun(
+      `
+        INSERT INTO shipment_personal_notes (
+          org_id,
+          shipment_id,
+          user_id,
+          note,
+          is_completed,
+          completed_at,
+          created_at,
+          updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?,
+          CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END,
+          datetime('now'),
+          datetime('now')
+        )
+        ON CONFLICT(org_id, shipment_id, user_id) DO UPDATE SET
+          note = excluded.note,
+          is_completed = excluded.is_completed,
+          completed_at = CASE
+            WHEN excluded.is_completed = 1 THEN COALESCE(shipment_personal_notes.completed_at, datetime('now'))
+            ELSE NULL
+          END,
+          updated_at = datetime('now')
+      `,
+      [orgId, shipmentId, userId, note, isCompleted, isCompleted]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error saving shipment personal note:', err);
+    res.status(500).json({ error: 'Failed to save personal note.' });
+  }
+});
+
+app.delete('/api/shipments/:id/personal-note', requireSeeShipments, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    const userId = req.session && req.session.userId;
+    if (!orgId || !userId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const shipmentId = Number(req.params.id);
+    if (!shipmentId) {
+      return res.status(400).json({ error: 'Invalid shipment id.' });
+    }
+
+    await dbRun(
+      `DELETE FROM shipment_personal_notes WHERE org_id = ? AND shipment_id = ? AND user_id = ?`,
+      [orgId, shipmentId, userId]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error deleting shipment personal note:', err);
+    res.status(500).json({ error: 'Failed to delete personal note.' });
   }
 });
 
@@ -24071,7 +26046,7 @@ app.get('/api/shipments/templates', requireSeeShipments, async (req, res) => {
     for (const row of rows || []) {
       const items = await dbAll(
         `
-          SELECT description, sku, quantity, unit_price, line_total, vendor_name
+          SELECT description, sku, country_of_origin, quantity, unit_price, line_total, vendor_name
           FROM shipment_template_items
           WHERE template_id = ? AND org_id = ?
           ORDER BY id ASC
@@ -24113,6 +26088,7 @@ app.post('/api/shipments/templates', requireSeeShipments, async (req, res) => {
       destination,
       project_id,
       sku,
+      country_of_origin,
       quantity,
       total_price,
       price_per_item,
@@ -24159,6 +26135,7 @@ app.post('/api/shipments/templates', requireSeeShipments, async (req, res) => {
           destination,
           project_id,
           sku,
+          country_of_origin,
           quantity,
           total_price,
           price_per_item,
@@ -24167,7 +26144,7 @@ app.post('/api/shipments/templates', requireSeeShipments, async (req, res) => {
           created_by,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         orgId,
@@ -24178,6 +26155,7 @@ app.post('/api/shipments/templates', requireSeeShipments, async (req, res) => {
         destination || null,
         project_id || null,
         sku || null,
+        country_of_origin || null,
         quantity != null ? quantity : null,
         canViewPayroll && total_price != null ? total_price : null,
         canViewPayroll && price_per_item != null ? price_per_item : null,
@@ -24200,18 +26178,20 @@ app.post('/api/shipments/templates', requireSeeShipments, async (req, res) => {
               template_id,
               description,
               sku,
+              country_of_origin,
               quantity,
               unit_price,
               line_total,
               vendor_name,
               created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
           `,
           [
             orgId,
             templateId,
             it.description || null,
             it.sku || null,
+            it.country_of_origin || null,
             it.quantity != null ? it.quantity : 0,
             canViewPayroll && it.unit_price != null ? it.unit_price : null,
             canViewPayroll && it.line_total != null ? it.line_total : null,
@@ -24280,7 +26260,7 @@ app.put('/api/shipments/templates/:id', requireSeeShipments, async (req, res) =>
     const existing = await dbGet(
       `
         SELECT id, name, title, vendor_id, freight_forwarder, destination,
-               project_id, sku, quantity, total_price, price_per_item,
+               project_id, sku, country_of_origin, quantity, total_price, price_per_item,
                website_url, notes
         FROM shipment_templates
         WHERE id = ? AND org_id = ?
@@ -24299,6 +26279,7 @@ app.put('/api/shipments/templates/:id', requireSeeShipments, async (req, res) =>
       destination,
       project_id,
       sku,
+      country_of_origin,
       quantity,
       total_price,
       price_per_item,
@@ -24368,6 +26349,7 @@ app.put('/api/shipments/templates/:id', requireSeeShipments, async (req, res) =>
           destination = ?,
           project_id = ?,
           sku = ?,
+          country_of_origin = ?,
           quantity = ?,
           total_price = ?,
           price_per_item = ?,
@@ -24385,6 +26367,7 @@ app.put('/api/shipments/templates/:id', requireSeeShipments, async (req, res) =>
         destination || null,
         project_id || null,
         sku || null,
+        country_of_origin || null,
         quantity != null ? quantity : null,
         nextTotalPrice,
         nextPricePerItem,
@@ -24409,18 +26392,20 @@ app.put('/api/shipments/templates/:id', requireSeeShipments, async (req, res) =>
               template_id,
               description,
               sku,
+              country_of_origin,
               quantity,
               unit_price,
               line_total,
               vendor_name,
               created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
           `,
           [
             orgId,
             templateId,
             it.description || null,
             it.sku || null,
+            it.country_of_origin || null,
             it.quantity != null ? it.quantity : 0,
             it.unit_price != null ? it.unit_price : 0,
             it.line_total != null ? it.line_total : 0,
@@ -24448,6 +26433,7 @@ app.put('/api/shipments/templates/:id', requireSeeShipments, async (req, res) =>
         destination: destination || null,
         project_id: project_id || null,
         sku: sku || null,
+        country_of_origin: country_of_origin || null,
         quantity: quantity != null ? quantity : null,
         total_price: nextTotalPrice,
         price_per_item: nextPricePerItem,
@@ -24533,6 +26519,16 @@ app.get('/api/time-entries/export/:format', requireViewTimeReports, async (req, 
     (req.query.all_dates === '1' ||
       req.query.all_dates === 'true' ||
       req.query.all_dates === 'yes');
+  const hidePaid =
+    req.query &&
+    (req.query.hide_paid === '1' ||
+      req.query.hide_paid === 'true' ||
+      req.query.hide_paid === 'yes');
+  const hideApproved =
+    req.query &&
+    (req.query.hide_payroll_approved === '1' ||
+      req.query.hide_payroll_approved === 'true' ||
+      req.query.hide_payroll_approved === 'yes');
 
   let canViewPayroll = false;
   let perms = req.adminPerms;
@@ -24603,6 +26599,12 @@ app.get('/api/time-entries/export/:format', requireViewTimeReports, async (req, 
     sql += ' AND t.project_id = ?';
     params.push(project_id);
   }
+  if (hidePaid) {
+    sql += ' AND (t.paid IS NULL OR t.paid = 0)';
+  }
+  if (hideApproved) {
+    sql += " AND LOWER(COALESCE(t.approval_status, 'pending')) != 'approved'";
+  }
   const visibility = buildTimeEntryVisibilityFilter({
     adminId,
     perms,
@@ -24650,6 +26652,8 @@ app.get('/api/time-entries/export/:format', requireViewTimeReports, async (req, 
         end: end || null,
         employee_id: employee_id || null,
         project_id: project_id || null,
+        hide_paid: !!hidePaid,
+        hide_payroll_approved: !!hideApproved,
         row_count: rows.length
       }
     });
@@ -24785,7 +26789,7 @@ app.get('/api/time-entries/export/:format', requireViewTimeReports, async (req, 
 });
 
 
-app.get('/api/reports/payroll-runs', requireAdminAccess(p => p.view_payroll), (req, res) => {
+app.get('/api/reports/payroll-runs', requireSectionEnabled('payroll'), requireSuperAdmin, (req, res) => {
   const orgId = req.session && req.session.orgId;
   if (!orgId) {
     return res.status(401).json({ error: 'Not authenticated.' });
@@ -24816,7 +26820,233 @@ app.get('/api/reports/payroll-runs', requireAdminAccess(p => p.view_payroll), (r
   });
 });
 
-app.get('/api/reports/payroll-audit', requireAdminAccess(p => p.view_payroll), (req, res) => {
+async function loadPayrollRunReviewPayload({ orgId, runId = null, unresolvedOnly = false }) {
+  if (!orgId) return null;
+  const unresolvedStatuses = ['partial', 'failed'];
+  const runSql = unresolvedOnly
+    ? `
+      SELECT
+        pr.id,
+        pr.start_date,
+        pr.end_date,
+        pr.created_at,
+        pr.status,
+        pr.include_overtime,
+        pr.run_type,
+        pr.adjustment_reason,
+        pr.last_error,
+        pr.last_attempt_id,
+        pr.total_hours,
+        pr.total_pay,
+        COUNT(pc.id) AS check_count,
+        SUM(CASE WHEN pc.paid = 1 THEN 1 ELSE 0 END) AS paid_checks
+      FROM payroll_runs pr
+      LEFT JOIN payroll_checks pc
+        ON pc.payroll_run_id = pr.id AND pc.org_id = pr.org_id
+      WHERE pr.org_id = ?
+        AND LOWER(COALESCE(pr.status, '')) IN (${unresolvedStatuses.map(() => '?').join(',')})
+      GROUP BY pr.id
+      ORDER BY pr.created_at DESC, pr.id DESC
+      LIMIT 1
+    `
+    : `
+      SELECT
+        pr.id,
+        pr.start_date,
+        pr.end_date,
+        pr.created_at,
+        pr.status,
+        pr.include_overtime,
+        pr.run_type,
+        pr.adjustment_reason,
+        pr.last_error,
+        pr.last_attempt_id,
+        pr.total_hours,
+        pr.total_pay,
+        COUNT(pc.id) AS check_count,
+        SUM(CASE WHEN pc.paid = 1 THEN 1 ELSE 0 END) AS paid_checks
+      FROM payroll_runs pr
+      LEFT JOIN payroll_checks pc
+        ON pc.payroll_run_id = pr.id AND pc.org_id = pr.org_id
+      WHERE pr.org_id = ?
+        AND pr.id = ?
+      GROUP BY pr.id
+      LIMIT 1
+    `;
+
+  const runParams = unresolvedOnly
+    ? [orgId, ...unresolvedStatuses]
+    : [orgId, runId];
+  const run = await dbGet(runSql, runParams);
+  if (!run) return null;
+
+  let latestAttempt = null;
+  if (run.last_attempt_id) {
+    latestAttempt = await dbGet(
+      `
+        SELECT id, payroll_run_id, start_date, end_date, ok, fatal_error, created_at
+        FROM payroll_run_attempts
+        WHERE id = ? AND org_id = ?
+          AND (payroll_run_id = ? OR payroll_run_id IS NULL)
+        LIMIT 1
+      `,
+      [run.last_attempt_id, orgId, run.id]
+    );
+  }
+  if (!latestAttempt) {
+    latestAttempt = await dbGet(
+      `
+        SELECT id, payroll_run_id, start_date, end_date, ok, fatal_error, created_at
+        FROM payroll_run_attempts
+        WHERE payroll_run_id = ? AND org_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `,
+      [run.id, orgId]
+    );
+  }
+
+  const attemptResultsRaw = latestAttempt
+    ? await dbAll(
+        `
+          SELECT
+            id,
+            employee_id,
+            employee_name,
+            total_hours,
+            total_pay,
+            ok,
+            error,
+            warning_codes,
+            qbo_txn_id,
+            created_at
+          FROM payroll_attempt_results
+          WHERE attempt_id = ? AND org_id = ?
+          ORDER BY ok ASC, LOWER(COALESCE(employee_name, '')) ASC, id ASC
+        `,
+        [latestAttempt.id, orgId]
+      )
+    : [];
+
+  const attemptResults = (attemptResultsRaw || []).map(row => {
+    let warningCodes = [];
+    if (row.warning_codes) {
+      try {
+        const parsed = JSON.parse(row.warning_codes);
+        if (Array.isArray(parsed)) warningCodes = parsed.map(code => String(code));
+      } catch {
+        warningCodes = [];
+      }
+    }
+    return {
+      id: row.id,
+      employee_id: row.employee_id,
+      employee_name: row.employee_name || '',
+      total_hours: Number(row.total_hours || 0),
+      total_pay: Number(row.total_pay || 0),
+      ok: Number(row.ok) === 0 ? 0 : 1,
+      error: row.error || null,
+      warning_codes: warningCodes,
+      qbo_txn_id: row.qbo_txn_id || null,
+      created_at: row.created_at || null
+    };
+  });
+
+  const checkRows = await dbAll(
+    `
+      SELECT
+        pc.id,
+        pc.employee_id,
+        COALESCE(e.name, '(Unknown employee)') AS employee_name,
+        pc.total_hours,
+        pc.total_pay,
+        pc.check_number,
+        pc.paid,
+        pc.paid_date,
+        pc.qbo_txn_id
+      FROM payroll_checks pc
+      LEFT JOIN employees e ON pc.employee_id = e.id AND e.org_id = pc.org_id
+      WHERE pc.payroll_run_id = ?
+        AND pc.org_id = ?
+      ORDER BY LOWER(COALESCE(e.name, '')) ASC, pc.id ASC
+    `,
+    [run.id, orgId]
+  );
+
+  const failedCount = attemptResults.filter(row => row.ok === 0).length;
+  const successCount = attemptResults.filter(row => row.ok === 1).length;
+
+  return {
+    run: {
+      id: run.id,
+      start_date: run.start_date,
+      end_date: run.end_date,
+      created_at: run.created_at,
+      status: run.status,
+      include_overtime: Number(run.include_overtime || 0) ? 1 : 0,
+      run_type: run.run_type || 'standard',
+      adjustment_reason: run.adjustment_reason || null,
+      last_error: run.last_error || null,
+      last_attempt_id: run.last_attempt_id || null,
+      total_hours: Number(run.total_hours || 0),
+      total_pay: Number(run.total_pay || 0),
+      check_count: Number(run.check_count || 0),
+      paid_checks: Number(run.paid_checks || 0)
+    },
+    latest_attempt: latestAttempt
+      ? {
+          id: latestAttempt.id,
+          payroll_run_id: latestAttempt.payroll_run_id || run.id,
+          start_date: latestAttempt.start_date || run.start_date,
+          end_date: latestAttempt.end_date || run.end_date,
+          ok: Number(latestAttempt.ok) === 0 ? 0 : 1,
+          fatal_error: latestAttempt.fatal_error || null,
+          created_at: latestAttempt.created_at || null
+        }
+      : null,
+    results: attemptResults,
+    failed_count: failedCount,
+    success_count: successCount,
+    check_rows: Array.isArray(checkRows) ? checkRows : []
+  };
+}
+
+app.get('/api/reports/payroll-runs/unresolved/latest', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+    const review = await loadPayrollRunReviewPayload({ orgId, unresolvedOnly: true });
+    return res.json({ ok: true, review: review || null });
+  } catch (err) {
+    console.error('Error loading latest unresolved payroll run review:', err);
+    return res.status(500).json({ error: 'Failed to load latest unresolved payroll run.' });
+  }
+});
+
+app.get('/api/reports/payroll-runs/:id/review', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  const runId = Number(req.params.id);
+  if (!Number.isFinite(runId) || runId <= 0) {
+    return res.status(400).json({ error: 'Invalid payroll run id.' });
+  }
+  try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+    const review = await loadPayrollRunReviewPayload({ orgId, runId, unresolvedOnly: false });
+    if (!review) {
+      return res.status(404).json({ error: 'Payroll run not found.' });
+    }
+    return res.json({ ok: true, review });
+  } catch (err) {
+    console.error('Error loading payroll run review:', err);
+    return res.status(500).json({ error: 'Failed to load payroll run review.' });
+  }
+});
+
+app.get('/api/reports/payroll-audit', requireSectionEnabled('payroll'), requireSuperAdmin, (req, res) => {
   let limit = parseInt(req.query.limit, 10);
   if (!Number.isFinite(limit) || limit <= 0 || limit > 500) {
     limit = 50;
@@ -25264,7 +27494,7 @@ app.get('/api/reports/audit-log', async (req, res) => {
   }
 });
 
-app.get('/api/reports/payroll-runs/:id', requireAdminAccess(p => p.view_payroll), (req, res) => {
+app.get('/api/reports/payroll-runs/:id', requireSectionEnabled('payroll'), requireSuperAdmin, (req, res) => {
   const runId = parseInt(req.params.id, 10);
   if (Number.isNaN(runId)) {
     return res.status(400).json({ error: 'Invalid payroll run id.' });
@@ -25295,7 +27525,7 @@ app.get('/api/reports/payroll-runs/:id', requireAdminAccess(p => p.view_payroll)
   });
 });
 
-app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), async (req, res) => {
+app.patch('/api/reports/checks/:id', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   const checkId = parseInt(req.params.id, 10);
   if (Number.isNaN(checkId)) {
     return res.status(400).json({ error: 'Invalid check id.' });
@@ -25469,7 +27699,7 @@ app.patch('/api/reports/checks/:id', requireAdminAccess(p => p.modify_payroll), 
   }
 });
 
-app.get('/api/reports/payroll-audit-log', requireAdminAccess(p => p.view_payroll), async (req, res) => {
+app.get('/api/reports/payroll-audit-log', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
   try {
     let limit = parseInt(req.query.limit, 10);
     if (!Number.isFinite(limit) || limit <= 0 || limit > 1000) {
@@ -25595,6 +27825,7 @@ app.get('/api/reports/shipment-verification', async (req, res) => {
             shipment_id,
             description,
             sku,
+            country_of_origin,
             quantity,
             unit_price,
             line_total,
@@ -26594,100 +28825,17 @@ async function runShipmentRemindersForOrg(orgId, timeZone) {
   }
 }
 
-async function runDailySummaryForOrg(orgId, timeZone) {
-  const prefsRows = await dbAll(
-    `
-      SELECT user_id, remind_time, remind_every_days
-      FROM notification_prefs
-      WHERE org_id = ? AND remind_time IS NOT NULL AND remind_time != ''
-    `,
-    [orgId]
-  );
-  if (!prefsRows || !prefsRows.length) return;
-
-  const prefsMap = await loadNotificationPrefsMap(orgId);
-  const recipients = await loadNotificationRecipients(orgId);
-  const recipientMap = new Map(recipients.map(r => [r.user_id, r]));
-
-  const nowParts = getTimePartsInTimeZone(timeZone);
-  const nowMinutes = nowParts.hour * 60 + nowParts.minute;
-
-  for (const row of prefsRows) {
-    const prefs = prefsMap.get(row.user_id) || { ...DEFAULT_NOTIFICATION_PREFS };
-    const remindMinutes = parseTimeToMinutes(prefs.remind_time);
-    if (remindMinutes == null) continue;
-    if (nowMinutes < remindMinutes || nowMinutes >= remindMinutes + 30) continue;
-
-    const remindEvery = Number(prefs.remind_every_days) || 1;
-    const alreadySent = await wasNotificationSentRecently({
-      orgId,
-      userId: row.user_id,
-      type: 'daily_summary',
-      timeZone,
-      minDays: remindEvery
-    });
-    if (alreadySent) continue;
-
-    const recipient = recipientMap.get(row.user_id);
-    if (!recipient) continue;
-    const perms = mapRecipientPerms(recipient);
-
-    const summaryParts = [];
-    let timeCount = null;
-    let payrollCount = null;
-
-    const includeTime =
-      hasNotificationPerms(perms, 'time') &&
-      prefs.time_filters?.enabled &&
-      (!prefs.time_filters.event_types?.length ||
-        prefs.time_filters.event_types.includes('TIME_EXCEPTION_OPEN'));
-
-    const includePayroll =
-      hasNotificationPerms(perms, 'payroll') &&
-      prefs.payroll_filters?.enabled &&
-      (!prefs.payroll_filters.event_types?.length ||
-        prefs.payroll_filters.event_types.includes('PAYROLL_RUN_DUE'));
-
-    if (includeTime) {
-      const endDate = nowParts.dateStr;
-      const endDays = ymdToUtcDays(endDate);
-      const startDate = endDays != null ? utcDaysToYmd(endDays - 6) : endDate;
-      timeCount = await countOpenTimeExceptions(orgId, startDate, endDate);
-      summaryParts.push(`${timeCount} open time exceptions`);
-    }
-
-    if (includePayroll) {
-      const rules = await loadPayrollRulesMap(orgId);
-      const payPeriod = computePayPeriodForDate(nowParts, rules || {});
-      payrollCount = await countPayrollDueEntries(orgId, payPeriod);
-      summaryParts.push(`${payrollCount} unpaid entries in current pay period`);
-    }
-
-    if (!summaryParts.length) continue;
-
-    const body = `Daily summary: ${summaryParts.join('; ')}.`;
-
-    await deliverNotificationToUser({
-      orgId,
-      userId: row.user_id,
-      prefs,
-      type: 'daily_summary',
-      title: 'Daily summary',
-      body,
-      data: {
-        time_count: timeCount,
-        payroll_count: payrollCount
-      }
-    });
-  }
-}
-
 async function runClockoutRemindersForOrg(orgId, timeZone) {
   const prefsRows = await dbAll(
     `
-      SELECT user_id, clockout_time, clockout_enabled
+      SELECT user_id, remind_time, remind_every_days, clockout_enabled
       FROM notification_prefs
-      WHERE org_id = ? AND clockout_enabled = 1 AND clockout_time IS NOT NULL AND clockout_time != ''
+      WHERE org_id = ?
+        AND clockout_enabled = 1
+        AND (
+          (remind_time IS NOT NULL AND remind_time != '')
+          OR (clockout_time IS NOT NULL AND clockout_time != '')
+        )
     `,
     [orgId]
   );
@@ -26701,16 +28849,18 @@ async function runClockoutRemindersForOrg(orgId, timeZone) {
 
   for (const row of prefsRows) {
     const prefs = prefsMap.get(row.user_id) || { ...DEFAULT_NOTIFICATION_PREFS };
-    const targetMinutes = parseTimeToMinutes(prefs.clockout_time);
-    if (targetMinutes == null) continue;
-    if (nowMinutes < targetMinutes || nowMinutes >= targetMinutes + 30) continue;
+    const scheduleTime = prefs.remind_time || prefs.clockout_time;
+    const remindMinutes = parseTimeToMinutes(scheduleTime);
+    if (remindMinutes == null) continue;
+    if (nowMinutes < remindMinutes || nowMinutes >= remindMinutes + 30) continue;
 
+    const remindEvery = Math.max(1, Number(prefs.remind_every_days) || 1);
     const alreadySent = await wasNotificationSentRecently({
       orgId,
       userId: row.user_id,
       type: 'clockout_reminder',
       timeZone,
-      minDays: 1
+      minDays: remindEvery
     });
     if (alreadySent) continue;
 
@@ -26722,7 +28872,8 @@ async function runClockoutRemindersForOrg(orgId, timeZone) {
       title: 'Clock-out reminder',
       body: `Open punches: ${openCount}. Please review and clock out workers.`,
       data: {
-        clockout_time: prefs.clockout_time || null,
+        remind_time: scheduleTime || null,
+        remind_every_days: remindEvery,
         open_punch_count: openCount,
         open_punch_date: nowParts.dateStr || null
       }
@@ -26915,7 +29066,6 @@ async function runNotificationSchedules() {
       const tz = org.timezone || APP_TIMEZONE;
       try {
         await runShipmentRemindersForOrg(org.id, tz);
-        await runDailySummaryForOrg(org.id, tz);
         await runClockoutRemindersForOrg(org.id, tz);
         await runOpenPunchAlertsForOrg(org.id, tz);
       } catch (err) {

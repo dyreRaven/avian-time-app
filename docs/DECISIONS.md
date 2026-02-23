@@ -1,6 +1,25 @@
 # Decisions Log
 
+- 2026-02-23: Organization Settings > Kiosk Device Setup uses geofence location context (project geofence lat/lng/radius) in the device inventory instead of `last seen` time.
+- 2026-02-23: Receipt reimbursements now require a super-admin approval step before payroll inclusion (`requested` -> `approved` -> `paid`); payroll summary/preflight/create-checks include only approved reimbursements, and unpay returns paid reimbursements to approved.
+- 2026-02-23: Receipt upload/reimbursement request management now lives on a dedicated `Reimbursements` page under Time & Pay (separate from Payroll run/settings UI) while keeping the same reimbursement workflow and payroll integration.
+- 2026-02-23: Payroll reimbursements require a vendor at upload; reimbursement lines use `[Vendor] Reimbursement`, do not map Customer/Project to QBO line CustomerRef, use a dedicated receipt expense default (`receipt_expense_account_name`, fallback to main expense), use the reimbursement class default, and append `+ Reimbursement` to check memo/private note when present.
+- 2026-02-23: Payroll receipt reimbursements are first-class payroll inputs: super admins can submit receipt requests (employee + project + amount + file), payroll defaults include main expense account + dedicated receipt expense account + reimbursement class settings, and payroll can include reimbursements as dedicated lines (including reimbursement-only checks for employees with no time-entry pay in the period).
+- 2026-02-23: Payroll create/retry now uses a persistent run-review workflow: each run shows failed checks first and successful checks second, retries can target only selected failed employees, and unresolved runs (partial/failed) are resumable after leaving/reloading.
+- 2026-02-23: Payroll overtime toggle (`Include overtime in pay`) is deferred from the Payroll UI for now; the control is hidden, but underlying overtime-run logic remains for future re-enable.
+- 2026-02-23: Adjustment payroll runs are deferred for now; the payroll UI control is hidden, but underlying adjustment-run code remains for future re-enable.
+- 2026-02-23: Employee display names must be unique per org (case-insensitive, trimmed). Employee create/update/name-edit now block duplicates and the DB enforces this with a unique index.
+- 2026-02-23: Per-row payroll approval now also stamps field review as approved (including previously rejected entries) and marks linked punch review flags approved, so checked entries become payroll-ready in one action.
+- 2026-02-23: Payroll no longer hard-blocks on unapproved entries in the selected period. Payroll summary/preflight return pending approvals as advisory, and create-checks can proceed for approved selected entries while pending ones remain excluded.
+- 2026-02-21: Payroll load, preflight, and create-checks all share the same approval gate: if any entries in the selected period are not payroll-approved, payroll should block and return the pending approval list (no partial summary rows). Superseded by 2026-02-23 advisory pending-approval flow.
+- 2026-02-21: Payroll settings are sticky by default. Saved bank/expense + memo/line templates should preload on later sessions, and saving settings should offer to overwrite already-filled loaded checks while still filling blank check fields automatically.
+- 2026-02-21: Payroll approval is authoritative for payroll readiness. Once a time entry is payroll-approved (`approval_status=approved`), payroll summary, preflight, and check creation must include it regardless of field-review or punch-exception status.
+- 2026-02-21: Admin login lifecycle is managed in Employee Details (not Settings > Admin Accounts); the "This employee is an admin" toggle controls desktop admin access and login enable/disable, and invite links are sent from the employee modal.
+- 2026-02-07: Payroll (run payroll + payroll reports + QBO connect/disconnect) is super-admin only. `view_payroll`/`modify_payroll` are no longer configurable via Access Control or Employee Details; they are effectively reserved for super admins. `modify_pay_rates` does not imply payroll access.
+- 2026-02-06: Field review is advisory for payroll; payroll admins can approve and run payroll even if field review is pending. Preflight surfaces pending field reviews as a warning, and bulk-approve skips entries missing field review.
+- 2026-02-05: Role templates are removed from the UI; admins set permissions directly in Access Control and Employee Details.
 - 2026-02-04: Shipments have an is_container flag; storage_daily_late_fee defaults to storage_container_daily_late_fee_default for container shipments and storage_daily_late_fee_default otherwise.
+- 2026-02-05: Removed daily summary notifications; reminder schedule now controls clock-out reminders in Notification Preferences.
 - 2026-02-03: Removed bulk approve from Review Time Entries; approvals are per-row only.
 - 2026-02-02: Audit logs are retained indefinitely by default; orgs can set `audit_log_retention_days` to purge older audit entries.
 - 2026-02-02: Timesheet sharing is per-admin only; shared-with-all is deprecated and ignored (no global share UI).
@@ -79,6 +98,7 @@
 - 2025-01-XX: Legacy workers_see_shipments/workers_see_time are removed in favor of permissions; kiosk_require_photo is replaced by clock_in_photo_required.
 - 2025-01-XX: Kiosk enrollment requires the org enrollment code; no placeholder kiosk creation for unknown device_id; device_secret mismatches return the canonical secret for re-sync.
 - 2025-01-XX: Kiosk enrollment is code-only (no location required); kiosk name/location can be set later by super admin; kiosk ID is shown only in kiosk Settings and in admin kiosk detail for super admins.
+- 2026-02-23: Kiosk enrollment codes are single-use (auto-rotate after each successful code-based enrollment), and kiosk records track registration ownership metadata for org Device Setup inventory.
 - 2025-01-XX: Kiosk Start Day supports "clock me in"; if no active timesheet and a kiosk admin attempts to clock in, route to Start Day. Only one active timesheet per kiosk for new punches; multiple open timesheets can exist; workers never choose project.
 - 2025-01-XX: QuickBooks OAuth is per-org with state validation; only super admins can connect/disconnect; disconnect clears tokens but preserves linked QBO IDs.
 - 2025-01-XX: Kiosk admin onboarding captures an ID image (driver’s license or passport) and a manually entered name; no parsing required.

@@ -933,6 +933,20 @@
         </div>
       </div>
 
+      <div id="ka-admin-console-tile" class="ka-settings-tile collapsed hidden" data-settings-section="admin-console">
+        <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-admin-console">
+          <div>
+            <div class="ka-settings-title">Desktop admin console</div>
+            <p class="ka-settings-sub">Switch to the desktop admin view for this account.</p>
+          </div>
+          <span class="ka-settings-chevron" aria-hidden="true"></span>
+        </button>
+        <div class="ka-settings-content" id="ka-settings-admin-console">
+          <button type="button" id="ka-switch-admin-console" class="btn secondary btn-sm">Switch to desktop view</button>
+          <p id="ka-switch-admin-status" class="ka-status"></p>
+        </div>
+      </div>
+
       <div class="ka-settings-tile collapsed" data-settings-section="logout">
         <button type="button" class="ka-settings-head ka-settings-toggle" aria-expanded="false" aria-controls="ka-settings-logout">
           <div>
@@ -1354,6 +1368,7 @@
         <div class="ka-items-tabs" role="tablist">
           <button type="button" class="ka-items-tab-btn active" data-ka-items-tab="overview">Overview</button>
           <button type="button" class="ka-items-tab-btn" data-ka-items-tab="items">Items</button>
+          <button type="button" class="ka-items-tab-btn" data-ka-items-tab="messages">Messages</button>
         </div>
         <button type="button" class="ka-items-modal-close" id="ka-items-modal-close">×</button>
       </div>
@@ -1365,6 +1380,9 @@
       </div>
       <div class="ka-items-tab-panel" id="ka-items-modal-body" data-ka-items-panel="items">
         <div class="ka-ship-muted">(loading items…)</div>
+      </div>
+      <div class="ka-items-tab-panel" id="ka-items-comments" data-ka-items-panel="messages">
+        <div class="ka-ship-muted">(loading messages…)</div>
       </div>
     </div>
 

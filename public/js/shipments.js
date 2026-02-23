@@ -23,6 +23,9 @@ let overridePromptInFlight = false;
 let overridePromptTimer = null;
 let shipmentItemsLoadedOnce = false;
 let shipmentDocsLoadedOnce = false;
+let shipmentsSummaryCache = null;
+let shipmentsSummaryFiltersKey = '';
+let currentShipmentPersonalNoteShipmentId = null;
 
 
 const SHIPMENT_STATUS_ICONS = {
@@ -37,6 +40,33 @@ const SHIPMENT_STATUS_ICONS = {
   "Picked Up": "/icons/shipments/done.svg",
   "Archived": "/icons/shipments/archived.svg"
 };
+
+const SHIPMENT_PERSONAL_NOTE_ICON_SVG_EMPTY =
+  // File-plus (add note)
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>' +
+    '<path d="M14 2v6h6"/>' +
+    '<path d="M12 11v6"/>' +
+    '<path d="M9 14h6"/>' +
+  '</svg>';
+
+const SHIPMENT_PERSONAL_NOTE_ICON_SVG_NOTE =
+  // File-text (has note)
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>' +
+    '<path d="M14 2v6h6"/>' +
+    '<path d="M16 13H8"/>' +
+    '<path d="M16 17H8"/>' +
+    '<path d="M10 9H8"/>' +
+  '</svg>';
+
+const SHIPMENT_PERSONAL_NOTE_ICON_SVG_DONE =
+  // File-check (completed note)
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>' +
+    '<path d="M14 2v6h6"/>' +
+    '<path d="M9 14l2 2 4-4"/>' +
+  '</svg>';
 
 const FORWARDER_OTHER_VALUE = '__forwarder_other__';
 const SHIPMENTS_COLUMN_ORDER_KEY = 'avian_shipments_column_order';
@@ -113,6 +143,553 @@ function normalizeShipmentsBoardData(data) {
     statuses: order,
     shipmentsByStatus: byStatus
   };
+}
+
+function buildShipmentsSummaryFiltersKey() {
+  const search =
+    document.getElementById('shipments-search')?.value || '';
+  const project =
+    document.getElementById('shipments-filter-project')?.value || '';
+  const vendor =
+    document.getElementById('shipments-filter-vendor')?.value || '';
+  const status = currentStatusFilter || '';
+  const shipmentId =
+    document.getElementById('shipments-summary-filter-shipment')?.value || '';
+  return JSON.stringify({ search, project, vendor, status, shipmentId });
+}
+
+function flattenShipmentsBoardData() {
+  const byStatus = shipmentsBoardData?.shipmentsByStatus || {};
+  const list = [];
+  Object.values(byStatus).forEach(group => {
+    if (Array.isArray(group)) list.push(...group);
+  });
+  return list;
+}
+
+function shipmentSummaryOptionLabel(sh) {
+  const title = String(sh?.title || '(no title)').trim();
+  const status = String(sh?.status || '').trim();
+  const po = String(sh?.po_number || '').trim();
+  const bol = String(sh?.bol_number || '').trim();
+  const bits = [];
+  if (status) bits.push(status);
+  if (po) bits.push(`PO ${po}`);
+  if (bol) bits.push(`BOL ${bol}`);
+  return bits.length ? `${title} (${bits.join(' · ')})` : title;
+}
+
+function populateShipmentsSummaryStatusFilter(statuses = []) {
+  const sel = document.getElementById('shipments-summary-filter-status');
+  if (!sel) return;
+
+  const selected =
+    currentStatusFilter
+      ? (matchNormalizedStatus(currentStatusFilter, statuses) || normalizeShipmentStatusLabel(currentStatusFilter))
+      : '';
+
+  const ordered = getOrderedShipmentStatuses(statuses || []);
+  const frag = document.createDocumentFragment();
+
+  const optAll = document.createElement('option');
+  optAll.value = '';
+  optAll.textContent = 'All statuses';
+  frag.appendChild(optAll);
+
+  ordered.forEach(st => {
+    const opt = document.createElement('option');
+    opt.value = st;
+    opt.textContent = st;
+    frag.appendChild(opt);
+  });
+
+  const prev = sel.value;
+  sel.innerHTML = '';
+  sel.appendChild(frag);
+  sel.value = selected || prev || '';
+}
+
+function populateShipmentsSummaryShipmentFilter(list = []) {
+  const sel = document.getElementById('shipments-summary-filter-shipment');
+  if (!sel) return;
+
+  const prev = sel.value || '';
+  const unique = (Array.isArray(list) ? list : [])
+    .filter(sh => sh && sh.id != null)
+    .slice()
+    .sort((a, b) => {
+      const at = String(a.title || '').toLowerCase();
+      const bt = String(b.title || '').toLowerCase();
+      if (at < bt) return -1;
+      if (at > bt) return 1;
+      return Number(a.id) - Number(b.id);
+    });
+
+  const frag = document.createDocumentFragment();
+  const optAll = document.createElement('option');
+  optAll.value = '';
+  optAll.textContent = 'All shipments';
+  frag.appendChild(optAll);
+
+  unique.forEach(sh => {
+    const opt = document.createElement('option');
+    opt.value = String(sh.id);
+    opt.textContent = shipmentSummaryOptionLabel(sh);
+    frag.appendChild(opt);
+  });
+
+  sel.innerHTML = '';
+  sel.appendChild(frag);
+  if (prev && unique.some(sh => String(sh.id) === String(prev))) {
+    sel.value = String(prev);
+  } else {
+    sel.value = '';
+  }
+}
+
+function populateShipmentsSummaryFilters() {
+  populateShipmentsSummaryStatusFilter(shipmentsBoardData?.statuses || []);
+  populateShipmentsSummaryShipmentFilter(flattenShipmentsBoardData());
+}
+
+function truncateText(text, max = 90) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  if (raw.length <= max) return raw;
+  return raw.slice(0, max - 1).trimEnd() + '…';
+}
+
+function isShipmentFlagSet(value) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0 || value == null) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return ['1', 'true', 'yes', 'y'].includes(normalized);
+}
+
+function isStatusAtOrAfterArrival(status) {
+  const cls = shipmentStatusClass(status || '');
+  return [
+    'status-arrived',
+    'status-clearance',
+    'status-ready',
+    'status-pickedup',
+    'status-archived'
+  ].includes(cls);
+}
+
+function isStatusAtOrAfterForwarder(status) {
+  const cls = shipmentStatusClass(status || '');
+  return [
+    'status-forwarder',
+    'status-sailed',
+    'status-arrived',
+    'status-clearance',
+    'status-ready',
+    'status-pickedup',
+    'status-archived'
+  ].includes(cls);
+}
+
+function buildShipmentSummaryData(list = []) {
+  const missingCoo = [];
+  const missingDocs = [];
+  const unpaidForwarder = [];
+  const unpaidClearing = [];
+  const requestClearing = [];
+  const personalNotes = [];
+  const readyPickup = [];
+  const needsVerification = [];
+  const totalShipments = Array.isArray(list) ? list.length : 0;
+  let activeShipments = 0;
+  let archivedShipments = 0;
+  let paymentFieldsPresent = false;
+
+  list.forEach(sh => {
+    const statusCls = shipmentStatusClass(sh.status || '');
+    const isArchived = statusCls === 'status-archived';
+    if (isArchived) {
+      archivedShipments += 1;
+    } else {
+      activeShipments += 1;
+    }
+
+    if (
+      !paymentFieldsPresent &&
+      (Object.prototype.hasOwnProperty.call(sh, 'shipper_paid') ||
+        Object.prototype.hasOwnProperty.call(sh, 'customs_paid'))
+    ) {
+      paymentFieldsPresent = true;
+    }
+
+    const itemsTotal = Number(sh.items_total) || 0;
+    const itemsWithCoo = Number(sh.items_with_coo) || 0;
+    if (itemsTotal > 0 && itemsWithCoo < itemsTotal) {
+      missingCoo.push(sh);
+    }
+
+    const missing = getMissingRequiredDocsFromShipment(sh);
+    if (missing && missing.length) {
+      missingDocs.push({ ...sh, missing_docs: missing });
+    }
+
+    const needsForwarderPayment =
+      !isArchived &&
+      isStatusAtOrAfterForwarder(sh.status || '') &&
+      Object.prototype.hasOwnProperty.call(sh, 'shipper_paid') &&
+      !isShipmentFlagSet(sh.shipper_paid);
+    if (needsForwarderPayment) {
+      unpaidForwarder.push(sh);
+    }
+
+    const needsClearingPayment =
+      !isArchived &&
+      isStatusAtOrAfterArrival(sh.status || '') &&
+      Object.prototype.hasOwnProperty.call(sh, 'customs_paid') &&
+      !isShipmentFlagSet(sh.customs_paid);
+    if (needsClearingPayment) {
+      unpaidClearing.push(sh);
+    }
+
+    const needsRequestClearing =
+      isStatusAtOrAfterArrival(sh.status || '') &&
+      !isShipmentFlagSet(sh.requested_clearing);
+    if (needsRequestClearing) {
+      requestClearing.push(sh);
+    }
+
+    const personalNoteText = (sh.personal_note || '').trim();
+    const personalNoteDone = isShipmentFlagSet(sh.personal_note_completed);
+    if (personalNoteText && !personalNoteDone) {
+      personalNotes.push(sh);
+    }
+
+    const statusKey = normalizeShipmentStatusKey(sh.status || '');
+    const isReady =
+      statusKey === normalizeShipmentStatusKey('Cleared - Ready for Pickup') &&
+      Number(sh.items_verified) === 1 &&
+      !(sh.picked_up_by || '').trim();
+    if (isReady) {
+      readyPickup.push(sh);
+    }
+
+    const isPickedUp =
+      statusKey === normalizeShipmentStatusKey('Picked Up');
+    if (isPickedUp && Number(sh.items_verified) === 0) {
+      needsVerification.push(sh);
+    }
+  });
+
+  return {
+    totalShipments,
+    activeShipments,
+    archivedShipments,
+    paymentFieldsPresent,
+    missingCoo,
+    missingDocs,
+    unpaidForwarder,
+    unpaidClearing,
+    requestClearing,
+    personalNotes,
+    readyPickup,
+    needsVerification
+  };
+}
+
+function renderShipmentsSummaryCard({
+  id,
+  title,
+  subtitle,
+  items,
+  emptyLabel,
+  buildMeta,
+  buildBadge,
+  itemAction
+}) {
+  const count = Array.isArray(items) ? items.length : 0;
+  const actionAttr = itemAction ? ` data-summary-action="${itemAction}"` : '';
+  const rows = (items || []).map(sh => {
+    const meta = buildMeta ? buildMeta(sh) : '';
+    const badge = buildBadge ? buildBadge(sh) : '';
+    return `
+      <button type="button" class="ship-summary-item" data-summary-id="${sh.id}"${actionAttr}>
+        <div class="ship-summary-item-main">${escapeHTML(sh.title || '(no title)')}</div>
+        ${meta ? `<div class="ship-summary-item-meta">${meta}</div>` : ''}
+        ${badge ? `<div class="ship-summary-item-badge">${badge}</div>` : ''}
+      </button>
+    `;
+  }).join('');
+
+  return `
+    <div class="ship-summary-card" data-summary-card="${id}">
+      <div class="ship-summary-card-header">
+        <div>
+          <div class="ship-summary-card-title">${escapeHTML(title)}</div>
+          ${subtitle ? `<div class="ship-summary-card-sub">${escapeHTML(subtitle)}</div>` : ''}
+        </div>
+        <div class="ship-summary-card-count">${count}</div>
+      </div>
+      <div class="ship-summary-card-body">
+        ${count
+          ? rows
+          : `<div class="ship-summary-empty">${escapeHTML(emptyLabel || 'Nothing to review.')}</div>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function renderShipmentsSummary(summary = {}) {
+  const grid = document.getElementById('shipments-summary-grid');
+  if (!grid) return;
+
+  const statsEl = document.getElementById('shipments-summary-stats');
+  if (statsEl) {
+    const total = Number(summary.totalShipments) || 0;
+    const active = Number(summary.activeShipments) || 0;
+    const archived = Number(summary.archivedShipments) || 0;
+    const parts = [];
+    parts.push(`<span class="ship-summary-pill">Active: ${active}</span>`);
+    if (archived) {
+      parts.push(`<span class="ship-summary-pill">Archived: ${archived}</span>`);
+    }
+    statsEl.innerHTML = parts.join('');
+  }
+
+  const cards = [];
+  const personalNotes = Array.isArray(summary.personalNotes) ? summary.personalNotes : [];
+  if (personalNotes.length) {
+    cards.push(renderShipmentsSummaryCard({
+      id: 'personal-notes',
+      title: 'My Notes',
+      subtitle: 'Private notes (only you)',
+      items: personalNotes,
+      emptyLabel: 'No personal notes.',
+      itemAction: 'personal-note',
+      buildMeta: (sh) => {
+        const project = sh.project_name || '—';
+        const vendor = sh.vendor_name || '—';
+        const status = sh.status || '—';
+        return `${escapeHTML(project)} · ${escapeHTML(vendor)} · ${escapeHTML(status)}`;
+      },
+      buildBadge: (sh) => {
+        const snippet = truncateText(sh.personal_note || '', 120);
+        return snippet
+          ? `<span class="ship-summary-note">${escapeHTML(snippet)}</span>`
+          : '';
+      }
+    }));
+  }
+
+  const missingCoo = Array.isArray(summary.missingCoo) ? summary.missingCoo : [];
+  if (missingCoo.length) {
+  cards.push(renderShipmentsSummaryCard({
+    id: 'missing-coo',
+    title: 'Missing COO',
+    subtitle: 'Items without country of origin',
+    items: missingCoo,
+    emptyLabel: 'All items have COO.',
+    buildMeta: (sh) => {
+      const project = sh.project_name || '—';
+      const vendor = sh.vendor_name || '—';
+      const status = sh.status || '—';
+      return `${escapeHTML(project)} · ${escapeHTML(vendor)} · ${escapeHTML(status)}`;
+    },
+    buildBadge: (sh) => {
+      const total = Number(sh.items_total) || 0;
+      const withCoo = Number(sh.items_with_coo) || 0;
+      return `<span class="ship-summary-pill danger">${withCoo}/${total} COO</span>`;
+    }
+  }));
+  }
+
+  const missingDocs = Array.isArray(summary.missingDocs) ? summary.missingDocs : [];
+  if (missingDocs.length) {
+  cards.push(renderShipmentsSummaryCard({
+    id: 'missing-docs',
+    title: 'Missing Docs',
+    subtitle: 'Required documents not uploaded',
+    items: missingDocs,
+    emptyLabel: 'All required docs are present.',
+    buildMeta: (sh) => {
+      const project = sh.project_name || '—';
+      const vendor = sh.vendor_name || '—';
+      return `${escapeHTML(project)} · ${escapeHTML(vendor)}`;
+    },
+    buildBadge: (sh) => {
+      const missing = Array.isArray(sh.missing_docs) ? sh.missing_docs : [];
+      return `<span class="ship-summary-pill warning">Missing: ${escapeHTML(missing.join(', '))}</span>`;
+    }
+  }));
+  }
+
+  const canShowPayments =
+    summary.paymentFieldsPresent ||
+    !!(CURRENT_PERMS && CURRENT_PERMS.view_payroll);
+  if (canShowPayments) {
+    const unpaidForwarder = Array.isArray(summary.unpaidForwarder) ? summary.unpaidForwarder : [];
+    if (unpaidForwarder.length) {
+    cards.push(renderShipmentsSummaryCard({
+      id: 'forwarder-unpaid',
+      title: 'Forwarder Payment',
+      subtitle: 'Arrived at forwarder or later and unpaid',
+      items: unpaidForwarder,
+      emptyLabel: 'No unpaid forwarder payments.',
+      buildMeta: (sh) => {
+        const project = sh.project_name || '—';
+        const vendor = sh.vendor_name || '—';
+        const status = sh.status || '—';
+        return `${escapeHTML(project)} · ${escapeHTML(vendor)} · ${escapeHTML(status)}`;
+      },
+      buildBadge: (sh) => {
+        const amt = sh.shipper_paid_amount != null ? Number(sh.shipper_paid_amount) : null;
+        const amtLabel = Number.isFinite(amt) && amt > 0 ? formatMoney(amt) : '';
+        return `<span class="ship-summary-pill danger">Unpaid${amtLabel ? ` · ${escapeHTML(amtLabel)}` : ''}</span>`;
+      }
+    }));
+    }
+
+    const unpaidClearing = Array.isArray(summary.unpaidClearing) ? summary.unpaidClearing : [];
+    if (unpaidClearing.length) {
+    cards.push(renderShipmentsSummaryCard({
+      id: 'clearing-unpaid',
+      title: 'Clearing Payment',
+      subtitle: 'Arrived at port or later and unpaid',
+      items: unpaidClearing,
+      emptyLabel: 'No unpaid clearing payments.',
+      buildMeta: (sh) => {
+        const project = sh.project_name || '—';
+        const vendor = sh.vendor_name || '—';
+        const status = sh.status || '—';
+        return `${escapeHTML(project)} · ${escapeHTML(vendor)} · ${escapeHTML(status)}`;
+      },
+      buildBadge: (sh) => {
+        const amt = sh.customs_paid_amount != null ? Number(sh.customs_paid_amount) : null;
+        const amtLabel = Number.isFinite(amt) && amt > 0 ? formatMoney(amt) : '';
+        return `<span class="ship-summary-pill danger">Unpaid${amtLabel ? ` · ${escapeHTML(amtLabel)}` : ''}</span>`;
+      }
+    }));
+    }
+  }
+
+  const requestClearing = Array.isArray(summary.requestClearing) ? summary.requestClearing : [];
+  if (requestClearing.length) {
+  cards.push(renderShipmentsSummaryCard({
+    id: 'request-clearing',
+    title: 'Request Clearing',
+    subtitle: 'Arrived at port or later without a clearing request',
+    items: requestClearing,
+    emptyLabel: 'All arrived shipments have clearing requested.',
+    buildMeta: (sh) => {
+      const project = sh.project_name || '—';
+      const vendor = sh.vendor_name || '—';
+      const status = sh.status || '—';
+      return `${escapeHTML(project)} · ${escapeHTML(vendor)} · ${escapeHTML(status)}`;
+    },
+    buildBadge: () => `<span class="ship-summary-pill danger">Request clearing</span>`
+  }));
+  }
+
+  const readyPickup = Array.isArray(summary.readyPickup) ? summary.readyPickup : [];
+  if (readyPickup.length) {
+  cards.push(renderShipmentsSummaryCard({
+    id: 'ready-pickup',
+    title: 'Ready for Pickup',
+    subtitle: 'Verified and waiting pickup',
+    items: readyPickup,
+    emptyLabel: 'No shipments are ready for pickup.',
+    buildMeta: (sh) => {
+      const project = sh.project_name || '—';
+      const arrival = sh.expected_arrival_date
+        ? formatDateUS(sh.expected_arrival_date)
+        : '—';
+      return `${escapeHTML(project)} · ETA ${escapeHTML(arrival)}`;
+    },
+    buildBadge: (sh) => {
+      const due = sh.storage_due_date ? formatDateUS(sh.storage_due_date) : '';
+      if (!due) return '';
+      return `<span class="ship-summary-pill">Storage due ${escapeHTML(due)}</span>`;
+    }
+  }));
+  }
+
+  const needsVerification = Array.isArray(summary.needsVerification) ? summary.needsVerification : [];
+  if (needsVerification.length) {
+  cards.push(renderShipmentsSummaryCard({
+    id: 'needs-verification',
+    title: 'Needs Verification',
+    subtitle: 'Picked up but not fully verified',
+    items: needsVerification,
+    emptyLabel: 'No pickups awaiting verification.',
+    buildMeta: (sh) => {
+      const project = sh.project_name || '—';
+      const vendor = sh.vendor_name || '—';
+      return `${escapeHTML(project)} · ${escapeHTML(vendor)}`;
+    },
+    buildBadge: () => `<span class="ship-summary-pill danger">Verify items</span>`
+  }));
+  }
+
+  if (!cards.length) {
+    grid.innerHTML = '<div class="ship-summary-empty">No shipments need attention.</div>';
+    return;
+  }
+
+  grid.innerHTML = cards.join('');
+
+  grid.querySelectorAll('.ship-summary-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-summary-id');
+      if (!id) return;
+      const action = btn.getAttribute('data-summary-action') || '';
+      if (action === 'personal-note') {
+        openShipmentPersonalNoteModal(id);
+        return;
+      }
+      openShipmentDetail(id);
+    });
+  });
+}
+
+async function loadShipmentsSummary({ force = false, skipBoardLoad = false } = {}) {
+  const message = document.getElementById('shipments-summary-message');
+  const grid = document.getElementById('shipments-summary-grid');
+  if (!grid) return;
+
+  const filtersKey = buildShipmentsSummaryFiltersKey();
+  if (!force && shipmentsSummaryCache && shipmentsSummaryFiltersKey === filtersKey) {
+    renderShipmentsSummary(shipmentsSummaryCache);
+    return;
+  }
+
+  if (message) {
+    message.textContent = 'Loading summary...';
+    message.style.color = 'black';
+  }
+
+  try {
+    if (!skipBoardLoad) {
+      await loadShipmentsBoard();
+    }
+    populateShipmentsSummaryFilters();
+
+    const list = flattenShipmentsBoardData();
+    const shipmentFilterId =
+      document.getElementById('shipments-summary-filter-shipment')?.value || '';
+    const filteredList = shipmentFilterId
+      ? (list || []).filter(sh => String(sh.id) === String(shipmentFilterId))
+      : list;
+
+    const summary = buildShipmentSummaryData(filteredList);
+    shipmentsSummaryCache = summary;
+    shipmentsSummaryFiltersKey = filtersKey;
+    renderShipmentsSummary(summary);
+    if (message) message.textContent = '';
+  } catch (err) {
+    if (message) {
+      message.textContent = 'Failed to load summary: ' + err.message;
+      message.style.color = 'crimson';
+    }
+  }
 }
 
 function matchNormalizedStatus(value, statuses = []) {
@@ -861,6 +1438,96 @@ function syncVendorApplyAllCheckbox() {
   }
 }
 
+function clearCountryOfOriginFromItemRows() {
+  const rows = document.querySelectorAll('.shipment-item-row');
+  rows.forEach(row => {
+    const input = row.querySelector('.shipment-item-coo');
+    if (!input) return;
+    input.value = '';
+  });
+}
+
+function applyCountryOfOriginToItemRowsIfNeeded() {
+  const headerInput = document.getElementById('shipment-country-origin');
+  const applyAll = document.getElementById('shipment-coo-apply-all');
+  if (!headerInput || !applyAll || !applyAll.checked) return;
+
+  const headerValue = (headerInput.value || '').trim();
+  if (!headerValue) return;
+
+  const rows = document.querySelectorAll('.shipment-item-row');
+  rows.forEach(row => {
+    const input = row.querySelector('.shipment-item-coo');
+    if (!input) return;
+
+    if (!input.value.trim()) {
+      input.value = headerValue;
+    }
+  });
+}
+
+function setCountryOfOriginOnAllItemRows(value) {
+  if (!value) return;
+  const rows = document.querySelectorAll('.shipment-item-row');
+  rows.forEach(row => {
+    const input = row.querySelector('.shipment-item-coo');
+    if (input) {
+      input.value = value;
+    }
+  });
+}
+
+function syncCountryOfOriginApplyAllFromItems(headerValue, items = []) {
+  const applyAll = document.getElementById('shipment-coo-apply-all');
+  if (!applyAll) return;
+
+  const headerCoo = (headerValue || '').trim();
+  const countries = new Set();
+
+  (items || []).forEach(it => {
+    const v = (it.country_of_origin || '').trim();
+    if (v) countries.add(v);
+  });
+
+  const singleCountryMatchesHeader =
+    countries.size === 1 && headerCoo && countries.has(headerCoo);
+
+  applyAll.checked = singleCountryMatchesHeader;
+
+  if (applyAll.checked && headerCoo) {
+    const rows = document.querySelectorAll('.shipment-item-row');
+    rows.forEach(row => {
+      const input = row.querySelector('.shipment-item-coo');
+      if (input && !input.value.trim()) {
+        input.value = headerCoo;
+      }
+    });
+  }
+}
+
+function syncCountryOfOriginApplyAllCheckbox() {
+  const headerInput = document.getElementById('shipment-country-origin');
+  const applyAll = document.getElementById('shipment-coo-apply-all');
+  if (!headerInput || !applyAll || !applyAll.checked) return;
+
+  const expected = (headerInput.value || '').trim();
+  if (!expected) {
+    applyAll.checked = false;
+    return;
+  }
+
+  const rows = document.querySelectorAll('.shipment-item-row');
+  for (const row of rows) {
+    const input = row.querySelector('.shipment-item-coo');
+    if (!input) continue;
+    const val = (input.value || '').trim();
+    if (val !== expected) {
+      applyAll.checked = false;
+      break;
+    }
+  }
+}
+
 function updateVerifierTagForRow(row) {
   if (!row) return;
   const span = row.querySelector('.shipment-item-verifier-tag');
@@ -986,7 +1653,12 @@ function populateStatusDropdown(statuses) {
       label.textContent = st;
       icon.src = src;
       currentStatusFilter = st;
-      loadShipmentsBoard();
+      loadShipmentsBoard().then(() => {
+        const summaryView = document.getElementById('shipments-view-summary');
+        if (summaryView && !summaryView.classList.contains('hidden')) {
+          loadShipmentsSummary({ force: true, skipBoardLoad: true });
+        }
+      });
       menu.classList.add('hidden');
     });
 
@@ -1017,7 +1689,12 @@ function applyShipmentStatusFilter(status) {
     : '';
   currentStatusFilter = normalized || '';
   setStatusDropdownSelection(currentStatusFilter);
-  loadShipmentsBoard();
+  loadShipmentsBoard().then(() => {
+    const summaryView = document.getElementById('shipments-view-summary');
+    if (summaryView && !summaryView.classList.contains('hidden')) {
+      loadShipmentsSummary({ force: true, skipBoardLoad: true });
+    }
+  });
 
   const section = document.getElementById('section-shipments');
   if (section) {
@@ -1897,10 +2574,16 @@ function addShipmentItemRow(initial) {
   // Figure out default vendor for this row (header vendor + "apply to all")
   const vendorSelect   = document.getElementById('shipment-vendor');
   const vendorApplyAll = document.getElementById('shipment-vendor-apply-all');
+  const cooInputHeader = document.getElementById('shipment-country-origin');
+  const cooApplyAll    = document.getElementById('shipment-coo-apply-all');
 
   let vendorValue =
     initial && typeof initial.vendor_name === 'string'
       ? initial.vendor_name
+      : '';
+  let cooValue =
+    initial && typeof initial.country_of_origin === 'string'
+      ? initial.country_of_origin
       : '';
 
   // If no per-item vendor yet and "apply to all" is on, copy header vendor name
@@ -1908,6 +2591,12 @@ function addShipmentItemRow(initial) {
     const idx = vendorSelect.selectedIndex;
     if (idx > 0) {
       vendorValue = vendorSelect.options[idx].textContent.trim();
+    }
+  }
+  if (!cooValue && cooInputHeader && cooApplyAll && cooApplyAll.checked) {
+    const headerValue = cooInputHeader.value.trim();
+    if (headerValue) {
+      cooValue = headerValue;
     }
   }
 
@@ -1926,6 +2615,14 @@ function addShipmentItemRow(initial) {
       class="shipment-item-sku"
       placeholder="SKU / Ref"
       value="${escapeHTML(sku)}"
+    />
+  </div>
+  <div>
+    <input
+      type="text"
+      class="shipment-item-coo"
+      placeholder="Country"
+      value="${escapeHTML(cooValue || '')}"
     />
   </div>
   <div>
@@ -1978,6 +2675,7 @@ function addShipmentItemRow(initial) {
   const statusSelect = row.querySelector('.shipment-item-status');
   const editBtn      = row.querySelector('.shipment-item-edit');
   const vendorInput  = row.querySelector('.shipment-item-vendor');
+  const cooInput     = row.querySelector('.shipment-item-coo');
   const deleteBtn    = row.querySelector('.shipment-item-delete');
 
   // Verification meta
@@ -2000,6 +2698,11 @@ function addShipmentItemRow(initial) {
   if (vendorInput) {
     vendorInput.addEventListener('input', () => {
       syncVendorApplyAllCheckbox();
+    });
+  }
+  if (cooInput) {
+    cooInput.addEventListener('input', () => {
+      syncCountryOfOriginApplyAllCheckbox();
     });
   }
 
@@ -2083,6 +2786,7 @@ function addShipmentItemRow(initial) {
   recalcShipmentItemsTotal();
   syncVerifyAllCheckboxState();
   syncVendorApplyAllCheckbox();
+  syncCountryOfOriginApplyAllCheckbox();
 }
 
 
@@ -2136,6 +2840,7 @@ function initShipmentItemsSection() {
   const totalHidden = document.getElementById('shipment-total-price');
   const totalOverride = document.getElementById('shipment-total-price-override');
   const vendorApplyAll = document.getElementById('shipment-vendor-apply-all');
+  const cooApplyAll = document.getElementById('shipment-coo-apply-all');
 
   if (container) container.innerHTML = '';
   if (totalDisplay) totalDisplay.textContent = '$0.00';
@@ -2145,6 +2850,7 @@ function initShipmentItemsSection() {
     totalOverride.placeholder = 'Use items total';
   }
   if (vendorApplyAll) vendorApplyAll.checked = false;
+  if (cooApplyAll) cooApplyAll.checked = false;
   lastItemsTotalValue = null;
   lastOverridePromptTotal = null;
   if (overridePromptTimer) {
@@ -2176,6 +2882,10 @@ function collectShipmentItemsFromForm() {
       ? headerVendorSelect.options[headerVendorSelect.selectedIndex].textContent.trim()
       : '';
   const applyAllChecked = !!(applyAll && applyAll.checked);
+  const headerCooInput = document.getElementById('shipment-country-origin');
+  const cooApplyAll = document.getElementById('shipment-coo-apply-all');
+  const headerCooText = headerCooInput ? headerCooInput.value.trim() : '';
+  const cooApplyAllChecked = !!(cooApplyAll && cooApplyAll.checked);
 
   rows.forEach(row => {
     const desc = row.querySelector('.shipment-item-desc')?.value.trim() || '';
@@ -2196,11 +2906,19 @@ function collectShipmentItemsFromForm() {
         vendorInput.value = headerVendorText; // keep UI in sync
       }
     }
+    const cooInput = row.querySelector('.shipment-item-coo');
+    let country_of_origin = cooInput ? cooInput.value.trim() : '';
+    if (cooApplyAllChecked && headerCooText) {
+      country_of_origin = headerCooText;
+      if (cooInput && cooInput.value.trim() !== headerCooText) {
+        cooInput.value = headerCooText;
+      }
+    }
 
     const vMeta = row._verification || {};
 
     // Skip completely empty rows (including vendor)
-    if (!desc && !sku && !qty && !unit && !vendor_name) return;
+    if (!desc && !sku && !qty && !unit && !vendor_name && !country_of_origin) return;
 
     const line_total = qty * unit;
 
@@ -2223,6 +2941,7 @@ function collectShipmentItemsFromForm() {
     items.push({
       description: desc || null,
       sku: sku || null,
+      country_of_origin: country_of_origin || null,
       quantity: qty,
       unit_price: unit,
       line_total,
@@ -2420,6 +3139,39 @@ function getMissingRequiredDocsFromShipment(shipment) {
     missing.push('BOL');
   }
   return missing;
+}
+
+function getShipmentCooSummary(shipment) {
+  const total = Number(shipment?.items_total) || 0;
+  const withCoo = Number(shipment?.items_with_coo) || 0;
+  const distinct = Number(shipment?.distinct_item_coo) || 0;
+  const cooValue = String(shipment?.coo_value || '').trim();
+  const headerValue = String(shipment?.country_of_origin || '').trim();
+
+  if (!total) {
+    if (headerValue) {
+      return { label: headerValue, missing: false };
+    }
+    return { label: 'MISSING', missing: true };
+  }
+
+  if (withCoo < total) {
+    return { label: 'MISSING', missing: true };
+  }
+
+  if (distinct > 1) {
+    return { label: 'Multiple', missing: false };
+  }
+
+  if (cooValue) {
+    return { label: cooValue, missing: false };
+  }
+
+  if (headerValue) {
+    return { label: headerValue, missing: false };
+  }
+
+  return { label: 'MISSING', missing: true };
 }
 
 function findShipmentInBoardData(shipmentId) {
@@ -2661,7 +3413,8 @@ function captureShipmentFormState() {
     title: getVal('shipment-title'),
     status: getVal('shipment-status'),
     po: getVal('shipment-po-number'),
-    sku: getVal('shipment-sku'),
+    country_of_origin: getVal('shipment-country-origin'),
+    country_apply_all: getVal('shipment-coo-apply-all'),
     project: getVal('shipment-project'),
     destination: getVal('shipment-destination'),
     vendor: getVal('shipment-vendor'),
@@ -2674,6 +3427,8 @@ function captureShipmentFormState() {
     expected_arrival: getVal('shipment-expected-arrival-date'),
     tracking: getVal('shipment-tracking-number'),
     bol: getVal('shipment-bol-number'),
+    requested_clearing: getVal('shipment-requested-clearing'),
+    requested_clearing_date: getVal('shipment-requested-clearing-date'),
     total_override: getVal('shipment-total-price-override'),
     storage_due: getVal('shipment-storage-due-date'),
     storage_daily_fee: getVal('shipment-storage-daily-fee'),
@@ -2700,6 +3455,7 @@ function captureShipmentFormState() {
   const items = Array.from(document.querySelectorAll('.shipment-item-row')).map(row => ({
     desc: row.querySelector('.shipment-item-desc')?.value || '',
     sku: row.querySelector('.shipment-item-sku')?.value || '',
+    coo: row.querySelector('.shipment-item-coo')?.value || '',
     vendor: row.querySelector('.shipment-item-vendor')?.value || '',
     qty: row.querySelector('.shipment-item-qty')?.value || '',
     unit: row.querySelector('.shipment-item-unit')?.value || '',
@@ -2933,11 +3689,40 @@ function isOnline() {
 
 // --- Board cache (for loading shipments when offline) ---
 
+function stripPersonalNotesFromShipmentsBoardData(data) {
+  if (!data || typeof data !== 'object') return data;
+  const byStatus = data.shipmentsByStatus || {};
+  const nextByStatus = {};
+
+  Object.entries(byStatus).forEach(([status, list]) => {
+    if (!Array.isArray(list)) {
+      nextByStatus[status] = [];
+      return;
+    }
+    nextByStatus[status] = list.map(sh => {
+      if (!sh || typeof sh !== 'object') return sh;
+      const clone = { ...sh };
+      delete clone.personal_note;
+      delete clone.personal_note_completed;
+      delete clone.personal_note_completed_at;
+      delete clone.personal_note_updated_at;
+      return clone;
+    });
+  });
+
+  return {
+    ...data,
+    shipmentsByStatus: nextByStatus
+  };
+}
+
 function saveShipmentsBoardCache(data) {
   try {
+    // Personal notes are private per-user; don't persist them into the shared offline cache.
+    const safeData = stripPersonalNotesFromShipmentsBoardData(data);
     localStorage.setItem(SHIPMENTS_CACHE_KEY, JSON.stringify({
       at: new Date().toISOString(),
-      data
+      data: safeData
     }));
   } catch {}
 }
@@ -3491,6 +4276,17 @@ function syncShipmentForwarderOtherState() {
   }
 }
 
+function syncRequestedClearingControls({ clearWhenUnchecked = false } = {}) {
+  const checkbox = document.getElementById('shipment-requested-clearing');
+  const dateInput = document.getElementById('shipment-requested-clearing-date');
+  if (!checkbox || !dateInput) return;
+  const isChecked = !!checkbox.checked;
+  dateInput.disabled = !isChecked;
+  if (!isChecked && clearWhenUnchecked) {
+    dateInput.value = '';
+  }
+}
+
 function getShipmentForwarderValue() {
   const selectEl = document.getElementById('shipment-forwarder');
   if (!selectEl) return null;
@@ -3706,6 +4502,7 @@ function buildTemplatePayloadFromForm(name) {
   const items = itemsRaw.map(it => ({
     description: it.description || null,
     sku: it.sku || null,
+    country_of_origin: it.country_of_origin || null,
     quantity: Number(it.quantity) || 0,
     unit_price: Number(it.unit_price) || 0,
     line_total: Number(it.line_total) || 0,
@@ -3728,7 +4525,7 @@ function buildTemplatePayloadFromForm(name) {
     freight_forwarder: getShipmentForwarderValue(),
     destination: document.getElementById('shipment-destination')?.value.trim() || null,
     project_id: projectIdRaw ? Number(projectIdRaw) : null,
-    sku: document.getElementById('shipment-sku')?.value.trim() || null,
+    country_of_origin: document.getElementById('shipment-country-origin')?.value.trim() || null,
     quantity: null,
     total_price: finalTotal != null ? finalTotal.toFixed(2) : null,
     price_per_item: null,
@@ -3791,14 +4588,17 @@ function applyShipmentTemplateToForm(template) {
   const projectSelect = document.getElementById('shipment-project');
   const forwarderSelect = document.getElementById('shipment-forwarder');
   const destinationInput = document.getElementById('shipment-destination');
-  const skuInput = document.getElementById('shipment-sku');
+  const countryInput = document.getElementById('shipment-country-origin');
   const websiteInput = document.getElementById('shipment-website-url');
   const notesInput = document.getElementById('shipment-notes');
   const totalOverrideInput = document.getElementById('shipment-total-price-override');
 
   if (titleInput) titleInput.value = template.title || '';
   if (destinationInput) destinationInput.value = template.destination || '';
-  if (skuInput) skuInput.value = template.sku || '';
+  if (countryInput) {
+    countryInput.value = template.country_of_origin || '';
+    countryInput.dataset.prevValue = countryInput.value || '';
+  }
   if (websiteInput) websiteInput.value = template.website_url || '';
   if (notesInput) notesInput.value = template.notes || '';
   if (totalOverrideInput) {
@@ -3865,6 +4665,7 @@ function applyShipmentTemplateToForm(template) {
         addShipmentItemRow({
           description: item.description,
           sku: item.sku,
+          country_of_origin: item.country_of_origin,
           quantity: item.quantity != null ? Number(item.quantity) : '',
           unit_price: item.unit_price != null ? Number(item.unit_price) : '',
           line_total: item.line_total != null ? Number(item.line_total) : 0,
@@ -3878,6 +4679,12 @@ function applyShipmentTemplateToForm(template) {
 
   recalcShipmentItemsTotal();
   syncVerifyAllCheckboxState();
+  if (countryInput) {
+    syncCountryOfOriginApplyAllFromItems(
+      (countryInput.value || '').trim(),
+      Array.isArray(template.items) ? template.items : []
+    );
+  }
 }
 
 async function deleteShipmentTemplate(id) {
@@ -3929,8 +4736,10 @@ function updateShipmentsStatusFilter(statuses) {
   }
 }
 
-async function loadArchivedShipmentsPreview(filters = {}) {
+async function loadArchivedShipmentsPreview(filters = {}, opts = {}) {
   if (currentStatusFilter) return;
+
+  const skipRender = !!(opts && opts.skipRender);
 
   const search = filters.search || '';
   const projectId = filters.project_id || '';
@@ -3966,7 +4775,7 @@ async function loadArchivedShipmentsPreview(filters = {}) {
       hasMore
     });
 
-    if (!currentStatusFilter) {
+    if (!skipRender && !currentStatusFilter) {
       renderShipmentsBoard();
     }
   } catch (err) {
@@ -3979,13 +4788,19 @@ async function loadArchivedShipmentsPreview(filters = {}) {
   }
 }
 
-async function loadShipmentsBoard() {
+async function loadShipmentsBoard(opts = {}) {
   const msgEl = document.getElementById('shipments-board-message');
   const boardEl = document.getElementById('shipments-board');
   if (!boardEl) return;
 
-  boardEl.innerHTML = '';
-  if (msgEl) {
+  const preserveBoard = !!(opts && opts.preserveBoard);
+  const silent = !!(opts && opts.silent);
+  const awaitArchivedPreview = !!(opts && opts.awaitArchivedPreview);
+
+  if (!preserveBoard) {
+    boardEl.innerHTML = '';
+  }
+  if (msgEl && !silent) {
     msgEl.textContent = isOnline()
       ? 'Loading shipments…'
       : 'Offline – showing last downloaded shipments.';
@@ -4027,7 +4842,11 @@ async function loadShipmentsBoard() {
       }
       renderNotificationStatusCheckboxes(normalized.statuses || []);
       refreshShipmentNotificationOptions();
-      loadArchivedShipmentsPreview(archivedPreviewFilters);
+      if (awaitArchivedPreview) {
+        await loadArchivedShipmentsPreview(archivedPreviewFilters, { skipRender: true });
+      } else {
+        loadArchivedShipmentsPreview(archivedPreviewFilters);
+      }
       renderShipmentsBoard();
       return;
     }
@@ -4053,17 +4872,30 @@ async function loadShipmentsBoard() {
     }
     renderNotificationStatusCheckboxes(normalized.statuses || []);
     refreshShipmentNotificationOptions();
-    loadArchivedShipmentsPreview(archivedPreviewFilters);
+    if (awaitArchivedPreview) {
+      await loadArchivedShipmentsPreview(archivedPreviewFilters, { skipRender: true });
+    } else {
+      loadArchivedShipmentsPreview(archivedPreviewFilters);
+    }
 
     renderShipmentsBoard();
-    if (msgEl) {
+    if (msgEl && !silent) {
       msgEl.textContent = '';
       msgEl.style.color = '';
     }
   } catch (err) {
+    // For background refreshes (ex: drag/drop status changes), avoid nuking the DOM
+    // or overwriting any existing queue warnings/messages.
+    if (silent && preserveBoard) {
+      console.error('Error loading shipments:', err.message);
+      return;
+    }
+
     console.error('Error loading shipments:', err.message);
-    boardEl.innerHTML = '';
-    if (msgEl) {
+    if (!preserveBoard) {
+      boardEl.innerHTML = '';
+    }
+    if (msgEl && !silent) {
       msgEl.textContent = 'Error loading shipments: ' + err.message;
       msgEl.style.color = 'red';
     }
@@ -4083,9 +4915,13 @@ async function loadShipmentsBoard() {
       }
       renderNotificationStatusCheckboxes(normalized.statuses || []);
       refreshShipmentNotificationOptions();
-      loadArchivedShipmentsPreview(archivedPreviewFilters);
+      if (awaitArchivedPreview) {
+        await loadArchivedShipmentsPreview(archivedPreviewFilters, { skipRender: true });
+      } else {
+        loadArchivedShipmentsPreview(archivedPreviewFilters);
+      }
       renderShipmentsBoard();
-      if (msgEl) {
+      if (msgEl && !silent) {
         msgEl.textContent =
           'Offline – showing last downloaded shipments (may be stale).';
         msgEl.style.color = '#b45309';
@@ -4574,6 +5410,8 @@ function openShipmentCreateModal() {
   const storageEstimate     = document.getElementById('shipment-storage-fees-estimate');
   const storageEstimateHelp = document.getElementById('shipment-storage-fees-helper');
   const totalOverrideInput  = document.getElementById('shipment-total-price-override');
+  const requestedClearingChk = document.getElementById('shipment-requested-clearing');
+  const requestedClearingDateInput = document.getElementById('shipment-requested-clearing-date');
   const header   = modal ? modal.querySelector('h3') : null;
 
   refreshShipmentPaidByOptions(shipmentsProjectsCache);
@@ -4602,7 +5440,12 @@ function openShipmentCreateModal() {
     form.dataset.customsPaidBy = '';
     form.dataset.storagePaidBy = '';
   }
+  const cooInputReset = document.getElementById('shipment-country-origin');
+  if (cooInputReset) cooInputReset.dataset.prevValue = cooInputReset.value || '';
   syncShipmentForwarderOtherState();
+  if (requestedClearingChk) requestedClearingChk.checked = false;
+  if (requestedClearingDateInput) requestedClearingDateInput.value = '';
+  syncRequestedClearingControls({ clearWhenUnchecked: true });
   if (updatedAtInput) updatedAtInput.value = '';
 
   // Reset total paid display + hidden numeric
@@ -4742,6 +5585,8 @@ function openShipmentCreateModal() {
   // Keep vendor apply-all unchecked by default; item vendors will be populated on edit
   const vendorApplyAll = document.getElementById('shipment-vendor-apply-all');
   if (vendorApplyAll) vendorApplyAll.checked = false;
+  const cooApplyAll = document.getElementById('shipment-coo-apply-all');
+  if (cooApplyAll) cooApplyAll.checked = false;
 
   applyDefaultStorageLateFeeFromSettings();
   updateStorageFeeEstimate();
@@ -4813,6 +5658,8 @@ async function saveShipmentFromModal(options = {}) {
   const isContainerInput    = document.getElementById('shipment-is-container');
   const pickedUpByInput     = document.getElementById('shipment-picked-up-by');
   const pickedUpDateInput   = document.getElementById('shipment-picked-up-date');
+  const requestedClearingChk = document.getElementById('shipment-requested-clearing');
+  const requestedClearingDateInput = document.getElementById('shipment-requested-clearing-date');
 
   const shipperPaidChk      = document.getElementById('shipment-shipper-paid');
   const shipperPaidAmtInput = document.getElementById('shipment-shipper-paid-amount');
@@ -4836,6 +5683,9 @@ async function saveShipmentFromModal(options = {}) {
   const isContainer = isContainerInput && isContainerInput.checked ? 1 : 0;
   const pickedUpBy     = pickedUpByInput?.value.trim() || '';
   const pickedUpDate   = pickedUpDateInput?.value || '';
+  const requestedClearingFlag =
+    requestedClearingChk && requestedClearingChk.checked ? 1 : 0;
+  const requestedClearingDate = requestedClearingDateInput?.value || '';
 
   const formEl = document.getElementById('shipment-create-form');
   const currentStep = Number(formEl?.dataset.step || '1');
@@ -4992,8 +5842,8 @@ async function saveShipmentFromModal(options = {}) {
       document.getElementById('shipment-destination')?.value.trim() || '',
     project_id: projectIdRaw || null,
 
-    // ⭐ INTERNAL REF FIXED HERE ⭐
-    sku: document.getElementById('shipment-sku')?.value.trim() || null,
+    country_of_origin:
+      document.getElementById('shipment-country-origin')?.value.trim() || null,
     quantity: null,
     price_per_item: null,
 
@@ -5006,6 +5856,10 @@ async function saveShipmentFromModal(options = {}) {
       document.getElementById('shipment-tracking-number')?.value.trim() || '',
     bol_number:
       document.getElementById('shipment-bol-number')?.value.trim() || '',
+    requested_clearing: requestedClearingFlag,
+    requested_clearing_date: requestedClearingFlag
+      ? (requestedClearingDate || null)
+      : null,
 
     // Storage + pickup
     storage_due_date: storageDueDate || null,
@@ -5184,7 +6038,7 @@ function openShipmentEditModal(shipment, items = []) {
   const destInput        = document.getElementById('shipment-destination');
   const projectSelect    = document.getElementById('shipment-project');
   const statusSelect     = document.getElementById('shipment-status');
-  const skuInput         = document.getElementById('shipment-sku');
+  const countryInput     = document.getElementById('shipment-country-origin');
   const forwarderSelect  = document.getElementById('shipment-forwarder');
   const websiteInput     = document.getElementById('shipment-website-url');
   const notesInput       = document.getElementById('shipment-notes');
@@ -5192,6 +6046,8 @@ function openShipmentEditModal(shipment, items = []) {
   const expArriveInput   = document.getElementById('shipment-expected-arrival-date');
   const trackingInput    = document.getElementById('shipment-tracking-number');
   const bolInput         = document.getElementById('shipment-bol-number');
+  const requestedClearingChk = document.getElementById('shipment-requested-clearing');
+  const requestedClearingDateInput = document.getElementById('shipment-requested-clearing-date');
   const storageDueInput  = document.getElementById('shipment-storage-due-date');
   const storageDailyInput= document.getElementById('shipment-storage-daily-fee');
   const containerInput   = document.getElementById('shipment-is-container');
@@ -5273,7 +6129,10 @@ function openShipmentEditModal(shipment, items = []) {
     };
   }
 
-  if (skuInput)         skuInput.value         = shipment.sku || '';
+  if (countryInput) {
+    countryInput.value = shipment.country_of_origin || '';
+    countryInput.dataset.prevValue = countryInput.value || '';
+  }
   if (forwarderSelect)  setShipmentForwarderValue(shipment.freight_forwarder || '');
   if (websiteInput)     websiteInput.value     = shipment.website_url || '';
   if (notesInput)       notesInput.value       = shipment.notes || '';
@@ -5281,6 +6140,11 @@ function openShipmentEditModal(shipment, items = []) {
   if (expArriveInput)   expArriveInput.value   = shipment.expected_arrival_date || '';
   if (trackingInput)    trackingInput.value    = shipment.tracking_number || '';
   if (bolInput)         bolInput.value         = shipment.bol_number || '';
+  if (requestedClearingChk)
+    requestedClearingChk.checked = isShipmentFlagSet(shipment.requested_clearing);
+  if (requestedClearingDateInput)
+    requestedClearingDateInput.value = shipment.requested_clearing_date || '';
+  syncRequestedClearingControls({ clearWhenUnchecked: true });
   if (storageDueInput)  storageDueInput.value  = shipment.storage_due_date || '';
   if (containerInput)   containerInput.checked = isContainerValue(shipment.is_container);
   if (storageDailyInput)
@@ -5397,6 +6261,7 @@ if (storagePaidAmt)
           id: it.id,
           description: it.description,
           sku: it.sku,
+          country_of_origin: it.country_of_origin,
           quantity: it.quantity,
           unit_price: it.unit_price != null ? Number(it.unit_price) : '',
           line_total: it.line_total != null ? Number(it.line_total) : 0,
@@ -5420,6 +6285,10 @@ if (storagePaidAmt)
         ? vendorSelect.options[vendorSelect.selectedIndex].textContent.trim()
         : '';
     syncVendorApplyAllFromItems(headerVendorText, items);
+  }
+  if (countryInput) {
+    const headerCountry = (countryInput.value || '').trim();
+    syncCountryOfOriginApplyAllFromItems(headerCountry, items);
   }
 
   // Totals & checkbox sync
@@ -5611,6 +6480,29 @@ function renderShipmentsBoard() {
       const rawEta = sh.expected_arrival_date;
       const eta = rawEta ? formatDateUS(rawEta) : '';
       const missingDocs = getMissingRequiredDocsFromShipment(sh);
+      const cooInfo = getShipmentCooSummary(sh);
+      const cooLabel = escapeHTML(cooInfo.label || '—');
+      const personalNoteText = (sh.personal_note || '').trim();
+      const personalNoteDone = isShipmentFlagSet(sh.personal_note_completed);
+      const hasPersonalNote = !!personalNoteText;
+      const noteBtnClass = `has-note${personalNoteDone ? ' is-complete' : ''}`;
+      const noteBtnIcon = personalNoteDone
+        ? SHIPMENT_PERSONAL_NOTE_ICON_SVG_DONE
+        : SHIPMENT_PERSONAL_NOTE_ICON_SVG_NOTE;
+      const noteBtnTitle = personalNoteDone ? 'Personal note (complete)' : 'Personal note';
+      const noteBtnHtml = hasPersonalNote
+        ? `
+    <button
+      type="button"
+      class="shipment-card-note-btn ${noteBtnClass}"
+      title="${noteBtnTitle}"
+      aria-label="${noteBtnTitle}"
+      data-shipment-note
+    >
+      ${noteBtnIcon}
+    </button>
+  `
+        : '';
       const missingDocsHtml =
         missingDocs && missingDocs.length
           ? `<div class="shipment-card-alert">Missing docs: ${missingDocs.join(', ')}</div>`
@@ -5618,12 +6510,16 @@ function renderShipmentsBoard() {
 
 card.innerHTML = `
   <div class="shipment-card-header">
-    ${sh.title || '(no title)'}
+    <div class="shipment-card-title">${sh.title || '(no title)'}</div>
+    ${noteBtnHtml}
   </div>
   <div class="shipment-card-body">
    <div><strong>BOL #:</strong> ${sh.bol_number || '—'}</div>
    <div><strong>Project:</strong> ${projLabel || '—'}</div>
     <div><strong>Vendor:</strong> ${sh.vendor_name || '—'}</div>
+    <div class="shipment-card-coo ${cooInfo.missing ? 'is-missing' : ''}">
+      <strong>COO:</strong> <span>${cooLabel}</span>
+    </div>
     ${missingDocsHtml}
   </div>
 `;
@@ -5631,6 +6527,20 @@ card.innerHTML = `
       card.addEventListener('click', () => {
         openShipmentDetail(sh.id);
       });
+
+      const noteBtn = card.querySelector('[data-shipment-note]');
+      if (noteBtn) {
+        noteBtn.draggable = false;
+        noteBtn.addEventListener('dragstart', (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+        });
+        noteBtn.addEventListener('click', (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          openShipmentPersonalNoteModal(sh.id);
+        });
+      }
 
       card.addEventListener('dragstart', onShipmentDragStart);
       card.addEventListener('dragend', onShipmentDragEnd);
@@ -5696,20 +6606,47 @@ card.innerHTML = `
 
       const rawEta = sh.expected_arrival_date;
       const eta = rawEta ? formatDateUS(rawEta) : '';
-      const missingDocs = getMissingRequiredDocsFromShipment(sh);
-      const missingDocsHtml =
-        missingDocs && missingDocs.length
-          ? `<div class="shipment-card-alert">Missing docs: ${missingDocs.join(', ')}</div>`
-          : '';
+	      const missingDocs = getMissingRequiredDocsFromShipment(sh);
+	      const cooInfo = getShipmentCooSummary(sh);
+	      const cooLabel = escapeHTML(cooInfo.label || '—');
+	      const personalNoteText = (sh.personal_note || '').trim();
+	      const personalNoteDone = isShipmentFlagSet(sh.personal_note_completed);
+	      const hasPersonalNote = !!personalNoteText;
+	      const noteBtnClass = `has-note${personalNoteDone ? ' is-complete' : ''}`;
+	      const noteBtnIcon = personalNoteDone
+	        ? SHIPMENT_PERSONAL_NOTE_ICON_SVG_DONE
+	        : SHIPMENT_PERSONAL_NOTE_ICON_SVG_NOTE;
+	      const noteBtnTitle = personalNoteDone ? 'Personal note (complete)' : 'Personal note';
+	      const noteBtnHtml = hasPersonalNote
+	        ? `
+	    <button
+	      type="button"
+	      class="shipment-card-note-btn ${noteBtnClass}"
+	      title="${noteBtnTitle}"
+	      aria-label="${noteBtnTitle}"
+	      data-shipment-note
+	    >
+	      ${noteBtnIcon}
+	    </button>
+	  `
+	        : '';
+	      const missingDocsHtml =
+	        missingDocs && missingDocs.length
+	          ? `<div class="shipment-card-alert">Missing docs: ${missingDocs.join(', ')}</div>`
+	          : '';
 
-card.innerHTML = `
-  <div class="shipment-card-header">
-    ${sh.title || '(no title)'}
-  </div>
-  <div class="shipment-card-body">
-  <div><strong>BOL #:</strong> ${sh.bol_number || '—'}</div>
-  <div><strong>Project:</strong> ${projLabel || '—'}</div>
-    <div><strong>Vendor:</strong> ${sh.vendor_name || '—'}</div>
+	card.innerHTML = `
+	  <div class="shipment-card-header">
+	    <div class="shipment-card-title">${sh.title || '(no title)'}</div>
+	    ${noteBtnHtml}
+	  </div>
+	  <div class="shipment-card-body">
+	  <div><strong>BOL #:</strong> ${sh.bol_number || '—'}</div>
+	  <div><strong>Project:</strong> ${projLabel || '—'}</div>
+	    <div><strong>Vendor:</strong> ${sh.vendor_name || '—'}</div>
+    <div class="shipment-card-coo ${cooInfo.missing ? 'is-missing' : ''}">
+      <strong>COO:</strong> <span>${cooLabel}</span>
+    </div>
     ${missingDocsHtml}
   </div>
 `;
@@ -5717,6 +6654,20 @@ card.innerHTML = `
       card.addEventListener('click', () => {
         openShipmentDetail(sh.id);
       });
+
+      const noteBtn = card.querySelector('[data-shipment-note]');
+      if (noteBtn) {
+        noteBtn.draggable = false;
+        noteBtn.addEventListener('dragstart', (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+        });
+        noteBtn.addEventListener('click', (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          openShipmentPersonalNoteModal(sh.id);
+        });
+      }
 
       card.addEventListener('dragstart', onShipmentDragStart);
       card.addEventListener('dragend', onShipmentDragEnd);
@@ -5744,6 +6695,7 @@ card.innerHTML = `
     boardEl.appendChild(col);
   });
 }
+
 
 function shipmentStatusClass(status) {
   if (!status) return '';
@@ -5859,11 +6811,12 @@ function shipmentItemsFormHasContent() {
   return rows.some(row => {
     const desc = row.querySelector('.shipment-item-desc')?.value.trim() || '';
     const sku = row.querySelector('.shipment-item-sku')?.value.trim() || '';
+    const coo = row.querySelector('.shipment-item-coo')?.value.trim() || '';
     const vendor = row.querySelector('.shipment-item-vendor')?.value.trim() || '';
     const qty = row.querySelector('.shipment-item-qty')?.value || '';
     const unit = row.querySelector('.shipment-item-unit')?.value || '';
     const status = row.querySelector('.shipment-item-status')?.value || '';
-    return desc || sku || vendor || qty || unit || status;
+    return desc || sku || coo || vendor || qty || unit || status;
   });
 }
 
@@ -5879,6 +6832,7 @@ function populateShipmentItemsFromList(items = []) {
         id: it.id,
         description: it.description,
         sku: it.sku,
+        country_of_origin: it.country_of_origin,
         quantity: it.quantity,
         unit_price: it.unit_price != null ? Number(it.unit_price) : '',
         line_total: it.line_total != null ? Number(it.line_total) : 0,
@@ -6046,9 +7000,10 @@ async function onShipmentDrop(evt, newStatus) {
         // you could also send a note here
       })
     });
-    loadShipmentsBoard();
+    // Refresh without clearing the board first to avoid a visible "flash" after drag/drop.
+    loadShipmentsBoard({ preserveBoard: true, silent: true, awaitArchivedPreview: true });
   } catch (err) {
-    await loadShipmentsBoard();
+    await loadShipmentsBoard({ preserveBoard: true });
     alert('Error updating status: ' + err.message);
   }
 }
@@ -6098,7 +7053,7 @@ function setShipmentDetailTab(tab) {
     btn.classList.toggle('active', btn.dataset.tab === tab);
   });
 
-  ['overview', 'payments', 'timeline', 'documents', 'comments'].forEach(key => {
+  ['overview', 'items', 'payments', 'timeline', 'documents', 'comments'].forEach(key => {
     const panel = document.getElementById(`ship-detail-${key}`);
     if (panel) panel.classList.toggle('hidden', key !== tab);
   });
@@ -6128,6 +7083,16 @@ function setupShipmentDetailTabs() {
     });
   }
 
+  const personalNoteBtn = document.getElementById('shipment-detail-personal-note');
+  if (personalNoteBtn && !personalNoteBtn.dataset.bound) {
+    personalNoteBtn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      if (!currentShipmentDetailId) return;
+      openShipmentPersonalNoteModal(currentShipmentDetailId);
+    });
+    personalNoteBtn.dataset.bound = '1';
+  }
+
   const editBtn = document.getElementById('shipment-detail-edit');
   if (editBtn) {
     editBtn.addEventListener('click', () => {
@@ -6143,8 +7108,240 @@ function setupShipmentDetailTabs() {
   }
 }
 
+function closeShipmentPersonalNoteModal() {
+  const modal = document.getElementById('shipment-personal-note-modal');
+  const backdrop = document.getElementById('shipment-personal-note-backdrop');
+  if (modal) modal.classList.add('hidden');
+  if (backdrop) backdrop.classList.add('hidden');
+  currentShipmentPersonalNoteShipmentId = null;
+}
+
+function findShipmentInBoardData(shipmentId) {
+  const list = flattenShipmentsBoardData();
+  return (list || []).find(sh => String(sh.id) === String(shipmentId)) || null;
+}
+
+function updateShipmentDetailPersonalNoteButton(shipmentId) {
+  const btn = document.getElementById('shipment-detail-personal-note');
+  if (!btn) return;
+
+  const hasId = shipmentId != null && String(shipmentId).trim() !== '';
+  if (!hasId) {
+    btn.disabled = true;
+    btn.innerHTML =
+      `<span class="btn-icon" aria-hidden="true">${SHIPMENT_PERSONAL_NOTE_ICON_SVG_EMPTY}</span>` +
+      `<span>My Note</span>`;
+    btn.setAttribute('title', 'Add personal note');
+    btn.setAttribute('aria-label', 'Add personal note');
+    btn.classList.add('is-empty');
+    btn.classList.remove('has-note', 'is-complete');
+    return;
+  }
+
+  btn.disabled = false;
+
+  const sh = findShipmentInBoardData(shipmentId);
+  const personalNoteText = (sh && sh.personal_note ? String(sh.personal_note) : '').trim();
+  const personalNoteDone = sh ? isShipmentFlagSet(sh.personal_note_completed) : false;
+  const hasPersonalNote = !!personalNoteText;
+  const icon = hasPersonalNote
+    ? (personalNoteDone ? SHIPMENT_PERSONAL_NOTE_ICON_SVG_DONE : SHIPMENT_PERSONAL_NOTE_ICON_SVG_NOTE)
+    : SHIPMENT_PERSONAL_NOTE_ICON_SVG_EMPTY;
+  const title = hasPersonalNote
+    ? (personalNoteDone ? 'Personal note (complete)' : 'Personal note')
+    : 'Add personal note';
+
+  btn.innerHTML =
+    `<span class="btn-icon" aria-hidden="true">${icon}</span>` +
+    `<span>My Note</span>`;
+  btn.setAttribute('title', title);
+  btn.setAttribute('aria-label', title);
+  btn.classList.toggle('has-note', hasPersonalNote);
+  btn.classList.toggle('is-complete', hasPersonalNote && personalNoteDone);
+  btn.classList.toggle('is-empty', !hasPersonalNote);
+}
+
+async function refreshShipmentsBoardAndSummary() {
+  await loadShipmentsBoard();
+  const summaryView = document.getElementById('shipments-view-summary');
+  if (summaryView && !summaryView.classList.contains('hidden')) {
+    loadShipmentsSummary({ force: true, skipBoardLoad: true });
+  }
+}
+
+async function openShipmentPersonalNoteModal(shipmentId) {
+  const backdrop = document.getElementById('shipment-personal-note-backdrop');
+  const modal = document.getElementById('shipment-personal-note-modal');
+  const titleEl = document.getElementById('shipment-personal-note-title');
+  const noteArea = document.getElementById('shipment-personal-note-body');
+  const completeChk = document.getElementById('shipment-personal-note-complete');
+  const statusEl = document.getElementById('shipment-personal-note-status');
+  const deleteBtn = document.getElementById('shipment-personal-note-delete');
+
+  if (!backdrop || !modal || !noteArea || !completeChk) return;
+
+  currentShipmentPersonalNoteShipmentId = shipmentId;
+
+  const sh = findShipmentInBoardData(shipmentId);
+  if (titleEl) {
+    titleEl.textContent = sh && sh.title
+      ? `My Note: ${sh.title}`
+      : 'My Note';
+  }
+
+  noteArea.value = '';
+  completeChk.checked = false;
+  if (deleteBtn) deleteBtn.disabled = true;
+  if (statusEl) {
+    statusEl.textContent = 'Loading...';
+    statusEl.style.color = 'var(--slate-600)';
+  }
+
+  backdrop.classList.remove('hidden');
+  modal.classList.remove('hidden');
+
+  try {
+    const data = await fetchJSON(
+      `/api/shipments/${encodeURIComponent(shipmentId)}/personal-note`
+    );
+    const note = data && data.note ? data.note : null;
+    noteArea.value = note && note.note ? String(note.note) : '';
+    completeChk.checked = note ? isShipmentFlagSet(note.is_completed) : false;
+    if (deleteBtn) deleteBtn.disabled = !note;
+    if (statusEl) statusEl.textContent = '';
+    setTimeout(() => noteArea.focus(), 0);
+  } catch (err) {
+    // Fallback to board data if available.
+    if (sh && (sh.personal_note || '').trim()) {
+      noteArea.value = String(sh.personal_note || '');
+      completeChk.checked = isShipmentFlagSet(sh.personal_note_completed);
+      if (deleteBtn) deleteBtn.disabled = false;
+      if (statusEl) statusEl.textContent = '';
+      setTimeout(() => noteArea.focus(), 0);
+      return;
+    }
+
+    if (statusEl) {
+      statusEl.textContent = 'Failed to load note: ' + (err.message || 'Unknown error');
+      statusEl.style.color = 'crimson';
+    }
+  }
+}
+
+async function saveShipmentPersonalNoteFromModal() {
+  const shipmentId = currentShipmentPersonalNoteShipmentId;
+  if (!shipmentId) return;
+
+  const noteArea = document.getElementById('shipment-personal-note-body');
+  const completeChk = document.getElementById('shipment-personal-note-complete');
+  const statusEl = document.getElementById('shipment-personal-note-status');
+  const saveBtn = document.getElementById('shipment-personal-note-save');
+  const deleteBtn = document.getElementById('shipment-personal-note-delete');
+  const prevDeleteDisabled = deleteBtn ? deleteBtn.disabled : true;
+
+  const note = noteArea ? noteArea.value.trim() : '';
+  const isCompleted = completeChk && completeChk.checked ? true : false;
+
+  if (statusEl) {
+    statusEl.textContent = 'Saving...';
+    statusEl.style.color = 'var(--slate-600)';
+  }
+  if (saveBtn) saveBtn.disabled = true;
+  if (deleteBtn) deleteBtn.disabled = true;
+
+  try {
+    await fetchJSON(
+      `/api/shipments/${encodeURIComponent(shipmentId)}/personal-note`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note, is_completed: isCompleted })
+      }
+    );
+
+    closeShipmentPersonalNoteModal();
+    await refreshShipmentsBoardAndSummary();
+    updateShipmentDetailPersonalNoteButton(shipmentId);
+  } catch (err) {
+    if (statusEl) {
+      statusEl.textContent = 'Failed to save: ' + (err.message || 'Unknown error');
+      statusEl.style.color = 'crimson';
+    }
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+    if (deleteBtn) deleteBtn.disabled = prevDeleteDisabled;
+  }
+}
+
+async function deleteShipmentPersonalNoteFromModal() {
+  const shipmentId = currentShipmentPersonalNoteShipmentId;
+  if (!shipmentId) return;
+
+  const statusEl = document.getElementById('shipment-personal-note-status');
+  const saveBtn = document.getElementById('shipment-personal-note-save');
+  const deleteBtn = document.getElementById('shipment-personal-note-delete');
+  const prevDeleteDisabled = deleteBtn ? deleteBtn.disabled : true;
+
+  const ok = await showYesNoPrompt('Delete this personal note?', {
+    yesLabel: 'Delete note',
+    noLabel: 'Cancel',
+    tone: 'danger'
+  });
+  if (!ok) return;
+
+  if (statusEl) {
+    statusEl.textContent = 'Deleting...';
+    statusEl.style.color = 'var(--slate-600)';
+  }
+  if (saveBtn) saveBtn.disabled = true;
+  if (deleteBtn) deleteBtn.disabled = true;
+
+  try {
+    await fetchJSON(
+      `/api/shipments/${encodeURIComponent(shipmentId)}/personal-note`,
+      { method: 'DELETE' }
+    );
+
+    closeShipmentPersonalNoteModal();
+    await refreshShipmentsBoardAndSummary();
+    updateShipmentDetailPersonalNoteButton(shipmentId);
+  } catch (err) {
+    if (statusEl) {
+      statusEl.textContent = 'Failed to delete: ' + (err.message || 'Unknown error');
+      statusEl.style.color = 'crimson';
+    }
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+    if (deleteBtn) deleteBtn.disabled = prevDeleteDisabled;
+  }
+}
+
+function setupShipmentPersonalNoteModal() {
+  const modal = document.getElementById('shipment-personal-note-modal');
+  const backdrop = document.getElementById('shipment-personal-note-backdrop');
+  if (!modal || !backdrop) return;
+  if (modal.dataset.bound === '1') return;
+  modal.dataset.bound = '1';
+
+  const closeBtn = document.getElementById('shipment-personal-note-close');
+  const cancelBtn = document.getElementById('shipment-personal-note-cancel');
+  const saveBtn = document.getElementById('shipment-personal-note-save');
+  const deleteBtn = document.getElementById('shipment-personal-note-delete');
+
+  closeBtn?.addEventListener('click', closeShipmentPersonalNoteModal);
+  cancelBtn?.addEventListener('click', closeShipmentPersonalNoteModal);
+  saveBtn?.addEventListener('click', saveShipmentPersonalNoteFromModal);
+  deleteBtn?.addEventListener('click', deleteShipmentPersonalNoteFromModal);
+
+  backdrop.addEventListener('click', (evt) => {
+    if (evt.target === backdrop) closeShipmentPersonalNoteModal();
+  });
+}
+
 
 function setupShipmentsUI() {
+  setupShipmentPersonalNoteModal();
+
   const search = document.getElementById('shipments-search');
   if (search) {
     // Hard-disable autofill as much as possible at runtime too
@@ -6179,7 +7376,12 @@ function setupShipmentsUI() {
         return;
       }
 
-      loadShipmentsBoard();
+      loadShipmentsBoard().then(() => {
+        const summaryView = document.getElementById('shipments-view-summary');
+        if (summaryView && !summaryView.classList.contains('hidden')) {
+          loadShipmentsSummary({ force: true, skipBoardLoad: true });
+        }
+      });
     });
   }
 
@@ -6187,7 +7389,14 @@ function setupShipmentsUI() {
   ['shipments-filter-project', 'shipments-filter-vendor']
     .forEach(id => {
       const el = document.getElementById(id);
-      if (el) el.addEventListener('change', () => loadShipmentsBoard());
+      if (el) el.addEventListener('change', () => {
+        loadShipmentsBoard().then(() => {
+          const summaryView = document.getElementById('shipments-view-summary');
+          if (summaryView && !summaryView.classList.contains('hidden')) {
+            loadShipmentsSummary({ force: true, skipBoardLoad: true });
+          }
+        });
+      });
     });
 
   const forwarderSelect = document.getElementById('shipment-forwarder');
@@ -6203,6 +7412,18 @@ function setupShipmentsUI() {
   }
   if (forwarderOtherInput) {
     forwarderOtherInput.addEventListener('input', updateShipmentTrackingHelper);
+  }
+
+  const requestedClearingChk = document.getElementById('shipment-requested-clearing');
+  const requestedClearingDateInput = document.getElementById('shipment-requested-clearing-date');
+  if (requestedClearingChk && requestedClearingDateInput && !requestedClearingChk.dataset.bound) {
+    requestedClearingChk.addEventListener('change', () => {
+      syncRequestedClearingControls({ clearWhenUnchecked: true });
+      if (requestedClearingChk.checked && !requestedClearingDateInput.value) {
+        requestedClearingDateInput.focus();
+      }
+    });
+    requestedClearingChk.dataset.bound = '1';
   }
 
   const stepper = document.querySelector('.shipment-stepper');
@@ -6353,6 +7574,10 @@ function setupShipmentsUI() {
         'hidden',
         view !== 'board'
       );
+      document.getElementById('shipments-view-summary')?.classList.toggle(
+        'hidden',
+        view !== 'summary'
+      );
       document.getElementById('shipments-view-analytics')?.classList.toggle(
         'hidden',
         view !== 'analytics'
@@ -6361,6 +7586,9 @@ function setupShipmentsUI() {
         'hidden',
         view !== 'templates'
       );
+      if (view === 'summary') {
+        loadShipmentsSummary({ force: true });
+      }
     });
   });
 
@@ -6368,6 +7596,29 @@ function setupShipmentsUI() {
   const docsBtn = document.getElementById('shipment-upload-docs-btn');
   if (docsBtn) {
     docsBtn.addEventListener('click', uploadShipmentDocumentsFromModal);
+  }
+
+  const summaryRefresh = document.getElementById('shipments-summary-refresh');
+  if (summaryRefresh) {
+    summaryRefresh.addEventListener('click', () => {
+      loadShipmentsSummary({ force: true });
+    });
+  }
+
+  const summaryStatusFilter = document.getElementById('shipments-summary-filter-status');
+  if (summaryStatusFilter && !summaryStatusFilter.dataset.bound) {
+    summaryStatusFilter.addEventListener('change', () => {
+      applyShipmentStatusFilter(summaryStatusFilter.value || '');
+    });
+    summaryStatusFilter.dataset.bound = '1';
+  }
+
+  const summaryShipmentFilter = document.getElementById('shipments-summary-filter-shipment');
+  if (summaryShipmentFilter && !summaryShipmentFilter.dataset.bound) {
+    summaryShipmentFilter.addEventListener('change', () => {
+      loadShipmentsSummary({ force: true, skipBoardLoad: true });
+    });
+    summaryShipmentFilter.dataset.bound = '1';
   }
 
   // 🔹 Document type → toggle custom label input
@@ -6488,6 +7739,83 @@ if (headerVendorSelect && headerVendorApplyAll) {
   }
 }
 
+  // 🔹 Header-level country of origin → apply-to-all wiring
+  const headerCooInput = document.getElementById('shipment-country-origin');
+  const headerCooApplyAll = document.getElementById('shipment-coo-apply-all');
+
+  if (headerCooInput && headerCooApplyAll) {
+    headerCooApplyAll.addEventListener('change', () => {
+      const headerValue = (headerCooInput.value || '').trim();
+      if (headerCooApplyAll.checked && !headerValue) {
+        headerCooApplyAll.checked = false;
+        return;
+      }
+
+      if (headerCooApplyAll.checked) {
+        const rows = Array.from(document.querySelectorAll('.shipment-item-row'));
+        const hasAnyCoo = rows.some(row => {
+          const input = row.querySelector('.shipment-item-coo');
+          return input && input.value.trim();
+        });
+
+        if (hasAnyCoo && headerValue) {
+          const ok = window.confirm(
+            'Overwrite all item country of origin fields with the shipment-level value?'
+          );
+          if (!ok) {
+            headerCooApplyAll.checked = false;
+            return;
+          }
+          setCountryOfOriginOnAllItemRows(headerValue);
+        } else {
+          applyCountryOfOriginToItemRowsIfNeeded();
+        }
+      } else {
+        clearCountryOfOriginFromItemRows();
+      }
+    });
+
+    headerCooInput.dataset.prevValue = headerCooInput.value || '';
+    headerCooInput.addEventListener('change', () => {
+      const prevValue = headerCooInput.dataset.prevValue || '';
+      const newValue = (headerCooInput.value || '').trim();
+
+      if (!newValue) {
+        headerCooApplyAll.checked = false;
+        clearCountryOfOriginFromItemRows();
+        headerCooInput.dataset.prevValue = '';
+        return;
+      }
+
+      if (headerCooApplyAll.checked) {
+        const rows = Array.from(document.querySelectorAll('.shipment-item-row'));
+        const hasAnyCoo = rows.some(row => {
+          const input = row.querySelector('.shipment-item-coo');
+          return input && input.value.trim();
+        });
+
+        if (hasAnyCoo) {
+          const ok = window.confirm(
+            'Overwrite all item country of origin fields with the shipment-level value?'
+          );
+          if (!ok) {
+            headerCooInput.value = prevValue;
+            return;
+          }
+          setCountryOfOriginOnAllItemRows(newValue);
+        } else {
+          applyCountryOfOriginToItemRowsIfNeeded();
+        }
+      }
+
+      headerCooInput.dataset.prevValue = newValue;
+    });
+
+    if (headerCooApplyAll.checked) {
+      applyCountryOfOriginToItemRowsIfNeeded();
+    }
+  }
+
 
   // Payments + verification UI
   setupStorageLateFeeListeners();
@@ -6504,6 +7832,7 @@ async function openShipmentDetail(id) {
   const modal = document.getElementById('shipment-detail-modal');
   const titleEl = document.getElementById('shipment-detail-title');
   const overviewEl = document.getElementById('ship-detail-overview');
+  const itemsEl = document.getElementById('ship-detail-items');
   const paymentsEl = document.getElementById('ship-detail-payments');
   const timelineEl = document.getElementById('ship-detail-timeline');
   const docsEl = document.getElementById('ship-detail-documents');
@@ -6514,8 +7843,10 @@ async function openShipmentDetail(id) {
   currentShipmentDetailId = id;
   currentShipmentDetail = null;
   setShipmentDetailTab('overview');
+  updateShipmentDetailPersonalNoteButton(id);
 
   overviewEl.innerHTML = 'Loading…';
+  if (itemsEl) itemsEl.innerHTML = 'Loading…';
   if (paymentsEl) {
     paymentsEl.innerHTML = 'Loading…';
     paymentsEl.dataset.loaded = '0';
@@ -6546,6 +7877,12 @@ async function openShipmentDetail(id) {
     const expectedArrival = s.expected_arrival_date
       ? formatDateUS(s.expected_arrival_date)
       : '—';
+    const requestedClearing = isShipmentFlagSet(s.requested_clearing)
+      ? 'Yes'
+      : 'No';
+    const requestedClearingDate = s.requested_clearing_date
+      ? formatDateUS(s.requested_clearing_date)
+      : '—';
     const pickupDue = s.storage_due_date
       ? formatDateUS(s.storage_due_date)
       : '—';
@@ -6572,95 +7909,78 @@ async function openShipmentDetail(id) {
       titleEl.textContent = `${s.title || 'Shipment'}${s.status ? ` · ${s.status}` : ''}`;
     }
 
+    const customerName = s.customer_name || '';
+    const projectName = s.project_name || '';
+    const projectLabel = escapeHTML(
+      customerName && projectName
+        ? `${customerName} - ${projectName}`
+        : customerName || projectName || '—'
+    );
+    const websiteHtml = s.website_url
+      ? `<a href="${escapeHTML(s.website_url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(s.website_url)}</a>`
+      : '—';
+    const pickupText = `${escapeHTML(pickupBy)}${pickupDate ? ` (${pickupDate})` : ''}`;
+    const verificationHtml = s.items_verified
+      ? '<span class="ship-detail-pill ship-detail-pill--ok">Verified</span>'
+      : '<span class="ship-detail-pill ship-detail-pill--warn">Pending</span>';
+
     overviewEl.innerHTML = `
-      <div class="form-grid">
-        <div class="form-field">
-          <label>Vendor</label>
-          <div>${escapeHTML(s.vendor_name || '—')}</div>
-        </div>
-        <div class="form-field">
-          <label>Forwarder</label>
-          <div>${escapeHTML(s.freight_forwarder || '—')}</div>
-        </div>
-        <div class="form-field">
-          <label>Destination</label>
-          <div>${escapeHTML(s.destination || '—')}</div>
-        </div>
-        <div class="form-field">
-          <label>Project</label>
-          <div>${escapeHTML(s.customer_name ? (s.customer_name + ' – ') : '')}${escapeHTML(s.project_name || '')}</div>
-        </div>
-        <div class="form-field">
-          <label>Tracking #</label>
-          <div>${trackingHtml}</div>
-        </div>
-        <div class="form-field">
-          <label>BOL #</label>
-          <div>${escapeHTML(s.bol_number || '—')}</div>
-        </div>
-        <div class="form-field">
-          <label>PO #</label>
-          <div>${escapeHTML(s.po_number || '—')}</div>
-        </div>
-        <div class="form-field">
-          <label>Total price</label>
-          <div>${s.total_price != null ? formatMoney(s.total_price) : '—'}</div>
-        </div>
-        <div class="form-field">
-          <label>Forwarder paid by</label>
-          <div>${shipperPaidByLabel}</div>
-        </div>
-        <div class="form-field">
-          <label>Customs/Clearing paid by</label>
-          <div>${customsPaidByLabel}</div>
-        </div>
-        <div class="form-field">
-          <label>Expected ship</label>
-          <div>${expectedShip}</div>
-        </div>
-        <div class="form-field">
-          <label>Expected arrival</label>
-          <div>${expectedArrival}</div>
+      <div class="ship-detail-overview">
+        <div class="ship-detail-overview-grid">
+          <section class="ship-detail-overview-card">
+            <h4>Shipment</h4>
+            <div class="ship-detail-pair"><span>Status</span><strong>${escapeHTML(s.status || '—')}</strong></div>
+            <div class="ship-detail-pair"><span>Vendor</span><strong>${escapeHTML(s.vendor_name || '—')}</strong></div>
+            <div class="ship-detail-pair"><span>Project</span><strong>${projectLabel}</strong></div>
+            <div class="ship-detail-pair"><span>Destination</span><strong>${escapeHTML(s.destination || '—')}</strong></div>
+            <div class="ship-detail-pair"><span>Forwarder</span><strong>${escapeHTML(s.freight_forwarder || '—')}</strong></div>
+            <div class="ship-detail-pair"><span>BOL #</span><strong>${escapeHTML(s.bol_number || '—')}</strong></div>
+            <div class="ship-detail-pair"><span>PO #</span><strong>${escapeHTML(s.po_number || '—')}</strong></div>
+          </section>
+
+          <section class="ship-detail-overview-card">
+            <h4>Dates & Tracking</h4>
+            <div class="ship-detail-pair"><span>Expected ship</span><strong>${expectedShip}</strong></div>
+            <div class="ship-detail-pair"><span>Expected arrival</span><strong>${expectedArrival}</strong></div>
+            <div class="ship-detail-pair"><span>Requested clearing</span><strong>${escapeHTML(requestedClearing)}</strong></div>
+            <div class="ship-detail-pair"><span>Clearing request date</span><strong>${escapeHTML(requestedClearingDate)}</strong></div>
+            <div class="ship-detail-pair"><span>Pickup due</span><strong>${pickupDue}</strong></div>
+            <div class="ship-detail-pair"><span>Tracking #</span><strong>${trackingHtml}</strong></div>
+            <div class="ship-detail-pair"><span>Website</span><strong>${websiteHtml}</strong></div>
+          </section>
+
+          <section class="ship-detail-overview-card">
+            <h4>Payments</h4>
+            <div class="ship-detail-pair"><span>Total price</span><strong>${s.total_price != null ? formatMoney(s.total_price) : '—'}</strong></div>
+            <div class="ship-detail-pair"><span>Forwarder paid by</span><strong>${shipperPaidByLabel}</strong></div>
+            <div class="ship-detail-pair"><span>Customs/Clearing paid by</span><strong>${customsPaidByLabel}</strong></div>
+          </section>
+
+          <section class="ship-detail-overview-card">
+            <h4>Pickup & Storage</h4>
+            <div class="ship-detail-pair"><span>Storage fee type</span><strong>${escapeHTML(storageFeeType)}</strong></div>
+            <div class="ship-detail-pair"><span>Daily storage fee</span><strong>${escapeHTML(storageFeeRate)}</strong></div>
+            <div class="ship-detail-pair"><span>Picked up</span><strong>${pickupText || '—'}</strong></div>
+            <div class="ship-detail-pair"><span>Verification</span><strong>${verificationHtml}</strong></div>
+          </section>
+
+          <section class="ship-detail-overview-card ship-detail-overview-notes">
+            <h4>Description</h4>
+            <div class="ship-detail-notes-body">${escapeHTML(s.notes || '—')}</div>
+          </section>
         </div>
 
-        <div class="form-field">
-          <label>Pickup Due</label>
-          <div>${pickupDue}</div>
-        </div>
-        <div class="form-field">
-          <label>Storage fee type</label>
-          <div>${escapeHTML(storageFeeType)}</div>
-        </div>
-        <div class="form-field">
-          <label>Daily storage fee</label>
-          <div>${escapeHTML(storageFeeRate)}</div>
-        </div>
-        <div class="form-field">
-          <label>Picked Up</label>
-          <div>${escapeHTML(pickupBy)}${pickupDate ? ` (${pickupDate})` : ''}</div>
-        </div>
-        <div class="form-field">
-          <label>Verification</label>
-          <div>
-            ${s.items_verified ? '✅ All line items marked Verified' : '— (see line items)'}
-          </div>
-        </div>
-
-        <div class="form-field">
-          <label>Website</label>
-          <div>${s.website_url ? `<a href="${escapeHTML(s.website_url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(s.website_url)}</a>` : '—'}</div>
-        </div>
-
-        <div class="form-field" style="grid-column:1 / -1;">
-          <label>Notes</label>
-          <div>${escapeHTML(s.notes || '—')}</div>
-        </div>
-      </div>
-      <div class="ship-detail-items">
-        <h4>Line items</h4>
-        ${renderShipmentItemsTable(items)}
       </div>
     `;
+
+    if (itemsEl) {
+      itemsEl.innerHTML = `
+        <div class="ship-detail-items">
+          <h4>Line items</h4>
+          ${renderShipmentItemsTable(items)}
+        </div>
+      `;
+    }
 
     const permsKnown = CURRENT_PERMS != null;
     const paymentsAllowed = permsKnown ? canViewShipmentPayments() : false;
@@ -6676,7 +7996,9 @@ async function openShipmentDetail(id) {
       loadShipmentComments(id)
     ]);
   } catch (err) {
-    overviewEl.innerHTML = 'Error loading shipment: ' + err.message;
+    const msg = 'Error loading shipment: ' + err.message;
+    overviewEl.innerHTML = msg;
+    if (itemsEl) itemsEl.innerHTML = msg;
     if (paymentsEl) paymentsEl.innerHTML = '';
     if (timelineEl) timelineEl.innerHTML = '';
     if (docsEl) docsEl.innerHTML = '';
@@ -6704,6 +8026,7 @@ function renderShipmentItemsTable(items = []) {
       <tr>
         <td>${escapeHTML(it.description || '—')}</td>
         <td>${escapeHTML(it.sku || '—')}</td>
+        <td>${escapeHTML(it.country_of_origin || '—')}</td>
         <td>${escapeHTML(it.vendor_name || '—')}</td>
         <td class="num">${Number(it.quantity) || 0}</td>
         <td class="num">${formatMoney(it.unit_price || 0)}</td>
@@ -6722,6 +8045,7 @@ function renderShipmentItemsTable(items = []) {
           <tr>
             <th>Description</th>
             <th>SKU</th>
+            <th>COO</th>
             <th>Vendor</th>
             <th class="num">Qty</th>
             <th class="num">Unit</th>

@@ -20,6 +20,13 @@ let kaShipmentItemsDirty = new Map(); // shipment_item_id -> verification payloa
 let kaShipmentDetail = null;
 let kaShipmentDetailDocs = [];
 let kaItemsModalShipmentId = null;
+let kaShipmentMessageState = {
+  shipmentId: null,
+  threads: [],
+  activeThreadId: null,
+  comments: [],
+  search: ''
+};
 let kaTimesheetDate = '';
 let kaTimesheetSearchQuery = '';
 let kaShipmentsLoading = false;
@@ -47,6 +54,7 @@ let kaTimePendingGlobalCount = null;
 let kaTimePendingGlobalLastFetched = 0;
 let kaTimePendingGlobalInFlight = false;
 const kaOpenDetailEntries = new Set();
+const KA_SECTION_FEATURE_DEFAULTS = { time: true, payroll: true, shipments: true };
 let kaAccessPerms = {
   see_shipments: true,
   modify_time: true,
@@ -61,6 +69,7 @@ let kaShowPayUI = false;
 let kaShowApprovalsUI = true;
 let kaShowHideResolved = true;
 let kaRatesUnlockedAll = false;
+let kaSectionFeatures = { ...KA_SECTION_FEATURE_DEFAULTS };
 const kaUnlockedRates = new Set();
 const KA_DEVICE_SECRET_KEY = 'avian_kiosk_device_secret_v1';
 let kaNewSessionVisible = false;
@@ -165,6 +174,7 @@ const KA_PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
 const KA_OFFLINE_QUEUE_KEY = 'avian_kiosk_offline_punches_v1';
 const KA_VERIFY_QUEUE_KEY = 'avian_kiosk_verify_queue_v1';
 const KA_SHIPMENT_NOTES_QUEUE_KEY = 'avian_kiosk_shipment_notes_queue_v1';
+const KA_SHIPMENT_COMMENTS_QUEUE_KEY = 'avian_kiosk_shipment_comments_queue_v1';
 const KA_TIME_REVIEW_QUEUE_KEY = 'avian_kiosk_time_review_queue_v1';
 const KA_EMPLOYEE_UPDATES_QUEUE_KEY = 'avian_kiosk_employee_updates_queue_v1';
 const KA_EMPLOYEE_DOCS_DB = 'avian_kiosk_employee_docs_v1';
@@ -174,6 +184,7 @@ const KA_SHIPMENTS_CACHE_KEY = 'avian_kiosk_shipments_cache_v1';
 const KA_DOC_CACHE_NAME = 'avian_doc_cache_v1';
 const KA_ORG_TIMEZONE_KEY = 'avian_kiosk_org_timezone_v1';
 const KA_DEFAULT_TIMEZONE = 'America/Puerto_Rico';
+const KA_SHIPMENT_COMMENT_UNDO_WINDOW_MS = 5 * 60 * 1000;
 const KA_LANGUAGE_LABELS = {
   en: 'English',
   es: 'Spanish',
@@ -376,10 +387,11 @@ function kaOfflineQueueCount() {
   const pins = kaReadPendingPins().length;
   const verify = kaLoadVerificationQueue().length;
   const notes = kaLoadShipmentNotesQueue().length;
+  const comments = kaLoadShipmentCommentsQueue().length;
   const reviews = kaLoadTimeReviewQueue().length;
   const docs = kaHasEmployeeDocsQueueFlag() ? 1 : 0;
   const updates = kaLoadEmployeeUpdatesQueue().length;
-  return punches + pins + verify + notes + reviews + docs + updates;
+  return punches + pins + verify + notes + comments + reviews + docs + updates;
 }
 
 function kaUpdateOfflineIndicator() {
@@ -1971,6 +1983,7 @@ function kaHasOfflineDataToSync() {
     const pins = kaReadPendingPins();
     const verify = kaLoadVerificationQueue();
     const notes = kaLoadShipmentNotesQueue();
+    const comments = kaLoadShipmentCommentsQueue();
     const punches = kaLoadOfflinePunches();
     const reviews = kaLoadTimeReviewQueue();
     const docsPending = kaHasEmployeeDocsQueueFlag();
@@ -1978,6 +1991,7 @@ function kaHasOfflineDataToSync() {
     return (Array.isArray(pins) && pins.length > 0) ||
       (Array.isArray(verify) && verify.length > 0) ||
       (Array.isArray(notes) && notes.length > 0) ||
+      (Array.isArray(comments) && comments.length > 0) ||
       (Array.isArray(punches) && punches.length > 0) ||
       (Array.isArray(reviews) && reviews.length > 0) ||
       docsPending ||
@@ -1995,6 +2009,7 @@ async function kaSyncOfflineData(trigger = 'manual') {
   try {
     await kaSyncPendingPins();
     await kaSyncShipmentNotesQueue();
+    await kaSyncShipmentCommentsQueue();
     await kaSyncVerificationQueue();
     await kaSyncOfflinePunches();
     await kaSyncTimeReviewQueue();
@@ -4270,36 +4285,61 @@ function kaIsSuperAdmin() {
   return value === true || value === 1 || value === '1';
 }
 
+function kaCoerceSectionFlag(value, fallback) {
+  if (value === undefined || value === null) return fallback;
+  return value === true || value === 1 || value === 'true';
+}
+
+function kaNormalizeSectionFeatures(features = {}) {
+  const raw = features && typeof features === 'object' ? features : {};
+  return {
+    time: kaCoerceSectionFlag(raw.time, KA_SECTION_FEATURE_DEFAULTS.time),
+    payroll: kaCoerceSectionFlag(raw.payroll, KA_SECTION_FEATURE_DEFAULTS.payroll),
+    shipments: kaCoerceSectionFlag(raw.shipments, KA_SECTION_FEATURE_DEFAULTS.shipments)
+  };
+}
+
+function kaIsSectionFeatureEnabled(sectionName) {
+  return !!kaSectionFeatures[sectionName];
+}
+
 function kaCanViewShipments() {
-  return kaPerm('see_shipments');
+  return kaIsSectionFeatureEnabled('shipments') && kaPerm('see_shipments');
 }
 
 function kaCanViewTimeReports() {
-  return kaPerm('view_time_reports') || kaPerm('view_payroll');
+  return kaIsSectionFeatureEnabled('time') && (kaPerm('view_time_reports') || kaPerm('view_payroll'));
 }
 
 function kaCanModifyTime() {
-  return kaPerm('modify_time');
+  return kaIsSectionFeatureEnabled('time') && kaPerm('modify_time');
 }
 
 function kaCanViewPayroll() {
-  return kaPerm('view_payroll');
+  return kaIsSectionFeatureEnabled('payroll') && kaPerm('view_payroll');
 }
 
 function kaCanModifyPayRates() {
-  return kaPerm('modify_pay_rates');
+  return kaIsSectionFeatureEnabled('payroll') && kaPerm('modify_pay_rates');
 }
 
 function kaCanAssignTimesheets() {
-  return kaPerm('assign_timesheets') || kaIsSuperAdmin();
+  return (
+    kaIsSectionFeatureEnabled('time') &&
+    (kaPerm('assign_timesheets') || kaIsSuperAdmin())
+  );
 }
 
 function kaApplyAccessUI() {
-  const shipBtn = document.querySelector('.ka-bottom-nav button[data-ka-view=\"shipments\"]');
-  if (shipBtn) shipBtn.style.display = kaCanViewShipments() ? '' : 'none';
+  const shipmentNavItems = document.querySelectorAll('.ka-header-menu-item[data-ka-view=\"shipments\"], .ka-bottom-nav button[data-ka-view=\"shipments\"]');
+  shipmentNavItems.forEach(btn => {
+    btn.style.display = kaCanViewShipments() ? '' : 'none';
+  });
 
-  const timeBtn = document.querySelector('.ka-bottom-nav button[data-ka-view=\"time\"]');
-  if (timeBtn) timeBtn.style.display = kaCanViewTimeReports() ? '' : 'none';
+  const timeNavItems = document.querySelectorAll('.ka-header-menu-item[data-ka-view=\"time\"], .ka-bottom-nav button[data-ka-view=\"time\"]');
+  timeNavItems.forEach(btn => {
+    btn.style.display = kaCanViewTimeReports() ? '' : 'none';
+  });
 
   const shipSection = document.getElementById('ka-view-shipments');
   if (shipSection) shipSection.classList.toggle('hidden', !kaCanViewShipments());
@@ -4367,6 +4407,7 @@ async function kaLoadAccessPerms() {
   };
 
   let nextPerms = { ...defaults };
+  let nextSectionFeatures = { ...KA_SECTION_FEATURE_DEFAULTS };
   try {
     // Kiosk can call the public kiosk settings endpoint for clock-in photo requirement
     const res = await fetchJSON('/api/kiosk/settings');
@@ -4375,12 +4416,14 @@ async function kaLoadAccessPerms() {
   } catch (err) {
     console.warn('Unable to load access permissions, using defaults', err);
   }
+  try {
+    const me = await fetchJSON('/api/kiosk/admin/account');
+    nextSectionFeatures = kaNormalizeSectionFeatures(me && me.features ? me.features : {});
+  } catch (err) {
+    console.warn('Unable to load section feature flags for kiosk admin, using defaults', err);
+  }
 
-  const coerceFlag = (value, fallback) => {
-    if (value === undefined || value === null) return fallback;
-    return value === true || value === 1 || value === 'true';
-  };
-
+  const coerceFlag = kaCoerceSectionFlag;
   const admin = kaCurrentAdmin || {};
   nextPerms = {
     ...defaults,
@@ -4392,6 +4435,8 @@ async function kaLoadAccessPerms() {
     view_payroll: coerceFlag(admin.view_payroll, defaults.view_payroll),
     modify_pay_rates: coerceFlag(admin.modify_pay_rates, defaults.modify_pay_rates)
   };
+
+  kaSectionFeatures = kaNormalizeSectionFeatures(nextSectionFeatures);
 
   if (kaIsSuperAdmin()) {
     nextPerms = {
@@ -5398,6 +5443,16 @@ function kaSaveShipmentNotesQueue(list) {
   kaUpdateOfflineIndicator();
 }
 
+function kaLoadShipmentCommentsQueue() {
+  const list = kaStoreGet(KA_SHIPMENT_COMMENTS_QUEUE_KEY, []);
+  return Array.isArray(list) ? list : [];
+}
+
+function kaSaveShipmentCommentsQueue(list) {
+  kaStoreSet(KA_SHIPMENT_COMMENTS_QUEUE_KEY, list || []);
+  kaUpdateOfflineIndicator();
+}
+
 function kaLoadTimeReviewQueue() {
   const list = kaStoreGet(KA_TIME_REVIEW_QUEUE_KEY, []);
   return Array.isArray(list) ? list : [];
@@ -5443,6 +5498,38 @@ function kaQueueShipmentNotes(shipmentId, notes, meta = {}) {
     queued_at: new Date().toISOString()
   });
   kaSaveShipmentNotesQueue(remaining);
+}
+
+function kaQueueShipmentComment(shipmentId, body, threadId = null, meta = {}) {
+  if (!shipmentId) return null;
+  const idNum = Number(shipmentId);
+  if (!Number.isFinite(idNum)) return null;
+  const text = String(body || '').trim();
+  if (!text) return null;
+
+  const queue = kaLoadShipmentCommentsQueue();
+  const auth = {
+    ...kaShipmentAuthMeta(),
+    ...meta
+  };
+  const normalizedThreadId = Number(threadId);
+  const entry = {
+    shipment_id: idNum,
+    thread_id: Number.isFinite(normalizedThreadId) ? normalizedThreadId : null,
+    body: text,
+    client_id: (meta && meta.client_id ? String(meta.client_id) : makeClientId('kmsg')).trim(),
+    employee_id: auth.employee_id || null,
+    device_id: auth.device_id || null,
+    device_secret: auth.device_secret || null,
+    created_by: auth.employee_id || null,
+    created_by_name: auth.created_by_name || kaAdminDisplayName() || 'You',
+    queued_at: new Date().toISOString()
+  };
+
+  const deduped = queue.filter(item => String(item.client_id || '') !== entry.client_id);
+  deduped.push(entry);
+  kaSaveShipmentCommentsQueue(deduped);
+  return entry;
 }
 
 function kaQueueShipmentVerification(shipmentId, items = [], meta = {}) {
@@ -5519,6 +5606,52 @@ async function kaSyncShipmentNotesQueue() {
   }
 
   kaSaveShipmentNotesQueue(remaining);
+}
+
+async function kaSyncShipmentCommentsQueue() {
+  const queue = kaLoadShipmentCommentsQueue();
+  if (!Array.isArray(queue) || !queue.length) return;
+  if (!navigator.onLine) return;
+
+  const remaining = [];
+
+  for (const job of queue) {
+    if (!job || !job.shipment_id || !String(job.body || '').trim()) continue;
+    const fallback = kaShipmentAuthMeta();
+    const employeeId = job.employee_id || fallback.employee_id;
+    const deviceId = job.device_id || fallback.device_id;
+    const deviceSecret = job.device_secret || fallback.device_secret;
+    const threadId = Number(job.thread_id);
+    const payload = {
+      body: String(job.body || ''),
+      thread_id: Number.isFinite(threadId) ? threadId : null,
+      client_id: job.client_id || makeClientId('kmsg'),
+      employee_id: employeeId || null,
+      device_id: deviceId || null,
+      device_secret: deviceSecret || null
+    };
+
+    if (!payload.employee_id || !payload.device_id || !payload.device_secret) {
+      remaining.push(job);
+      continue;
+    }
+
+    try {
+      await fetchJSON(`/api/shipments/${job.shipment_id}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    } catch (err) {
+      console.warn('Failed to sync queued shipment comment', err);
+      remaining.push(job);
+      if (kaIsConnectionIssue(err) || (err && (err.status === 401 || err.status === 403))) {
+        break;
+      }
+    }
+  }
+
+  kaSaveShipmentCommentsQueue(remaining);
 }
 
 async function kaSyncVerificationQueue() {
@@ -8161,6 +8294,8 @@ function kaRenderEmployeesGrid() {
 
 function kaShowView(view, opts = {}) {
   if (!KA_VIEWS.includes(view)) return;
+  if (view === 'shipments' && !kaCanViewShipments()) return;
+  if (view === 'time' && !kaCanViewTimeReports()) return;
   kaCurrentView = view;
   if (view === 'workers') {
     const projectOverride = opts.projectOverride;
@@ -10870,6 +11005,11 @@ async function kaInit() {
     kaSyncOfflineData('online');
     kaStartOfflineSyncLoop();
     kaUpdateOfflineIndicator();
+    if (kaItemsModalShipmentId) {
+      kaLoadShipmentMessages(kaItemsModalShipmentId, { preserveThread: true }).catch(err => {
+        console.warn('Shipment messages refresh failed after reconnect:', err);
+      });
+    }
     kaSyncNotificationPrefsQueue().catch(err => {
       console.warn('Notification prefs sync failed:', err);
     });
@@ -11981,6 +12121,13 @@ async function kaCloseItemsModal(opts = {}) {
   kaItemsFilterUnverifiedFirst = true;
   kaItemsModalShipmentId = null;
   kaShipmentDetailDocs = [];
+  kaShipmentMessageState = {
+    shipmentId: null,
+    threads: [],
+    activeThreadId: null,
+    comments: [],
+    search: ''
+  };
   kaExpandedItems.clear();
   kaAutoExpandedItems.clear();
   kaSavedItemStatuses.clear();
@@ -13759,6 +13906,875 @@ function kaBindOverviewDocViewer() {
   wrap.dataset.docViewBound = '1';
 }
 
+function kaShipmentParseTimestampMs(value) {
+  if (value == null) return Number.NaN;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return Number.NaN;
+    return value > 0 && value < 1000000000000 ? value * 1000 : value;
+  }
+  const text = String(value || '').trim();
+  if (!text) return Number.NaN;
+  const parsedUtc = kaParseUtcTimestamp(text);
+  if (parsedUtc) return parsedUtc.getTime();
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function kaShipmentThreadActivityMs(thread = {}) {
+  const direct =
+    thread.last_comment_at_ms ||
+    thread.updated_at_ms ||
+    thread.created_at_ms ||
+    null;
+  const directMs = kaShipmentParseTimestampMs(direct);
+  if (Number.isFinite(directMs)) return directMs;
+  return kaShipmentParseTimestampMs(
+    thread.last_comment_at || thread.updated_at || thread.created_at
+  );
+}
+
+function kaShipmentThreadCreatedMs(thread = {}) {
+  const direct = kaShipmentParseTimestampMs(thread.created_at_ms);
+  if (Number.isFinite(direct)) return direct;
+  return kaShipmentParseTimestampMs(thread.created_at);
+}
+
+function kaShipmentCommentTimestampMs(row = {}) {
+  const directMs = kaShipmentParseTimestampMs(row.created_at_ms);
+  if (Number.isFinite(directMs)) return directMs;
+  return kaShipmentParseTimestampMs(row.created_at || row.queued_at);
+}
+
+function kaFormatShipmentMessageDateTime(ms) {
+  if (!Number.isFinite(ms)) return '';
+  const dt = new Date(ms);
+  if (Number.isNaN(dt.getTime())) return '';
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: kaOrgTimezone || KA_DEFAULT_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }).format(dt);
+  } catch {
+    return dt.toLocaleString();
+  }
+}
+
+function kaShipmentGeneralThreadId(threads = []) {
+  const match = (threads || []).find(
+    thread => String(thread && thread.title || '').trim().toLowerCase() === 'general'
+  );
+  return match && match.id ? Number(match.id) : null;
+}
+
+function kaBuildShipmentThreadSearchText(thread = {}) {
+  return [
+    thread.title,
+    thread.category,
+    thread.last_comment_body,
+    thread.last_comment_by_name
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function kaFilterShipmentMessageThreads(threads = [], searchTerm = '') {
+  const term = String(searchTerm || '').trim().toLowerCase();
+  if (!term) return Array.isArray(threads) ? threads : [];
+  return (threads || []).filter(thread => kaBuildShipmentThreadSearchText(thread).includes(term));
+}
+
+function kaBuildShipmentThreadPendingCounts(queued = [], threads = []) {
+  const counts = {};
+  const generalThreadId = kaShipmentGeneralThreadId(threads);
+  (queued || []).forEach(entry => {
+    const rawThreadId = Number(entry && entry.thread_id);
+    if (Number.isFinite(rawThreadId) && rawThreadId > 0) {
+      counts[rawThreadId] = (counts[rawThreadId] || 0) + 1;
+      return;
+    }
+    if (generalThreadId) {
+      counts[generalThreadId] = (counts[generalThreadId] || 0) + 1;
+      return;
+    }
+    counts.__general__ = (counts.__general__ || 0) + 1;
+  });
+  return counts;
+}
+
+function kaShipmentCommentUndoOpen(createdAtMs) {
+  const ts = Number(createdAtMs);
+  if (!Number.isFinite(ts)) return false;
+  return Date.now() - ts <= KA_SHIPMENT_COMMENT_UNDO_WINDOW_MS;
+}
+
+async function kaDeleteShipmentMessageComment(shipmentId, commentId, options = {}) {
+  const { prompt = true } = options;
+  if (!commentId) return;
+  if (!navigator.onLine) {
+    kaShowModalToast('Comment deletion requires an online connection.', 'error');
+    return;
+  }
+
+  if (prompt) {
+    const ok = await kaShowConfirmDialog('Delete this comment?', {
+      okLabel: 'Delete comment',
+      cancelLabel: 'Keep it',
+      title: 'Delete comment'
+    });
+    if (!ok) return;
+  }
+
+  try {
+    await fetchJSON(
+      `/api/shipments/${encodeURIComponent(shipmentId)}/comments/${encodeURIComponent(commentId)}`,
+      { method: 'DELETE' }
+    );
+    await kaLoadShipmentMessages(shipmentId, {
+      preserveThread: true,
+      preserveSearch: true
+    });
+    kaShowModalToast(prompt ? 'Comment deleted.' : 'Message undone.', 'ok');
+  } catch (err) {
+    kaShowModalToast(err.message || 'Failed to delete comment.', 'error');
+  }
+}
+
+async function kaUpdateShipmentMessageThreadTitle(shipmentId, threadId, title) {
+  if (!navigator.onLine) {
+    throw new Error('Go online to rename this thread.');
+  }
+  const trimmed = String(title || '').trim();
+  if (!trimmed) {
+    throw new Error('Thread title required.');
+  }
+  return fetchJSON(
+    `/api/shipments/${encodeURIComponent(shipmentId)}/comment-threads/${encodeURIComponent(threadId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: trimmed })
+    }
+  );
+}
+
+function kaRenderShipmentMessageRows({
+  comments = [],
+  queued = [],
+  activeThreadId = null,
+  threads = []
+} = {}) {
+  const adminId = kaAdminAuthId();
+  const isSuperAdmin = kaIsSuperAdmin();
+  const generalThreadId = kaShipmentGeneralThreadId(threads);
+  const pendingRows = (queued || []).filter(entry => {
+    const queuedThread = Number(entry && entry.thread_id);
+    if (!Number.isFinite(activeThreadId) || activeThreadId <= 0) {
+      if (!Array.isArray(threads) || !threads.length) return true;
+      return !Number.isFinite(queuedThread) || queuedThread <= 0;
+    }
+    if (Number.isFinite(queuedThread) && queuedThread > 0) {
+      return queuedThread === Number(activeThreadId);
+    }
+    return Number.isFinite(generalThreadId) && Number(generalThreadId) === Number(activeThreadId);
+  }).map(entry => ({
+    body: entry.body || '',
+    created_at: entry.queued_at || null,
+    created_at_ms: kaShipmentParseTimestampMs(entry.queued_at),
+    created_by: entry.created_by || entry.employee_id || null,
+    created_by_name: entry.created_by_name || null,
+    pending: true
+  }));
+
+  const rows = [...(comments || []), ...pendingRows].sort((a, b) => {
+    const at = kaShipmentCommentTimestampMs(a);
+    const bt = kaShipmentCommentTimestampMs(b);
+    if (!Number.isFinite(at) && !Number.isFinite(bt)) return 0;
+    if (!Number.isFinite(at)) return 1;
+    if (!Number.isFinite(bt)) return -1;
+    return at - bt;
+  });
+
+  if (!rows.length) {
+    return '<div class="ka-ship-msg-empty">(No messages yet.)</div>';
+  }
+
+  return rows.map(row => {
+    const createdAt = kaShipmentCommentTimestampMs(row);
+    const when = kaFormatShipmentMessageDateTime(createdAt);
+    const author = row.created_by_name
+      ? String(row.created_by_name)
+      : (row.created_by ? `Admin #${row.created_by}` : 'Admin');
+    const isMine = Number.isFinite(Number(adminId)) &&
+      Number.isFinite(Number(row.created_by)) &&
+      Number(row.created_by) === Number(adminId);
+    const authorLabel = isMine ? 'You' : author;
+    const initials = kaInitialsFromName(author) || '?';
+    const pendingTag = row.pending ? '<span class="ka-ship-msg-tag">Pending sync</span>' : '';
+    const withinWindow = Number.isFinite(createdAt) && kaShipmentCommentUndoOpen(createdAt);
+    const canUndo = !row.pending && isMine && withinWindow;
+    const canDelete = !row.pending && (isMine || isSuperAdmin) && withinWindow;
+    const actionItems = [];
+    if (canUndo) {
+      actionItems.push(`
+        <button
+          type="button"
+          class="ka-ship-msg-menu-item"
+          data-comment-action="undo"
+          data-comment-id="${escapeHTML(String(row.id || ''))}"
+          data-comment-created-at-ms="${Number.isFinite(createdAt) ? String(createdAt) : ''}"
+          data-comment-expire="${Number.isFinite(createdAt) ? String(createdAt + KA_SHIPMENT_COMMENT_UNDO_WINDOW_MS) : ''}"
+        >Undo send</button>
+      `);
+    }
+    if (canDelete) {
+      actionItems.push(`
+        <button
+          type="button"
+          class="ka-ship-msg-menu-item"
+          data-comment-action="delete"
+          data-comment-id="${escapeHTML(String(row.id || ''))}"
+          data-comment-expire="${Number.isFinite(createdAt) ? String(createdAt + KA_SHIPMENT_COMMENT_UNDO_WINDOW_MS) : ''}"
+        >Delete</button>
+      `);
+    }
+    const menu = actionItems.length
+      ? `
+        <div class="ka-ship-msg-menu">
+          <button
+            type="button"
+            class="ka-ship-msg-menu-toggle"
+            aria-label="Comment options"
+            data-comment-menu-toggle="${escapeHTML(String(row.id || ''))}"
+          >...</button>
+          <div
+            class="ka-ship-msg-menu-popover hidden"
+            data-comment-menu-popover="${escapeHTML(String(row.id || ''))}"
+          >
+            ${actionItems.join('')}
+          </div>
+        </div>
+      `
+      : '';
+    return `
+      <div class="ka-ship-msg-row ${isMine ? 'mine' : ''} ${row.pending ? 'pending' : ''}">
+        <div class="ka-ship-msg-avatar" aria-hidden="true">${escapeHTML(initials)}</div>
+        <div class="ka-ship-msg-bubble">
+          <div class="ka-ship-msg-meta">
+            <span class="ka-ship-msg-author">${escapeHTML(authorLabel)}</span>
+            <span>${escapeHTML(when || '')}</span>
+            ${pendingTag}
+          </div>
+          <div class="ka-ship-msg-body">${escapeHTML(String(row.body || ''))}</div>
+          ${menu}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function kaRenderShipmentMessagesPanel(shipmentId, options = {}) {
+  const panel = document.getElementById('ka-items-comments');
+  if (!panel || !shipmentId) return;
+
+  const offline = options.offline === true;
+  const sameShipment =
+    Number(kaShipmentMessageState.shipmentId || 0) === Number(shipmentId || 0);
+  const threads = sameShipment && Array.isArray(kaShipmentMessageState.threads)
+    ? kaShipmentMessageState.threads
+    : [];
+  const searchTerm = sameShipment ? String(kaShipmentMessageState.search || '') : '';
+  const queued = kaLoadShipmentCommentsQueue().filter(
+    entry => Number(entry && entry.shipment_id) === Number(shipmentId)
+  );
+  let activeThreadId = sameShipment ? Number(kaShipmentMessageState.activeThreadId) : null;
+  if (!Number.isFinite(activeThreadId) || activeThreadId <= 0) {
+    activeThreadId = threads.length ? Number(threads[0].id) : null;
+  }
+  if (activeThreadId && !threads.some(thread => Number(thread.id) === Number(activeThreadId))) {
+    activeThreadId = threads.length ? Number(threads[0].id) : null;
+  }
+
+  if (!sameShipment) {
+    kaShipmentMessageState = {
+      shipmentId,
+      threads,
+      activeThreadId,
+      comments: [],
+      search: ''
+    };
+  } else {
+    kaShipmentMessageState.activeThreadId = activeThreadId;
+  }
+
+  const filteredThreads = kaFilterShipmentMessageThreads(threads, searchTerm);
+  const pendingCounts = kaBuildShipmentThreadPendingCounts(queued, threads);
+  const pendingGeneral = pendingCounts.__general__ || 0;
+  const activeThread = threads.find(
+    thread => Number(thread.id) === Number(activeThreadId)
+  ) || null;
+  const activeThreadTitle = activeThread
+    ? (activeThread.title || 'Thread')
+    : 'General';
+  const placeholder = `Message ${activeThreadTitle}...`;
+  const threadOptions = filteredThreads.length
+    ? filteredThreads.map(thread => {
+      const idNum = Number(thread.id);
+      const isActive = idNum === Number(activeThreadId);
+      const when = kaFormatShipmentMessageDateTime(kaShipmentThreadActivityMs(thread));
+      const pending = pendingCounts[idNum] ? ` · ${pendingCounts[idNum]} pending` : '';
+      const label = [thread.title || 'Thread', when].filter(Boolean).join(' · ');
+      return `<option value="${idNum}" ${isActive ? 'selected' : ''}>${escapeHTML(label + pending)}</option>`;
+    }).join('')
+    : threads.length
+      ? '<option value="">No threads match your search</option>'
+      : `<option value="">${escapeHTML(`General${pendingGeneral ? ` · ${pendingGeneral} pending` : ''}`)}</option>`;
+
+  const categoryOptions = ['General', 'Customs', 'Delivery', 'Payments', 'Issue', 'Other'];
+  const categoryHtml = categoryOptions.map(value =>
+    `<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`
+  ).join('');
+
+  const offlineBanner = offline
+    ? '<div class="ka-ship-msg-offline">Offline: messages will queue and sync when connection returns.</div>'
+    : '';
+  const disableNewThread = offline ? 'disabled title="Go online to create a new thread."' : '';
+  const threadCategoryTag = activeThread && activeThread.category
+    ? `<span class="ka-ship-msg-thread-tag">${escapeHTML(activeThread.category)}</span>`
+    : '';
+  const createdAtLabel = activeThread
+    ? kaFormatShipmentMessageDateTime(kaShipmentThreadCreatedMs(activeThread))
+    : '';
+  const createdByLabel = activeThread && activeThread.created_by_name
+    ? `by ${activeThread.created_by_name}`
+    : '';
+  const subtitle = [createdAtLabel, createdByLabel].filter(Boolean).join(' · ');
+  const currentAdminId = kaAdminAuthId();
+  const canEditThread = !!(
+    activeThread &&
+    activeThread.id &&
+    currentAdminId &&
+    Number(activeThread.created_by) === Number(currentAdminId)
+  );
+  const renameBtn = canEditThread
+    ? `<button
+        type="button"
+        class="btn secondary btn-sm ka-ship-msg-thread-edit-btn"
+        id="ka-ship-msg-thread-edit-toggle"
+        ${offline ? 'disabled title="Go online to rename this thread."' : ''}
+      >Rename</button>`
+    : '';
+  const renameForm = canEditThread
+    ? `<form
+         id="ka-ship-msg-thread-edit-form"
+         class="ka-ship-msg-thread-edit-form hidden"
+         data-thread-id="${escapeHTML(String(activeThread.id || ''))}"
+         data-thread-title="${escapeHTML(String(activeThread.title || ''))}"
+       >
+         <input
+           id="ka-ship-msg-thread-edit-title"
+           type="text"
+           maxlength="80"
+           value="${escapeHTML(String(activeThread.title || ''))}"
+           placeholder="Rename thread"
+         />
+         <div class="ka-ship-msg-thread-edit-actions">
+           <button type="submit" class="btn primary btn-sm">Save</button>
+           <button type="button" class="btn secondary btn-sm" id="ka-ship-msg-thread-edit-cancel">Cancel</button>
+           <span id="ka-ship-msg-thread-edit-status" class="ka-status"></span>
+         </div>
+       </form>`
+    : '';
+
+  panel.innerHTML = `
+    ${offlineBanner}
+    <div class="ka-ship-msg-toolbar">
+      <label class="ka-ship-msg-thread-select">
+        <span>Search</span>
+        <input
+          id="ka-ship-msg-thread-search"
+          type="search"
+          placeholder="Search threads"
+          value="${escapeHTML(searchTerm)}"
+        />
+      </label>
+      <label class="ka-ship-msg-thread-select">
+        <span>Thread</span>
+        <select id="ka-ship-msg-thread-select">
+          ${threadOptions}
+        </select>
+      </label>
+      <button type="button" class="btn secondary btn-sm" id="ka-ship-msg-thread-new-toggle" ${disableNewThread}>
+        New thread
+      </button>
+      <button type="button" class="btn secondary btn-sm" id="ka-ship-msg-refresh">
+        Refresh
+      </button>
+    </div>
+
+    <div class="ka-ship-msg-thread-head">
+      <div class="ka-ship-msg-thread-head-title">
+        <strong>${escapeHTML(activeThreadTitle || 'General')}</strong>
+        ${threadCategoryTag}
+      </div>
+      ${renameBtn}
+    </div>
+    ${subtitle ? `<div class="ka-ship-msg-thread-sub">${escapeHTML(subtitle)}</div>` : ''}
+    ${renameForm}
+
+    <form id="ka-ship-msg-thread-new-form" class="ka-ship-msg-thread-new hidden">
+      <div class="ka-ship-msg-thread-new-row">
+        <input
+          type="text"
+          id="ka-ship-msg-thread-title"
+          maxlength="80"
+          placeholder="Thread subject"
+        />
+        <select id="ka-ship-msg-thread-category">
+          ${categoryHtml}
+        </select>
+      </div>
+      <div class="ka-ship-msg-thread-new-actions">
+        <button type="submit" class="btn primary btn-sm">Create thread</button>
+        <button type="button" class="btn secondary btn-sm" id="ka-ship-msg-thread-new-cancel">Cancel</button>
+        <span id="ka-ship-msg-thread-new-status" class="ka-status"></span>
+      </div>
+    </form>
+
+    <div id="ka-ship-msg-list" class="ka-ship-msg-list">
+      ${kaRenderShipmentMessageRows({
+    comments: kaShipmentMessageState.comments,
+    queued,
+    activeThreadId,
+    threads
+  })}
+    </div>
+
+    <form id="ka-ship-msg-form" class="ka-ship-msg-form">
+      <textarea id="ka-ship-msg-body" rows="3" placeholder="${escapeHTML(placeholder)}"></textarea>
+      <div class="ka-ship-msg-form-actions">
+        <button type="submit" class="btn primary btn-sm">Send message</button>
+        <span id="ka-ship-msg-status" class="ka-status"></span>
+      </div>
+    </form>
+  `;
+
+  kaBindShipmentMessagesPanel(shipmentId, { offline });
+}
+
+async function kaLoadShipmentMessages(shipmentId, options = {}) {
+  const panel = document.getElementById('ka-items-comments');
+  if (!panel || !shipmentId) return;
+
+  const preserveThread = options.preserveThread !== false;
+  const preserveSearch = options.preserveSearch !== false;
+  const sameShipment =
+    Number(kaShipmentMessageState.shipmentId || 0) === Number(shipmentId || 0);
+  const requestedThreadId = options.activeThreadId == null
+    ? null
+    : Number(options.activeThreadId);
+  const existingThreadId = preserveThread && sameShipment
+    ? Number(kaShipmentMessageState.activeThreadId)
+    : null;
+  const existingSearch = preserveSearch && sameShipment
+    ? String(kaShipmentMessageState.search || '')
+    : '';
+
+  if (!navigator.onLine) {
+    const threads = sameShipment && Array.isArray(kaShipmentMessageState.threads)
+      ? kaShipmentMessageState.threads
+      : [];
+    let activeThreadId = Number.isFinite(requestedThreadId) && requestedThreadId > 0
+      ? requestedThreadId
+      : existingThreadId;
+    if (activeThreadId && !threads.some(thread => Number(thread.id) === Number(activeThreadId))) {
+      activeThreadId = threads.length ? Number(threads[0].id) : null;
+    }
+    const comments = sameShipment && Array.isArray(kaShipmentMessageState.comments)
+      ? kaShipmentMessageState.comments
+      : [];
+    kaShipmentMessageState = {
+      shipmentId,
+      threads,
+      activeThreadId,
+      comments,
+      search: existingSearch
+    };
+    kaRenderShipmentMessagesPanel(shipmentId, { offline: true });
+    return;
+  }
+
+  if (!sameShipment) {
+    panel.innerHTML = '<div class="ka-ship-muted">(loading messages…)</div>';
+  }
+
+  try {
+    const threadsRes = await fetchJSON(`/api/shipments/${encodeURIComponent(shipmentId)}/comment-threads`);
+    const threads = Array.isArray(threadsRes && threadsRes.threads) ? threadsRes.threads : [];
+
+    let activeThreadId = Number.isFinite(requestedThreadId) && requestedThreadId > 0
+      ? requestedThreadId
+      : existingThreadId;
+    if (activeThreadId && !threads.some(thread => Number(thread.id) === Number(activeThreadId))) {
+      activeThreadId = null;
+    }
+    if (!activeThreadId && threads.length) {
+      activeThreadId = Number(threads[0].id);
+    }
+
+    let comments = [];
+    if (activeThreadId) {
+      const commentsRes = await fetchJSON(
+        `/api/shipments/${encodeURIComponent(shipmentId)}/comments?thread_id=${encodeURIComponent(activeThreadId)}`
+      );
+      comments = Array.isArray(commentsRes && commentsRes.comments) ? commentsRes.comments : [];
+    }
+
+    kaShipmentMessageState = {
+      shipmentId,
+      threads,
+      activeThreadId,
+      comments,
+      search: existingSearch
+    };
+    kaRenderShipmentMessagesPanel(shipmentId, { offline: false });
+  } catch (err) {
+    panel.innerHTML = `<div class="ka-ship-muted">(Error loading messages: ${escapeHTML(err.message || err)})</div>`;
+  }
+}
+
+async function kaCreateShipmentMessageThread(shipmentId) {
+  const titleEl = document.getElementById('ka-ship-msg-thread-title');
+  const categoryEl = document.getElementById('ka-ship-msg-thread-category');
+  const statusEl = document.getElementById('ka-ship-msg-thread-new-status');
+  const formEl = document.getElementById('ka-ship-msg-thread-new-form');
+  const submitBtn = formEl ? formEl.querySelector('button[type="submit"]') : null;
+  const title = String(titleEl && titleEl.value || '').trim();
+  const category = String(categoryEl && categoryEl.value || '').trim() || 'General';
+
+  if (!title) {
+    if (statusEl) {
+      statusEl.textContent = 'Subject is required.';
+      statusEl.className = 'ka-status ka-status-error';
+    }
+    return;
+  }
+  if (!navigator.onLine) {
+    if (statusEl) {
+      statusEl.textContent = 'Go online to create a thread.';
+      statusEl.className = 'ka-status ka-status-error';
+    }
+    return;
+  }
+
+  if (submitBtn) submitBtn.disabled = true;
+  if (statusEl) {
+    statusEl.textContent = 'Creating...';
+    statusEl.className = 'ka-status';
+  }
+  try {
+    const res = await fetchJSON(`/api/shipments/${encodeURIComponent(shipmentId)}/comment-threads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        category,
+        client_id: makeClientId('kthread')
+      })
+    });
+    kaShowModalToast('Thread created.', 'ok');
+    await kaLoadShipmentMessages(shipmentId, {
+      activeThreadId: res && res.thread_id ? Number(res.thread_id) : null,
+      preserveThread: false,
+      preserveSearch: true
+    });
+  } catch (err) {
+    if (statusEl) {
+      statusEl.textContent = err.message || 'Failed to create thread.';
+      statusEl.className = 'ka-status ka-status-error';
+    }
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+async function kaSubmitShipmentMessage(shipmentId) {
+  const bodyEl = document.getElementById('ka-ship-msg-body');
+  const statusEl = document.getElementById('ka-ship-msg-status');
+  const rawBody = String(bodyEl && bodyEl.value || '').trim();
+  if (!rawBody) {
+    if (statusEl) {
+      statusEl.textContent = 'Message cannot be empty.';
+      statusEl.className = 'ka-status ka-status-error';
+    }
+    return;
+  }
+
+  const threadIdRaw = Number(kaShipmentMessageState.activeThreadId);
+  const threadId = Number.isFinite(threadIdRaw) && threadIdRaw > 0
+    ? threadIdRaw
+    : null;
+
+  if (!navigator.onLine) {
+    kaQueueShipmentComment(shipmentId, rawBody, threadId, {
+      created_by_name: kaAdminDisplayName()
+    });
+    if (bodyEl) bodyEl.value = '';
+    await kaLoadShipmentMessages(shipmentId, {
+      activeThreadId: threadId,
+      preserveThread: true,
+      preserveSearch: true
+    });
+    kaShowModalToast('Message saved offline and queued for sync.', 'ok');
+    return;
+  }
+
+  if (statusEl) {
+    statusEl.textContent = 'Sending...';
+    statusEl.className = 'ka-status';
+  }
+  try {
+    await fetchJSON(`/api/shipments/${encodeURIComponent(shipmentId)}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        body: rawBody,
+        thread_id: threadId,
+        client_id: makeClientId('kmsg')
+      })
+    });
+    if (bodyEl) bodyEl.value = '';
+    await kaLoadShipmentMessages(shipmentId, {
+      activeThreadId: threadId,
+      preserveThread: true,
+      preserveSearch: true
+    });
+    kaShowModalToast('Message sent.', 'ok');
+  } catch (err) {
+    if (statusEl) {
+      statusEl.textContent = err.message || 'Failed to send message.';
+      statusEl.className = 'ka-status ka-status-error';
+    }
+  }
+}
+
+function kaBindShipmentMessagesPanel(shipmentId, options = {}) {
+  const panel = document.getElementById('ka-items-comments');
+  if (!panel || !shipmentId) return;
+  const offline = options.offline === true;
+
+  const searchInput = panel.querySelector('#ka-ship-msg-thread-search');
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      kaShipmentMessageState.search = searchInput.value || '';
+      kaRenderShipmentMessagesPanel(shipmentId, { offline });
+    });
+  }
+
+  const refreshBtn = panel.querySelector('#ka-ship-msg-refresh');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => {
+      kaLoadShipmentMessages(shipmentId, {
+        preserveThread: true,
+        preserveSearch: true
+      });
+    });
+  }
+
+  const threadSelect = panel.querySelector('#ka-ship-msg-thread-select');
+  if (threadSelect) {
+    threadSelect.addEventListener('change', () => {
+      const nextThreadId = Number(threadSelect.value);
+      kaLoadShipmentMessages(shipmentId, {
+        activeThreadId: Number.isFinite(nextThreadId) && nextThreadId > 0 ? nextThreadId : null,
+        preserveThread: false,
+        preserveSearch: true
+      });
+    });
+  }
+
+  const newToggle = panel.querySelector('#ka-ship-msg-thread-new-toggle');
+  const newForm = panel.querySelector('#ka-ship-msg-thread-new-form');
+  const newCancel = panel.querySelector('#ka-ship-msg-thread-new-cancel');
+  if (newToggle && newForm) {
+    newToggle.addEventListener('click', () => {
+      if (offline) return;
+      const willOpen = newForm.classList.contains('hidden');
+      newForm.classList.toggle('hidden', !willOpen);
+      if (willOpen) {
+        const titleEl = newForm.querySelector('#ka-ship-msg-thread-title');
+        const categoryEl = newForm.querySelector('#ka-ship-msg-thread-category');
+        const statusEl = newForm.querySelector('#ka-ship-msg-thread-new-status');
+        if (statusEl) {
+          statusEl.textContent = '';
+          statusEl.className = 'ka-status';
+        }
+        if (categoryEl) categoryEl.value = 'General';
+        if (titleEl) {
+          titleEl.value = '';
+          titleEl.focus();
+        }
+      }
+    });
+  }
+  if (newCancel && newForm) {
+    newCancel.addEventListener('click', () => {
+      newForm.classList.add('hidden');
+      const statusEl = newForm.querySelector('#ka-ship-msg-thread-new-status');
+      if (statusEl) {
+        statusEl.textContent = '';
+        statusEl.className = 'ka-status';
+      }
+    });
+  }
+  if (newForm) {
+    newForm.addEventListener('submit', (evt) => {
+      evt.preventDefault();
+      kaCreateShipmentMessageThread(shipmentId);
+    });
+  }
+
+  const editToggle = panel.querySelector('#ka-ship-msg-thread-edit-toggle');
+  const editForm = panel.querySelector('#ka-ship-msg-thread-edit-form');
+  const editInput = panel.querySelector('#ka-ship-msg-thread-edit-title');
+  const editCancel = panel.querySelector('#ka-ship-msg-thread-edit-cancel');
+  const editStatus = panel.querySelector('#ka-ship-msg-thread-edit-status');
+  if (editToggle && editForm) {
+    editToggle.addEventListener('click', () => {
+      if (offline) return;
+      const isHidden = editForm.classList.contains('hidden');
+      editForm.classList.toggle('hidden', !isHidden);
+      if (isHidden && editInput) {
+        editInput.value = editForm.dataset.threadTitle || '';
+        editInput.focus();
+        editInput.select();
+      }
+      if (editStatus) {
+        editStatus.textContent = '';
+        editStatus.className = 'ka-status';
+      }
+    });
+  }
+  if (editCancel && editForm) {
+    editCancel.addEventListener('click', () => {
+      editForm.classList.add('hidden');
+      if (editStatus) {
+        editStatus.textContent = '';
+        editStatus.className = 'ka-status';
+      }
+    });
+  }
+  if (editForm) {
+    editForm.addEventListener('submit', async (evt) => {
+      evt.preventDefault();
+      const threadId = editForm.dataset.threadId;
+      const nextTitle = String(editInput && editInput.value || '').trim();
+      if (!nextTitle) {
+        if (editStatus) {
+          editStatus.textContent = 'Subject is required.';
+          editStatus.className = 'ka-status ka-status-error';
+        }
+        return;
+      }
+      if (editStatus) {
+        editStatus.textContent = 'Saving...';
+        editStatus.className = 'ka-status';
+      }
+      try {
+        await kaUpdateShipmentMessageThreadTitle(shipmentId, threadId, nextTitle);
+        await kaLoadShipmentMessages(shipmentId, {
+          activeThreadId: threadId,
+          preserveThread: true,
+          preserveSearch: true
+        });
+        kaShowModalToast('Thread renamed.', 'ok');
+      } catch (err) {
+        if (editStatus) {
+          editStatus.textContent = err.message || 'Failed to rename thread.';
+          editStatus.className = 'ka-status ka-status-error';
+        }
+      }
+    });
+  }
+
+  const composer = panel.querySelector('#ka-ship-msg-form');
+  if (composer) {
+    composer.addEventListener('submit', (evt) => {
+      evt.preventDefault();
+      kaSubmitShipmentMessage(shipmentId);
+    });
+  }
+
+  const closeCommentMenus = () => {
+    panel.querySelectorAll('.ka-ship-msg-menu-popover').forEach(menu => {
+      menu.classList.add('hidden');
+    });
+  };
+
+  panel.querySelectorAll('.ka-ship-msg-menu-toggle').forEach(btn => {
+    btn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      const menuId = btn.getAttribute('data-comment-menu-toggle');
+      if (!menuId) return;
+      const menu = panel.querySelector(`[data-comment-menu-popover="${menuId}"]`);
+      if (!menu) return;
+      const shouldOpen = menu.classList.contains('hidden');
+      closeCommentMenus();
+      if (shouldOpen) {
+        menu.classList.remove('hidden');
+      }
+    });
+  });
+
+  if (!panel.dataset.kaShipMsgMenuBound) {
+    panel.addEventListener('click', (evt) => {
+      if (evt.target.closest('.ka-ship-msg-menu')) return;
+      closeCommentMenus();
+    });
+    panel.dataset.kaShipMsgMenuBound = '1';
+  }
+
+  panel.querySelectorAll('[data-comment-action]').forEach(btn => {
+    btn.addEventListener('click', async (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      const action = btn.getAttribute('data-comment-action');
+      const commentId = btn.getAttribute('data-comment-id');
+      if (!action || !commentId) return;
+      closeCommentMenus();
+      if (action === 'undo') {
+        const createdAtMs = btn.getAttribute('data-comment-created-at-ms');
+        if (!kaShipmentCommentUndoOpen(createdAtMs)) {
+          kaShowModalToast('Undo send is only available for 5 minutes after posting.', 'error');
+          return;
+        }
+        await kaDeleteShipmentMessageComment(shipmentId, commentId, { prompt: false });
+        return;
+      }
+      if (action === 'delete') {
+        await kaDeleteShipmentMessageComment(shipmentId, commentId, { prompt: true });
+      }
+    });
+  });
+
+  panel.querySelectorAll('[data-comment-expire]').forEach(btn => {
+    const expiresAt = Number(btn.getAttribute('data-comment-expire'));
+    if (!Number.isFinite(expiresAt)) return;
+    const delay = expiresAt - Date.now();
+    if (delay <= 0) {
+      btn.classList.add('hidden');
+      return;
+    }
+    setTimeout(() => {
+      if (!document.body.contains(btn)) return;
+      btn.classList.add('hidden');
+    }, delay);
+  });
+}
+
 async function kaOpenItemsModal(shipmentId, opts = {}) {
   const { tab = kaItemsActiveTab || 'items' } = opts || {};
   const modal = document.getElementById('ka-items-modal');
@@ -13766,7 +14782,8 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
   const titleEl = document.getElementById('ka-items-modal-title');
   const subEl = document.getElementById('ka-items-modal-sub');
   const overviewEl = document.getElementById('ka-items-overview');
-  if (!modal || !body || !titleEl || !overviewEl) return;
+  const commentsEl = document.getElementById('ka-items-comments');
+  if (!modal || !body || !titleEl || !overviewEl || !commentsEl) return;
   kaResetItemsSheetPosition();
 
   document.body.classList.add('ka-modal-open');
@@ -13781,6 +14798,14 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
   kaShipmentDetailDocs = [];
   kaExpandedItems.clear();
   kaAutoExpandedItems.clear();
+  kaShipmentMessageState = {
+    shipmentId,
+    threads: [],
+    activeThreadId: null,
+    comments: [],
+    search: ''
+  };
+  commentsEl.innerHTML = '<div class="ka-ship-muted">(loading messages…)</div>';
 
   if (!modal.dataset.tabsBound) {
     const tabBtns = modal.querySelectorAll('[data-ka-items-tab]');
@@ -13940,6 +14965,8 @@ async function kaOpenItemsModal(shipmentId, opts = {}) {
     });
     undoBtn.dataset.bound = '1';
   }
+
+  kaLoadShipmentMessages(shipmentId, { preserveThread: true });
 
   modal.classList.remove('hidden');
 }
@@ -15180,8 +16207,20 @@ async function kaInitAdminConsoleSwitch() {
   if (!tile || !btn) return;
 
   tile.classList.add('hidden');
+  const hasDesktopAccess = !!(
+    kaCurrentAdmin &&
+    (kaCurrentAdmin.desktop_access === true ||
+      kaCurrentAdmin.desktop_access === 1 ||
+      kaCurrentAdmin.desktop_access === '1')
+  );
+  const hasKioskAdminAccess = !!(
+    kaCurrentAdmin &&
+    (kaCurrentAdmin.kiosk_admin_access === true ||
+      kaCurrentAdmin.kiosk_admin_access === 1 ||
+      kaCurrentAdmin.kiosk_admin_access === '1')
+  );
+  if (!hasDesktopAccess || !hasKioskAdminAccess) return;
 
-  if (!kaCurrentAdmin || !kaCurrentAdmin.is_admin) return;
   tile.classList.remove('hidden');
 
   btn.addEventListener('click', async () => {

@@ -353,6 +353,18 @@ body {
   white-space: nowrap;
 }
 
+.btn .btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn .btn-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
 .btn-sm {
   padding: 7px 14px;
   font-size: 0.78rem;
@@ -733,6 +745,17 @@ select:focus {
   line-height: 1.1;
 }
 
+.te-approved-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 0.75rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
 .time-entry-approve-bar {
   display: flex;
   justify-content: flex-end;
@@ -931,6 +954,23 @@ tbody tr:nth-child(even) {
 
 .clickable-rows tbody tr.is-selected {
   background: var(--emerald-100);
+}
+
+.project-customer-missing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #fcd34d;
+  background: #fffbeb;
+  color: #b45309;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+#projects-table-body tr.project-row-missing-customer td:nth-child(2) {
+  color: #92400e;
 }
 
 /* Checkbox column helper for tables */
@@ -1145,6 +1185,72 @@ table.vendors-table th:first-child {
   font-size: 0.9rem;
   color: #111827;
   min-width: 200px;
+}
+
+.time-report-form .te-include-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: #111827;
+  min-width: 200px;
+}
+
+.te-filter-dropdown {
+  position: relative;
+}
+
+.te-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 200px;
+  padding: 7px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.te-filter-toggle:hover {
+  border-color: #9ca3af;
+}
+
+.te-filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 240px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 8px 16px rgba(0,0,0,0.08);
+  z-index: 20;
+  padding: 6px;
+}
+
+.te-filter-menu.hidden {
+  display: none;
+}
+
+.time-report-form label.te-filter-menu-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-width: auto;
+  width: 100%;
+}
+
+.time-report-form label.te-filter-menu-option:hover {
+  background: #f3f4f6;
 }
 
 .time-report-actions {
@@ -1471,8 +1577,38 @@ table.vendors-table th:first-child {
   table-layout: auto;
 }
 
+.payroll-pending-approvals-banner {
+  margin: 8px 0 14px;
+  padding: 12px 14px;
+  border: 1px solid #f59e0b;
+  border-radius: 12px;
+  background: #fffbeb;
+}
+
+#payroll-pending-approvals-text {
+  margin: 0;
+  color: #78350f;
+}
+
+.payroll-pending-approvals-list {
+  margin: 10px 0 0 18px;
+  padding: 0;
+  color: #92400e;
+  font-size: 0.84rem;
+  display: grid;
+  gap: 4px;
+}
+
+.payroll-pending-approvals-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .payroll-row td {
   white-space: nowrap;
+  vertical-align: middle;
 }
 
 .payroll-row td:nth-child(1) { width: 25%; } /* employee */
@@ -1481,16 +1617,280 @@ table.vendors-table th:first-child {
 .payroll-row td:nth-child(4) { width: 15%; } /* pay */
 .payroll-row td:nth-child(5) { width: auto; }
 
-.payroll-row {
+#payroll-summary-body tr.payroll-row {
   cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+#payroll-summary-body tr.payroll-row:hover {
+  background: #f7fafc;
+}
+
+#payroll-summary-body tr.payroll-row.payroll-row-open {
+  background: #f8fafc;
+}
+
+#payroll-summary-body tr.payroll-row.payroll-row-open td:first-child {
+  box-shadow: inset 3px 0 0 #94a3b8;
+  font-weight: 600;
+}
+
+#payroll-summary-body tr.payroll-row td:nth-child(3),
+#payroll-summary-body tr.payroll-row td:nth-child(4) {
+  font-variant-numeric: tabular-nums;
+}
+
+#payroll-summary-body tr.payroll-row td:nth-child(4) {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.payroll-details-row,
+.payroll-details-row:nth-child(even) {
+  background: transparent !important;
+}
+
+.payroll-details-row > td {
+  padding: 0 !important;
+  border-bottom: none !important;
+}
+
+.payroll-details {
+  margin: 0 12px 14px;
+  padding: 10px;
+  border: 2px solid #94a3b8;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+
+.payroll-details-panel {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 14px 16px;
+}
+
+.payroll-details-panel.payroll-check-preview {
+  background: #e2e8f0;
+}
+
+.payroll-details-panel.payroll-line-items {
+  background: #ffffff;
+}
+
+.payroll-details-panel + .payroll-details-panel {
+  margin-top: 10px;
+}
+
+.payroll-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 0 0 8px;
+  border: 0;
+  border-bottom: 1px solid #e2e8f0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.payroll-section-heading h4 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 0.94rem;
+}
+
+.payroll-check-preview .payroll-section-heading {
+  border-bottom-color: #cbd5e1;
+  background: transparent;
+}
+
+.payroll-line-items .payroll-section-heading {
+  border-bottom-color: #e2e8f0;
+  background: transparent;
+}
+
+.payroll-section-subtitle {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.77rem;
+  font-weight: 500;
+  line-height: 1.45;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.payroll-check-preview .payroll-section-subtitle {
+  color: #64748b;
+  border: 0;
+  background: transparent;
+}
+
+.payroll-line-items .payroll-section-subtitle {
+  color: #64748b;
+  border: 0;
+  background: transparent;
 }
 
 .line-items-box {
-  margin-top: 10px;
-  padding: 10px;
-  border: 1px solid #e5e7eb;
+  margin-top: 0;
+  border: 1px solid #e2e8f0;
   border-radius: 10px;
-  background: #f9fafb;
+  background: #ffffff;
+  overflow-x: auto;
+  box-shadow: none;
+}
+
+#payroll-summary-body .line-items-box select,
+#payroll-summary-body .line-items-box input[type="text"],
+#payroll-summary-body .line-items-box input[type="number"] {
+  width: 100%;
+  min-height: 34px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #111827;
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease,
+    background 0.14s ease;
+}
+
+#payroll-summary-body .line-items-box select:focus,
+#payroll-summary-body .line-items-box input[type="text"]:focus,
+#payroll-summary-body .line-items-box input[type="number"]:focus {
+  outline: none;
+  border-color: #94a3b8;
+  background: #ffffff;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.16);
+}
+
+.payroll-memo-field {
+  margin-top: 0.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+}
+
+.payroll-memo-field label {
+  font-size: 0.77rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.payroll-memo-field input {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  border-radius: 8px;
+  min-height: 36px;
+}
+
+.payroll-memo-field input:focus {
+  outline: none;
+  border-color: #94a3b8;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.16);
+}
+
+.payroll-line-items-table {
+  min-width: 980px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.payroll-line-items-table thead th {
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.76rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.payroll-line-items-table tbody td {
+  padding-top: 11px;
+  padding-bottom: 11px;
+  background: #ffffff;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.payroll-line-items-table tbody tr:nth-child(even) td {
+  background: #ffffff;
+}
+
+.payroll-line-items-table tbody tr.custom-line-row td {
+  background: #fffdf5;
+}
+
+.payroll-line-items-table tbody tr:hover td {
+  background: #f8fafc;
+}
+
+.payroll-line-items-table tbody tr.custom-line-row:hover td {
+  background: #fef9e7;
+}
+
+.payroll-line-items-table thead th:nth-child(3),
+.payroll-line-items-table tbody td:nth-child(3) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.payroll-line-items-table thead th:nth-child(6),
+.payroll-line-items-table tbody td:nth-child(6) {
+  text-align: center;
+}
+
+.payroll-line-items-table tbody td:nth-child(3) {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.payroll-line-items-table tbody td:nth-child(4) {
+  color: #334155;
+  font-weight: 500;
+}
+
+.payroll-line-items-table .btn-view-time-entries {
+  text-transform: none;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  box-shadow: none;
+  color: #475569;
+}
+
+.payroll-line-items-table .btn-view-time-entries:hover {
+  background: #f1f5f9;
+}
+
+.payroll-add-line-wrap {
+  padding: 10px 12px;
+  border-top: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.payroll-add-line-wrap .btn {
+  text-transform: none;
+  letter-spacing: 0.01em;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.payroll-add-line-wrap .btn:hover {
+  background: #f1f5f9;
 }
 
 /* Dropdown arrow styling */
@@ -1528,6 +1928,7 @@ table.vendors-table th:first-child {
 .actions-inline {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -1567,17 +1968,6 @@ table.vendors-table th:first-child {
   }
 }
 
-.payroll-details .details-columns {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 16px;
-}
-
-.payroll-details .details-column h4 {
-  margin-top: 0;
-  margin-bottom: 10px;
-}
-
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1585,25 +1975,74 @@ table.vendors-table th:first-child {
 }
 
 .summary-item {
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8f0;
   border-radius: 10px;
-  padding: 8px 10px;
-  background: #f9fafb;
+  padding: 10px 12px;
+  background: #f8fafc;
 }
 
 .summary-item .label {
-  font-size: 0.8rem;
-  color: #6b7280;
-  margin-bottom: 2px;
+  font-size: 0.78rem;
+  color: #64748b;
+  margin-bottom: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .summary-item .value {
   font-weight: 600;
-  color: #111827;
+  color: #0f172a;
 }
 
-.payroll-line-items {
-  margin-top: 16px;
+.summary-item.summary-item-total {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.summary-item.summary-item-total .label,
+.summary-item.summary-item-total .value {
+  color: #0f172a;
+}
+
+.line-items-empty {
+  margin: 0;
+  padding: 12px;
+  color: #64748b;
+  font-size: 0.84rem;
+  background: #f8fafc;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .payroll-details {
+    margin: 0 8px 12px;
+    padding: 8px;
+  }
+
+  .payroll-details-panel {
+    padding: 12px;
+  }
+
+  .payroll-section-heading {
+    margin-bottom: 10px;
+    padding: 0 0 8px;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .payroll-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
+@media (max-width: 640px) {
+  .summary-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .time-entry-row {
@@ -2409,6 +2848,10 @@ table.vendors-table th:first-child {
   color: #374151;
 }
 
+.form-group .form-label-spacer {
+  visibility: hidden;
+}
+
 .form-group input,
 .form-group select,
 .form-group textarea {
@@ -2471,13 +2914,14 @@ table.vendors-table th:first-child {
 .shipment-items-header {
   display: grid;
   grid-template-columns:
-    2.8fr  /* Name/Description */
-    1.2fr  /* SKU */
-    1.2fr  /* Vendor */
+    2.4fr  /* Name/Description */
+    1.1fr  /* SKU */
+    1.1fr  /* COO */
+    1.1fr  /* Vendor */
     0.7fr  /* Qty */
     0.9fr  /* Price / Unit */
     0.9fr  /* Total */
-    1.3fr  /* Status */
+    1.2fr  /* Status */
     auto;  /* Actions */
   gap: 0.5rem;
   font-size: 0.8rem;
@@ -2490,13 +2934,14 @@ table.vendors-table th:first-child {
 .shipment-item-row {
   display: grid;
   grid-template-columns:
-    2.8fr  /* Name/Description */
-    1.2fr  /* SKU */
-    1.2fr  /* Vendor */
+    2.4fr  /* Name/Description */
+    1.1fr  /* SKU */
+    1.1fr  /* COO */
+    1.1fr  /* Vendor */
     0.7fr  /* Qty */
     0.9fr  /* Price / Unit */
     0.9fr  /* Total */
-    1.3fr  /* Status */
+    1.2fr  /* Status */
     auto;  /* Actions */
   gap: 0.5rem;
   align-items: center;
@@ -2581,10 +3026,29 @@ table.vendors-table th:first-child {
   font-size: 0.8rem;
 }
 
-.shipment-items-header > div:nth-child(4),
 .shipment-items-header > div:nth-child(5),
-.shipment-items-header > div:nth-child(6) {
+.shipment-items-header > div:nth-child(6),
+.shipment-items-header > div:nth-child(7) {
   text-align: right;
+}
+
+.shipment-vendor-inline,
+.shipment-coo-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.shipment-vendor-inline select,
+.shipment-coo-inline input[type="text"] {
+  flex: 1 1 180px;
+}
+
+.shipment-vendor-apply-label,
+.shipment-coo-apply-label {
+  font-size: 0.78rem;
+  color: var(--slate-600);
 }
 
 
@@ -2837,7 +3301,7 @@ table.vendors-table th:first-child {
 
 /* Every card after the first overlaps the previous one */
 .shipments-column-body .shipment-card + .shipment-card {
-  margin-top: -70px;  /* adjust overlap amount (more negative = tighter stack) */
+  margin-top: -120px;  /* adjust overlap amount (more negative = tighter stack) */
 }
 
 /* Hover: lift the card slightly and bring it to front */
@@ -2871,6 +3335,81 @@ table.vendors-table th:first-child {
   font-weight: 600;
   color: #ffffff;
   font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.shipment-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.shipment-card-note-btn {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.9;
+  padding: 4px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: background 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+
+.shipment-card-note-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.shipment-card-note-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.shipment-card-note-btn.is-empty {
+  opacity: 0.35;
+}
+
+.shipment-card:hover .shipment-card-note-btn.is-empty {
+  opacity: 0.95;
+}
+
+@media (hover: none) {
+  .shipment-card-note-btn.is-empty {
+    opacity: 0.85;
+  }
+}
+
+.shipment-card-note-btn.has-note {
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+.shipment-card-note-btn.has-note:not(.is-complete)::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.6),
+    0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.shipment-card-note-btn.is-complete {
+  opacity: 0.65;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
 }
 
 /* Content area */
@@ -2884,6 +3423,28 @@ table.vendors-table th:first-child {
   font-size: 0.85rem;
 }
 
+.shipment-card-coo {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.shipment-card-coo span {
+  font-weight: 600;
+}
+
+.shipment-card-coo.is-missing {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.shipment-card-coo.is-missing span {
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
 .shipment-card-alert {
   margin-top: 6px;
   padding: 6px 8px;
@@ -2892,6 +3453,169 @@ table.vendors-table th:first-child {
   border: 1px solid #f59e0b;
   color: #92400e;
   font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* ───────── SHIPMENTS SUMMARY ───────── */
+
+.shipments-summary-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.shipments-summary-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.shipments-summary-filters .select-wrapper {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.shipments-summary-filters select {
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid #d1d5db;
+  background-color: #ffffff;
+  font-size: 0.8rem;
+}
+
+.shipments-summary-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.shipments-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.ship-summary-card {
+  background: #ffffff;
+  border-radius: 12px;
+  border: 1px solid var(--slate-200);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+}
+
+.ship-summary-card-header {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--slate-200);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.ship-summary-card-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--slate-900);
+}
+
+.ship-summary-card-sub {
+  font-size: 0.78rem;
+  color: var(--slate-600);
+  margin-top: 2px;
+}
+
+.ship-summary-card-count {
+  min-width: 36px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: var(--slate-700);
+  font-weight: 700;
+  text-align: center;
+  font-size: 0.8rem;
+}
+
+.ship-summary-card-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+.ship-summary-item {
+  text-align: left;
+  border: 1px solid var(--slate-200);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.ship-summary-item:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+.ship-summary-item-main {
+  font-weight: 600;
+  color: var(--slate-900);
+  font-size: 0.88rem;
+}
+
+.ship-summary-item-meta {
+  font-size: 0.75rem;
+  color: var(--slate-600);
+}
+
+.ship-summary-item-badge {
+  font-size: 0.75rem;
+  color: var(--slate-700);
+}
+
+.ship-summary-empty {
+  color: var(--slate-500);
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+.ship-summary-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #1e293b;
+  font-weight: 600;
+}
+
+.ship-summary-pill.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.ship-summary-pill.danger {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.ship-summary-note {
+  display: inline-block;
+  background: #ecfeff;
+  border: 1px solid #a5f3fc;
+  color: #0e7490;
+  padding: 2px 6px;
+  border-radius: 8px;
   font-weight: 600;
 }
 
@@ -3209,8 +3933,149 @@ table.vendors-table th:first-child {
   text-decoration: underline;
 }
 
+.ship-detail-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+
+.ship-detail-tabs .ship-detail-tab {
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-weight: 600;
+  box-shadow: none;
+  border: 1px solid var(--slate-200);
+  background: #f8fafc;
+  color: var(--slate-600);
+}
+
+.ship-detail-tabs .ship-detail-tab:hover {
+  background: #e2e8f0;
+}
+
+.ship-detail-tabs .ship-detail-tab.active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+.ship-detail-tabs .ship-detail-tab.active:hover {
+  background: #0f172a;
+}
+
+.ship-detail-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ship-detail-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.ship-detail-overview-card {
+  border: 1px solid var(--slate-200);
+  border-radius: 12px;
+  padding: 12px;
+  background: #ffffff;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+}
+
+.ship-detail-overview-card h4 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  color: var(--slate-700);
+  display: inline-block;
+  padding-bottom: 4px;
+  border-bottom: 2px solid var(--emerald-500);
+}
+
+.ship-detail-overview-notes {
+  grid-column: 1 / -1;
+}
+
+.ship-detail-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--slate-200);
+  font-size: 0.85rem;
+}
+
+.ship-detail-pair:last-child {
+  border-bottom: none;
+}
+
+.ship-detail-pair span {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--slate-500);
+}
+
+.ship-detail-pair strong {
+  font-weight: 600;
+  color: var(--slate-900);
+}
+
+.ship-detail-pair a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.ship-detail-pair a:hover {
+  text-decoration: underline;
+}
+
+.ship-detail-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+
+.ship-detail-pill--ok {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+
+.ship-detail-pill--warn {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #f59e0b;
+}
+
+.ship-detail-notes-body {
+  font-size: 0.85rem;
+  color: var(--slate-700);
+  background: #f8fafc;
+  border: 1px solid var(--slate-200);
+  border-radius: 10px;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.ship-detail-items {
+  border-top: 1px solid var(--slate-200);
+  padding-top: 6px;
+}
+
+#ship-detail-items .ship-detail-items {
+  border-top: none;
+  padding-top: 0;
+}
+
 .ship-detail-items h4 {
-  margin: 1rem 0 0.5rem;
+  margin: 0.5rem 0 0.5rem;
   font-size: 0.95rem;
   color: var(--slate-700);
 }
@@ -4621,6 +5486,43 @@ input[type="checkbox"]:disabled {
   margin-bottom: 2rem;
 }
 
+.payroll-reimbursements-card {
+  margin-bottom: 2rem;
+}
+
+.payroll-reimbursement-grid {
+  align-items: end;
+}
+
+#payroll-reimbursement-submit {
+  width: 100%;
+  white-space: normal;
+  line-height: 1.25;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+#payroll-reimbursements-table {
+  width: 100%;
+}
+
+#payroll-reimbursements-table td:nth-child(5),
+#payroll-reimbursements-table th:nth-child(5) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.payroll-line-note {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+}
+
 .payroll-actions-grid {
   align-items: start;
   margin-top: 12px;
@@ -4631,6 +5533,182 @@ input[type="checkbox"]:disabled {
   align-self: start;
   justify-self: end;
   align-items: flex-end;
+}
+
+.payroll-run-review {
+  margin: 14px 0 18px;
+  padding: 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.payroll-run-review-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.payroll-run-review-head h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+  color: #0f172a;
+}
+
+.payroll-run-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.payroll-run-review-meta {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #eef2f7;
+  color: #334155;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.payroll-run-review-alert {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid #f59e0b;
+  border-radius: 10px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.82rem;
+}
+
+.payroll-run-review-panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.payroll-run-review-panel {
+  border: 1px solid #d7dee8;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 10px;
+  min-width: 0;
+}
+
+.payroll-run-review-panel-failed {
+  border-color: #f8caca;
+  background: #fff9f9;
+}
+
+.payroll-run-review-panel-success {
+  border-color: #cbd5e1;
+}
+
+.payroll-run-review-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.payroll-run-review-panel-head h4 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 0.9rem;
+}
+
+.payroll-run-review-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.payroll-run-review-panel-failed .payroll-run-review-count {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.payroll-run-review-table-wrap {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: auto;
+}
+
+#payroll-run-review-failed-table,
+#payroll-run-review-success-table {
+  width: 100%;
+  min-width: 700px;
+  border-collapse: collapse;
+}
+
+#payroll-run-review-failed-table th,
+#payroll-run-review-success-table th {
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#payroll-run-review-failed-table td,
+#payroll-run-review-success-table td {
+  vertical-align: top;
+  font-size: 0.85rem;
+}
+
+#payroll-run-review-failed-table th:first-child,
+#payroll-run-review-failed-table td:first-child {
+  width: 74px;
+  text-align: center;
+}
+
+#payroll-run-review-failed-body tr:nth-child(even) td,
+#payroll-run-review-success-body tr:nth-child(even) td {
+  background: #f8fafc;
+}
+
+#payroll-run-review-failed-body tr td:nth-child(3) {
+  color: #7f1d1d;
+}
+
+#payroll-run-review-failed-body tr td:nth-child(4) {
+  color: #334155;
+}
+
+#payroll-run-review-failed-note {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
+@media (max-width: 1080px) {
+  .payroll-run-review-panels {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .payroll-run-review {
+    padding: 12px;
+  }
+
+  .payroll-run-review-head {
+    flex-direction: column;
+  }
+
+  .payroll-run-review-actions {
+    justify-content: flex-start;
+  }
 }
 
 .btn.danger {
@@ -5980,6 +7058,50 @@ select:focus {
   text-align: left;
 }
 
+.prefs-section--collapsible .prefs-section-head {
+  list-style: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.prefs-section--collapsible .prefs-section-head::-webkit-details-marker {
+  display: none;
+}
+
+.prefs-section--collapsible .prefs-section-head::marker {
+  display: none;
+}
+
+.prefs-section--collapsible .prefs-section-head:focus-visible {
+  outline: 2px solid var(--emerald-500);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+.prefs-section-title {
+  display: grid;
+}
+
+.prefs-section-chevron {
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid var(--slate-400);
+  border-bottom: 2px solid var(--slate-400);
+  transform: rotate(45deg);
+  transition: transform 0.2s ease;
+}
+
+.prefs-section--collapsible[open] .prefs-section-chevron {
+  transform: rotate(-135deg);
+}
+
+.prefs-section--collapsible[open] .prefs-section-body {
+  animation: settings-reveal 0.22s ease;
+}
+
 .prefs-section-head h3 {
   margin: 0;
   font-size: 0.95rem;
@@ -6176,6 +7298,15 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.onboarding-skip-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
 }
 
 .onboarding-badge {
@@ -6603,6 +7734,50 @@ select:focus {
   padding: 12px;
 }
 
+.dashboard-checklist-item.is-clickable {
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.dashboard-checklist-item.is-clickable:hover {
+  border-color: var(--slate-300);
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
+.dashboard-checklist-item.is-clickable:focus-visible {
+  outline: 2px solid var(--emerald-500);
+  outline-offset: 2px;
+}
+
+.dashboard-item-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dashboard-item-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: #eef2ff;
+  border: 1px solid #dbeafe;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.dashboard-item-icon img {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
 .dashboard-item-meta {
   display: flex;
   align-items: center;
@@ -6687,6 +7862,9 @@ select:focus {
 
 body.onboarding-first .dashboard-shell,
 html.onboarding-first .dashboard-shell,
+body.onboarding-first .qb-card,
+html.onboarding-first .qb-card,
+html.app-booting .qb-card,
 html.app-booting .dashboard-shell {
   display: none;
 }
@@ -6711,6 +7889,10 @@ html.app-booting .dashboard-shell {
   .dashboard-checklist-item {
     flex-direction: column;
     align-items: flex-start;
+  }
+  .dashboard-item-meta {
+    width: 100%;
+    justify-content: space-between;
   }
 }
 
@@ -10038,12 +11220,69 @@ body {
 
 .pending-actions {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 270px;
+}
+
+.pending-actions input {
+  min-width: 0;
+  width: 100%;
+}
+
+.pending-actions-link .pending-action-row {
+  display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.pending-actions input {
-  min-width: 130px;
+.pending-actions-sync {
+  min-width: 0;
+}
+
+.pending-manual-link {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.pending-manual-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pending-manual-field span {
+  font-size: 0.72rem;
+  color: var(--slate-500);
+  letter-spacing: 0.02em;
+}
+
+.pending-employee-name {
+  font-weight: 600;
+  color: var(--slate-800);
+}
+
+.pending-status-pill {
+  font-size: 0.78rem;
+}
+
+.pending-no-action {
+  margin-top: 0;
+}
+
+#pending-employees-card th,
+#pending-employees-card td {
+  vertical-align: top;
+}
+
+#pending-employees-card th:last-child,
+#pending-employees-card td:last-child {
+  min-width: 300px;
+}
+
+#pending-employees-card .btn.btn-sm {
+  letter-spacing: 0.08em;
 }
 
 .pending-sub {
@@ -10076,20 +11315,27 @@ body {
 
 .pending-suggestion {
   margin-top: 8px;
-  padding: 8px 10px;
+  padding: 10px 11px;
   border-radius: 10px;
   border: 1px solid #e5e7eb;
   background: #f9fafb;
 }
 
-.pending-suggestion-row {
+.pending-suggestion-head {
   display: flex;
-  align-items: center;
   justify-content: space-between;
+  align-items: center;
   gap: 8px;
+}
+
+.pending-sub-label {
+  margin-top: 0;
+}
+
+.pending-suggestion-row {
+  margin-top: 4px;
   font-size: 0.85rem;
   color: #111827;
-  margin-top: 4px;
 }
 
 .pending-suggestion-actions {
@@ -10097,6 +11343,21 @@ body {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
+}
+
+@media (max-width: 1024px) {
+  .pending-actions {
+    min-width: 220px;
+  }
+
+  .pending-manual-link {
+    grid-template-columns: 1fr;
+  }
+
+  #pending-employees-card th:last-child,
+  #pending-employees-card td:last-child {
+    min-width: 250px;
+  }
 }
 
 /* Payroll settings spacing and smaller text */

@@ -1,0 +1,28 @@
+services:
+  avian-time-app:
+    build: .
+    image: avian-time-app:local
+    container_name: avian-time-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 3000
+      DB_PATH: /app/data/rebuild.db
+      SESSION_DB_PATH: /app/data/sessions.db
+      ENABLED_SECTIONS: ${ENABLED_SECTIONS:-all}
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    volumes:
+      - avian-time-data:/app/data
+      - avian-time-secure-uploads:/app/secure_uploads
+      - avian-time-backups:/app/backups
+      - avian-time-uploads:/app/uploads
+      - avian-time-public-uploads:/app/public/uploads
+
+volumes:
+  avian-time-data:
+  avian-time-secure-uploads:
+  avian-time-backups:
+  avian-time-uploads:
+  avian-time-public-uploads:

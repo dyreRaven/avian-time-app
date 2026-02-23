@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="app-booting">
 <head>
   <meta charset="UTF-8" />
   <title>Avian Time & Payroll</title>
@@ -77,33 +77,45 @@
           <span>Payroll</span>
         </button>
 
+        <button class="nav-item" data-section="reimbursements">
+          <img src="/icons/payroll.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Reimbursements</span>
+        </button>
+
         <!-- REPORTS -->
         <div class="nav-section-label">Reports</div>
-
-        <button class="nav-item" data-section="time-entries-report">
-          <img src="/icons/clock.svg" class="nav-icon" alt="" aria-hidden="true" />
-          <span>Time Entries Report</span>
-        </button>
 
 <button class="nav-item" data-section="shipments-report">
   <img src="/icons/verification.svg" class="nav-icon" alt="" aria-hidden="true" />
   <span>Shipment Verification Report</span>
 </button>
 
+		<button class="nav-item" data-section="reports" data-requires="view_payroll">
+		  <img src="/icons/payroll.svg" class="nav-icon" alt="" aria-hidden="true" />
+		  <span>Payroll Reports</span>
+		</button>
+
+        <button class="nav-item" data-section="time-entries-report">
+          <img src="/icons/clock.svg" class="nav-icon" alt="" aria-hidden="true" />
+          <span>Time Entries Report</span>
+        </button>
+
+        <div class="nav-section-label">Audit Reports</div>
+
 <button class="nav-item" data-section="audit-time-report" data-requires="view_time_reports">
   <img src="/icons/clock.svg" class="nav-icon" alt="" aria-hidden="true" />
   <span>Time Audit Report</span>
 </button>
 
-<button class="nav-item" data-section="audit-payroll-report" data-requires="view_payroll">
-  <img src="/icons/payroll.svg" class="nav-icon" alt="" aria-hidden="true" />
-  <span>Payroll Audit Report</span>
-</button>
+	<button class="nav-item" data-section="audit-payroll-report" data-requires="view_payroll">
+	  <img src="/icons/payroll.svg" class="nav-icon" alt="" aria-hidden="true" />
+	  <span>Payroll Audit Report</span>
+	</button>
 
-<button class="nav-item" data-section="audit-ops-report" data-requires="see_shipments">
-  <img src="/icons/shipments.svg" class="nav-icon" alt="" aria-hidden="true" />
-  <span>Operations Audit Report</span>
-</button>
+	<button class="nav-item" data-section="audit-ops-report" data-requires="see_shipments">
+	  <img src="/icons/shipments.svg" class="nav-icon" alt="" aria-hidden="true" />
+	  <span>Operations Audit Report</span>
+	</button>
 
 <button class="nav-item" data-section="audit-security-report" data-requires="super_admin">
   <img src="/icons/alerts.svg" class="nav-icon" alt="" aria-hidden="true" />
@@ -147,6 +159,9 @@
       <div class="qb-actions">
         <!-- CONNECT BUTTON -->
         <button id="connect" class="btn primary">Connect</button>
+        <button id="disconnect-quickbooks" class="btn secondary" style="display:none;">
+          Disconnect
+        </button>
 
         <!-- EMPLOYEES SYNC BUTTON -->
         <button
@@ -209,12 +224,9 @@
             Complete these steps to start tracking time and running payroll.
           </p>
         </div>
-        <div class="onboarding-actions">
-          <button id="post-bootstrap-dismiss" class="btn secondary btn-sm" type="button">Dismiss</button>
-        </div>
       </div>
 
-      <div id="post-bootstrap-checklist" class="onboarding-checklist">
+        <div id="post-bootstrap-checklist" class="onboarding-checklist">
         <div
           id="post-bootstrap-org-step"
           class="onboarding-step onboarding-step--form"
@@ -274,8 +286,8 @@
           <div class="onboarding-step-body hidden">
             <p id="post-bootstrap-qbo-status" class="message"></p>
             <div class="onboarding-step-actions">
-              <button id="post-bootstrap-qbo" class="btn primary" type="button">Connect QuickBooks</button>
-              <button id="post-bootstrap-qbo-skip" class="btn secondary" type="button">Finish later</button>
+              <button id="post-bootstrap-qbo" class="btn primary" type="button" style="display: none;">Connect QuickBooks</button>
+              <button id="post-bootstrap-qbo-skip" class="btn secondary" type="button" style="display: none;">Finish later</button>
             </div>
           </div>
         </div>
@@ -284,21 +296,32 @@
           <button class="onboarding-step-header" type="button" aria-expanded="false">
             <span class="onboarding-step-number">3</span>
             <div>
-              <div class="onboarding-step-title">Set permissions</div>
+              <div class="onboarding-step-title">Set up admin access</div>
               <div class="onboarding-step-text">
-                Add another employee or create a permission template for admins.
+                Choose who should have admin login access. You can skip if you're the only admin.
               </div>
             </div>
           </button>
           <div class="onboarding-step-body hidden">
-            <div class="onboarding-step-actions">
-              <button id="post-bootstrap-employees" class="btn primary" type="button">Add employees</button>
-              <button id="post-bootstrap-permissions" class="btn secondary" type="button">
-                Create permission template
-              </button>
-            </div>
+          <div class="onboarding-step-actions">
+            <button id="post-bootstrap-permissions" class="btn primary" type="button">
+              Set up admin logins
+            </button>
+            <button id="post-bootstrap-permissions-only-admin" class="btn secondary" type="button">
+              I'm the only admin
+            </button>
+            <button id="post-bootstrap-permissions-skip" class="btn secondary" type="button">
+              Finish later
+            </button>
           </div>
+          <p id="post-bootstrap-permissions-status" class="message"></p>
         </div>
+        </div>
+
+      <div class="onboarding-skip-row">
+        <button id="post-bootstrap-dismiss" class="btn secondary btn-sm" type="button">Mark as complete</button>
+        <button id="post-bootstrap-skip-all" class="btn primary btn-sm" type="button">Finish Setup Later</button>
+      </div>
       </div>
     </div>
 
@@ -336,10 +359,15 @@
           </div>
           <ul class="dashboard-checklist">
             <li class="dashboard-checklist-item">
-              <div>
-                <div class="dashboard-item-title">Time entries needing review</div>
-                <div id="dashboard-task-time-entries-note" class="dashboard-item-sub">
-                  Pending approvals before payroll.
+              <div class="dashboard-item-main">
+                <div class="dashboard-item-icon" aria-hidden="true">
+                  <img src="/icons/clock.svg" alt="" />
+                </div>
+                <div>
+                  <div class="dashboard-item-title">Time entries needing review</div>
+                  <div id="dashboard-task-time-entries-note" class="dashboard-item-sub">
+                    Pending approvals before payroll.
+                  </div>
                 </div>
               </div>
               <div class="dashboard-item-meta">
@@ -350,10 +378,15 @@
               </div>
             </li>
             <li class="dashboard-checklist-item">
-              <div>
-                <div class="dashboard-item-title">Missing shipment docs</div>
-                <div id="dashboard-task-missing-docs-note" class="dashboard-item-sub">
-                  BOL or shipper invoice still required.
+              <div class="dashboard-item-main">
+                <div class="dashboard-item-icon" aria-hidden="true">
+                  <img src="/icons/verification.svg" alt="" />
+                </div>
+                <div>
+                  <div class="dashboard-item-title">Missing shipment docs</div>
+                  <div id="dashboard-task-missing-docs-note" class="dashboard-item-sub">
+                    BOL or shipper invoice still required.
+                  </div>
                 </div>
               </div>
               <div class="dashboard-item-meta">
@@ -364,10 +397,15 @@
               </div>
             </li>
             <li class="dashboard-checklist-item">
-              <div>
-                <div class="dashboard-item-title">Unread shipment comments</div>
-                <div id="dashboard-task-unread-comments-note" class="dashboard-item-sub">
-                  New shipment messages waiting on a response.
+              <div class="dashboard-item-main">
+                <div class="dashboard-item-icon" aria-hidden="true">
+                  <img src="/icons/notifications.svg" alt="" />
+                </div>
+                <div>
+                  <div class="dashboard-item-title">Unread shipment comments</div>
+                  <div id="dashboard-task-unread-comments-note" class="dashboard-item-sub">
+                    New shipment messages waiting on a response.
+                  </div>
                 </div>
               </div>
               <div class="dashboard-item-meta">
@@ -378,10 +416,15 @@
               </div>
             </li>
             <li class="dashboard-checklist-item">
-              <div>
-                <div class="dashboard-item-title">Pickup or storage due</div>
-                <div id="dashboard-task-pickup-storage-note" class="dashboard-item-sub">
-                  Ready for pickup or storage fees now due.
+              <div class="dashboard-item-main">
+                <div class="dashboard-item-icon" aria-hidden="true">
+                  <img src="/icons/shipments/pickup.svg" alt="" />
+                </div>
+                <div>
+                  <div class="dashboard-item-title">Pickup or storage due</div>
+                  <div id="dashboard-task-pickup-storage-note" class="dashboard-item-sub">
+                    Ready for pickup or storage fees now due.
+                  </div>
                 </div>
               </div>
               <div class="dashboard-item-meta">
@@ -392,10 +435,15 @@
               </div>
             </li>
             <li class="dashboard-checklist-item">
-              <div>
-                <div class="dashboard-item-title">QuickBooks sync needed</div>
-                <div id="dashboard-task-qbo-sync-note" class="dashboard-item-sub">
-                  Employees missing QBO links or needing sync.
+              <div class="dashboard-item-main">
+                <div class="dashboard-item-icon" aria-hidden="true">
+                  <img src="/icons/settings.svg" alt="" />
+                </div>
+                <div>
+                  <div class="dashboard-item-title">QuickBooks sync needed</div>
+                  <div id="dashboard-task-qbo-sync-note" class="dashboard-item-sub">
+                    Employees missing QBO links or needing sync.
+                  </div>
                 </div>
               </div>
               <div class="dashboard-item-meta">
@@ -406,15 +454,25 @@
               </div>
             </li>
             <li class="dashboard-checklist-item">
-              <div>
-                <div class="dashboard-item-title">Payroll issues to fix</div>
-                <div id="dashboard-task-payroll-issues-note" class="dashboard-item-sub">
-                  Failed or partial runs need attention.
+              <div class="dashboard-item-main">
+                <div class="dashboard-item-icon" aria-hidden="true">
+                  <img src="/icons/payroll.svg" alt="" />
+                </div>
+                <div>
+                  <div class="dashboard-item-title">Payroll issues to fix</div>
+                  <div id="dashboard-task-payroll-issues-note" class="dashboard-item-sub">
+                    Failed or partial runs need attention.
+                  </div>
                 </div>
               </div>
               <div class="dashboard-item-meta">
                 <span id="dashboard-task-payroll-issues-count" class="dashboard-item-count">--</span>
-                <button class="btn secondary btn-sm" type="button" data-dashboard-link="payroll">
+                <button
+                  id="dashboard-task-payroll-issues-action"
+                  class="btn secondary btn-sm"
+                  type="button"
+                  data-dashboard-link="payroll"
+                >
                   Open payroll
                 </button>
               </div>
@@ -475,8 +533,14 @@
           </div>
           <div class="dashboard-link-actions">
             <button class="btn secondary btn-sm" type="button" data-dashboard-link="employees">Employees</button>
-            <button class="btn secondary btn-sm" type="button" data-dashboard-link="settings">
-              Permission templates
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="vendors">Vendors</button>
+            <button
+              class="btn secondary btn-sm"
+              type="button"
+              data-dashboard-link="settings"
+              data-dashboard-expand-card="settings-access-card"
+            >
+              Permissions
             </button>
           </div>
         </div>
@@ -494,9 +558,10 @@
           <div class="dashboard-link-actions">
             <button class="btn secondary btn-sm" type="button" data-dashboard-link="kiosks">Timesheets</button>
             <button class="btn secondary btn-sm" type="button" data-dashboard-link="time-entries">
-              Approve time
+              Review time entries
             </button>
             <button class="btn secondary btn-sm" type="button" data-dashboard-link="payroll">Payroll</button>
+            <button class="btn secondary btn-sm" type="button" data-dashboard-link="reimbursements">Reimbursements</button>
           </div>
         </div>
 
@@ -572,11 +637,6 @@
             <input id="employee-rate" type="number" min="0" step="0.01" />
           </div>
 
-          <div class="form-field">
-            <label for="employee-permission-template">Role template (optional)</label>
-            <select id="employee-permission-template"></select>
-          </div>
-
           <div class="form-field checkbox-field">
             <label>
               <input type="checkbox" id="employee-worker-timekeeping" checked />
@@ -587,7 +647,7 @@
           <div class="form-field checkbox-field">
             <label>
               <input id="employee-desktop-access" type="checkbox" />
-              Desktop admin access
+              This employee is an admin
             </label>
           </div>
 
@@ -647,7 +707,7 @@
           <div>
             <h3>Needs QuickBooks link <span id="pending-employees-count"></span></h3>
             <p class="card-sub">
-              These employees can clock in now. Link them to a QuickBooks Employee/Vendor before sending payroll.
+              Use the suggested match when available. Otherwise enter a QuickBooks ID (or create one) before sending payroll.
             </p>
           </div>
         </div>
@@ -659,11 +719,12 @@
                 <th>Rate</th>
                 <th>Nickname</th>
                 <th>Name on checks</th>
-                <th>QuickBooks IDs</th>
+                <th>QuickBooks status</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody id="pending-employees-body">
-              <tr><td colspan="5">(loading)</td></tr>
+              <tr><td colspan="6">(loading)</td></tr>
             </tbody>
           </table>
         </div>
@@ -751,7 +812,7 @@
               <div>
                 <h2>Projects</h2>
                 <p class="card-sub">
-                  Projects are synced from QuickBooks and used when creating time entries.
+                  Projects are synced from QuickBooks and used when creating time entries. Click a row to add a missing customer.
                 </p>
               </div>
 <div class="projects-header-actions">
@@ -801,15 +862,26 @@
                   Track shipments from pre-order through pickup. Drag cards between status
                   columns, view timelines, payments, documents, and comments.
                 </p>
-              </div>
-              <div>
-                <button id="shipment-add-btn" class="btn primary">+ Add shipment</button>
-              </div>
-            </div>
+	              </div>
+	              <div>
+	                <button id="shipment-add-btn" class="btn primary" type="button">
+	                  <span class="btn-icon" aria-hidden="true">
+	                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+	                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+	                      <path d="M14 2v6h6"></path>
+	                      <path d="M12 11v6"></path>
+	                      <path d="M9 14h6"></path>
+	                    </svg>
+	                  </span>
+	                  <span>Add shipment</span>
+	                </button>
+	              </div>
+	            </div>
 
-            <!-- Tabs: Board / Analytics / Templates -->
+            <!-- Tabs: Board / Summary / Templates -->
             <div class="shipments-tabs" style="display:flex; gap:8px; margin-bottom:14px;">
               <button class="btn secondary btn-sm shipments-tab active" data-view="board">Board</button>
+              <button class="btn secondary btn-sm shipments-tab" data-view="summary">Summary</button>
               <button class="btn secondary btn-sm shipments-tab" data-view="templates">Templates</button>
             </div>
 
@@ -911,6 +983,35 @@
               </div>
             </div>
 
+            <!-- SUMMARY VIEW -->
+	            <div id="shipments-view-summary" class="hidden">
+	              <div class="shipments-summary-header">
+                <div>
+                  <h3>Attention Summary</h3>
+                  <div class="shipments-summary-filters">
+                    <div class="select-wrapper">
+                      <select id="shipments-summary-filter-status">
+                        <option value="">All statuses</option>
+                      </select>
+                    </div>
+                    <div class="select-wrapper">
+                      <select id="shipments-summary-filter-shipment">
+                        <option value="">All shipments</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div id="shipments-summary-stats" class="shipments-summary-stats"></div>
+                </div>
+                <button id="shipments-summary-refresh" class="btn secondary btn-sm" type="button">
+                  Refresh
+                </button>
+	              </div>
+              <p id="shipments-summary-message" class="message"></p>
+              <div id="shipments-summary-grid" class="shipments-summary-grid">
+                <!-- summary cards injected by JS -->
+              </div>
+            </div>
+
             <!-- TEMPLATES VIEW -->
             <div id="shipments-view-templates" class="hidden">
               <div class="form-grid" style="margin-bottom:1rem;">
@@ -1009,6 +1110,21 @@
                 </div>
               </div>
 
+              <div id="account-view-mode-card" class="card settings-card hidden">
+                <div class="card-header">
+                  <h2>View Mode</h2>
+                </div>
+                <div class="card-body">
+                  <p class="card-sub">
+                    Switch between the desktop admin console and kiosk view on this device.
+                  </p>
+                  <div class="settings-actions">
+                    <button type="button" id="account-view-mode-btn" class="btn secondary">Switch View</button>
+                    <span id="account-view-mode-status" class="message"></span>
+                  </div>
+                </div>
+              </div>
+
               <div class="card settings-card settings-card--wide">
                 <div class="card-header">
                   <h2>Notification Preferences</h2>
@@ -1020,11 +1136,14 @@
                     <span id="notifications-pref-message" class="message"></span>
                   </div>
 
-                  <div class="prefs-section">
-                    <div class="prefs-section-head">
-                      <h3>Channels</h3>
-                      <p class="card-sub">Choose how you want to receive alerts.</p>
-                    </div>
+                  <details class="prefs-section prefs-section--collapsible">
+                    <summary class="prefs-section-head">
+                      <div class="prefs-section-title">
+                        <h3>Channels</h3>
+                        <p class="card-sub">Choose how you want to receive alerts.</p>
+                      </div>
+                      <span class="prefs-section-chevron" aria-hidden="true"></span>
+                    </summary>
                     <div class="prefs-section-body prefs-stack">
                       <div class="prefs-item">
                         <label class="checkbox-inline">
@@ -1042,13 +1161,16 @@
                         <span id="notifications-push-status" class="message"></span>
                       </div>
                     </div>
-                  </div>
+                  </details>
 
-                  <div class="prefs-section">
-                    <div class="prefs-section-head">
-                      <h3>Shipments</h3>
-                      <p class="card-sub">Pick the shipment statuses you want alerts for.</p>
-                    </div>
+                  <details class="prefs-section prefs-section--collapsible">
+                    <summary class="prefs-section-head">
+                      <div class="prefs-section-title">
+                        <h3>Shipments</h3>
+                        <p class="card-sub">Pick the shipment statuses you want alerts for.</p>
+                      </div>
+                      <span class="prefs-section-chevron" aria-hidden="true"></span>
+                    </summary>
                     <div class="prefs-section-body prefs-two-col">
                       <div class="prefs-card">
                         <label class="checkbox-inline">
@@ -1065,13 +1187,16 @@
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </details>
 
-                  <div class="prefs-section">
-                    <div class="prefs-section-head">
-                      <h3>Time &amp; Payroll</h3>
-                      <p class="card-sub">Choose the event types you want to be notified about.</p>
-                    </div>
+                  <details class="prefs-section prefs-section--collapsible">
+                    <summary class="prefs-section-head">
+                      <div class="prefs-section-title">
+                        <h3>Time &amp; Payroll</h3>
+                        <p class="card-sub">Choose the event types you want to be notified about.</p>
+                      </div>
+                      <span class="prefs-section-chevron" aria-hidden="true"></span>
+                    </summary>
                     <div class="prefs-section-body prefs-two-col">
                       <div class="prefs-card">
                         <label class="checkbox-inline">
@@ -1079,6 +1204,13 @@
                           Timekeeping notifications
                         </label>
                         <div id="notifications-time-events" class="notify-statuses notify-statuses--compact"></div>
+                        <div class="form-field">
+                          <label class="checkbox-inline">
+                            <input type="checkbox" id="notifications-clockout-enabled" />
+                            Clock-out reminders
+                          </label>
+                          <p class="card-sub">Notify if anyone is still clocked in at the reminder time.</p>
+                        </div>
                       </div>
                       <div class="prefs-card">
                         <label class="checkbox-inline">
@@ -1088,35 +1220,31 @@
                         <div id="notifications-payroll-events" class="notify-statuses notify-statuses--compact"></div>
                       </div>
                     </div>
-                  </div>
+                  </details>
 
-                  <div class="prefs-section">
-                    <div class="prefs-section-head">
-                      <h3>Reminders</h3>
-                      <p class="card-sub">Schedule daily summaries and clock-out nudges.</p>
-                    </div>
-                    <div class="prefs-section-body prefs-two-col">
+                  <details class="prefs-section prefs-section--collapsible">
+                    <summary class="prefs-section-head">
+                      <div class="prefs-section-title">
+                        <h3>Reminder Schedule</h3>
+                        <p class="card-sub">Set the time and frequency for scheduled alerts.</p>
+                      </div>
+                      <span class="prefs-section-chevron" aria-hidden="true"></span>
+                    </summary>
+                    <div class="prefs-section-body prefs-stack">
                       <div class="prefs-card">
                         <div class="form-field">
-                          <label for="notifications-remind-time">Daily summary time</label>
+                          <label for="notifications-remind-time">Send reminders at</label>
                           <input type="time" id="notifications-remind-time" />
                         </div>
                         <div class="form-field">
-                          <label for="notifications-remind-every">Remind every (days)</label>
+                          <label for="notifications-remind-every">Repeat every (days)</label>
                           <input type="number" id="notifications-remind-every" min="1" step="1" value="1" />
                         </div>
-                      </div>
-                      <div class="prefs-card">
-                        <div class="form-field">
-                          <label class="checkbox-inline">
-                            <input type="checkbox" id="notifications-clockout-enabled" />
-                            Clock-out reminders
-                          </label>
-                          <input type="time" id="notifications-clockout-time" />
-                        </div>
+                        <p class="card-sub">Applies to scheduled alerts like clock-out reminders.</p>
                       </div>
                     </div>
-                  </div>
+                  </details>
+
                 </div>
               </div>
 
@@ -1249,224 +1377,30 @@
                 </summary>
                 <div class="settings-accordion-body">
                   <div class="card-body">
-                    <p class="card-sub">Use this code on the kiosk device to enroll it. Rotate the code if it was shared by mistake.</p>
+                    <p class="card-sub">Use this code on the kiosk device to enroll it. The code auto-rotates after each successful enrollment.</p>
                     <div class="device-setup-code-row">
                       <div id="settings-kiosk-enrollment-code" class="device-setup-code">••••••</div>
                       <button type="button" id="settings-kiosk-rotate" class="btn secondary">Rotate code</button>
                     </div>
                     <p id="settings-kiosk-status" class="message"></p>
-                  </div>
-                </div>
-              </details>
-
-              <details id="settings-admin-users-card" class="settings-accordion settings-card card settings-accordion--admin hidden">
-                <summary class="settings-accordion-summary">
-                  <div class="settings-accordion-head">
-                    <h2>Admin Accounts</h2>
-                    <p class="card-sub">Manage super admin logins and kiosk access.</p>
-                  </div>
-                  <div class="settings-accordion-right">
-                    <div class="settings-accordion-meta">
-                      <span class="settings-pill settings-pill--admin">Super admin</span>
-                      <span class="settings-pill">Admins</span>
-                    </div>
-                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
-                  </div>
-                </summary>
-                <div class="settings-accordion-body">
-                  <div class="card-body">
-                    <p class="card-sub">Manage super admin logins and kiosk PIN access.</p>
-                    <div class="admin-accounts-stack">
-                      <div class="admin-accounts-section">
-                        <div class="admin-accounts-head">
-                          <div>
-                            <h3>Existing logins</h3>
-                            <p class="card-sub">Super admins can sign in with email on desktop and PIN on kiosks.</p>
-                          </div>
-                        </div>
-                        <div class="table-wrapper">
-                          <table class="access-table admin-accounts-table">
-                            <thead>
-                              <tr>
-                                <th>Login email</th>
-                                <th>Employee</th>
-                                <th>Status</th>
-                                <th>Kiosk</th>
-                                <th>PIN</th>
-                                <th>Login access</th>
-                              </tr>
-                            </thead>
-                            <tbody id="settings-admin-users-body">
-                              <tr><td colspan="6">(loading...)</td></tr>
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-
-                      <div class="admin-accounts-divider"></div>
-
-                      <div class="admin-accounts-section">
-                        <div class="admin-accounts-head">
-                          <div>
-                            <h3>Create or update a login</h3>
-                            <p class="card-sub">
-                              Leave passwords blank to email a setup link (requires email configuration). Entering a password sets it immediately.
-                            </p>
-                          </div>
-                        </div>
-                        <div class="form-grid admin-login-form-grid">
-                          <label>
-                            Employee
-                            <select id="settings-admin-user-employee"></select>
-                          </label>
-                          <label>
-                            Login email
-                            <input type="email" id="settings-admin-user-email" />
-                          </label>
-                          <label>
-                            Password (optional)
-                            <input type="password" id="settings-admin-user-password" />
-                          </label>
-                          <label>
-                            Confirm password
-                            <input type="password" id="settings-admin-user-password-confirm" />
-                          </label>
-                        </div>
-                        <p class="card-sub">Kiosk admin access and PINs are managed in Employee Details.</p>
-                        <div class="settings-actions admin-accounts-actions">
-                          <button type="button" id="settings-admin-user-create" class="btn secondary">Send setup link</button>
-                          <span id="settings-admin-user-status" class="message"></span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </details>
-
-              <details id="settings-role-templates-card" class="settings-accordion settings-card card settings-accordion--admin hidden">
-                <summary class="settings-accordion-summary">
-                  <div class="settings-accordion-head">
-                    <h2>Role Templates</h2>
-                    <p class="card-sub">Reusable access and permission presets.</p>
-                  </div>
-                  <div class="settings-accordion-right">
-                    <div class="settings-accordion-meta">
-                      <span class="settings-pill settings-pill--admin">Super admin</span>
-                      <span class="settings-pill">Permissions</span>
-                    </div>
-                    <span class="settings-accordion-chevron" aria-hidden="true"></span>
-                  </div>
-                </summary>
-                <div class="settings-accordion-body">
-                  <div class="card-body">
-                    <p class="card-sub">Create reusable access and permission presets for admins.</p>
                     <div class="table-wrapper">
-                      <table class="access-table">
+                      <table>
                         <thead>
                           <tr>
-                            <th>Name</th>
-                            <th>Role title</th>
-                            <th>Actions</th>
+                            <th>Kiosk ID</th>
+                            <th>Device</th>
+                            <th>Device ID</th>
+                            <th>Registered Under</th>
+                            <th>Registered At</th>
+                            <th>Geofence Location</th>
                           </tr>
                         </thead>
-                        <tbody id="settings-role-templates-body">
-                          <tr><td colspan="3">(loading...)</td></tr>
+                        <tbody id="settings-kiosk-devices-body">
+                          <tr><td colspan="6">(loading devices…)</td></tr>
                         </tbody>
                       </table>
                     </div>
-
-                    <div class="form-grid">
-                      <label>
-                        Template name
-                        <input type="text" id="settings-template-name" />
-                      </label>
-                      <label>
-                        Role title (optional)
-                        <input type="text" id="settings-template-role-title" />
-                      </label>
-                    </div>
-
-                    <div class="modal-section">
-                      <h2>Access</h2>
-                      <div class="two-col">
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-worker-timekeeping" />
-                          Worker timekeeping
-                        </label>
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-desktop-access" />
-                          Desktop admin access
-                        </label>
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-kiosk-admin-access" />
-                          Kiosk admin access
-                        </label>
-                      </div>
-                    </div>
-
-                    <div class="modal-section">
-                      <h2>Permissions</h2>
-                      <div class="two-col">
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-perm-see-shipments" />
-                          See shipments
-                        </label>
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-perm-modify-time" />
-                          Modify/approve/reject time
-                        </label>
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-perm-view-time-reports" />
-                          View time reports
-                        </label>
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-perm-view-all-timesheets" />
-                          View all timesheets
-                        </label>
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-perm-assign-timesheets" />
-                          Assign timesheets
-                        </label>
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-perm-view-payroll" />
-                          View payroll info
-                        </label>
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-perm-modify-payroll" />
-                          Modify payroll
-                        </label>
-                        <label class="checkbox-inline">
-                          <input type="checkbox" id="settings-template-perm-modify-pay-rates" />
-                          Modify pay rates
-                        </label>
-                      </div>
-                    </div>
-
-                    <div class="settings-actions">
-                      <button type="button" id="settings-template-save" class="btn secondary">Save template</button>
-                      <button type="button" id="settings-template-clear" class="btn tertiary">New template</button>
-                      <button type="button" id="settings-template-delete" class="btn danger" disabled>Delete</button>
-                      <span id="settings-template-status" class="message"></span>
-                    </div>
-
-                    <div class="template-presets">
-                      <h3>Recommended templates</h3>
-                      <p class="card-sub">Create common roles for faster setup. You can edit them afterward.</p>
-                      <ul class="template-preset-list">
-                        <li>Super Admin (all access + all permissions)</li>
-                        <li>Payroll Manager (full payroll + time visibility)</li>
-                        <li>Payroll Approver (view payroll, approve time, no payroll edits)</li>
-                        <li>Time Reviewer (time entry review + edits, no payroll)</li>
-                        <li>Shipments Admin (shipments only)</li>
-                        <li>Kiosk Admin (time review + shipments)</li>
-                      </ul>
-                      <div class="settings-actions">
-                        <button type="button" id="settings-template-presets-create" class="btn secondary">
-                          Create recommended templates
-                        </button>
-                        <span id="settings-template-presets-status" class="message"></span>
-                      </div>
-                    </div>
+                    <p id="settings-kiosk-devices-status" class="message"></p>
                   </div>
                 </div>
               </details>
@@ -1474,7 +1408,7 @@
               <details id="settings-access-card" class="settings-accordion settings-card card settings-accordion--access">
                 <summary class="settings-accordion-summary">
                   <div class="settings-accordion-head">
-                    <h2>Access Control</h2>
+                    <h2>Permissions</h2>
                     <p class="card-sub">Toggle what each admin can see and do.</p>
                   </div>
                   <div class="settings-accordion-right">
@@ -1494,17 +1428,15 @@
                           <tr>
                             <th>Admin</th>
                             <th>See shipments</th>
-                            <th>Modify/approve/reject time</th>
+                            <th>Field review (approve/modify/reject)</th>
                             <th>View time reports</th>
                             <th>View all timesheets</th>
                             <th>Assign timesheets</th>
-                            <th>View payroll info</th>
-                            <th>Modify payroll</th>
                             <th>Modify pay rates</th>
                           </tr>
                         </thead>
                         <tbody id="settings-access-body">
-                          <tr><td colspan="9">(loading admins...)</td></tr>
+                          <tr><td colspan="7">(loading admins...)</td></tr>
                         </tbody>
                       </table>
                     </div>
@@ -1548,7 +1480,7 @@
                 </summary>
                 <div class="settings-accordion-body">
                   <div class="card-body">
-                    <p class="card-sub">Uncheck a rule to stop flagging it in Approve Time Entries.</p>
+                    <p class="card-sub">Uncheck a rule to stop flagging it in Review Time Entries.</p>
                     <div class="table-wrapper">
                       <table class="access-table exception-rules-table">
                         <thead>
@@ -1871,6 +1803,9 @@
             <div class="card-header">
               <div>
                 <h1 class="report-title">Review Time Entries</h1>
+                <p class="card-sub">
+                  This report shows each time entry's hours, flags, and approval status so you can verify entries before payroll.
+                </p>
               </div>
 
               <div class="card-header-actions" id="time-entry-toggle-container-report">
@@ -1898,6 +1833,33 @@
                     Project
                     <select id="te-filter-project"></select>
                   </label>
+
+                  <div class="te-include-filter">
+                    <span>Include</span>
+                    <div class="te-filter-dropdown">
+                      <button
+                        type="button"
+                        id="te-filter-include-toggle"
+                        class="te-filter-toggle"
+                        aria-haspopup="true"
+                        aria-expanded="false"
+                        aria-controls="te-filter-include-menu"
+                      >
+                        <span id="te-filter-include-toggle-label">Include</span>
+                        <span aria-hidden="true">▾</span>
+                      </button>
+                      <div id="te-filter-include-menu" class="te-filter-menu hidden">
+                        <label class="te-filter-menu-option" for="te-filter-include-approved">
+                          <span>Payroll approved entries</span>
+                          <input id="te-filter-include-approved" type="checkbox" />
+                        </label>
+                        <label class="te-filter-menu-option" for="te-filter-include-paid">
+                          <span>Paid entries</span>
+                          <input id="te-filter-include-paid" type="checkbox" />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
 
                   <label>
                     Date range
@@ -1951,7 +1913,7 @@
                       <th>Hours</th>
                       <th>Flags</th>
                       <th>Field Review</th>
-                      <th>Approve</th>
+                      <th>Approve for Payroll</th>
                     </tr>
                   </thead>
                   <tbody id="time-table-body">
@@ -1964,7 +1926,7 @@
 
               <div class="time-entry-approve-toolbar">
                 <button type="button" id="te-approve-selected" class="btn primary btn-sm" disabled>
-                  Approve checked entries
+                  Approve selected for payroll
                 </button>
               </div>
             </div> <!-- /card-body -->
@@ -2044,7 +2006,7 @@
               <div>
                 <h2>Payroll Settings</h2>
                 <p class="card-sub">
-                  Choose your QuickBooks bank / expense accounts and default memo templates.
+                  Choose your QuickBooks bank/expense defaults for payroll and receipt reimbursements.
                 </p>
               </div>
             </div>
@@ -2065,6 +2027,22 @@
                 <label for="payroll-expense-account">Expense / COGS account (QuickBooks)</label>
                 <select id="payroll-expense-account">
                   <option value="">(select expense account)</option>
+                </select>
+              </div>
+
+              <!-- Receipt reimbursement expense account dropdown -->
+              <div class="form-field">
+                <label for="payroll-receipt-expense-account">Receipt reimbursement expense / COGS account (QuickBooks)</label>
+                <select id="payroll-receipt-expense-account">
+                  <option value="">(select receipt expense account)</option>
+                </select>
+              </div>
+
+              <!-- Receipt reimbursement class dropdown -->
+              <div class="form-field">
+                <label for="payroll-receipt-class">Receipt reimbursement class (QuickBooks)</label>
+                <select id="payroll-receipt-class">
+                  <option value="">(select receipt class)</option>
                 </select>
               </div>
 
@@ -2141,31 +2119,113 @@
                     Show paid entries in summary
                   </label>
                   <label class="checkbox-inline" style="margin-top: 8px;">
-                    <input id="payroll-include-overtime" type="checkbox" checked />
-                    Include overtime in pay
+                    <input id="payroll-include-reimbursements" type="checkbox" checked />
+                    Include receipt reimbursements
                   </label>
-                  <label class="checkbox-inline" style="margin-top: 8px;">
-                    <input id="payroll-adjustment-toggle" type="checkbox" />
-                    Adjustment run
-                  </label>
-                  <input
-                    id="payroll-adjustment-reason"
-                    class="hidden"
-                    type="text"
-                    placeholder="Adjustment reason (required)"
-                    style="margin-top: 8px;"
-                  >
+                  <!-- Overtime and adjustment controls are intentionally hidden for now; payroll logic remains in place for a later release. -->
                 </div>
 
                 <div class="form-field form-field-button payroll-create-action">
                   <button id="payroll-create-checks" class="btn primary" type="button">
                     Create Checks
                   </button>
+                  <button id="payroll-retry-failed" class="btn secondary" type="button" disabled>
+                    Retry Failed Checks
+                  </button>
+                </div>
+              </div>
+
+              <div id="payroll-run-review" class="payroll-run-review hidden">
+                <div class="payroll-run-review-head">
+                  <div>
+                    <h3>Payroll Run Review</h3>
+                    <p id="payroll-run-review-subtext" class="card-sub">
+                      Review exactly what failed and succeeded, then retry only what you select.
+                    </p>
+                  </div>
+                  <div class="payroll-run-review-actions">
+                    <button id="payroll-run-review-load-period" class="btn tertiary btn-sm" type="button">
+                      Load Period For Edits
+                    </button>
+                    <button id="payroll-run-review-retry-selected" class="btn primary btn-sm" type="button" disabled>
+                      Retry Selected Failed
+                    </button>
+                    <button id="payroll-run-review-refresh" class="btn secondary btn-sm" type="button">
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+                <div id="payroll-run-review-meta" class="payroll-run-review-meta"></div>
+                <div id="payroll-run-review-alert" class="payroll-run-review-alert hidden"></div>
+                <div class="payroll-run-review-panels">
+                  <section class="payroll-run-review-panel payroll-run-review-panel-failed">
+                    <div class="payroll-run-review-panel-head">
+                      <h4>Failed Checks</h4>
+                      <span id="payroll-run-review-failed-count" class="payroll-run-review-count">0</span>
+                    </div>
+                    <p id="payroll-run-review-failed-note" class="card-sub">
+                      Select failed employees to retry. Unchecked rows are skipped.
+                    </p>
+                    <div class="table-wrapper payroll-run-review-table-wrap">
+                      <table id="payroll-run-review-failed-table">
+                        <thead>
+                          <tr>
+                            <th>Retry</th>
+                            <th>Employee</th>
+                            <th>Error</th>
+                            <th>Suggested Fix</th>
+                            <th>Total Hours</th>
+                            <th>Total Pay</th>
+                          </tr>
+                        </thead>
+                        <tbody id="payroll-run-review-failed-body">
+                          <tr>
+                            <td colspan="6">(no failed checks in this run)</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                  <section class="payroll-run-review-panel payroll-run-review-panel-success">
+                    <div class="payroll-run-review-panel-head">
+                      <h4>Successful Checks</h4>
+                      <span id="payroll-run-review-success-count" class="payroll-run-review-count">0</span>
+                    </div>
+                    <div class="table-wrapper payroll-run-review-table-wrap">
+                      <table id="payroll-run-review-success-table">
+                        <thead>
+                          <tr>
+                            <th>Employee</th>
+                            <th>Check Number</th>
+                            <th>Total Hours</th>
+                            <th>Total Pay</th>
+                          </tr>
+                        </thead>
+                        <tbody id="payroll-run-review-success-body">
+                          <tr>
+                            <td colspan="4">(no successful checks yet)</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
                 </div>
               </div>
 
               <!-- PAYROLL SUMMARY TABLE -->
               <h3 class="mt-4">Payroll Summary</h3>
+              <div id="payroll-pending-approvals-banner" class="payroll-pending-approvals-banner hidden">
+                <p id="payroll-pending-approvals-text" class="card-sub"></p>
+                <ul id="payroll-pending-approvals-list" class="payroll-pending-approvals-list"></ul>
+                <div class="payroll-pending-approvals-actions">
+                  <button id="payroll-pending-approvals-continue" class="btn secondary btn-sm" type="button">
+                    Continue with Approved Entries
+                  </button>
+                  <button id="payroll-pending-approvals-review" class="btn tertiary btn-sm" type="button">
+                    Review Time Entries
+                  </button>
+                </div>
+              </div>
               <div class="table-wrapper">
                 <table id="payroll-summary-table">
                   <thead>
@@ -2186,15 +2246,92 @@
           </div>
         </section>
 
+        <!-- REIMBURSEMENTS SECTION -->
+        <section id="section-reimbursements" class="section">
+          <div class="card payroll-reimbursements-card">
+            <div class="card-header">
+              <div>
+                <h2>Reimbursements</h2>
+                <p class="card-sub">
+                  Upload employee receipts with a project and reimbursement amount. Requested receipts can be included as payroll line items.
+                </p>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="form-grid payroll-reimbursement-grid">
+                <div class="form-field">
+                  <label for="payroll-reimbursement-employee">Employee</label>
+                  <select id="payroll-reimbursement-employee">
+                    <option value="">(select employee)</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label for="payroll-reimbursement-project">Project</label>
+                  <select id="payroll-reimbursement-project">
+                    <option value="">(select project)</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label for="payroll-reimbursement-amount">Amount</label>
+                  <input id="payroll-reimbursement-amount" type="number" min="0.01" step="0.01" placeholder="0.00" />
+                </div>
+                <div class="form-field">
+                  <label for="payroll-reimbursement-date">Purchase date</label>
+                  <input id="payroll-reimbursement-date" type="date" />
+                </div>
+                <div class="form-field">
+                  <label for="payroll-reimbursement-note">Note (optional)</label>
+                  <input id="payroll-reimbursement-note" type="text" placeholder="Materials purchased, etc." />
+                </div>
+                <div class="form-field">
+                  <label for="payroll-reimbursement-vendor">Vendor</label>
+                  <input id="payroll-reimbursement-vendor" type="text" placeholder="Vendor name" />
+                </div>
+                <div class="form-field">
+                  <label for="payroll-reimbursement-receipt">Receipt image/PDF</label>
+                  <input id="payroll-reimbursement-receipt" type="file" accept=".pdf,image/*" />
+                </div>
+                <div class="form-field form-field-button">
+                  <button id="payroll-reimbursement-submit" class="btn secondary" type="button">
+                    Request Reimbursement
+                  </button>
+                </div>
+              </div>
+              <p id="payroll-reimbursement-message" class="message"></p>
+
+              <div class="table-wrapper">
+                <table id="payroll-reimbursements-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Employee</th>
+                      <th>Vendor</th>
+                      <th>Project</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                      <th>Receipt</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="payroll-reimbursements-body">
+                    <tr><td colspan="8">(loading)</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
 <!-- REPORTS SECTION (PAYROLL RUNS) -->
 <section id="section-reports" class="section">
   <div class="card">
     <div class="card-header">
-      <h2>Payroll Reports</h2>
-      <p class="card-sub">
-        View past payroll runs that have been sent to QuickBooks, see
-        check details, and download check information.
-      </p>
+      <div>
+        <h2>Payroll Reports</h2>
+        <p class="card-sub">
+          This page shows payroll run summaries and the checks included in each run. Use the filters below to narrow by pay period, status, run type, employee, or paid state. Difference: Payroll Reports is run/check summary data; Payroll Audit Report is who-did-what history.
+        </p>
+      </div>
     </div>
 
     <p class="message" id="reports-message"></p>
@@ -2202,13 +2339,44 @@
     <!-- ───────── PAYROLL REPORTS ───────── -->
 
     <h3>Payroll Runs</h3>
+    <p class="card-sub">Each row is one payroll run. Click a run to load its checks below.</p>
+    <form id="reports-runs-filter-form" class="time-report-form">
+      <div class="form-row time-report-row">
+        <label>
+          Pay period start (on/after)
+          <input type="date" id="reports-runs-filter-start" />
+        </label>
+        <label>
+          Pay period end (on/before)
+          <input type="date" id="reports-runs-filter-end" />
+        </label>
+        <label>
+          Status
+          <select id="reports-runs-filter-status">
+            <option value="">All statuses</option>
+          </select>
+        </label>
+        <label>
+          Run type
+          <select id="reports-runs-filter-type">
+            <option value="">All run types</option>
+            <option value="standard">Standard</option>
+            <option value="adjustment">Adjustment</option>
+          </select>
+        </label>
+      </div>
+      <div class="form-actions time-report-actions">
+        <button type="button" id="reports-runs-filter-apply" class="btn">Run report</button>
+        <button type="button" id="reports-runs-filter-clear" class="btn secondary">Clear</button>
+      </div>
+    </form>
     <div class="table-wrapper">
       <table class="clickable-rows">
         <thead>
           <tr>
             <th>Pay Period</th>
             <th>Status</th>
-            <th>Type</th>
+            <th>Run Type</th>
             <th>Created</th>
             <th>Total Hours</th>
             <th>Total Pay</th>
@@ -2224,10 +2392,31 @@
       </table>
     </div>
 
-    <h3>Run Details</h3>
+    <h3>Selected Run Checks</h3>
+    <p class="card-sub">After you select a run above, this table shows each employee check in that run.</p>
+    <form id="reports-checks-filter-form" class="time-report-form">
+      <div class="form-row time-report-row">
+        <label>
+          Employee
+          <input type="text" id="reports-checks-filter-employee" placeholder="Name contains..." />
+        </label>
+        <label>
+          Paid status
+          <select id="reports-checks-filter-paid">
+            <option value="">All checks</option>
+            <option value="paid">Paid only</option>
+            <option value="unpaid">Unpaid only</option>
+          </select>
+        </label>
+      </div>
+      <div class="form-actions time-report-actions">
+        <button type="button" id="reports-checks-filter-apply" class="btn">Apply</button>
+        <button type="button" id="reports-checks-filter-clear" class="btn secondary">Clear</button>
+      </div>
+    </form>
     <div class="reports-actions">
       <button id="reports-download" class="btn secondary" disabled>
-        Download CSV (checks in this run)
+        Download Selected Run CSV
       </button>
     </div>
 
@@ -2252,25 +2441,6 @@
       </table>
     </div>
 
-    <!-- Payroll Audit Log -->
-    <h3>Payroll Audit Log (last 50 events)</h3>
-    <div class="table-wrapper">
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Event</th>
-            <th>Message</th>
-            <th>Run ID</th>
-          </tr>
-        </thead>
-        <tbody id="reports-audit-body">
-          <tr>
-            <td colspan="4">(no audit events yet)</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
   </div>
 </section>
 
@@ -2280,7 +2450,7 @@
     <div class="card-header">
       <div>
         <h2>Time Entry Audit Report</h2>
-        <p class="card-sub">Full history of time entry changes and approvals.</p>
+        <p class="card-sub">This report shows who changed or approved time entries, what changed, and when it happened.</p>
       </div>
     </div>
     <div class="card-body">
@@ -2338,7 +2508,7 @@
     <div class="card-header">
       <div>
         <h2>Payroll Audit Report</h2>
-        <p class="card-sub">Payroll run and payroll action history.</p>
+        <p class="card-sub">This report shows payroll run activity and check-level actions, including who performed each action. Difference: Payroll Reports is run/check summary data; Payroll Audit Report is who-did-what audit history.</p>
       </div>
     </div>
     <div class="card-body">
@@ -2396,7 +2566,7 @@
     <div class="card-header">
       <div>
         <h2>Operations Audit Report</h2>
-        <p class="card-sub">Shipments, kiosks, settings, and operational changes.</p>
+        <p class="card-sub">This report shows operational changes across shipments, kiosks, settings, notifications, projects, and exports.</p>
       </div>
     </div>
     <div class="card-body">
@@ -2465,7 +2635,7 @@
     <div class="card-header">
       <div>
         <h2>Security &amp; Access Audit Report</h2>
-        <p class="card-sub">Authentication, access changes, and QuickBooks actions.</p>
+        <p class="card-sub">This report shows sign-ins, access changes, and QuickBooks security-related actions.</p>
       </div>
     </div>
     <div class="card-body">
@@ -2529,10 +2699,12 @@
 <section id="section-time-entries-report" class="section">
   <div class="card">
     <div class="card-header">
-      <h1 class="report-title">Time Entries Report</h1>
-      <p class="card-sub">
-        View time entries using filters only (no edits or approvals).
-      </p>
+      <div>
+        <h1 class="report-title">Time Entries Report</h1>
+        <p class="card-sub">
+          This report shows read-only time entries by employee, project, and date range.
+        </p>
+      </div>
     </div>
 
     <div class="card-body">
@@ -2611,11 +2783,12 @@
 <section id="section-shipments-report" class="section">
   <div class="card">
     <div class="card-header">
-      <h1 class="report-title">Shipment Verification Report</h1>
-      <p class="card-sub">
-        Find shipments that are verified, ready for pickup, or drill into a single
-        shipment’s item-level verification history.
-      </p>
+      <div>
+        <h1 class="report-title">Shipment Verification Report</h1>
+        <p class="card-sub">
+          This report shows shipment verification progress, current status, and item-level verification history.
+        </p>
+      </div>
     </div>
 
     <form id="shipments-report-form" class="reports-filter-form shipments-report-form">
@@ -2766,14 +2939,14 @@
   <script src="/js/projects.js"></script>
   <script src="/js/shipments.js"></script>
   <script src="/js/kiosks.js"></script>
-  <script src="/js/payroll.js"></script>
-  <script src="/js/notifications.js"></script>
-  <!-- cache-bust for app.js to ensure latest Review wiring loads -->
-  <script src="/js/app.js?v=reviewfix16"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/service-worker.js');
+		  <script src="/js/payroll.js?v=reviewfix24"></script>
+	  <script src="/js/notifications.js"></script>
+	  <!-- cache-bust for app.js to ensure latest Review wiring loads -->
+			  <script src="/js/app.js?v=reviewfix26"></script>
+		  <script>
+		    if ('serviceWorker' in navigator) {
+		      window.addEventListener('load', () => {
+		        navigator.serviceWorker.register('/service-worker.js');
       });
     }
   </script>

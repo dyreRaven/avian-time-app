@@ -286,7 +286,6 @@
     const remindTime = getEl('notifications-remind-time');
     const remindEvery = getEl('notifications-remind-every');
     const clockoutToggle = getEl('notifications-clockout-enabled');
-    const clockoutTime = getEl('notifications-clockout-time');
     const statusContainer = getEl('notifications-shipment-statuses');
     const timeContainer = getEl('notifications-time-events');
     const payrollContainer = getEl('notifications-payroll-events');
@@ -319,10 +318,9 @@
       new Set((payrollFilters.event_types || []).map(String))
     );
 
-    if (remindTime) remindTime.value = prefs.remind_time || '';
+    if (remindTime) remindTime.value = prefs.remind_time || prefs.clockout_time || '';
     if (remindEvery) remindEvery.value = prefs.remind_every_days || 1;
     if (clockoutToggle) clockoutToggle.checked = !!prefs.clockout_enabled;
-    if (clockoutTime) clockoutTime.value = prefs.clockout_time || '';
 
     setGroupDisabled(statusContainer, !shipmentsToggle?.checked);
     setGroupDisabled(timeContainer, !timeToggle?.checked);
@@ -332,10 +330,6 @@
     if (projectSelect) {
       setProjectCheckboxes(projectSelect, shipmentFilters.project_ids || [], true);
       setGroupDisabled(projectSelect, !shipmentsToggle?.checked);
-    }
-
-    if (clockoutTime) {
-      clockoutTime.disabled = !clockoutToggle?.checked;
     }
 
     refreshPushStatus().catch(err => {
@@ -352,7 +346,6 @@
     const remindTime = getEl('notifications-remind-time');
     const remindEvery = getEl('notifications-remind-every');
     const clockoutToggle = getEl('notifications-clockout-enabled');
-    const clockoutTime = getEl('notifications-clockout-time');
 
     const statusContainer = getEl('notifications-shipment-statuses');
     const timeContainer = getEl('notifications-time-events');
@@ -379,7 +372,7 @@
       remind_time: remindTime?.value || '',
       remind_every_days: Number(remindEvery?.value || 1),
       clockout_enabled: !!clockoutToggle?.checked,
-      clockout_time: clockoutTime?.value || ''
+      clockout_time: ''
     };
   }
 
@@ -595,7 +588,6 @@
     const shipmentsToggle = getEl('notifications-shipments-enabled');
     const timeToggle = getEl('notifications-time-enabled');
     const payrollToggle = getEl('notifications-payroll-enabled');
-    const clockoutToggle = getEl('notifications-clockout-enabled');
 
     if (refreshBtn) {
       refreshBtn.addEventListener('click', () => loadNotifications({ reset: true }));
@@ -646,12 +638,6 @@
     if (payrollToggle) {
       payrollToggle.addEventListener('change', () => {
         setGroupDisabled(getEl('notifications-payroll-events'), !payrollToggle.checked);
-      });
-    }
-    if (clockoutToggle) {
-      clockoutToggle.addEventListener('change', () => {
-        const clockoutTime = getEl('notifications-clockout-time');
-        if (clockoutTime) clockoutTime.disabled = !clockoutToggle.checked;
       });
     }
 

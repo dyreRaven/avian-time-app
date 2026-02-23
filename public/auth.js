@@ -1,7 +1,6 @@
 // public/auth.js
 
 const CSRF_TOKEN_KEY = 'avian_csrf_token_v1';
-const DEVICE_MODE_KEY = 'avian_device_mode_v1';
 const ONBOARDING_PENDING_KEY = 'avian_onboarding_pending_v1';
 const LAST_ORG_ID_KEY = 'avian_last_org_id_v1';
 let csrfToken = null;
@@ -22,28 +21,6 @@ function storeCsrfToken(token) {
   csrfToken = token;
   try {
     localStorage.setItem(CSRF_TOKEN_KEY, token);
-  } catch {
-    // ignore storage failures
-  }
-}
-
-function loadDeviceMode() {
-  try {
-    const stored = localStorage.getItem(DEVICE_MODE_KEY);
-    if (stored === 'desktop' || stored === 'kiosk') return stored;
-  } catch {
-    // ignore storage failures
-  }
-  return null;
-}
-
-function storeDeviceMode(mode) {
-  try {
-    if (mode === 'desktop' || mode === 'kiosk') {
-      localStorage.setItem(DEVICE_MODE_KEY, mode);
-      return;
-    }
-    localStorage.removeItem(DEVICE_MODE_KEY);
   } catch {
     // ignore storage failures
   }
@@ -126,9 +103,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const bootstrapStepOrg = document.getElementById('bootstrap-step-org');
   const bootstrapEmailDisplay = document.getElementById('bootstrap-email-display');
   const tzSelect = document.getElementById('bootstrap-org-timezone');
-  const deviceDesktopBtn = document.getElementById('auth-device-desktop');
-  const deviceKioskBtn = document.getElementById('auth-device-kiosk');
-  const deviceChooser = document.getElementById('auth-device');
   const headerText = document.querySelector('.auth-header-text');
   const urlParams = new URLSearchParams(window.location.search);
   const setupToken = (urlParams.get('setup') || '').trim();
@@ -313,10 +287,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (bootstrapForm) {
       bootstrapForm.classList.toggle('hidden', mode !== 'bootstrap');
     }
-    if (deviceChooser) {
-      const showChooser = mode === 'login' && !bootstrapRequired;
-      deviceChooser.classList.toggle('hidden', !showChooser);
-    }
 
     if (toggleText) {
       toggleText.textContent =
@@ -411,25 +381,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   let requestedUiMode = null;
-  const storedDeviceMode = loadDeviceMode();
   const forceDesktopParam = (urlParams.get('force_desktop') || '').toLowerCase();
   if (forceDesktopParam === '1' || forceDesktopParam === 'true') {
     requestedUiMode = 'desktop';
-  } else if (storedDeviceMode === 'desktop') {
-    requestedUiMode = 'desktop';
-  }
-
-  function setDeviceSelection(mode) {
-    const isDesktop = mode === 'desktop';
-    const isKiosk = mode === 'kiosk';
-    if (deviceDesktopBtn) {
-      deviceDesktopBtn.classList.toggle('is-selected', isDesktop);
-      deviceDesktopBtn.setAttribute('aria-pressed', isDesktop ? 'true' : 'false');
-    }
-    if (deviceKioskBtn) {
-      deviceKioskBtn.classList.toggle('is-selected', isKiosk);
-      deviceKioskBtn.setAttribute('aria-pressed', isKiosk ? 'true' : 'false');
-    }
   }
 
   async function setUiModeAndRedirect(forcedMode = null) {
@@ -486,22 +440,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (toggleBtn) {
     toggleBtn.addEventListener('click', () => {
       setMode(mode === 'login' ? 'bootstrap' : 'login');
-    });
-  }
-
-  if (deviceDesktopBtn) {
-    deviceDesktopBtn.addEventListener('click', () => {
-      storeDeviceMode('desktop');
-      requestedUiMode = 'desktop';
-      setDeviceSelection('desktop');
-    });
-  }
-
-  if (deviceKioskBtn) {
-    deviceKioskBtn.addEventListener('click', () => {
-      storeDeviceMode('kiosk');
-      setDeviceSelection('kiosk');
-      window.location.href = '/kiosk';
     });
   }
 
@@ -707,7 +645,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   buildTimezoneOptions();
-  setDeviceSelection(storedDeviceMode);
 
   if (setupToken) {
     await initPasswordSetup(setupToken);
@@ -725,7 +662,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       toggleWrap.classList.toggle('hidden', bootstrapRequired && !bootstrapAccountReady);
     }
     if (bootstrapRequired) {
-      if (deviceChooser) deviceChooser.classList.add('hidden');
       if (bootstrapEmailInput && bootstrapEmail) {
         bootstrapEmailInput.value = bootstrapEmail;
       }

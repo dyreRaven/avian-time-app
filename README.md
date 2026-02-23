@@ -1,3 +1,40 @@
+## Containerized Deployment
+
+- Copy `.env.docker.example` to `.env` and fill required secrets:
+  - `cp .env.docker.example .env`
+
+- Build and start:
+  - `docker compose build`
+  - `docker compose up -d`
+- Stop:
+  - `docker compose down`
+- Validate section toggles for a quick smoke check:
+  - `npm run check:section-toggle`
+
+Section bundles are controlled with `ENABLED_SECTIONS` in `docker-compose.yml`/env:
+
+- Clock-in only:
+  - `ENABLED_SECTIONS=clock docker compose up -d`
+- Clock-in + Payroll:
+  - `ENABLED_SECTIONS=clock,payroll docker compose up -d`
+- Clock-in + Shipments:
+  - `ENABLED_SECTIONS=clock,shipments docker compose up -d`
+- All modules:
+  - `ENABLED_SECTIONS=all docker compose up -d`
+
+If you prefer a shell command override:
+
+- `ENABLED_SECTIONS=clock,payroll docker compose up -d`
+
+For repeatable app-store style bundles, use the profile patterns in
+`docs/SECTION_PROFILES.md` (clock-only, clock+payroll, clock+shipments).
+
+Defaults in the shipped compose:
+
+- `ENABLED_SECTIONS=all`
+- `DB_PATH=/app/data/rebuild.db`
+- `SESSION_DB_PATH=/app/data/sessions.db`
+
 ## Security Notes
 
 - **CSRF**: For any cross-origin client, read the `X-CSRF-Token` response header from a safe request (GET/HEAD/OPTIONS) and send it back in `X-CSRF-Token` on all state-changing requests (POST/PUT/PATCH/DELETE). Same-origin browser use should work without changes.
@@ -13,6 +50,19 @@
 - Stop the server before restoring to avoid file locks.
 
 ## Scripts
+
+- Quick test reset (development only):
+  - `npm run reset:test-data -- --all --force` (wipes app/session data for a fresh bootstrap test run, keeps migration history).
+  - `npm run reset:test-data -- --org-id <id> --force` (removes all rows tied to a single org and related users).
+  - After reset, in the browser console run:
+
+    `Object.keys(localStorage).filter(k => k.startsWith('avian_')).forEach(k => localStorage.removeItem(k));`
+
+- Comprehensive local fixtures:
+  - `npm run seed:test-data` (adds/updates broad test data in the first org, including users/employees, kiosks/sessions, time entries/exceptions, shipments, payroll history, notifications, and audit rows).
+  - Optional targeting/customization:
+    - `npm run seed:test-data -- --org-id 1 --seed-tag Demo`
+    - `npm run seed:test-data -- --admin-email demo.super@example.com --admin-password 'StrongPass123!'`
 
 - `npm run lint` (placeholder; no lint configured yet).
 - `npm test` (placeholder; no tests configured yet).

@@ -77,6 +77,8 @@ const LANG_COPY = {
     cameraStart: 'Start Camera',
     cameraTake: 'Take Photo',
     cameraRetake: 'Retake',
+    clockInPhotoUnavailable:
+      'Clock-in needs a photo, but this tablet cannot access the camera. Ask a supervisor or use another tablet.',
     pinCancel: 'Cancel',
     pinContinue: 'Continue',
     successBackToClockIn: 'Back to Clock-In',
@@ -112,6 +114,7 @@ const LANG_COPY = {
     statusSyncCount: 'Sync {{count}}',
     statusSyncReenroll: 'Re-enroll to sync punches',
     statusSyncNeedsAdmin: 'Sync needs admin attention',
+    clockingModuleDisabled: 'Clock-in is disabled for this deployment.',
     summaryCloseLabel: 'OK',
     clockOutSummaryTitle: 'Clock-out recorded.',
     clockOutSummaryOfflineTitle: 'Clock-out saved offline - will sync.',
@@ -163,6 +166,8 @@ const LANG_COPY = {
     cameraStart: 'Iniciar cámara',
     cameraTake: 'Tomar foto',
     cameraRetake: 'Repetir',
+    clockInPhotoUnavailable:
+      'Para fichar entrada se requiere una foto, pero esta tableta no puede acceder a la cámara.',
     pinCancel: 'Cancelar',
     pinContinue: 'Continuar',
     successBackToClockIn: 'Volver al fichaje',
@@ -198,6 +203,7 @@ const LANG_COPY = {
     statusSyncCount: 'Sincronizar {{count}}',
     statusSyncReenroll: 'Reinscribe para sincronizar marcaciones',
     statusSyncNeedsAdmin: 'La sincronización necesita atención del administrador',
+    clockingModuleDisabled: 'El registro de horas está desactivado para este despliegue.',
     summaryCloseLabel: 'Aceptar',
     clockOutSummaryTitle: 'Salida registrada.',
     clockOutSummaryOfflineTitle: 'Salida guardada sin conexion - se sincronizara.',
@@ -250,6 +256,8 @@ const LANG_COPY = {
     cameraStart: 'Kòmanse kamera',
     cameraTake: 'Pran foto',
     cameraRetake: 'Repran',
+    clockInPhotoUnavailable:
+      'Pou antre, foto obligatwa, men tablèt sa pa ka sèvi ak kamera.',
     pinCancel: 'Anile',
     pinContinue: 'Kontinye',
     successBackToClockIn: 'Retounen pou antre lè',
@@ -285,6 +293,7 @@ const LANG_COPY = {
     statusSyncCount: 'Senkronize {{count}}',
     statusSyncReenroll: 'Re-anrejistre pou senkronize makaj yo',
     statusSyncNeedsAdmin: 'Senkronizasyon bezwen atansyon admin',
+    clockingModuleDisabled: 'Antre sòti anrejistre pou aplikasyon sa a dezaktive.',
     summaryCloseLabel: 'Dakò',
     clockOutSummaryTitle: 'Fini travay anrejistre.',
     clockOutSummaryOfflineTitle: 'Fini travay sove offline - ap senkronize.',
@@ -381,6 +390,8 @@ let kioskTimezone = null;
 let kioskRefreshIntervalId = null;
 let headerClockTimerId = null;
 let headerClockTimeoutId = null;
+const KIOSK_SECTION_FEATURE_DEFAULTS = { time: true, payroll: true, shipments: true };
+let kioskSectionFeatures = { ...KIOSK_SECTION_FEATURE_DEFAULTS };
 
 function setPinToggleState(button, isVisible) {
   if (!button) return;
@@ -390,6 +401,53 @@ function setPinToggleState(button, isVisible) {
   button.setAttribute('aria-label', nextLabel);
   const labelEl = button.querySelector('[data-pin-toggle-label]');
   if (labelEl) labelEl.textContent = nextLabel;
+}
+
+function kioskCoerceSectionFlag(value, fallback = true) {
+  if (value === undefined || value === null) return fallback;
+  return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function kioskNormalizeSectionFeatures(raw = {}) {
+  const next = raw && typeof raw === 'object' ? raw : {};
+  return {
+    time: kioskCoerceSectionFlag(next.time, KIOSK_SECTION_FEATURE_DEFAULTS.time),
+    payroll: kioskCoerceSectionFlag(next.payroll, KIOSK_SECTION_FEATURE_DEFAULTS.payroll),
+    shipments: kioskCoerceSectionFlag(next.shipments, KIOSK_SECTION_FEATURE_DEFAULTS.shipments)
+  };
+}
+
+function isKioskSectionEnabled(sectionName) {
+  return kioskCoerceSectionFlag(kioskSectionFeatures?.[sectionName], true);
+}
+
+function applyClockingModuleDisabledState() {
+  const status = document.getElementById('kiosk-status');
+  const employeeSelect = document.getElementById('kiosk-employee');
+  const punchBtn = document.getElementById('kiosk-punch');
+  const langSwitch = document.querySelector('.lang-switch');
+  const logoHotspot =
+    document.getElementById('kiosk-logo-hotspot') ||
+    (document.querySelector('.glass-logo') &&
+      document.querySelector('.glass-logo').querySelector('.logo-hotspot'));
+
+  if (status) {
+    status.textContent = getCopy('clockingModuleDisabled');
+    status.className = 'glass-status kiosk-status kiosk-status-error';
+  }
+  if (employeeSelect) {
+    employeeSelect.disabled = true;
+  }
+  if (punchBtn) {
+    punchBtn.disabled = true;
+  }
+  if (langSwitch) {
+    langSwitch.style.display = 'none';
+  }
+  if (logoHotspot) {
+    logoHotspot.style.pointerEvents = 'none';
+    logoHotspot.style.opacity = '0.7';
+  }
 }
 
 // ====== BASIC HELPERS ======
@@ -502,11 +560,12 @@ function showSuccessOverlay(message, durationMs = 5000, closeLabel = null) {  //
 
 // Replace native dialogs with our in-app overlay to avoid browser chrome like "IP address says"
 function overrideNativeDialogs() {
+  const nativeConfirm = window.confirm && window.confirm.bind(window);
   window.alert = function kioskAlert(message) {
     showSuccessOverlay(String(message || ''));
   };
   window.confirm = function kioskConfirm(message) {
-    showSuccessOverlay(String(message || ''));
+    if (nativeConfirm) return nativeConfirm(String(message || ''));
     return false;
   };
   window.prompt = function kioskPrompt(message) {
@@ -802,6 +861,7 @@ async function fetchJSON(url, options = {}) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = new Error(data.error || data.message || 'Request failed');
+      err.data = data;
       err.status = res.status;
       err.statusText = res.statusText;
       throw err;
@@ -1056,6 +1116,15 @@ function isConnectionIssue(err, message) {
   const networkish = /network|failed to fetch|offline|connection|timed out/.test(msg);
   const serverDown = typeof status === 'number' && status >= 500;
   return !navigator.onLine || networkish || serverDown;
+}
+
+function isHardPunchQueueError(err) {
+  const status = err && err.status;
+  if (typeof status !== 'number') return false;
+
+  if (status === 401 || status === 403) return false;
+  if (status >= 500) return false;
+  return status >= 400 && status < 500;
 }
 
 function saveCache(key, v) {
@@ -1487,6 +1556,7 @@ function sortSessionsByRecency(list) {
 function computeActiveSession(sessions, sessionId, kioskProjectId) {
   const sorted = sortSessionsByRecency(sessions);
   if (!sorted.length) return null;
+  const openSessions = sorted.filter(s => !s?.ended_at);
 
   const normalizedSessionId =
     sessionId !== null && sessionId !== undefined ? Number(sessionId) : null;
@@ -1496,18 +1566,20 @@ function computeActiveSession(sessions, sessionId, kioskProjectId) {
   const validProjectId = Number.isFinite(normalizedProjectId) ? normalizedProjectId : null;
 
   if (validSessionId !== null) {
-    const matchById = sorted.find(s => Number(s.id) === validSessionId);
+    const matchById = openSessions.find(s => Number(s.id) === validSessionId);
     if (matchById && (validProjectId === null || Number(matchById.project_id) === validProjectId)) {
       return matchById;
     }
   }
 
   if (validProjectId !== null) {
-    const matchByProject = sorted.find(s => Number(s.project_id) === validProjectId);
+    const matchByProject = openSessions.find(
+      s => Number(s.project_id) === validProjectId
+    );
     if (matchByProject) return matchByProject;
   }
 
-  return sorted[0] || null;
+  return openSessions[0] || null;
 }
 
 function getActiveSession() {
@@ -1745,11 +1817,17 @@ function applyKioskProjectDefault() {
     activeSessionId = active.id || activeSessionId;
     projectId = active.project_id;
     kioskConfig.project_id = projectId;
-  } else if (kioskConfig && kioskConfig.project_id) {
-    projectId = kioskConfig.project_id;
-  } else {
-    const saved = localStorage.getItem(CURRENT_PROJECT_KEY);
-    if (saved) projectId = Number(saved);
+  }
+
+  if (!projectId && kioskConfig) {
+    kioskConfig.project_id = null;
+  }
+  if (!projectId) {
+    try {
+      localStorage.removeItem(CURRENT_PROJECT_KEY);
+    } catch {
+      // ignore
+    }
   }
 
   setCurrentProject(projectId);
@@ -1863,8 +1941,10 @@ async function loadKioskSettings() {
   try {
     const data = await fetchJSON('/api/kiosk/settings');
     const settings = data && data.settings ? data.settings : {};
+    const sectionFeatures = data && data.features ? data.features : {};
     clockInPhotoRequired = !!settings.clock_in_photo_required;
     saveClockInPhotoRequired(clockInPhotoRequired);
+    kioskSectionFeatures = kioskNormalizeSectionFeatures(sectionFeatures);
   } catch (err) {
     console.warn('Unable to load kiosk settings', err);
   }
@@ -1874,9 +1954,16 @@ async function onKioskReady() {
   if (kioskEnrolled) return;
   kioskEnrolled = true;
   await loadKioskSettings();
+
+  if (!isKioskSectionEnabled('time')) {
+    applyClockingModuleDisabledState();
+    return;
+  }
+
   await loadEmployeesAndProjects();
   await syncOfflineData('init');
   startOfflineSyncLoop();
+  setupAdminLongPress();
 
   if (!kioskRefreshIntervalId) {
     kioskRefreshIntervalId = setInterval(refreshKioskProjectFromServer, 30000);
@@ -2012,7 +2099,7 @@ function markKioskDayStarted() {
 function hasTodayTimesheet() {
   const today = getTodayIsoInTimezone(kioskTimezone || DEFAULT_TIMEZONE);
   return (kioskSessions || []).some(
-    s => (s.date || '').slice(0, 10) === today && s.project_id
+    s => (s.date || '').slice(0, 10) === today && s.project_id && !s.ended_at
   );
 }
 
@@ -2069,7 +2156,7 @@ async function loadEmployeesAndProjects() {
     employeesCache = emps.map(e => ({
       ...e,
       id: Number(e.id),
-      is_admin: !!e.kiosk_admin_access,
+      is_admin: e.is_admin !== undefined ? !!e.is_admin : !!e.kiosk_admin_access,
       uses_timekeeping: e.worker_timekeeping !== undefined ? Number(e.worker_timekeeping) : 1
     }));
     saveCache(CACHE_EMP_KEY, employeesCache);
@@ -2413,6 +2500,7 @@ if (modeLabelEl) {
     status.textContent = '';
     status.style.color = '#bbf7d0';
   }
+  clearClockInPhotoPendingState();
 
   const cachedOpen = getCachedOpenPunch(employee.id);
   if (cachedOpen && cachedOpen.open && cachedOpen.clock_in_ts) {
@@ -2429,6 +2517,9 @@ if (modeLabelEl) {
   const mustPhoto = clockInPhotoRequired && isClockInMode();
 
   if (mustPhoto) camSec.classList.remove('hidden');
+  if (mustPhoto && !isPhotoCaptureSupported()) {
+    setClockInPhotoUnavailableState();
+  }
 
   document.getElementById('pin-backdrop').classList.remove('hidden');
   if (pinInput) pinInput.focus();
@@ -2483,9 +2574,38 @@ function setPinWarning(msg) {
   el.style.color = '#fbbf24';
 }
 
+function isPhotoCaptureSupported() {
+  return !!(
+    navigator &&
+    navigator.mediaDevices &&
+    typeof navigator.mediaDevices.getUserMedia === 'function'
+  );
+}
+
+function setClockInPhotoUnavailableState() {
+  const pinContinueBtn = document.getElementById('pin-continue');
+  if (pinContinueBtn) pinContinueBtn.disabled = true;
+  setPinError(getCopy('clockInPhotoUnavailable'));
+}
+
+function setClockInPhotoPendingState() {
+  const pinContinueBtn = document.getElementById('pin-continue');
+  if (pinContinueBtn) pinContinueBtn.disabled = true;
+  setPinWarning(getCopy('pinStatusPinOkPhoto'));
+}
+
+function clearClockInPhotoPendingState() {
+  const pinContinueBtn = document.getElementById('pin-continue');
+  if (pinContinueBtn) pinContinueBtn.disabled = false;
+}
+
 // ====== CAMERA ======
 
 async function startCamera() {
+  if (!isPhotoCaptureSupported()) {
+    setClockInPhotoUnavailableState();
+    return;
+  }
   try {
     stopCamera();
     cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -2497,6 +2617,10 @@ async function startCamera() {
 
     setPinOk(getCopy('statusCameraReady'));
   } catch {
+    if (clockInPhotoRequired && isClockInMode()) {
+      setClockInPhotoUnavailableState();
+      return;
+    }
     setPinError(getCopy('statusCameraUnavailable'));
   }
 }
@@ -2530,6 +2654,7 @@ function takePhoto() {
   document.getElementById('retake-photo').classList.remove('hidden');
 
   setPinOk(getCopy('statusPhotoCaptured'));
+  clearClockInPhotoPendingState();
 }
 
 function retakePhoto() {
@@ -2538,6 +2663,9 @@ function retakePhoto() {
   document.getElementById('cam-video').classList.remove('hidden');
   document.getElementById('take-photo').classList.remove('hidden');
   document.getElementById('retake-photo').classList.add('hidden');
+  if (clockInPhotoRequired && isClockInMode()) {
+    setClockInPhotoPendingState();
+  }
 }
 
 
@@ -2600,7 +2728,11 @@ async function submitPin() {
 
       if (clockInPhotoRequired && isClockInMode() && !currentPhotoBase64) {
         kioskDebug('awaiting photo');
-        setPinOk(getCopy('pinStatusPinOkPhoto'));
+        if (isPhotoCaptureSupported()) {
+          setClockInPhotoPendingState();
+        } else {
+          setClockInPhotoUnavailableState();
+        }
         return;
       }
     }
@@ -2725,7 +2857,11 @@ async function submitPin() {
   if (pinConfirmInput) pinConfirmInput.value = '';
 
   if (clockInPhotoRequired && isClockInMode() && !currentPhotoBase64) {
-    setPinOk(getCopy('pinStatusPinCreatedPhoto'));
+    if (isPhotoCaptureSupported()) {
+      setClockInPhotoPendingState();
+    } else {
+      setClockInPhotoUnavailableState();
+    }
     return;
   }
 
@@ -2773,6 +2909,7 @@ async function performPunch(employee_id) {
   const isAdmin = !!(employee && employee.is_admin);
   const intendedMode = isClockInMode() ? 'clock_in' : 'clock_out';
   const cachedOpenPunch = getCachedOpenPunch(employee_id);
+  const hasOpenPunch = !!(cachedOpenPunch && cachedOpenPunch.open);
   const cachedClockInTs =
     cachedOpenPunch && cachedOpenPunch.open ? cachedOpenPunch.clock_in_ts : null;
   kioskDebug('performPunch start', {
@@ -2801,7 +2938,7 @@ async function performPunch(employee_id) {
   }
 
   const hasTimesheetToday = hasTodayTimesheet();
-  if (!hasTimesheetToday) {
+  if (!hasTimesheetToday && !hasOpenPunch && intendedMode === 'clock_in') {
     if (!navigator.onLine) {
       kioskDebug('performPunch blocked: no timesheet (offline)');
       status.textContent = getCopy('timesheetNotSet');
@@ -2813,6 +2950,11 @@ async function performPunch(employee_id) {
       openAdminDashboard(employee_id, { skipPin: true, forceStart: true });
       return;
     }
+    kioskDebug('performPunch worker needs timesheet');
+    status.textContent = getCopy('timesheetNotSet');
+    status.className = 'glass-status kiosk-status kiosk-status-error';
+    showAdminLoginModal();
+    return;
   }
 
   if (intendedMode === 'clock_out' && cachedClockInTs) {
@@ -3228,6 +3370,11 @@ function handleEmployeeSelectBlur() {
 function onPunchClick() {
   const empSel = document.getElementById('kiosk-employee');
   const status = document.getElementById('kiosk-status');
+  if (!isKioskSectionEnabled('time')) {
+    status.textContent = getCopy('clockingModuleDisabled');
+    status.className = 'glass-status kiosk-status kiosk-status-error';
+    return;
+  }
 
   if (!empSel.value) {
     status.textContent = getCopy('selectYourNameStatus');
@@ -3315,6 +3462,11 @@ async function syncQueueToServer() {
       if (authIssue) {
         setSyncWarning(getCopy('statusSyncReenroll'));
         break;
+      }
+      if (isHardPunchQueueError(err)) {
+        removeFromQueue(punch.client_id);
+        setSyncWarning(getCopy('statusSyncNeedsAdmin'));
+        continue;
       }
       setSyncWarning(getCopy('statusSyncNeedsAdmin'));
     }
@@ -3459,8 +3611,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const retakePhotoBtn = document.getElementById('retake-photo');
   if (retakePhotoBtn) retakePhotoBtn.addEventListener('click', retakePhoto);
 
-  // Hidden admin mode on logo long-press
-  setupAdminLongPress();
+  // Hidden admin mode on logo long-press is initialized after feature validation.
 
   // Admin login modal buttons
   const adminClose = document.getElementById('admin-login-close');

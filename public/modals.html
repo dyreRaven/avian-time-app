@@ -65,11 +65,6 @@
         <input id="edit-employee-rate" type="number" min="0" step="0.01" />
       </div>
 
-      <div class="form-field">
-        <label for="edit-employee-template">Role template (optional)</label>
-        <select id="edit-employee-template"></select>
-        <p class="field-help">Applies access + permissions from a saved template.</p>
-      </div>
     </div>
 
     <!-- ACCESS -->
@@ -81,7 +76,7 @@
             id="edit-employee-desktop-access"
             type="checkbox"
           />
-          Desktop admin access
+          This employee is an admin
         </label>
 
         <label class="checkbox-inline">
@@ -92,13 +87,17 @@
           Kiosk admin access
         </label>
       </div>
+      <p class="field-help">Admins can sign in to the app and manage settings based on their permissions.</p>
     </div>
 
     <!-- ADMIN LOGIN -->
     <div class="modal-section employee-admin-login-section" id="employee-admin-login-section">
       <h2>Admin login</h2>
-      <p class="card-sub">Create or enable a super admin login for this employee.</p>
-      <div class="employee-admin-login-card">
+      <p class="card-sub">After you mark this employee as an admin, send a setup link so they can create their login.</p>
+      <p id="employee-admin-login-inactive-note" class="field-help hidden">
+        Click Edit, then turn on "This employee is an admin" above to send an invite link.
+      </p>
+      <div class="employee-admin-login-card" id="employee-admin-login-card">
         <div class="employee-admin-login-status">
           <span class="label">Status</span>
           <span id="employee-admin-login-status" class="value" data-status="none">No admin login yet.</span>
@@ -121,7 +120,7 @@
           Leave passwords blank to email a setup link (requires email configuration). Entering a password sets it immediately.
         </p>
         <div class="settings-actions">
-          <button type="button" id="employee-admin-login-save" class="btn secondary">Send setup link</button>
+          <button type="button" id="employee-admin-login-save" class="btn secondary">Send admin invite link</button>
           <span id="employee-admin-login-message" class="message"></span>
         </div>
       </div>
@@ -139,21 +138,21 @@
             <input id="edit-employee-perm-see-shipments" type="checkbox" />
             <span>See shipments</span>
           </label>
-          <p class="perm-note">Shipments board, documents, comments, templates, and shipment reports. Payment amounts/docs still require payroll access.</p>
+          <p class="perm-note">Shipments board, documents, comments, templates, and shipment reports. Payment amounts/docs still require super admin access.</p>
         </div>
         <div class="perm-item">
           <label class="checkbox-inline">
             <input id="edit-employee-perm-view-time-reports" type="checkbox" />
             <span>View time reports</span>
           </label>
-          <p class="perm-note">Approve Time Entries and open punches (view-only). Pay fields remain hidden without payroll access.</p>
+          <p class="perm-note">Review Time Entries and open punches (view-only). Pay fields remain hidden without super admin access.</p>
         </div>
         <div class="perm-item">
           <label class="checkbox-inline">
             <input id="edit-employee-perm-modify-time" type="checkbox" />
             <span>Modify time entries</span>
           </label>
-          <p class="perm-note">Edit, verify, resolve, and review exceptions. Payroll approval still requires payroll access.</p>
+          <p class="perm-note">Edit, verify, resolve, and complete field review. Payroll approval still requires super admin access.</p>
         </div>
         <div class="perm-item">
           <label class="checkbox-inline">
@@ -171,24 +170,10 @@
         </div>
         <div class="perm-item">
           <label class="checkbox-inline">
-            <input id="edit-employee-perm-view-payroll" type="checkbox" />
-            <span>View payroll info</span>
-          </label>
-          <p class="perm-note">Payroll screens, pay fields, employee list, vendors/projects, settings, and QBO status/sync. Includes time approval.</p>
-        </div>
-        <div class="perm-item">
-          <label class="checkbox-inline">
-            <input id="edit-employee-perm-modify-payroll" type="checkbox" />
-            <span>Modify payroll</span>
-          </label>
-          <p class="perm-note">Run payroll (preflight, create checks, unpay) and edit payroll settings. Implies payroll view access.</p>
-        </div>
-        <div class="perm-item">
-          <label class="checkbox-inline">
             <input id="edit-employee-perm-modify-pay-rates" type="checkbox" />
             <span>Modify pay rates</span>
           </label>
-          <p class="perm-note">Edit employee rates (desktop and kiosk unlock). Implies payroll view access.</p>
+          <p class="perm-note">Edit employee rates (desktop and kiosk unlock).</p>
         </div>
       </div>
     </div>
@@ -240,7 +225,7 @@
       <div class="form-field">
         <label for="te-review-action">Action</label>
         <select id="te-review-action">
-          <option value="approve">Approve</option>
+          <option value="approve">Approve (field review)</option>
           <option value="modify">Modify</option>
           <option value="reject">Reject</option>
         </select>
@@ -380,20 +365,24 @@
   aria-modal="true"
 >
   <div class="modal-card modal-card-wide">
-    <div class="modal-header">
-      <h3 id="shipment-detail-title">Shipment</h3>
-      <div class="modal-header-actions">
-        <button id="shipment-detail-edit" class="btn secondary btn-sm" type="button">
-          Edit
-        </button>
-        <button id="shipment-detail-close" class="icon-button" type="button" aria-label="Close shipment details">
-          ×
+	    <div class="modal-header">
+	      <h3 id="shipment-detail-title">Shipment</h3>
+	      <div class="modal-header-actions">
+	        <button id="shipment-detail-personal-note" class="btn secondary btn-sm" type="button">
+	          My Note
+	        </button>
+	        <button id="shipment-detail-edit" class="btn secondary btn-sm" type="button">
+	          Edit
+	        </button>
+	        <button id="shipment-detail-close" class="icon-button" type="button" aria-label="Close shipment details">
+	          ×
         </button>
       </div>
     </div>
 
-    <div class="ship-detail-tabs" style="display:flex; gap:8px; margin-bottom:10px;">
+    <div class="ship-detail-tabs">
       <button class="btn secondary btn-sm ship-detail-tab active" data-tab="overview">Overview</button>
+      <button class="btn secondary btn-sm ship-detail-tab" data-tab="items">Items</button>
       <button class="btn secondary btn-sm ship-detail-tab" data-tab="payments">Payments</button>
       <button class="btn secondary btn-sm ship-detail-tab" data-tab="timeline">Timeline</button>
       <button class="btn secondary btn-sm ship-detail-tab" data-tab="documents">Documents</button>
@@ -403,10 +392,80 @@
     <div id="ship-detail-overview" class="ship-detail-tabpanel">
       <!-- filled from /api/shipments/:id -->
     </div>
+    <div id="ship-detail-items" class="ship-detail-tabpanel hidden"></div>
     <div id="ship-detail-payments" class="ship-detail-tabpanel hidden"></div>
     <div id="ship-detail-timeline" class="ship-detail-tabpanel hidden"></div>
     <div id="ship-detail-documents" class="ship-detail-tabpanel hidden"></div>
     <div id="ship-detail-comments" class="ship-detail-tabpanel hidden"></div>
+</div>
+</div>
+
+<!-- SHIPMENT PERSONAL NOTE (PRIVATE) -->
+<div id="shipment-personal-note-backdrop" class="modal-backdrop hidden"></div>
+
+<div
+  id="shipment-personal-note-modal"
+  class="modal hidden"
+  role="dialog"
+  aria-modal="true"
+>
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="shipment-personal-note-title">My Note</h3>
+      <div class="modal-header-actions">
+        <button
+          id="shipment-personal-note-close"
+          class="icon-button"
+          type="button"
+          aria-label="Close personal note"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+
+    <div class="modal-section">
+      <div class="form-group">
+        <label for="shipment-personal-note-body">Note</label>
+        <textarea
+          id="shipment-personal-note-body"
+          rows="4"
+          placeholder="Add a private note (only you can see this)."
+        ></textarea>
+      </div>
+
+      <label class="checkbox-inline">
+        <input type="checkbox" id="shipment-personal-note-complete" />
+        <span>Mark complete</span>
+      </label>
+
+      <div id="shipment-personal-note-status" class="small-muted"></div>
+    </div>
+
+    <div class="modal-footer">
+      <button
+        id="shipment-personal-note-delete"
+        type="button"
+        class="btn danger"
+        disabled
+      >
+        Delete note
+      </button>
+      <button
+        id="shipment-personal-note-cancel"
+        type="button"
+        class="btn secondary"
+      >
+        Cancel
+      </button>
+      <button
+        id="shipment-personal-note-save"
+        type="button"
+        class="btn primary"
+      >
+        Save
+      </button>
+    </div>
   </div>
 </div>
 
@@ -526,7 +585,7 @@
 
       <div class="form-field">
         <label for="project-edit-customer">Customer</label>
-        <input id="project-edit-customer" type="text" readonly />
+        <input id="project-edit-customer" type="text" placeholder="Required" />
       </div>
 
       <div class="form-field">
@@ -695,19 +754,19 @@
 
 <!-- TIME ENTRY APPROVE NOTE MODAL -->
 <div id="time-entry-approve-note-backdrop" class="modal-backdrop hidden"></div>
-<div id="time-entry-approve-note-modal" class="modal hidden" role="dialog" aria-modal="true">
-  <div class="modal-card time-entry-note-card">
-    <div class="modal-header">
-      <h3>Approval note</h3>
-      <button
-        id="time-entry-approve-note-close"
-        class="icon-button"
-        type="button"
-        aria-label="Close approval note"
-      >
-        ×
-      </button>
-    </div>
+  <div id="time-entry-approve-note-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card time-entry-note-card">
+      <div class="modal-header">
+        <h3>Payroll approval note</h3>
+        <button
+          id="time-entry-approve-note-close"
+          class="icon-button"
+          type="button"
+          aria-label="Close payroll approval note"
+        >
+          ×
+        </button>
+      </div>
     <div class="modal-section">
       <p id="time-entry-approve-note-message" class="text-sm text-gray-700"></p>
       <textarea
@@ -743,7 +802,7 @@
     </div>
     <div class="modal-footer">
       <button id="time-entry-review-warning-cancel" type="button" class="btn secondary">Cancel</button>
-      <button id="time-entry-review-warning-ok" type="button" class="btn primary">Approve anyway</button>
+      <button id="time-entry-review-warning-ok" type="button" class="btn primary">Approve for payroll anyway</button>
     </div>
   </div>
 </div>
@@ -901,9 +960,22 @@
                 <input type="text" id="shipment-po-number" name="po_number" />
               </div>
               <div class="form-group">
-                <!-- Reuse the old SKU spot as a generic internal reference -->
-                <label for="shipment-sku">Internal Ref # (optional)</label>
-                <input type="text" id="shipment-sku" name="sku" />
+                <label for="shipment-country-origin">Country of origin (optional)</label>
+                <div class="shipment-coo-inline">
+                  <input
+                    type="text"
+                    id="shipment-country-origin"
+                    name="country_of_origin"
+                    placeholder="e.g., China"
+                  />
+                  <label class="checkbox-inline shipment-coo-apply-label">
+                    <input
+                      type="checkbox"
+                      id="shipment-coo-apply-all"
+                    />
+                    <span>Use this country on all items</span>
+                  </label>
+                </div>
               </div>
             </div>
 
@@ -1016,12 +1088,34 @@
               </div>
             </div>
 
+            <div class="form-row-2">
+              <div class="form-group">
+                <label class="form-label-spacer" aria-hidden="true">Requested clearing</label>
+                <label class="checkbox-inline">
+                  <input
+                    type="checkbox"
+                    id="shipment-requested-clearing"
+                  />
+                  <span>Requested clearing</span>
+                </label>
+              </div>
+              <div class="form-group">
+                <label for="shipment-requested-clearing-date">Clearing request sent</label>
+                <input
+                  type="date"
+                  id="shipment-requested-clearing-date"
+                  name="requested_clearing_date"
+                  disabled
+                />
+              </div>
+            </div>
+
               </section>
 
               <!-- NOTES now lives INSIDE the left column -->
               <section class="shipment-card">
                 <div class="form-group">
-                  <label for="shipment-notes">Notes</label>
+                  <label for="shipment-notes">Description</label>
                   <textarea
                     id="shipment-notes"
                     name="notes"
@@ -1051,6 +1145,7 @@
             <div class="shipment-items-header">
               <div>Name/Description</div>
               <div>SKU</div>
+              <div>COO</div>
               <div>Vendor</div>
               <div>Qty</div>
               <div>Price / Unit</div>

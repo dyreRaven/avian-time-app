@@ -3,11 +3,16 @@
 // Rebuilt payroll UI from scratch: summary, settings, send-to-QB toggle, custom lines,
 // inline time-entry viewer/editor, and create-check payload wiring.
 
+const DEFAULT_PAYROLL_MEMO_TEMPLATE = 'Payroll {start} – {end}';
+const DEFAULT_PAYROLL_LINE_TEMPLATE = 'Labor {hours} hrs – {project}';
+
 let currentPayrollSettings = {
   bank_account_name: null,
   expense_account_name: null,
-  default_memo: 'Payroll {start} – {end}',
-  line_description_template: 'Labor {hours} hrs – {project}'
+  receipt_expense_account_name: null,
+  receipt_class_name: null,
+  default_memo: DEFAULT_PAYROLL_MEMO_TEMPLATE,
+  line_description_template: DEFAULT_PAYROLL_LINE_TEMPLATE
 };
 let currentPayrollRows = [];
 let currentPayrollRange = { start: null, end: null };
@@ -15,10 +20,12 @@ let payrollOverrides = {}; // per-employee memo/line overrides
 let payrollExpenseAccounts = [];
 let payrollClasses = [];
 let payrollProjects = [];
+let payrollEmployees = [];
 let payrollSettingsPromise = null;
 let payrollSettingsLoaded = false;
 let additionalLinesByEmployee = {}; // { empId: [ { id, description, amount, expenseAccountName, className } ] }
 let payrollExpandedRows = new Set(); // track expanded rows so rerenders don't collapse
+let payrollSendSelections = new Set(); // selected employee ids for "Send to QB"
 let lastPayrollResults = null;
 let lastPayrollRunId = null;
 let lastPayrollRunStatus = null;
@@ -27,9 +34,25 @@ let lastPayrollPayloadHash = null;
 let lastPayrollRunType = 'standard';
 let lastPayrollAdjustmentReason = null;
 let lastTimeEntriesContext = null;
+let currentPayrollPendingApprovals = [];
+let currentPayrollPendingApprovalCount = 0;
+let payrollPendingApprovalsDismissed = false;
+let payrollPendingApprovalsActionsBound = false;
 let payrollReportRuns = [];
-let payrollReportDetailsCache = {};
+let payrollRunDetailsCache = {};
 let currentPayrollReportRunId = null;
+let currentPayrollRunReview = null;
+let payrollRunReviewRetrySelections = new Set();
+let payrollReportRunFilters = {
+  start: '',
+  end: '',
+  status: '',
+  runType: ''
+};
+let payrollReportCheckFilters = {
+  employee: '',
+  paid: ''
+};
 let auditReportsInitialized = false;
 
 function collectPayrollWarnings(results) {
@@ -50,17 +73,186 @@ function collectPayrollWarnings(results) {
   return list;
 }
 
+function buildPendingApprovalsMessage(pendingRows) {
+  if (!Array.isArray(pendingRows) || !pendingRows.length) return '';
+  const maxRows = 8;
+  const preview = pendingRows.slice(0, maxRows).map(row => {
+    const employee = row?.employee_name || '(Employee)';
+    const start = row?.start_date || '';
+    const end = row?.end_date || '';
+    const dateLabel = start && end ? `${start} to ${end}` : (start || end || 'unknown date');
+    return `• ${employee} (${dateLabel})`;
+  });
+  const remaining = pendingRows.length - preview.length;
+  const moreLine = remaining > 0 ? `\n• +${remaining} more` : '';
+  return `\n\nPending approvals in this period:\n${preview.join('\n')}${moreLine}`;
+}
+
+function buildPendingApprovalsConfirmWarning({ pendingRows = [], pendingCount = null } = {}) {
+  const rows = Array.isArray(pendingRows) ? pendingRows : [];
+  const parsedCount = Number(pendingCount);
+  const totalCount =
+    Number.isFinite(parsedCount) && parsedCount >= 0
+      ? parsedCount
+      : rows.length;
+  if (totalCount <= 0) return '';
+
+  const maxRows = 6;
+  const preview = rows.slice(0, maxRows).map(row => {
+    const employee = row?.employee_name || '(Employee)';
+    const start = row?.start_date || '';
+    const end = row?.end_date || '';
+    const dateLabel = start && end
+      ? (start === end ? formatDateUS(start) : `${formatDateUS(start)} to ${formatDateUS(end)}`)
+      : (start ? formatDateUS(start) : (end ? formatDateUS(end) : 'Unknown date'));
+    return `• ${employee} (${dateLabel})`;
+  });
+  const remaining = Math.max(0, totalCount - preview.length);
+  const heading = totalCount === 1
+    ? 'Warning: 1 time entry in this period is not payroll-approved yet.'
+    : `Warning: ${totalCount} time entries in this period are not payroll-approved yet.`;
+  const previewText = preview.length
+    ? `\n${preview.join('\n')}${remaining > 0 ? `\n• +${remaining} more` : ''}`
+    : '';
+
+  return `\n\n${heading}\nPayroll will run only for approved selected entries.${previewText}`;
+}
+
+function buildPayrollApiErrorMessage(err) {
+  const base = (err && err.message) ? err.message : String(err || 'Unknown error');
+  const pendingRows = Array.isArray(err?.body?.pending)
+    ? err.body.pending
+    : (Array.isArray(err?.body?.pending_approvals?.pending)
+      ? err.body.pending_approvals.pending
+      : []);
+  if (Array.isArray(pendingRows) && pendingRows.length) {
+    return base + buildPendingApprovalsMessage(pendingRows);
+  }
+  return base;
+}
+
+function openPayrollReviewTimeEntries() {
+  if (typeof window.navigateToSection === 'function') {
+    window.navigateToSection('time-entries');
+  }
+  const applyFilters = () => {
+    const startEl = document.getElementById('te-filter-start');
+    const endEl = document.getElementById('te-filter-end');
+    const runBtn = document.getElementById('time-filter-apply');
+    if (startEl && currentPayrollRange?.start) startEl.value = currentPayrollRange.start;
+    if (endEl && currentPayrollRange?.end) endEl.value = currentPayrollRange.end;
+    if (runBtn) runBtn.click();
+  };
+  setTimeout(applyFilters, 0);
+  setTimeout(applyFilters, 120);
+}
+
+function renderPayrollPendingApprovalsBanner() {
+  const box = document.getElementById('payroll-pending-approvals-banner');
+  const textEl = document.getElementById('payroll-pending-approvals-text');
+  const listEl = document.getElementById('payroll-pending-approvals-list');
+  if (!box || !textEl || !listEl) return;
+
+  const hasPending = currentPayrollPendingApprovalCount > 0;
+  if (!hasPending || payrollPendingApprovalsDismissed) {
+    box.classList.add('hidden');
+    listEl.innerHTML = '';
+    textEl.textContent = '';
+    return;
+  }
+
+  const start = currentPayrollRange?.start ? formatDateUS(currentPayrollRange.start) : '';
+  const end = currentPayrollRange?.end ? formatDateUS(currentPayrollRange.end) : '';
+  const rangeLabel = start && end ? ` (${start} – ${end})` : '';
+  const countLabel = currentPayrollPendingApprovalCount === 1 ? 'entry is' : 'entries are';
+  textEl.textContent =
+    `${currentPayrollPendingApprovalCount} time ${countLabel} still not approved for payroll${rangeLabel}. ` +
+    'These unapproved entries are excluded and will not appear in the payroll entries below. ' +
+    'You can continue with approved entries, or review these first.';
+
+  listEl.innerHTML = '';
+  const maxRows = 10;
+  currentPayrollPendingApprovals.slice(0, maxRows).forEach(row => {
+    const li = document.createElement('li');
+    const employee = row?.employee_name || '(Employee)';
+    const startDate = row?.start_date || '';
+    const endDate = row?.end_date || '';
+    const dateLabel = startDate && endDate
+      ? (startDate === endDate ? formatDateUS(startDate) : `${formatDateUS(startDate)} to ${formatDateUS(endDate)}`)
+      : (startDate ? formatDateUS(startDate) : (endDate ? formatDateUS(endDate) : 'Unknown date'));
+    li.textContent = `${employee} (${dateLabel})`;
+    listEl.appendChild(li);
+  });
+  const remaining = currentPayrollPendingApprovalCount - Math.min(maxRows, currentPayrollPendingApprovals.length);
+  if (remaining > 0) {
+    const li = document.createElement('li');
+    li.textContent = `+${remaining} more`;
+    listEl.appendChild(li);
+  }
+
+  box.classList.remove('hidden');
+}
+
+function setPayrollPendingApprovals(pendingRows = [], pendingCount = null) {
+  currentPayrollPendingApprovals = Array.isArray(pendingRows) ? pendingRows : [];
+  const parsedCount = Number(pendingCount);
+  currentPayrollPendingApprovalCount =
+    Number.isFinite(parsedCount) && parsedCount >= 0
+      ? parsedCount
+      : currentPayrollPendingApprovals.length;
+  payrollPendingApprovalsDismissed = false;
+  renderPayrollPendingApprovalsBanner();
+}
+
+function clearPayrollPendingApprovals() {
+  currentPayrollPendingApprovals = [];
+  currentPayrollPendingApprovalCount = 0;
+  payrollPendingApprovalsDismissed = false;
+  renderPayrollPendingApprovalsBanner();
+}
+
+function setupPayrollPendingApprovalsBannerActions() {
+  if (payrollPendingApprovalsActionsBound) return;
+  const continueBtn = document.getElementById('payroll-pending-approvals-continue');
+  const reviewBtn = document.getElementById('payroll-pending-approvals-review');
+  if (!continueBtn && !reviewBtn) return;
+
+  if (continueBtn) {
+    continueBtn.addEventListener('click', () => {
+      payrollPendingApprovalsDismissed = true;
+      renderPayrollPendingApprovalsBanner();
+    });
+  }
+  if (reviewBtn) {
+    reviewBtn.addEventListener('click', openPayrollReviewTimeEntries);
+  }
+  payrollPendingApprovalsActionsBound = true;
+}
+
+function isPayrollFeatureEnabled() {
+  if (typeof isSectionFeatureEnabled !== 'function') return true;
+  return isSectionFeatureEnabled('payroll');
+}
+
 function canModifyPayrollReports() {
+  if (!isPayrollFeatureEnabled()) return false;
   const perms = window.CURRENT_ACCESS_PERMS || {};
-  if (typeof perms.modify_payroll === 'undefined') return true;
-  return perms.modify_payroll === true || perms.modify_payroll === 'true';
+  return (
+    perms.modify_payroll === true ||
+    perms.modify_payroll === 'true' ||
+    perms.modify_payroll === 1 ||
+    perms.modify_payroll === '1'
+  );
 }
 
 function applyPayrollSettingsAccess() {
+  if (!isPayrollFeatureEnabled()) return;
   const canEdit = canModifyPayrollReports();
   const fieldIds = [
     'payroll-bank-account',
     'payroll-expense-account',
+    'payroll-receipt-expense-account',
+    'payroll-receipt-class',
     'payroll-memo-template',
     'payroll-line-desc-template'
   ];
@@ -73,6 +265,102 @@ function applyPayrollSettingsAccess() {
     saveBtn.disabled = !canEdit;
     saveBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
   }
+
+  // Payroll actions (create checks / unpay) require modify_payroll.
+  const createBtn = document.getElementById('payroll-create-checks');
+  if (createBtn) {
+    createBtn.disabled = !canEdit;
+    createBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
+  }
+  const retryBtn = document.getElementById('payroll-retry-failed');
+  if (retryBtn) {
+    if (!canEdit) {
+      retryBtn.disabled = true;
+      retryBtn.title = 'Requires modify payroll permission.';
+    } else {
+      retryBtn.title = '';
+    }
+  }
+  const runReviewRetryBtn = document.getElementById('payroll-run-review-retry-selected');
+  if (runReviewRetryBtn) {
+    runReviewRetryBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
+  }
+  document.querySelectorAll('.payroll-run-review-select-failed').forEach(el => {
+    el.disabled = !canEdit;
+    el.title = canEdit ? '' : 'Requires modify payroll permission.';
+  });
+  updatePayrollRunReviewRetryButtonState();
+
+  const reimbursementFieldIds = [
+    'payroll-reimbursement-employee',
+    'payroll-reimbursement-project',
+    'payroll-reimbursement-amount',
+    'payroll-reimbursement-date',
+    'payroll-reimbursement-note',
+    'payroll-reimbursement-vendor',
+    'payroll-reimbursement-receipt'
+  ];
+  reimbursementFieldIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !canEdit;
+  });
+  const reimbursementBtn = document.getElementById('payroll-reimbursement-submit');
+  if (reimbursementBtn) {
+    reimbursementBtn.disabled = !canEdit;
+    reimbursementBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
+  }
+  document.querySelectorAll('.payroll-reimbursement-approve').forEach(btn => {
+    btn.disabled = !canEdit;
+    btn.title = canEdit ? '' : 'Requires modify payroll permission.';
+  });
+
+  // Summary table contains per-employee memo/line item inputs which should also reflect access.
+  applyPayrollSummaryAccess();
+}
+
+function applyPayrollSummaryAccess() {
+  if (!isPayrollFeatureEnabled()) return;
+  const canEdit = canModifyPayrollReports();
+  const tbody = document.getElementById('payroll-summary-body');
+  if (!tbody) return;
+
+  const title = canEdit ? '' : 'Requires modify payroll permission.';
+
+  tbody.querySelectorAll('.payroll-send-checkbox').forEach(el => {
+    el.disabled = !canEdit;
+    el.title = title;
+  });
+
+  tbody.querySelectorAll('.payroll-memo-input').forEach(el => {
+    el.disabled = !canEdit;
+    el.title = title;
+  });
+
+  tbody
+    .querySelectorAll(
+      '.line-expense-select, .line-class-select, .line-project-select'
+    )
+    .forEach(el => {
+      el.disabled = !canEdit;
+      el.title = title;
+    });
+
+  tbody.querySelectorAll('.line-desc-input, .line-amount-input').forEach(el => {
+    el.disabled = !canEdit;
+    el.title = title;
+  });
+
+  // Hide add/remove buttons in view-only mode so the UI doesn't look editable.
+  tbody.querySelectorAll('.btn-add-line, .btn-remove-line').forEach(btn => {
+    btn.disabled = !canEdit;
+    btn.title = title;
+    btn.style.display = canEdit ? '' : 'none';
+  });
+}
+
+// app.js hydrates CURRENT_ACCESS_PERMS after payroll.js runs; expose a hook to re-apply access gates.
+if (typeof window !== 'undefined') {
+  window.applyPayrollSettingsAccess = applyPayrollSettingsAccess;
 }
 
 function setReportsMessage(text, isError = false) {
@@ -80,6 +368,391 @@ function setReportsMessage(text, isError = false) {
   if (!msgEl) return;
   msgEl.textContent = text || '';
   msgEl.style.color = isError ? '#b91c1c' : '';
+}
+
+function getPayrollRunReviewElements() {
+  return {
+    wrap: document.getElementById('payroll-run-review'),
+    subtext: document.getElementById('payroll-run-review-subtext'),
+    meta: document.getElementById('payroll-run-review-meta'),
+    alert: document.getElementById('payroll-run-review-alert'),
+    failedCount: document.getElementById('payroll-run-review-failed-count'),
+    successCount: document.getElementById('payroll-run-review-success-count'),
+    failedBody: document.getElementById('payroll-run-review-failed-body'),
+    successBody: document.getElementById('payroll-run-review-success-body'),
+    retryBtn: document.getElementById('payroll-run-review-retry-selected'),
+    loadPeriodBtn: document.getElementById('payroll-run-review-load-period'),
+    refreshBtn: document.getElementById('payroll-run-review-refresh')
+  };
+}
+
+function getPayrollReviewFailedRows(review = currentPayrollRunReview) {
+  const results = Array.isArray(review?.results) ? review.results : [];
+  return results.filter(row => row && (row.ok === 0 || row.ok === false));
+}
+
+function getPayrollReviewSuccessRows(review = currentPayrollRunReview) {
+  const results = Array.isArray(review?.results) ? review.results : [];
+  return results.filter(row => row && !(row.ok === 0 || row.ok === false));
+}
+
+function getPayrollReviewSelectedFailedEmployeeIds() {
+  return [...payrollRunReviewRetrySelections]
+    .map(id => Number(id))
+    .filter(Number.isFinite);
+}
+
+function setPayrollRunReviewAlert(message, isError = true) {
+  const { alert } = getPayrollRunReviewElements();
+  if (!alert) return;
+  const text = String(message || '').trim();
+  if (!text) {
+    alert.textContent = '';
+    alert.classList.add('hidden');
+    return;
+  }
+  alert.textContent = text;
+  alert.style.borderColor = isError ? '#f59e0b' : '#cbd5e1';
+  alert.style.background = isError ? '#fffbeb' : '#f8fafc';
+  alert.style.color = isError ? '#92400e' : '#334155';
+  alert.classList.remove('hidden');
+}
+
+function derivePayrollFailureFixHint(row, run = null) {
+  const errorText = String(row?.error || run?.last_error || '').trim();
+  const normalized = errorText.toLowerCase();
+  const warningCodes = Array.isArray(row?.warning_codes)
+    ? row.warning_codes.map(code => String(code || '').toLowerCase())
+    : [];
+
+  if (!errorText) {
+    return 'Review this employee in Payroll Summary, then retry after confirming line-item details.';
+  }
+
+  if (
+    normalized.includes('not connected to quickbooks') ||
+    normalized.includes('quickbooks not connected')
+  ) {
+    return 'Connect QuickBooks in the QuickBooks card, then retry this employee.';
+  }
+  if (
+    normalized.includes('applicationauthorizationfailed') ||
+    (normalized.includes('quickbooks') && normalized.includes('auth'))
+  ) {
+    return 'Reconnect QuickBooks, run Sync Now if needed, then retry this employee.';
+  }
+  if (normalized.includes('rate limit') || normalized.includes('retry after')) {
+    return 'QuickBooks rate-limited this request. Wait briefly, then retry selected failed checks.';
+  }
+  if (normalized.includes('snapshot') || normalized.includes('changed since preflight')) {
+    return 'Reload payroll summary for this period, verify details, then retry.';
+  }
+  if (
+    normalized.includes('employee') &&
+    (normalized.includes('link') || normalized.includes('qbo id') || normalized.includes('quickbooks id'))
+  ) {
+    return 'Open Employees, link this employee to QuickBooks, then retry.';
+  }
+  if (
+    normalized.includes('missing') &&
+    (normalized.includes('expense') || normalized.includes('class') || normalized.includes('project') || normalized.includes('memo'))
+  ) {
+    return 'Use "Load Period For Edits", fix missing payroll line fields, and retry.';
+  }
+  if (normalized.includes('class') && (normalized.includes('no matching') || normalized.includes('qbo'))) {
+    return 'Sync QuickBooks classes, update class mapping in Payroll Summary, then retry.';
+  }
+  if (
+    normalized.includes('bank account') ||
+    normalized.includes('expense account')
+  ) {
+    return 'Set payroll accounts in Payroll Settings and retry.';
+  }
+  if (warningCodes.includes('qbo_dirty_fields') || warningCodes.includes('qbo_conflict_fields')) {
+    return 'Run QuickBooks employee update sync to clear dirty/conflict fields, then retry.';
+  }
+  return 'Use "Load Period For Edits", review this employee, save fixes, then retry this row.';
+}
+
+async function showPayrollRunReviewNotice(message, options = {}) {
+  const {
+    isError = true,
+    runId = null,
+    preserveSelection = false,
+    scrollIntoView = true,
+    fallbackAlert = true
+  } = options;
+  const text = String(message || '').trim();
+  if (!text) return false;
+
+  let rendered = false;
+  const normalizedRunId = Number(runId);
+  if (Number.isFinite(normalizedRunId) && normalizedRunId > 0) {
+    try {
+      await loadPayrollRunReviewById(normalizedRunId, {
+        preserveSelection,
+        scrollIntoView
+      });
+      rendered = true;
+    } catch (err) {
+      console.warn('Failed loading payroll run review for inline notice:', err);
+    }
+  }
+
+  const { wrap } = getPayrollRunReviewElements();
+  if (wrap && !wrap.classList.contains('hidden')) {
+    if (scrollIntoView) {
+      wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    setPayrollRunReviewAlert(text, isError);
+    return true;
+  }
+
+  if (fallbackAlert && !rendered) {
+    alert(text);
+  } else if (rendered) {
+    setPayrollRunReviewAlert(text, isError);
+  }
+  return rendered;
+}
+
+function syncLastPayrollStateFromReview(review) {
+  if (!review || !review.run) return;
+  const run = review.run;
+  lastPayrollRunId = Number(run.id) || null;
+  lastPayrollRunStatus = run.status || null;
+  lastPayrollRunType = run.run_type || 'standard';
+  lastPayrollAdjustmentReason = run.adjustment_reason || null;
+
+  const normalizedResults = (Array.isArray(review.results) ? review.results : []).map(row => ({
+    employeeId: Number(row.employee_id) || null,
+    employeeName: row.employee_name || '',
+    totalHours: Number(row.total_hours || 0),
+    totalPay: Number(row.total_pay || 0),
+    ok: !(row.ok === 0 || row.ok === false),
+    error: row.error || null,
+    warningCodes: Array.isArray(row.warning_codes) ? row.warning_codes : [],
+    qboTxnId: row.qbo_txn_id || null
+  }));
+  lastPayrollResults = normalizedResults;
+}
+
+function updatePayrollRunReviewRetryButtonState() {
+  const { retryBtn } = getPayrollRunReviewElements();
+  if (!retryBtn) return;
+  const canEdit = canModifyPayrollReports();
+  const failedRows = getPayrollReviewFailedRows();
+  const failedIds = new Set(
+    failedRows
+      .map(row => Number(row.employee_id))
+      .filter(Number.isFinite)
+  );
+  payrollRunReviewRetrySelections = new Set(
+    [...payrollRunReviewRetrySelections].filter(id => failedIds.has(Number(id)))
+  );
+  const selectedCount = getPayrollReviewSelectedFailedEmployeeIds().length;
+  retryBtn.textContent = selectedCount > 0
+    ? `Retry Selected Failed (${selectedCount})`
+    : 'Retry Selected Failed';
+  retryBtn.disabled = !canEdit || !failedRows.length || selectedCount === 0;
+  retryBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
+
+  const legacyRetryBtn = document.getElementById('payroll-retry-failed');
+  if (legacyRetryBtn) {
+    legacyRetryBtn.disabled = !canEdit || !failedRows.length;
+    legacyRetryBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
+  }
+}
+
+function renderPayrollRunReview(review, options = {}) {
+  const { preserveSelection = true } = options;
+  const els = getPayrollRunReviewElements();
+  if (!els.wrap) return;
+
+  if (!review || !review.run) {
+    currentPayrollRunReview = null;
+    payrollRunReviewRetrySelections = new Set();
+    els.wrap.classList.add('hidden');
+    return;
+  }
+
+  currentPayrollRunReview = review;
+  syncLastPayrollStateFromReview(review);
+
+  const run = review.run || {};
+  const latestAttempt = review.latest_attempt || null;
+  const checkRows = Array.isArray(review.check_rows) ? review.check_rows : [];
+  const failedRows = getPayrollReviewFailedRows(review);
+  let successRows = getPayrollReviewSuccessRows(review);
+  if (!successRows.length && checkRows.length) {
+    successRows = checkRows.map(row => ({
+      employee_id: row.employee_id,
+      employee_name: row.employee_name,
+      total_hours: row.total_hours,
+      total_pay: row.total_pay,
+      qbo_txn_id: row.qbo_txn_id
+    }));
+  }
+
+  const failedEmployeeIds = new Set(
+    failedRows
+      .map(row => Number(row.employee_id))
+      .filter(Number.isFinite)
+  );
+  if (!preserveSelection || !payrollRunReviewRetrySelections.size) {
+    payrollRunReviewRetrySelections = new Set(failedEmployeeIds);
+  } else {
+    payrollRunReviewRetrySelections = new Set(
+      [...payrollRunReviewRetrySelections].filter(id => failedEmployeeIds.has(Number(id)))
+    );
+    if (!payrollRunReviewRetrySelections.size && failedEmployeeIds.size) {
+      payrollRunReviewRetrySelections = new Set(failedEmployeeIds);
+    }
+  }
+
+  if (els.subtext) {
+    if (failedRows.length) {
+      els.subtext.textContent =
+        'Some checks failed. Fix any payroll details, then retry only the failed employees you select.';
+    } else {
+      els.subtext.textContent =
+        'No failures in the latest attempt. Successful checks are listed here for reference.';
+    }
+  }
+
+  if (els.meta) {
+    const status = formatPayrollRunStatus(run.status || '') || '-';
+    const start = formatDateUS(run.start_date || '');
+    const end = formatDateUS(run.end_date || '');
+    const period = start && end ? `${start} - ${end}` : '-';
+    const created = formatDateTimeLocal(run.created_at) || '';
+    const attempt = latestAttempt?.id ? ` | Attempt #${latestAttempt.id}` : '';
+    const attemptTime = latestAttempt?.created_at
+      ? ` at ${formatDateTimeLocal(latestAttempt.created_at)}`
+      : '';
+    els.meta.textContent =
+      `Run #${run.id} | Status ${status} | Period ${period} | Created ${created}${attempt}${attemptTime}`;
+  }
+
+  const alertMessage =
+    (latestAttempt && latestAttempt.fatal_error) ||
+    run.last_error ||
+    '';
+  setPayrollRunReviewAlert(alertMessage, true);
+
+  if (els.failedCount) {
+    els.failedCount.textContent = String(failedRows.length);
+  }
+  if (els.successCount) {
+    els.successCount.textContent = String(successRows.length);
+  }
+
+  const checkByEmployeeId = new Map();
+  checkRows.forEach(row => {
+    const employeeId = Number(row?.employee_id);
+    if (!Number.isFinite(employeeId) || checkByEmployeeId.has(employeeId)) return;
+    checkByEmployeeId.set(employeeId, row);
+  });
+
+  if (els.failedBody) {
+    if (!failedRows.length) {
+      els.failedBody.innerHTML = '<tr><td colspan="6">(no failed checks in this run)</td></tr>';
+    } else {
+      const canEdit = canModifyPayrollReports();
+      els.failedBody.innerHTML = failedRows.map(row => {
+        const employeeId = Number(row.employee_id);
+        const isSelectable = Number.isFinite(employeeId);
+        const checked = isSelectable && payrollRunReviewRetrySelections.has(employeeId);
+        const employee = escapeHTML(row.employee_name || '(Employee)');
+        const errorRaw = String(row.error || run.last_error || 'QuickBooks error');
+        const errorText = escapeHTML(errorRaw);
+        const hintText = escapeHTML(derivePayrollFailureFixHint(row, run));
+        const hours = escapeHTML(Number(row.total_hours || 0).toFixed(2));
+        const pay = escapeHTML(formatMoney(Number(row.total_pay || 0)));
+        return `
+          <tr>
+            <td>
+              <input
+                type="checkbox"
+                class="payroll-run-review-select-failed"
+                data-employee-id="${isSelectable ? employeeId : ''}"
+                ${checked ? 'checked' : ''}
+                ${(canEdit && isSelectable) ? '' : 'disabled'}
+              />
+            </td>
+            <td>${employee}</td>
+            <td title="${errorText}">${errorText}</td>
+            <td>${hintText}</td>
+            <td>${hours}</td>
+            <td>${pay}</td>
+          </tr>
+        `;
+      }).join('');
+      els.failedBody.querySelectorAll('.payroll-run-review-select-failed').forEach(input => {
+        input.addEventListener('change', () => {
+          const employeeId = Number(input.dataset.employeeId);
+          if (!Number.isFinite(employeeId)) return;
+          if (input.checked) payrollRunReviewRetrySelections.add(employeeId);
+          else payrollRunReviewRetrySelections.delete(employeeId);
+          updatePayrollRunReviewRetryButtonState();
+        });
+      });
+    }
+  }
+
+  if (els.successBody) {
+    if (!successRows.length) {
+      els.successBody.innerHTML = '<tr><td colspan="4">(no successful checks yet)</td></tr>';
+    } else {
+      els.successBody.innerHTML = successRows.map(row => {
+        const employeeId = Number(row.employee_id);
+        const employee = escapeHTML(row.employee_name || '(Employee)');
+        const checkRow = checkByEmployeeId.get(employeeId);
+        const checkText = checkRow?.check_number || checkRow?.qbo_txn_id || row.qbo_txn_id || '-';
+        const hours = escapeHTML(Number(row.total_hours || 0).toFixed(2));
+        const pay = escapeHTML(formatMoney(Number(row.total_pay || 0)));
+        return `
+          <tr>
+            <td>${employee}</td>
+            <td>${escapeHTML(String(checkText || '-'))}</td>
+            <td>${hours}</td>
+            <td>${pay}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+  }
+
+  els.wrap.classList.remove('hidden');
+  updatePayrollRunReviewRetryButtonState();
+}
+
+async function loadPayrollRunReviewById(runId, options = {}) {
+  const { preserveSelection = false, scrollIntoView = false } = options;
+  const normalizedRunId = Number(runId);
+  if (!Number.isFinite(normalizedRunId) || normalizedRunId <= 0) return null;
+  const payload = await fetchJSON(`/api/reports/payroll-runs/${normalizedRunId}/review`);
+  const review = payload?.review || null;
+  renderPayrollRunReview(review, { preserveSelection });
+  if (scrollIntoView) {
+    const { wrap } = getPayrollRunReviewElements();
+    if (wrap && !wrap.classList.contains('hidden')) {
+      wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+  return review;
+}
+
+async function loadLatestUnresolvedPayrollRunReview(options = {}) {
+  const { allowHide = true } = options;
+  const payload = await fetchJSON('/api/reports/payroll-runs/unresolved/latest');
+  const review = payload?.review || null;
+  if (!review) {
+    if (allowHide) renderPayrollRunReview(null);
+    return null;
+  }
+  renderPayrollRunReview(review, { preserveSelection: false });
+  return review;
 }
 
 function formatPayrollRunStatus(status) {
@@ -131,12 +804,92 @@ function buildLineDescription(template, row, start, end) {
     .replace('{end}', endUS);
 }
 
+function buildMemoFromTemplate(template, row, start, end) {
+  const startUS = formatDateUS(start);
+  const endUS = formatDateUS(end);
+  const dateRange = `${startUS || ''} – ${endUS || ''}`;
+  return (template || DEFAULT_PAYROLL_MEMO_TEMPLATE)
+    .replace('{employee}', row?.employee_name || '')
+    .replace('{project}', row?.project_name || '')
+    .replace('{hours}', Number(row?.project_hours || row?.total_hours || 0).toFixed(2))
+    .replace('{dateRange}', dateRange)
+    .replace('{start}', startUS || '')
+    .replace('{end}', endUS || '');
+}
+
+function appendReimbursementMemoSuffix(baseMemo, hasReimbursementLines) {
+  if (!hasReimbursementLines) return baseMemo;
+  const suffix = ' + Reimbursement';
+  const memo = String(baseMemo || '');
+  if (!memo) return '+ Reimbursement';
+  return memo.endsWith(suffix) ? memo : `${memo}${suffix}`;
+}
+
+function buildReceiptLineDescription(row) {
+  const vendorName = String(row?.vendor_name || '').trim() || 'Unknown Vendor';
+  return `[${vendorName}] Reimbursement`;
+}
+
+function getPayrollIncludeReimbursementsSetting() {
+  const checkbox = document.getElementById('payroll-include-reimbursements');
+  return checkbox ? checkbox.checked : true;
+}
+
+function ensureSelectOption(selectEl, value, label) {
+  if (!selectEl || !value) return;
+  const existing = Array.from(selectEl.options || []).find(opt => opt.value === value);
+  if (existing) return;
+  const opt = document.createElement('option');
+  opt.value = value;
+  opt.textContent = label || value;
+  selectEl.appendChild(opt);
+}
+
 function getProjectLabel(projectId, projectName, customerName) {
   const fromPayload = customerName ? `${customerName} : ${projectName || ''}` : projectName || '';
   if (fromPayload) return fromPayload;
   const match = payrollProjects.find(p => Number(p.id) === Number(projectId));
   if (!match) return projectName || '';
   return match.customer_name ? `${match.customer_name} : ${match.name}` : (match.name || '');
+}
+
+function populatePayrollReimbursementFormOptions() {
+  const employeeSelect = document.getElementById('payroll-reimbursement-employee');
+  const projectSelect = document.getElementById('payroll-reimbursement-project');
+  if (!employeeSelect || !projectSelect) return;
+
+  const selectedEmployee = employeeSelect.value;
+  const selectedProject = projectSelect.value;
+
+  employeeSelect.innerHTML = '<option value="">(select employee)</option>';
+  (payrollEmployees || []).forEach(emp => {
+    const id = Number(emp.id || 0);
+    if (!id) return;
+    const option = document.createElement('option');
+    option.value = String(id);
+    option.textContent = emp.name || `Employee #${id}`;
+    employeeSelect.appendChild(option);
+  });
+  if (selectedEmployee) employeeSelect.value = selectedEmployee;
+
+  projectSelect.innerHTML = '<option value="">(select project)</option>';
+  (payrollProjects || []).forEach(project => {
+    const id = Number(project.id || 0);
+    if (!id) return;
+    const option = document.createElement('option');
+    option.value = String(id);
+    option.textContent = project.customer_name
+      ? `${project.customer_name} : ${project.name || ''}`
+      : (project.name || `Project #${id}`);
+    projectSelect.appendChild(option);
+  });
+  if (selectedProject) projectSelect.value = selectedProject;
+}
+
+function ensurePayrollReimbursementDateDefault() {
+  const input = document.getElementById('payroll-reimbursement-date');
+  if (!input || input.value) return;
+  input.value = new Date().toISOString().slice(0, 10);
 }
 
 function parseYmd(value) {
@@ -326,19 +1079,15 @@ async function runPayrollPreflightWithConfirm(payload, options) {
   let preflightData = null;
   try {
     showPayrollLoading();
-    const res = await fetch('/api/payroll/preflight-checks', {
+    preflightData = await fetchJSON('/api/payroll/preflight-checks', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...payload, previewOnly: true })
     });
-    preflightData = await res.json();
-    if (!res.ok) {
-      throw new Error(preflightData?.error || preflightData?.reason || `Server responded ${res.status}`);
-    }
   } catch (err) {
     console.error('Error preflighting checks:', err);
     const prefix = mode === 'retry' ? 'Could not prepare retry' : 'Could not prepare checks';
-    alert(prefix + ':\n\n' + (err.message || err));
+    alert(prefix + ':\n\n' + buildPayrollApiErrorMessage(err));
     hidePayrollLoading();
     return null;
   }
@@ -360,6 +1109,23 @@ async function runPayrollPreflightWithConfirm(payload, options) {
   lastPayrollPreflightId = preflightData.preflight_id;
   lastPayrollPayloadHash = preflightData.payload_hash;
 
+  const pendingFieldReviewCount = Number(preflightData?.field_review?.pending_count || 0);
+  const pendingApprovalRows = Array.isArray(preflightData?.pending_approvals?.pending)
+    ? preflightData.pending_approvals.pending
+    : [];
+  const pendingApprovalCountRaw = Number(preflightData?.pending_approvals?.pending_count);
+  const pendingApprovalCount =
+    Number.isFinite(pendingApprovalCountRaw) && pendingApprovalCountRaw >= 0
+      ? pendingApprovalCountRaw
+      : pendingApprovalRows.length;
+  const pendingApprovalsWarning = buildPendingApprovalsConfirmWarning({
+    pendingRows: pendingApprovalRows,
+    pendingCount: pendingApprovalCount
+  });
+  const fieldReviewWarning = pendingFieldReviewCount > 0
+    ? `\n\nNote: ${pendingFieldReviewCount} time entries are still awaiting field review. Payroll can proceed, but you may want to double-check those entries.`
+    : '';
+
   const previewFailures = Array.isArray(preflightData.results)
     ? preflightData.results.filter(r => r && r.ok === false)
     : [];
@@ -371,10 +1137,14 @@ async function runPayrollPreflightWithConfirm(payload, options) {
     const prompt = mode === 'retry'
       ? 'The following retry checks still look like they will fail:\n\n' +
         failureText +
-        '\n\nSend the rest to QuickBooks and leave these in the queue?'
+        '\n\nSend the rest to QuickBooks and leave these in the queue?' +
+        pendingApprovalsWarning +
+        fieldReviewWarning
       : 'The following checks look like they will fail:\n\n' +
         failureText +
-        '\n\nSend the rest to QuickBooks and leave these in the queue?';
+        '\n\nSend the rest to QuickBooks and leave these in the queue?' +
+        pendingApprovalsWarning +
+        fieldReviewWarning;
     if (!confirm(prompt)) {
       return null;
     }
@@ -389,6 +1159,7 @@ async function runPayrollPreflightWithConfirm(payload, options) {
     } else {
       confirmText = `Create QuickBooks checks for the period ${start} to ${end}?`;
     }
+    confirmText += pendingApprovalsWarning + fieldReviewWarning;
     if (!confirm(confirmText)) {
       return null;
     }
@@ -422,35 +1193,46 @@ function updatePayrollAdjustmentUI() {
 }
 
 async function loadPayrollSettings() {
+  if (!isPayrollFeatureEnabled()) return;
   if (payrollSettingsPromise) return payrollSettingsPromise;
   payrollSettingsPromise = (async () => {
   const bankSelect = document.getElementById('payroll-bank-account');
   const expenseSelect = document.getElementById('payroll-expense-account');
+  const receiptExpenseSelect = document.getElementById('payroll-receipt-expense-account');
+  const receiptClassSelect = document.getElementById('payroll-receipt-class');
   const memoInput = document.getElementById('payroll-memo-template');
   const lineDescInput = document.getElementById('payroll-line-desc-template');
   const statusEl = getPayrollSettingsStatusEl();
     if (bankSelect) bankSelect.classList.add('with-arrow');
     if (expenseSelect) expenseSelect.classList.add('with-arrow');
+    if (receiptExpenseSelect) receiptExpenseSelect.classList.add('with-arrow');
+    if (receiptClassSelect) receiptClassSelect.classList.add('with-arrow');
   try {
-    const [settingsRes, optsRes, classesRes, projectsRes] = await Promise.all([
+    const [settingsRes, optsRes, classesRes, projectsRes, employeesRes] = await Promise.all([
       fetch('/api/payroll/settings'),
       fetch('/api/payroll/account-options'),
       fetch('/api/payroll/classes'),
-      fetch('/api/projects')
+      fetch('/api/projects'),
+      fetch('/api/employees?status=active')
     ]);
     const settings = settingsRes.ok ? await settingsRes.json() : {};
     const opts = optsRes.ok ? await optsRes.json() : { bankAccounts: [], expenseAccounts: [] };
     const classesPayload = classesRes.ok ? await classesRes.json() : { classes: [] };
     const projectsPayload = projectsRes.ok ? await projectsRes.json() : [];
+    const employeesPayload = employeesRes.ok ? await employeesRes.json() : [];
     payrollExpenseAccounts = opts.expenseAccounts || [];
     payrollClasses = classesPayload.classes || [];
     payrollProjects = Array.isArray(projectsPayload) ? projectsPayload : (projectsPayload.projects || []);
-    // Do not preload bank/expense; admin must choose each visit
+    payrollEmployees = Array.isArray(employeesPayload)
+      ? employeesPayload
+      : (employeesPayload.employees || []);
     currentPayrollSettings = {
-      bank_account_name: null,
-      expense_account_name: null,
-      default_memo: settings.default_memo || 'Payroll {start} – {end}',
-      line_description_template: settings.line_description_template || 'Labor {hours} hrs – {project}'
+      bank_account_name: settings.bank_account_name || null,
+      expense_account_name: settings.expense_account_name || null,
+      receipt_expense_account_name: settings.receipt_expense_account_name || null,
+      receipt_class_name: settings.receipt_class_name || null,
+      default_memo: settings.default_memo || DEFAULT_PAYROLL_MEMO_TEMPLATE,
+      line_description_template: settings.line_description_template || DEFAULT_PAYROLL_LINE_TEMPLATE
     };
     if (bankSelect) {
       bankSelect.innerHTML = '<option value="">(select bank account)</option>';
@@ -460,9 +1242,12 @@ async function loadPayrollSettings() {
         const opt = document.createElement('option');
         opt.value = fullName;
         opt.textContent = fullName;
-        // Intentionally not selecting; user must choose each visit.
         bankSelect.appendChild(opt);
       });
+      if (currentPayrollSettings.bank_account_name) {
+        ensureSelectOption(bankSelect, currentPayrollSettings.bank_account_name);
+      }
+      bankSelect.value = currentPayrollSettings.bank_account_name || '';
     }
     if (expenseSelect) {
       expenseSelect.innerHTML = '<option value="">(select expense account)</option>';
@@ -472,12 +1257,50 @@ async function loadPayrollSettings() {
         const opt = document.createElement('option');
         opt.value = fullName;
         opt.textContent = fullName;
-        // Intentionally not selecting; user must choose each visit.
         expenseSelect.appendChild(opt);
       });
+      if (currentPayrollSettings.expense_account_name) {
+        ensureSelectOption(expenseSelect, currentPayrollSettings.expense_account_name);
+      }
+      expenseSelect.value = currentPayrollSettings.expense_account_name || '';
+    }
+    if (receiptExpenseSelect) {
+      receiptExpenseSelect.innerHTML = '<option value="">(select receipt expense account)</option>';
+      (payrollExpenseAccounts || []).forEach(acc => {
+        const fullName = acc.fullName || acc.name || '';
+        if (!fullName) return;
+        const opt = document.createElement('option');
+        opt.value = fullName;
+        opt.textContent = fullName;
+        receiptExpenseSelect.appendChild(opt);
+      });
+      if (currentPayrollSettings.receipt_expense_account_name) {
+        ensureSelectOption(
+          receiptExpenseSelect,
+          currentPayrollSettings.receipt_expense_account_name
+        );
+      }
+      receiptExpenseSelect.value = currentPayrollSettings.receipt_expense_account_name || '';
+    }
+    if (receiptClassSelect) {
+      receiptClassSelect.innerHTML = '<option value="">(select receipt class)</option>';
+      (payrollClasses || []).forEach(cls => {
+        const className = cls.fullName || cls.name || '';
+        if (!className) return;
+        const opt = document.createElement('option');
+        opt.value = className;
+        opt.textContent = className;
+        receiptClassSelect.appendChild(opt);
+      });
+      if (currentPayrollSettings.receipt_class_name) {
+        ensureSelectOption(receiptClassSelect, currentPayrollSettings.receipt_class_name);
+      }
+      receiptClassSelect.value = currentPayrollSettings.receipt_class_name || '';
     }
     if (memoInput) memoInput.value = currentPayrollSettings.default_memo;
     if (lineDescInput) lineDescInput.value = currentPayrollSettings.line_description_template;
+    populatePayrollReimbursementFormOptions();
+    ensurePayrollReimbursementDateDefault();
     if (statusEl) statusEl.textContent = '';
   } catch (err) {
     console.error('Error loading payroll settings/options:', err);
@@ -495,22 +1318,37 @@ async function savePayrollSettings() {
   }
   const bankSelect = document.getElementById('payroll-bank-account');
   const expenseSelect = document.getElementById('payroll-expense-account');
+  const receiptExpenseSelect = document.getElementById('payroll-receipt-expense-account');
+  const receiptClassSelect = document.getElementById('payroll-receipt-class');
   const memoInput = document.getElementById('payroll-memo-template');
   const lineDescInput = document.getElementById('payroll-line-desc-template');
   const statusEl = getPayrollSettingsStatusEl();
   const payload = {
     bank_account_name: bankSelect ? bankSelect.value || null : null,
     expense_account_name: expenseSelect ? expenseSelect.value || null : null,
+    receipt_expense_account_name: receiptExpenseSelect ? receiptExpenseSelect.value || null : null,
+    receipt_class_name: receiptClassSelect ? receiptClassSelect.value || null : null,
     default_memo: memoInput ? memoInput.value || null : null,
     line_description_template: lineDescInput ? lineDescInput.value || null : null
   };
-  const res = await fetch('/api/payroll/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
-    body: JSON.stringify(payload)
-  });
-  const data = await res.json();
-  if (!data.ok && data.error) {
+  let data = null;
+  try {
+    data = await fetchJSON('/api/payroll/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    const msg = err?.message || 'Failed to save payroll settings.';
+    if (statusEl) {
+      statusEl.textContent = 'Failed to save payroll settings: ' + msg;
+      statusEl.style.color = '#b91c1c';
+    } else {
+      alert('Failed to save payroll settings: ' + msg);
+    }
+    return;
+  }
+  if (!data?.ok && data?.error) {
     if (statusEl) {
       statusEl.textContent = 'Failed to save payroll settings: ' + data.error;
       statusEl.style.color = '#b91c1c';
@@ -520,6 +1358,7 @@ async function savePayrollSettings() {
     return;
   }
   currentPayrollSettings = payload;
+  const applyResult = applySavedSettingsToLoadedChecks(currentPayrollSettings);
   const body = document.getElementById('payroll-settings-body');
   if (body) body.classList.add('hidden');
   const settingsSaveBtn = document.getElementById('payroll-settings-save');
@@ -533,7 +1372,14 @@ async function savePayrollSettings() {
     }, 1200);
   }
   if (statusEl) {
-    statusEl.textContent = 'Payroll settings saved.';
+    let statusMsg = 'Payroll settings saved.';
+    if (applyResult.appliedCount > 0) {
+      statusMsg += ` Updated ${applyResult.appliedCount} loaded check field${applyResult.appliedCount === 1 ? '' : 's'}.`;
+    }
+    if (applyResult.conflicts > 0 && !applyResult.overwroteFilled) {
+      statusMsg += ' Existing filled check values were kept.';
+    }
+    statusEl.textContent = statusMsg;
     statusEl.style.color = '#0f5132';
   }
   payrollSettingsLoaded = true;
@@ -565,6 +1411,413 @@ function getPayrollSettingsStatusEl() {
   el.style.color = '#0f5132';
   container.appendChild(el);
   return el;
+}
+
+function setPayrollReimbursementMessage(text, isError = false) {
+  const el = document.getElementById('payroll-reimbursement-message');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = isError ? '#b91c1c' : '';
+}
+
+function formatPayrollReimbursementStatus(row) {
+  const statusRaw = String(row?.status || 'requested').trim().toLowerCase();
+  if (!statusRaw) return 'REQUESTED';
+  if (statusRaw === 'approved') {
+    const approver = (row?.approved_by_name || '').trim();
+    const approvedDate = row?.approved_at ? formatDateUS(row.approved_at) : '';
+    if (approver && approvedDate) return `APPROVED (${approver}, ${approvedDate})`;
+    if (approver) return `APPROVED (${approver})`;
+    if (approvedDate) return `APPROVED (${approvedDate})`;
+    return 'APPROVED';
+  }
+  if (statusRaw === 'paid') {
+    const paidDate = row?.paid_date ? formatDateUS(row.paid_date) : '';
+    return paidDate ? `PAID (${paidDate})` : 'PAID';
+  }
+  return statusRaw.toUpperCase();
+}
+
+function renderPayrollReimbursementsTable(rows) {
+  const tbody = document.getElementById('payroll-reimbursements-body');
+  if (!tbody) return;
+  const esc = typeof escapeHTML === 'function' ? escapeHTML : (value => String(value || ''));
+  const list = Array.isArray(rows) ? rows : [];
+  tbody.innerHTML = '';
+  if (!list.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="8">(no receipt reimbursements found)</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+
+  list.forEach(row => {
+    const tr = document.createElement('tr');
+    const reimbursementId = Number(row.id || 0);
+    const amount = Number(row.amount || 0);
+    const projectLabel = row.project_customer_name
+      ? `${row.project_customer_name} : ${row.project_name || ''}`
+      : (row.project_name || '');
+    const statusRaw = String(row.status || 'requested').trim().toLowerCase();
+    const status = formatPayrollReimbursementStatus(row);
+    const canApprove = canModifyPayrollReports();
+    const showApproveAction = statusRaw === 'requested' && Number.isFinite(reimbursementId) && reimbursementId > 0;
+    const actionHtml = showApproveAction
+      ? `<button type="button" class="btn secondary btn-sm payroll-reimbursement-approve" data-reimbursement-id="${reimbursementId}" ${canApprove ? '' : 'disabled title="Requires modify payroll permission."'}>Approve</button>`
+      : '—';
+    tr.innerHTML = `
+      <td>${esc(formatDateUS(row.expense_date || row.requested_at || ''))}</td>
+      <td>${esc(row.employee_name || '')}</td>
+      <td>${esc(row.vendor_name || '')}</td>
+      <td>${esc(projectLabel)}</td>
+      <td>$${amount.toFixed(2)}</td>
+      <td>${esc(status)}</td>
+      <td>${row.receipt_url ? `<a href="${esc(row.receipt_url)}" target="_blank" rel="noopener">View</a>` : ''}</td>
+      <td>${actionHtml}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadPayrollReimbursements() {
+  if (!isPayrollFeatureEnabled()) return;
+  const tbody = document.getElementById('payroll-reimbursements-body');
+  if (tbody && !tbody.children.length) {
+    tbody.innerHTML = '<tr><td colspan="8">(loading)</td></tr>';
+  }
+
+  const params = new URLSearchParams();
+  params.set('status', 'all');
+  if (currentPayrollRange?.start && currentPayrollRange?.end) {
+    params.set('start', currentPayrollRange.start);
+    params.set('end', currentPayrollRange.end);
+  }
+  params.set('limit', '200');
+
+  try {
+    const data = await fetchJSON(`/api/payroll/reimbursements?${params.toString()}`);
+    const rows = Array.isArray(data)
+      ? data
+      : (Array.isArray(data?.rows) ? data.rows : []);
+    renderPayrollReimbursementsTable(rows);
+    setPayrollReimbursementMessage('');
+  } catch (err) {
+    console.error('[PAYROLL] loadPayrollReimbursements error', err);
+    renderPayrollReimbursementsTable([]);
+    setPayrollReimbursementMessage(
+      'Failed to load reimbursements: ' + (err?.message || 'Unknown error'),
+      true
+    );
+  } finally {
+    applyPayrollSettingsAccess();
+  }
+}
+
+async function approvePayrollReimbursement(reimbursementId) {
+  if (!canModifyPayrollReports()) {
+    alert('You do not have permission to approve reimbursements.');
+    return;
+  }
+  const reimbursementIdNum = Number(reimbursementId);
+  if (!Number.isFinite(reimbursementIdNum) || reimbursementIdNum <= 0) {
+    return;
+  }
+
+  const confirmApprove = confirm('Approve this reimbursement for payroll?');
+  if (!confirmApprove) return;
+
+  setPayrollReimbursementMessage('Approving reimbursement...');
+  try {
+    const payload = await fetchJSON(`/api/payroll/reimbursements/${reimbursementIdNum}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    if (!payload?.ok) {
+      throw new Error(payload?.error || 'Failed to approve reimbursement.');
+    }
+
+    setPayrollReimbursementMessage('Reimbursement approved for payroll.');
+    await loadPayrollReimbursements();
+    if (currentPayrollRange?.start && currentPayrollRange?.end && getPayrollIncludeReimbursementsSetting()) {
+      await loadPayrollSummary();
+    }
+  } catch (err) {
+    console.error('[PAYROLL] approvePayrollReimbursement error', err);
+    setPayrollReimbursementMessage(
+      'Failed to approve reimbursement: ' + (err?.message || 'Unknown error'),
+      true
+    );
+  } finally {
+    applyPayrollSettingsAccess();
+  }
+}
+
+async function submitPayrollReimbursement() {
+  if (!canModifyPayrollReports()) {
+    alert('You do not have permission to request reimbursements.');
+    return;
+  }
+
+  const employeeSelect = document.getElementById('payroll-reimbursement-employee');
+  const projectSelect = document.getElementById('payroll-reimbursement-project');
+  const amountInput = document.getElementById('payroll-reimbursement-amount');
+  const dateInput = document.getElementById('payroll-reimbursement-date');
+  const noteInput = document.getElementById('payroll-reimbursement-note');
+  const vendorInput = document.getElementById('payroll-reimbursement-vendor');
+  const fileInput = document.getElementById('payroll-reimbursement-receipt');
+  const submitBtn = document.getElementById('payroll-reimbursement-submit');
+
+  const employeeId = Number(employeeSelect?.value || 0);
+  const projectId = Number(projectSelect?.value || 0);
+  const amount = Number(amountInput?.value || 0);
+  const expenseDate = (dateInput?.value || '').trim();
+  const note = (noteInput?.value || '').trim();
+  const vendorName = (vendorInput?.value || '').trim();
+  const file = fileInput?.files && fileInput.files[0] ? fileInput.files[0] : null;
+
+  if (!employeeId || !projectId || !Number.isFinite(amount) || amount <= 0 || !vendorName || !file) {
+    setPayrollReimbursementMessage(
+      'Employee, project, vendor, amount, and receipt file are required.',
+      true
+    );
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('employee_id', String(employeeId));
+  formData.append('project_id', String(projectId));
+  formData.append('amount', amount.toFixed(2));
+  formData.append('vendor_name', vendorName);
+  if (expenseDate) formData.append('expense_date', expenseDate);
+  if (note) formData.append('note', note);
+  formData.append('receipt', file);
+
+  if (submitBtn) submitBtn.disabled = true;
+  setPayrollReimbursementMessage('Uploading receipt...');
+  try {
+    const data = await fetchJSON('/api/payroll/reimbursements', {
+      method: 'POST',
+      body: formData
+    });
+    if (!data?.ok) {
+      throw new Error(data?.error || 'Failed to create reimbursement request.');
+    }
+
+    setPayrollReimbursementMessage('Reimbursement request created. Approve it before including it in payroll.');
+    if (amountInput) amountInput.value = '';
+    if (noteInput) noteInput.value = '';
+    if (vendorInput) vendorInput.value = '';
+    if (fileInput) fileInput.value = '';
+    ensurePayrollReimbursementDateDefault();
+
+    await loadPayrollReimbursements();
+    if (currentPayrollRange?.start && currentPayrollRange?.end && getPayrollIncludeReimbursementsSetting()) {
+      await loadPayrollSummary();
+    }
+  } catch (err) {
+    console.error('[PAYROLL] submitPayrollReimbursement error', err);
+    setPayrollReimbursementMessage(
+      'Failed to create reimbursement request: ' + (err?.message || 'Unknown error'),
+      true
+    );
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+    applyPayrollSettingsAccess();
+  }
+}
+
+function setupPayrollReimbursements() {
+  const submitBtn = document.getElementById('payroll-reimbursement-submit');
+  if (submitBtn && !submitBtn.dataset.bound) {
+    submitBtn.dataset.bound = '1';
+    submitBtn.addEventListener('click', submitPayrollReimbursement);
+  }
+  const tbody = document.getElementById('payroll-reimbursements-body');
+  if (tbody && !tbody.dataset.boundApprove) {
+    tbody.dataset.boundApprove = '1';
+    tbody.addEventListener('click', event => {
+      const approveBtn = event.target.closest('.payroll-reimbursement-approve');
+      if (!approveBtn) return;
+      const reimbursementId = Number(approveBtn.dataset.reimbursementId || 0);
+      approvePayrollReimbursement(reimbursementId);
+    });
+  }
+}
+
+function getPayrollEmployeeName(employeeId) {
+  if (!employeeId) return '';
+  const row = document.querySelector(`tr.payroll-row[data-employee-id="${employeeId}"]`);
+  return row?.dataset?.employeeName || '';
+}
+
+function findPayrollSummaryProject(employeeId, projectId) {
+  if (!employeeId || projectId === undefined || projectId === null || projectId === '') return null;
+  return (currentPayrollRows || []).find(
+    row =>
+      Number(row.employee_id) === Number(employeeId) &&
+      String(row.project_id) === String(projectId)
+  ) || null;
+}
+
+function setFieldValueAndSync(field, value) {
+  if (!field) return false;
+  const nextValue = value == null ? '' : String(value);
+  if (field.value === nextValue) return false;
+  field.value = nextValue;
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+  field.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+function applySavedSettingsToLoadedChecks(savedSettings) {
+  const tbody = document.getElementById('payroll-summary-body');
+  if (!tbody) {
+    return { appliedCount: 0, conflicts: 0, overwroteFilled: false };
+  }
+
+  const memoInputs = Array.from(tbody.querySelectorAll('.payroll-memo-input'));
+  const standardLineRows = Array.from(tbody.querySelectorAll('.line-items-box tbody tr'))
+    .filter(row => !row.classList.contains('custom-line-row'));
+  if (!memoInputs.length && !standardLineRows.length) {
+    return { appliedCount: 0, conflicts: 0, overwroteFilled: false };
+  }
+
+  const rangeStart = currentPayrollRange?.start || '';
+  const rangeEnd = currentPayrollRange?.end || '';
+  const memoTemplate = savedSettings?.default_memo || DEFAULT_PAYROLL_MEMO_TEMPLATE;
+  const lineTemplate = savedSettings?.line_description_template || DEFAULT_PAYROLL_LINE_TEMPLATE;
+
+  const memoUpdates = memoInputs.map(input => {
+    const employeeId = Number(input.dataset.employeeId || 0);
+    const employeeName = getPayrollEmployeeName(employeeId);
+    const memoBase = buildMemoFromTemplate(
+      memoTemplate,
+      { employee_name: employeeName },
+      rangeStart,
+      rangeEnd
+    );
+    const hasReimbursementLines = (currentPayrollRows || []).some(
+      row =>
+        Number(row?.employee_id) === employeeId &&
+        !!row?.is_receipt_reimbursement
+    );
+    const desired = appendReimbursementMemoSuffix(
+      memoBase,
+      hasReimbursementLines
+    );
+    return {
+      input,
+      current: (input.value || '').trim(),
+      desired
+    };
+  });
+
+  const lineUpdates = standardLineRows
+    .map(row => {
+      const descInput = row.querySelector('.line-desc-input');
+      const expenseSelect = row.querySelector('.line-expense-select');
+      if (!descInput || !expenseSelect) return null;
+      const employeeId = Number(descInput.dataset.employeeId || expenseSelect.dataset.employeeId || row.dataset.employeeId || 0);
+      const projectId = descInput.dataset.projectId || expenseSelect.dataset.projectId || '';
+      const projectCell = row.querySelector('td[data-project-id]');
+      const fallbackProjectName = projectCell?.dataset?.projectName || '';
+      const employeeName = getPayrollEmployeeName(employeeId);
+      const projectSummary = findPayrollSummaryProject(employeeId, projectId);
+      const lineType = row.dataset.lineType || '';
+      const isReceipt = lineType === 'receipt';
+      const desiredDesc = isReceipt
+        ? buildReceiptLineDescription(projectSummary || {
+            vendor_name: projectSummary?.vendor_name || '',
+            project_name_raw: fallbackProjectName,
+            project_name: fallbackProjectName,
+            reimbursement_count: Number(projectSummary?.reimbursement_count || 0)
+          })
+        : buildLineDescription(
+            lineTemplate,
+            {
+              employee_name: employeeName,
+              project_name:
+                projectSummary?.project_name_raw ||
+                projectSummary?.project_name ||
+                fallbackProjectName,
+              project_hours: Number(projectSummary?.project_hours || 0)
+            },
+            rangeStart,
+            rangeEnd
+          );
+      const desiredExpense = isReceipt
+        ? (
+            savedSettings?.receipt_expense_account_name ||
+            savedSettings?.expense_account_name ||
+            ''
+          )
+        : (savedSettings?.expense_account_name || '');
+      return {
+        descInput,
+        expenseSelect,
+        currentDesc: (descInput.value || '').trim(),
+        desiredDesc,
+        currentExpense: (expenseSelect.value || '').trim(),
+        desiredExpense
+      };
+    })
+    .filter(Boolean);
+
+  let conflicts = 0;
+  memoUpdates.forEach(update => {
+    if (update.current && update.current !== update.desired) {
+      conflicts += 1;
+    }
+  });
+  lineUpdates.forEach(update => {
+    if (update.currentDesc && update.currentDesc !== update.desiredDesc) {
+      conflicts += 1;
+    }
+    if (update.desiredExpense && update.currentExpense && update.currentExpense !== update.desiredExpense) {
+      conflicts += 1;
+    }
+  });
+
+  let overwroteFilled = false;
+  if (conflicts > 0) {
+    overwroteFilled = confirm(
+      'Some checks already have memo or line values.\n\n' +
+      'Select OK to rewrite those values with the saved payroll settings.\n' +
+      'Select Cancel to keep existing filled values and only fill blank fields.'
+    );
+  }
+
+  let appliedCount = 0;
+  memoUpdates.forEach(update => {
+    const shouldApply = overwroteFilled || !update.current;
+    if (!shouldApply) return;
+    if (setFieldValueAndSync(update.input, update.desired)) {
+      appliedCount += 1;
+    }
+  });
+
+  lineUpdates.forEach(update => {
+    const shouldApplyDesc = overwroteFilled || !update.currentDesc;
+    if (shouldApplyDesc && setFieldValueAndSync(update.descInput, update.desiredDesc)) {
+      appliedCount += 1;
+    }
+
+    if (update.desiredExpense) {
+      ensureSelectOption(update.expenseSelect, update.desiredExpense);
+      const shouldApplyExpense = overwroteFilled || !update.currentExpense;
+      if (shouldApplyExpense && setFieldValueAndSync(update.expenseSelect, update.desiredExpense)) {
+        appliedCount += 1;
+      }
+    }
+  });
+
+  const bankPreviewText = savedSettings?.bank_account_name || '(not set)';
+  document.querySelectorAll('.payroll-bank-preview').forEach(node => {
+    node.textContent = bankPreviewText;
+  });
+
+  return { appliedCount, conflicts, overwroteFilled };
 }
 
 function promptReuseSavedSettingsIfNeeded() {
@@ -624,6 +1877,21 @@ function hideInlineTimeEntryEditor() {
   panel.classList.add('hidden');
   panel.dataset.entryId = '';
   if (errEl) errEl.textContent = '';
+}
+
+async function reapproveEditedTimeEntryForPayroll(entryId, note) {
+  const idNum = Number(entryId);
+  if (!idNum) return { ok: false, error: 'Invalid time entry id.' };
+  try {
+    await fetchJSON(`/api/time-entries/${idNum}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: (note || '').trim() || null })
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'Failed to re-approve time entry.' };
+  }
 }
 
 function openInlineTimeEntryEditor(row) {
@@ -719,10 +1987,15 @@ function bindInlineTimeEntryEditor() {
         if (errEl) errEl.textContent = 'A note is required when saving changes.';
         return;
       }
+      const confirmed = confirm(
+        'Save changes to this time entry?\n\n' +
+        'This will update payroll totals/check line items and keep this entry approved for payroll.'
+      );
+      if (!confirmed) return;
       try {
-        const res = await fetch(`/api/time-entries/${entryId}`, {
+        const data = await fetchJSON(`/api/time-entries/${entryId}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             employee_id: empId,
             project_id: projId,
@@ -734,12 +2007,15 @@ function bindInlineTimeEntryEditor() {
             note
           })
         });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || 'Failed to save time entry.');
-        hidePanel();
-        if (lastTimeEntriesContext) {
-          const { employeeId, employeeName, projectId, projectName } = lastTimeEntriesContext;
-          openTimeEntriesModal(employeeId, employeeName, projectId, projectName);
+        if (data && data.error) throw new Error(data.error || 'Failed to save time entry.');
+        const reapprove = await reapproveEditedTimeEntryForPayroll(entryId, note);
+        closeTimeEntriesModal();
+        await loadPayrollSummary();
+        if (!reapprove.ok) {
+          alert(
+            'Time entry changes were saved, but payroll approval could not be restored automatically.\n\n' +
+            (reapprove.error || 'Please re-approve this entry in Review Time Entries.')
+          );
         }
       } catch (err) {
         console.error('[PAYROLL] Save time entry error', err);
@@ -899,8 +2175,10 @@ function renderPayrollSummaryTable() {
   const tbody = document.getElementById('payroll-summary-body');
   if (!tbody) return;
   const expandedBefore = new Set(payrollExpandedRows);
+  const esc = typeof escapeHTML === 'function' ? escapeHTML : (value => (value == null ? '' : String(value)));
   tbody.innerHTML = '';
   if (!currentPayrollRows.length) {
+    payrollSendSelections = new Set();
     const tr = document.createElement('tr');
     tr.innerHTML = `<td colspan="5">(no data yet)</td>`;
     tbody.appendChild(tr);
@@ -932,74 +2210,106 @@ function renderPayrollSummaryTable() {
       project_name: row.project_name,
       project_customer_name: row.project_customer_name,
       project_name_raw: row.project_name_raw,
+      vendor_name: row.vendor_name || '',
       hours: row.project_hours,
       total_pay: row.project_pay,
-      class_name: row.class_name || ''
+      class_name: row.class_name || '',
+      expense_account_name: row.expense_account_name || '',
+      is_receipt_reimbursement: !!row.is_receipt_reimbursement,
+      reimbursement_count: Number(row.reimbursement_count || 0)
     });
+  }
+  const loadedEmployeeIds = new Set(
+    Array.from(byEmployee.keys())
+      .map(id => Number(id))
+      .filter(Number.isFinite)
+  );
+  if (payrollSendSelections.size) {
+    payrollSendSelections = new Set(
+      Array.from(payrollSendSelections).filter(id => loadedEmployeeIds.has(id))
+    );
   }
   const startUS = formatDateUS(currentPayrollRange.start);
   const endUS = formatDateUS(currentPayrollRange.end);
-  const dateRange = `${startUS || ''} – ${endUS || ''}`;
-  const memoTemplate = currentPayrollSettings.default_memo || 'Payroll {start} – {end}';
-  const classDatalistId = 'qb-class-options';
+  const canUnpay = canModifyPayrollReports();
   for (const agg of byEmployee.values()) {
-    const customLines = additionalLinesByEmployee[agg.employee_id] || [];
+    const employeeId = Number(agg.employee_id);
+    const employeeNameRaw = agg.employee_name || '';
+    const customLines = additionalLinesByEmployee[employeeId] || [];
     const customTotal = customLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
     const displayTotalPay = agg.total_pay + customTotal;
-    const unpayButtonHtml = agg.any_paid
-      ? `<button type="button" class="btn tertiary btn-compact btn-unpay" data-employee-id="${agg.employee_id}" data-payroll-run-id="${agg.payroll_run_id || ''}">Mark unpaid</button>`
+    const unpayButtonHtml = canUnpay && agg.any_paid
+      ? `<button type="button" class="btn tertiary btn-compact btn-unpay" data-employee-id="${employeeId}" data-payroll-run-id="${agg.payroll_run_id || ''}">Mark unpaid</button>`
       : '';
     const tr = document.createElement('tr');
     tr.classList.add('payroll-row');
-    tr.dataset.employeeId = agg.employee_id;
-    tr.dataset.employeeName = agg.employee_name || '';
+    tr.dataset.employeeId = employeeId;
+    tr.dataset.employeeName = employeeNameRaw;
     const paidBadge = agg.any_paid ? '<span class="paid-badge">Paid</span>' : '';
-    const sendChecked = agg.any_paid ? '' : 'checked';
+    const sendChecked = payrollSendSelections.has(employeeId) ? 'checked' : '';
     tr.innerHTML = `
-      <td>${agg.employee_name || ''} ${paidBadge}</td>
+      <td>${esc(employeeNameRaw)} ${paidBadge}</td>
       <td>(multiple)</td>
       <td>${agg.total_hours.toFixed(2)}</td>
       <td>$${displayTotalPay.toFixed(2)}</td>
       <td>
         <div class="actions-inline">
           <label class="checkbox-inline">
-            <input type="checkbox" class="payroll-send-checkbox" data-employee-id="${agg.employee_id}" ${sendChecked} />
+            <input type="checkbox" class="payroll-send-checkbox" data-employee-id="${employeeId}" ${sendChecked} />
             Send to QB
           </label>
           ${unpayButtonHtml}
         </div>
       </td>
     `;
-    const memoText = memoTemplate
-      .replace('{employee}', agg.employee_name || '')
-      .replace('{start}', startUS || '')
-      .replace('{end}', endUS || '')
-      .replace('{dateRange}', dateRange);
+    const memoBase = buildMemoFromTemplate(
+      currentPayrollSettings.default_memo,
+      { employee_name: employeeNameRaw },
+      currentPayrollRange.start,
+      currentPayrollRange.end
+    );
+    const hasReimbursementLines = (agg.projects || []).some(
+      p => !!p.is_receipt_reimbursement
+    );
+    const memoText = appendReimbursementMemoSuffix(
+      memoBase,
+      hasReimbursementLines
+    );
     const detailsTr = document.createElement('tr');
     detailsTr.classList.add('payroll-details-row', 'hidden');
-    detailsTr.dataset.employeeId = agg.employee_id;
+    detailsTr.dataset.employeeId = employeeId;
     const colCount = 5;
+    const safeBankAccount = esc(currentPayrollSettings.bank_account_name || '(not set)');
+    const safeMemoText = esc(memoText);
+    const payPeriodLabel = `${startUS} - ${endUS}`;
+    const totalLineCount = (agg.projects ? agg.projects.length : 0) + customLines.length;
     detailsTr.innerHTML = `
       <td colspan="${colCount}">
         <div class="payroll-details">
-          <div class="details-column">
-            <h4>QuickBooks Check Preview</h4>
+          <section class="payroll-details-panel payroll-check-preview">
+            <div class="payroll-section-heading">
+              <h4>QuickBooks Check Preview</h4>
+              <p class="payroll-section-subtitle">Pay Period ${esc(payPeriodLabel)}</p>
+            </div>
             <div class="summary-grid">
-              <div class="summary-item"><div class="label">Employee</div><div class="value">${agg.employee_name || ''}</div></div>
-              <div class="summary-item"><div class="label">Check Date</div><div class="value">${formatDateUS(currentPayrollRange.end)}</div></div>
-              <div class="summary-item"><div class="label">Total Amount</div><div class="value">$${displayTotalPay.toFixed(2)}</div></div>
-              <div class="summary-item"><div class="label">Bank Account</div><div class="value">${currentPayrollSettings.bank_account_name || '(not set)'}</div></div>
+              <div class="summary-item"><div class="label">Employee</div><div class="value">${esc(employeeNameRaw)}</div></div>
+              <div class="summary-item"><div class="label">Check Date</div><div class="value">${esc(formatDateUS(currentPayrollRange.end))}</div></div>
+              <div class="summary-item summary-item-total"><div class="label">Total Amount</div><div class="value">$${displayTotalPay.toFixed(2)}</div></div>
+              <div class="summary-item"><div class="label">Bank Account</div><div class="value payroll-bank-preview">${safeBankAccount}</div></div>
             </div>
-            <div class="form-field" style="margin-top: 0.75rem;">
+            <div class="form-field payroll-memo-field">
               <label><strong>Default Memo</strong></label>
-              <input type="text" class="payroll-memo-input" data-employee-id="${agg.employee_id}" value="${memoText}" />
+              <input type="text" class="payroll-memo-input" data-employee-id="${employeeId}" value="${safeMemoText}" />
             </div>
-          </div>
-          <div class="details-column payroll-line-items" style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #e5e7eb;">
-            <h4>Line Items</h4>
+          </section>
+          <section class="payroll-details-panel payroll-line-items">
+            <div class="payroll-section-heading">
+              <h4>Line Items</h4>
+              <p class="payroll-section-subtitle">${totalLineCount} line item${totalLineCount === 1 ? '' : 's'}</p>
+            </div>
             <div class="line-items-box">
               ${agg.projects && agg.projects.length ? `
-                  <table class="table nested-table">
+                  <table class="table nested-table payroll-line-items-table">
                     <thead>
                       <tr>
                         <th>Expense Account</th><th>Description</th><th>Amount</th><th>Customer / Project</th><th>Class</th><th>Actions</th>
@@ -1009,34 +2319,64 @@ function renderPayrollSummaryTable() {
                       ${agg.projects.map(p => {
                         const hours = Number(p.hours || 0);
                         const amount = Number(p.total_pay || 0);
-                        const lineDesc = buildLineDescription(currentPayrollSettings.line_description_template, { employee_name: agg.employee_name, project_name: p.project_name_raw || p.project_name, project_hours: hours }, currentPayrollRange.start, currentPayrollRange.end);
-                        const selectedExpenseDefault = document.getElementById('payroll-expense-account')?.value || currentPayrollSettings.expense_account_name || '';
+                        const isReceiptReimbursement = !!p.is_receipt_reimbursement;
+                        const lineDesc = isReceiptReimbursement
+                          ? buildReceiptLineDescription(p)
+                          : buildLineDescription(
+                              currentPayrollSettings.line_description_template,
+                              {
+                                employee_name: employeeNameRaw,
+                                project_name: p.project_name_raw || p.project_name,
+                                project_hours: hours
+                              },
+                              currentPayrollRange.start,
+                              currentPayrollRange.end
+                            );
+                        const selectedExpenseDefault = isReceiptReimbursement
+                          ? (
+                              document.getElementById('payroll-receipt-expense-account')?.value ||
+                              currentPayrollSettings.receipt_expense_account_name ||
+                              currentPayrollSettings.expense_account_name ||
+                              ''
+                            )
+                          : (
+                              document.getElementById('payroll-expense-account')?.value ||
+                              currentPayrollSettings.expense_account_name ||
+                              ''
+                            );
                         const defaultExpenseName = selectedExpenseDefault || '';
                         const expenseOptions = (payrollExpenseAccounts || []).map(acc => {
                           const fullName = acc.fullName || acc.name || '';
                           if (!fullName) return '';
                           const selected = fullName === defaultExpenseName ? ' selected' : '';
-                          return `<option value="${fullName}"${selected}>${fullName}</option>`;
+                          return `<option value="${esc(fullName)}"${selected}>${esc(fullName)}</option>`;
                         }).join('');
-                        const defaultClassName = p.class_name || p.project_name || '';
+                        const defaultClassName = isReceiptReimbursement
+                          ? (p.class_name || currentPayrollSettings.receipt_class_name || '')
+                          : (p.class_name || p.project_name || '');
                         let classOptions = (payrollClasses || []).map(c => {
                           const name = c.fullName || c.name || '';
                           if (!name) return '';
                           const selected = name === defaultClassName ? ' selected' : '';
-                          return `<option value="${name}"${selected}>${name}</option>`;
+                          return `<option value="${esc(name)}"${selected}>${esc(name)}</option>`;
                         }).join('');
                         if (defaultClassName && !(payrollClasses || []).some(c => (c.fullName || c.name) === defaultClassName)) {
-                          classOptions = `<option value="${defaultClassName}" selected>${defaultClassName}</option>` + classOptions;
+                          classOptions = `<option value="${esc(defaultClassName)}" selected>${esc(defaultClassName)}</option>` + classOptions;
                         }
-                        const projectLabel = getProjectLabel(p.project_id, p.project_name_raw || p.project_name, p.project_customer_name);
+                        const projectLabel = isReceiptReimbursement
+                          ? ''
+                          : getProjectLabel(p.project_id, p.project_name_raw || p.project_name, p.project_customer_name);
+                        const actionsCell = isReceiptReimbursement
+                          ? `<span class="payroll-line-note">Receipt reimbursement</span>`
+                          : `<button type="button" class="btn secondary btn-compact btn-view-time-entries" data-employee-id="${employeeId}" data-employee-name="${esc(employeeNameRaw)}" data-project-id="${p.project_id || ''}" data-project-name="${esc(p.project_name || '')}">View Time Entries</button>`;
                         return `
-                          <tr data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}">
-                            <td><select class="line-expense-select with-arrow" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="${defaultExpenseName || ''}" ${defaultExpenseName ? 'selected' : ''}>${defaultExpenseName ? `Use default (${defaultExpenseName})` : '(select expense)'}</option>${expenseOptions}</select></td>
-                            <td><input type="text" class="line-desc-input" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}" value="${lineDesc}" /></td>
+                          <tr data-employee-id="${employeeId}" data-employee-name="${esc(employeeNameRaw)}" data-line-type="${isReceiptReimbursement ? 'receipt' : 'labor'}">
+                            <td><select class="line-expense-select with-arrow" data-employee-id="${employeeId}" data-project-id="${p.project_id}"><option value="${esc(defaultExpenseName || '')}" ${defaultExpenseName ? 'selected' : ''}>${defaultExpenseName ? `Use default (${esc(defaultExpenseName)})` : '(select expense)'}</option>${expenseOptions}</select></td>
+                            <td><input type="text" class="line-desc-input" data-employee-id="${employeeId}" data-project-id="${p.project_id}" value="${esc(lineDesc)}" /></td>
                             <td>$${amount.toFixed(2)}</td>
-                            <td data-project-id="${p.project_id}" data-customer-name="${p.project_customer_name || ''}" data-project-name="${p.project_name_raw || p.project_name || ''}">${projectLabel}</td>
-                            <td><select class="line-class-select with-arrow" data-employee-id="${agg.employee_id}" data-project-id="${p.project_id}"><option value="">(none)</option>${classOptions}</select></td>
-                            <td><button type="button" class="btn secondary btn-compact btn-view-time-entries" data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}" data-project-id="${p.project_id || ''}" data-project-name="${p.project_name || ''}">View Time Entries</button></td>
+                            <td data-project-id="${p.project_id}" data-customer-name="${esc(isReceiptReimbursement ? '' : (p.project_customer_name || ''))}" data-project-name="${esc(isReceiptReimbursement ? '' : (p.project_name_raw || p.project_name || ''))}">${esc(projectLabel)}</td>
+                            <td><select class="line-class-select with-arrow" data-employee-id="${employeeId}" data-project-id="${p.project_id}"><option value="">(none)</option>${classOptions}</select></td>
+                            <td>${actionsCell}</td>
                           </tr>
                         `;
                       }).join('')}
@@ -1048,60 +2388,64 @@ function renderPayrollSummaryTable() {
                         const hasClass = !!line.className;
                         const projectOptions = (payrollProjects || []).map(pr => {
                           const label = pr.customer_name ? `${pr.customer_name} : ${pr.name}` : pr.name;
-                          return `<option value="${pr.id}">${label}</option>`;
+                          return `<option value="${pr.id}">${esc(label)}</option>`;
                         }).join('');
                         const hasProject = !!line.projectId;
                         const expenseOptions = (payrollExpenseAccounts || []).map(acc => {
                           const fullName = acc.fullName || acc.name || '';
                           if (!fullName) return '';
                           const selected = fullName === line.expenseAccountName ? ' selected' : '';
-                          return `<option value="${fullName}"${selected}>${fullName}</option>`;
+                          return `<option value="${esc(fullName)}"${selected}>${esc(fullName)}</option>`;
                         }).join('');
                         const classOptions = (payrollClasses || []).map(c => {
                           const name = c.fullName || c.name || '';
                           if (!name) return '';
                           const selected = name === (line.className || '') ? ' selected' : '';
-                          return `<option value="${name}"${selected}>${name}</option>`;
+                          return `<option value="${esc(name)}"${selected}>${esc(name)}</option>`;
                         }).join('');
                         return `
-                          <tr class="custom-line-row" data-employee-id="${agg.employee_id}" data-employee-name="${agg.employee_name || ''}" data-line-id="${line.id}">
-                            <td><select class="line-expense-select with-arrow ${hasExpense ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select expense account)</option>${expenseOptions}</select></td>
-                            <td><input type="text" class="line-desc-input ${hasDesc ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${line.description || ''}" placeholder="(custom description)" /></td>
-                            <td><input type="number" step="0.01" min="0" class="line-amount-input ${hasAmount ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true" value="${hasAmount ? amountVal.toFixed(2) : ''}" placeholder="0.00" /></td>
-                            <td><select class="line-project-select with-arrow ${hasProject ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select customer / project)</option>${projectOptions}</select></td>
-                            <td><select class="line-class-select with-arrow ${hasClass ? '' : 'input-error'}" data-employee-id="${agg.employee_id}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select class)</option>${classOptions}</select></td>
-                            <td><button type="button" class="btn tertiary btn-compact btn-remove-line" data-employee-id="${agg.employee_id}" data-line-id="${line.id}">Remove</button></td>
+                          <tr class="custom-line-row" data-employee-id="${employeeId}" data-employee-name="${esc(employeeNameRaw)}" data-line-id="${line.id}">
+                            <td><select class="line-expense-select with-arrow ${hasExpense ? '' : 'input-error'}" data-employee-id="${employeeId}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select expense account)</option>${expenseOptions}</select></td>
+                            <td><input type="text" class="line-desc-input ${hasDesc ? '' : 'input-error'}" data-employee-id="${employeeId}" data-project-id="${line.id}" data-custom-line="true" value="${esc(line.description || '')}" placeholder="(custom description)" /></td>
+                            <td><input type="number" step="0.01" min="0" class="line-amount-input ${hasAmount ? '' : 'input-error'}" data-employee-id="${employeeId}" data-project-id="${line.id}" data-custom-line="true" value="${hasAmount ? amountVal.toFixed(2) : ''}" placeholder="0.00" /></td>
+                            <td><select class="line-project-select with-arrow ${hasProject ? '' : 'input-error'}" data-employee-id="${employeeId}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select customer / project)</option>${projectOptions}</select></td>
+                            <td><select class="line-class-select with-arrow ${hasClass ? '' : 'input-error'}" data-employee-id="${employeeId}" data-project-id="${line.id}" data-custom-line="true"><option value="">(select class)</option>${classOptions}</select></td>
+                            <td><button type="button" class="btn tertiary btn-compact btn-remove-line" data-employee-id="${employeeId}" data-line-id="${line.id}">Remove</button></td>
                           </tr>
                         `;
                       }).join('')}
                     </tbody>
                   </table>
-                  <div class="mt-2"><button type="button" class="btn tertiary btn-add-line" data-employee-id="${agg.employee_id}">+ Add line item</button></div>
-                ` : '<p>No line items available.</p>'}
+                  <div class="payroll-add-line-wrap"><button type="button" class="btn tertiary btn-add-line" data-employee-id="${employeeId}">+ Add line item</button></div>
+                ` : '<p class="line-items-empty">No line items available.</p>'}
             </div>
-          </div>
+          </section>
         </div>
       </td>
     `;
     tbody.appendChild(tr);
     tbody.appendChild(detailsTr);
-    if (expandedBefore.has(Number(agg.employee_id))) {
+    if (expandedBefore.has(employeeId)) {
       detailsTr.classList.remove('hidden');
+      tr.classList.add('payroll-row-open');
     }
   }
+
+  applyPayrollSummaryAccess();
 }
 
 function setupPayrollRowToggle() {
   const tbody = document.getElementById('payroll-summary-body');
   if (!tbody) return;
   tbody.addEventListener('click', e => {
-    if (e.target.closest('button') || e.target.closest('input')) return;
+    if (e.target.closest('button, input, select, textarea, label, a')) return;
     const tr = e.target.closest('tr.payroll-row');
     if (!tr) return;
     const empId = tr.dataset.employeeId;
     const detailsRow = tbody.querySelector(`tr.payroll-details-row[data-employee-id="${empId}"]`);
     if (!detailsRow) return;
     const nowHidden = detailsRow.classList.toggle('hidden');
+    tr.classList.toggle('payroll-row-open', !nowHidden);
     const empIdNum = Number(empId);
     if (nowHidden) payrollExpandedRows.delete(empIdNum);
     else payrollExpandedRows.add(empIdNum);
@@ -1109,6 +2453,7 @@ function setupPayrollRowToggle() {
 }
 
 function setupPayrollOverrideInputs() {
+  if (!isPayrollFeatureEnabled()) return;
   document.querySelectorAll('.payroll-memo-input').forEach(input => {
     const empId = input.dataset.employeeId;
     if (!empId) return;
@@ -1176,6 +2521,7 @@ function setupPayrollOverrideInputs() {
 }
 
 async function loadPayrollSummary() {
+  if (!isPayrollFeatureEnabled()) return;
   // ensure settings (and classes) are loaded first
   if (!payrollSettingsLoaded) {
     await loadPayrollSettings();
@@ -1186,28 +2532,63 @@ async function loadPayrollSummary() {
   const start = startInput?.value || '';
   const end = endInput?.value || '';
   if (!validatePayrollDates(start, end)) return;
+  const prevRange = currentPayrollRange || {};
   currentPayrollRange = { start, end };
   payrollOverrides = {};
+  if (prevRange.start !== start || prevRange.end !== end) {
+    additionalLinesByEmployee = {};
+    payrollExpandedRows = new Set();
+    payrollSendSelections = new Set();
+  }
   const includePaidCheckbox = document.getElementById('payroll-include-paid');
   const includePaid = includePaidCheckbox?.checked ? '1' : '0';
   const includeOvertime = getPayrollOvertimeSetting() ? '1' : '0';
-  const params = new URLSearchParams({ start, end, includePaid, includeOvertime });
+  const includeReceiptReimbursements = getPayrollIncludeReimbursementsSetting() ? '1' : '0';
+  const params = new URLSearchParams({
+    start,
+    end,
+    includePaid,
+    includeOvertime,
+    includeReceiptReimbursements
+  });
   const url = `/api/payroll-summary?${params.toString()}`;
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Server responded ${res.status}`);
-    const rows = await res.json();
-    currentPayrollRows = Array.isArray(rows) ? rows : [];
+    const payload = await fetchJSON(url);
+    const rows = Array.isArray(payload)
+      ? payload
+      : (Array.isArray(payload?.rows) ? payload.rows : []);
+    const pendingRows = Array.isArray(payload?.pending_approvals?.pending)
+      ? payload.pending_approvals.pending
+      : [];
+    const pendingCount = Number(payload?.pending_approvals?.pending_count);
+
+    currentPayrollRows = rows;
+    setPayrollPendingApprovals(pendingRows, Number.isFinite(pendingCount) ? pendingCount : pendingRows.length);
     renderPayrollSummaryTable();
     setupPayrollOverrideInputs();
-    if (!currentPayrollRows.length) alert('No unpaid time entries found for this date range.');
+    await loadPayrollReimbursements();
+    if (!currentPayrollRows.length) {
+      if (currentPayrollPendingApprovalCount > 0) {
+        alert(
+          'No payroll-approved unpaid entries are ready yet for this date range.\n\n' +
+          'Review the pending approval list and approve entries, or adjust your date range.'
+        );
+      } else {
+        alert('No payroll-approved unpaid time entries found for this date range. Use Include Paid to review prior runs.');
+      }
+    }
   } catch (err) {
     console.error('[PAYROLL] loadPayrollSummary error', err);
-    alert('Failed to load payroll summary: ' + (err.message || err));
+    currentPayrollRows = [];
+    clearPayrollPendingApprovals();
+    renderPayrollSummaryTable();
+    await loadPayrollReimbursements();
+    alert('Could not load payroll summary:\n\n' + buildPayrollApiErrorMessage(err));
   }
 }
 
 function addCustomLine(empId) {
+  if (!isPayrollFeatureEnabled()) return;
   const lines = additionalLinesByEmployee[empId] || [];
   const newId = Date.now() + '-' + Math.round(Math.random() * 1e6);
   lines.push({ id: newId, description: '', amount: 0, expenseAccountName: null, className: null });
@@ -1218,6 +2599,7 @@ function addCustomLine(empId) {
 }
 
 function removeCustomLine(empId, lineId) {
+  if (!isPayrollFeatureEnabled()) return;
   const lines = additionalLinesByEmployee[empId] || [];
   additionalLinesByEmployee[empId] = lines.filter(l => String(l.id) !== String(lineId));
   renderPayrollSummaryTable();
@@ -1225,6 +2607,7 @@ function removeCustomLine(empId, lineId) {
 }
 
 function setupCustomLineButtons() {
+  if (!isPayrollFeatureEnabled()) return;
   const tbody = document.getElementById('payroll-summary-body');
   if (!tbody) return;
   tbody.addEventListener('click', e => {
@@ -1246,7 +2629,261 @@ function setupCustomLineButtons() {
   });
 }
 
+function refreshCurrentPayrollSettingsFromInputs() {
+  const bankSelect = document.getElementById('payroll-bank-account');
+  const expenseSelect = document.getElementById('payroll-expense-account');
+  const receiptExpenseSelect = document.getElementById('payroll-receipt-expense-account');
+  const receiptClassSelect = document.getElementById('payroll-receipt-class');
+  const memoInput = document.getElementById('payroll-memo-template');
+  const lineDescInput = document.getElementById('payroll-line-desc-template');
+  currentPayrollSettings.bank_account_name =
+    bankSelect ? (bankSelect.value || currentPayrollSettings.bank_account_name) : currentPayrollSettings.bank_account_name;
+  currentPayrollSettings.expense_account_name =
+    expenseSelect ? (expenseSelect.value || currentPayrollSettings.expense_account_name) : currentPayrollSettings.expense_account_name;
+  currentPayrollSettings.receipt_expense_account_name =
+    receiptExpenseSelect
+      ? (receiptExpenseSelect.value || currentPayrollSettings.receipt_expense_account_name)
+      : currentPayrollSettings.receipt_expense_account_name;
+  currentPayrollSettings.receipt_class_name =
+    receiptClassSelect ? (receiptClassSelect.value || currentPayrollSettings.receipt_class_name) : currentPayrollSettings.receipt_class_name;
+  currentPayrollSettings.default_memo = memoInput ? (memoInput.value || null) : null;
+  currentPayrollSettings.line_description_template = lineDescInput ? (lineDescInput.value || null) : null;
+}
+
+function buildRetryOverridesForEmployeeIds(employeeIds = []) {
+  const targetIds = new Set((employeeIds || []).map(Number).filter(Number.isFinite));
+  return Object.entries(payrollOverrides || {})
+    .map(([key, ov]) => ({
+      employeeId: Number(ov?.employeeId || key.split(':')[0]),
+      expenseAccountName: ov?.expenseAccountName || null,
+      memo: ov?.memo || null,
+      lineDescriptionTemplate: ov?.lineDescriptionTemplate || null
+    }))
+    .filter(o => o.employeeId && targetIds.has(o.employeeId));
+}
+
+async function retryPayrollEmployees(options = {}) {
+  const {
+    start,
+    end,
+    payrollRunId,
+    failedEmployeeIds = [],
+    runType = 'standard',
+    adjustmentReason = null,
+    includeOvertime = true,
+    includeReceiptReimbursements = getPayrollIncludeReimbursementsSetting(),
+    sourceLabel = 'retry'
+  } = options;
+
+  if (!canModifyPayrollReports()) {
+    alert('Payroll section is disabled or your permissions are insufficient.');
+    return;
+  }
+  if (!validatePayrollDates(start, end)) return;
+  const normalizedRunId = Number(payrollRunId);
+  if (!normalizedRunId) {
+    alert('Cannot retry: no payroll run ID is available.');
+    return;
+  }
+  const employeeIds = [...new Set((failedEmployeeIds || []).map(Number).filter(Number.isFinite))];
+  if (!employeeIds.length) {
+    alert('There are no failed employees selected to retry.');
+    return;
+  }
+  if (runType === 'adjustment' && !adjustmentReason) {
+    alert('Adjustment reason is required for an adjustment payroll retry.');
+    return;
+  }
+
+  refreshCurrentPayrollSettingsFromInputs();
+  const overrides = buildRetryOverridesForEmployeeIds(employeeIds);
+  const payload = {
+    start,
+    end,
+    bankAccountName: currentPayrollSettings.bank_account_name || null,
+    expenseAccountName: currentPayrollSettings.expense_account_name || null,
+    receiptExpenseAccountName: currentPayrollSettings.receipt_expense_account_name || null,
+    memo: currentPayrollSettings.default_memo || null,
+    lineDescriptionTemplate: currentPayrollSettings.line_description_template || null,
+    includeOvertime,
+    includeReceiptReimbursements,
+    overrides,
+    isRetry: true,
+    originalPayrollRunId: normalizedRunId,
+    onlyEmployeeIds: employeeIds,
+    run_type: runType,
+    adjustment_reason: adjustmentReason || null
+  };
+
+  const createBtn = document.getElementById('payroll-create-checks');
+  const retryBtn = document.getElementById('payroll-retry-failed');
+  if (createBtn) createBtn.disabled = true;
+  if (retryBtn) retryBtn.disabled = true;
+
+  const preflightData = await runPayrollPreflightWithConfirm(payload, {
+    mode: 'retry',
+    start,
+    end,
+    runType,
+    adjustmentReason,
+    failedEmployeeIds: employeeIds
+  });
+  if (!preflightData) {
+    if (createBtn) createBtn.disabled = false;
+    if (retryBtn) retryBtn.disabled = false;
+    updatePayrollRunReviewRetryButtonState();
+    return;
+  }
+
+  const basePayload = { ...payload };
+  let createPayload = {
+    ...payload,
+    preflight_id: preflightData.preflight_id,
+    payload_hash: preflightData.payload_hash
+  };
+  let conflictAttempts = 0;
+
+  while (true) {
+    let data = null;
+    let callErr = null;
+    try {
+      showPayrollLoading();
+      data = await fetchJSON('/api/payroll/create-checks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createPayload)
+      });
+    } catch (err) {
+      callErr = err;
+    } finally {
+      hidePayrollLoading();
+    }
+
+    if (callErr) {
+      const body = callErr && callErr.body ? callErr.body : null;
+      if (callErr.status === 409 && body && body.snapshot_hash && conflictAttempts < 1) {
+        data = body;
+      } else {
+        console.error(`Error calling /api/payroll/create-checks (${sourceLabel}):`, callErr);
+        const msg = 'There was a problem contacting the server while retrying failed checks.\n\n' +
+          buildPayrollApiErrorMessage(callErr);
+        await showPayrollRunReviewNotice(msg, {
+          isError: true,
+          runId: lastPayrollRunId || normalizedRunId,
+          preserveSelection: true,
+          scrollIntoView: true,
+          fallbackAlert: true
+        });
+        if (retryBtn) retryBtn.disabled = false;
+        if (createBtn) createBtn.disabled = false;
+        updatePayrollRunReviewRetryButtonState();
+        return;
+      }
+    }
+
+    if (data && data.snapshot_hash && conflictAttempts < 1) {
+      const retryPreflight = confirm(
+        'Time entries changed since preflight. Re-run preflight and try again?'
+      );
+      if (!retryPreflight) {
+        if (createBtn) createBtn.disabled = false;
+        if (retryBtn) retryBtn.disabled = false;
+        updatePayrollRunReviewRetryButtonState();
+        return;
+      }
+
+      const refreshed = await runPayrollPreflightWithConfirm(basePayload, {
+        mode: 'retry',
+        start,
+        end,
+        runType,
+        adjustmentReason,
+        failedEmployeeIds: employeeIds
+      });
+      if (!refreshed) {
+        if (createBtn) createBtn.disabled = false;
+        if (retryBtn) retryBtn.disabled = false;
+        updatePayrollRunReviewRetryButtonState();
+        return;
+      }
+      createPayload = {
+        ...basePayload,
+        preflight_id: refreshed.preflight_id,
+        payload_hash: refreshed.payload_hash
+      };
+      conflictAttempts += 1;
+      continue;
+    }
+
+    lastPayrollResults = data.results || null;
+    lastPayrollRunId = data.payrollRunId || normalizedRunId;
+    lastPayrollRunStatus = data.status || null;
+    lastPayrollRunType = runType;
+    lastPayrollAdjustmentReason = adjustmentReason;
+    const backupWarnings = Array.isArray(data.warnings) ? data.warnings : [];
+
+    if (!data.ok) {
+      let msg = data.error || data.reason || 'Unknown error retrying checks.';
+      if (data.fatal_qbo_error) {
+        msg += `\n\nFatal QuickBooks error:\n${data.fatal_qbo_error}`;
+      }
+      if (backupWarnings.length) {
+        msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
+      }
+      await showPayrollRunReviewNotice(msg, {
+        isError: true,
+        runId: lastPayrollRunId || normalizedRunId,
+        preserveSelection: false,
+        scrollIntoView: true,
+        fallbackAlert: true
+      });
+      if (retryBtn) retryBtn.disabled = !(data.results || []).some(r => r && r.ok === false);
+      break;
+    }
+
+    const results = Array.isArray(data.results) ? data.results : [];
+    const failedAgain = results.filter(r => r && r.ok === false);
+    const succeeded = results.filter(r => r && r.ok !== false);
+    const warnings = collectPayrollWarnings(results);
+    const statusLabel = data.status ? String(data.status).toUpperCase() : null;
+    let msg = `Retry complete. ${succeeded.length} succeeded, ${failedAgain.length} failed.`;
+    if (statusLabel) msg += `\nStatus: ${statusLabel}`;
+    if (warnings.length) msg += `\n${warnings.length} discrepancy warning(s) were returned.`;
+    if (backupWarnings.length) {
+      msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
+    }
+    await showPayrollRunReviewNotice(msg, {
+      isError: failedAgain.length > 0 || !!data.fatal_qbo_error,
+      runId: lastPayrollRunId || normalizedRunId,
+      preserveSelection: false,
+      scrollIntoView: true,
+      fallbackAlert: true
+    });
+    if (retryBtn) retryBtn.disabled = !failedAgain.length;
+    if (
+      typeof loadPayrollSummary === 'function' &&
+      currentPayrollRange &&
+      currentPayrollRange.start === start &&
+      currentPayrollRange.end === end
+    ) {
+      loadPayrollSummary();
+    }
+    break;
+  }
+
+  if (createBtn) createBtn.disabled = false;
+  updatePayrollRunReviewRetryButtonState();
+}
+
 async function createChecksForCurrentRange() {
+  if (!canModifyPayrollReports()) {
+    alert('Payroll section is disabled or your permissions are insufficient.');
+    return;
+  }
+  if (!Array.isArray(currentPayrollRows) || !currentPayrollRows.length) {
+    alert('No payroll-approved unpaid time entries are loaded for this date range.');
+    return;
+  }
   const { start, end } = currentPayrollRange || {};
   if (!validatePayrollDates(start, end)) return;
   const adjustmentSettings = getPayrollAdjustmentSettings();
@@ -1254,15 +2891,18 @@ async function createChecksForCurrentRange() {
     alert('Adjustment reason is required for an adjustment payroll run.');
     return;
   }
-  // refresh in-memory settings from inputs
-  const bankSelect = document.getElementById('payroll-bank-account');
-  const expenseSelect = document.getElementById('payroll-expense-account');
-  const memoInput = document.getElementById('payroll-memo-template');
-  const lineDescInput = document.getElementById('payroll-line-desc-template');
-  currentPayrollSettings.bank_account_name = bankSelect ? bankSelect.value || currentPayrollSettings.bank_account_name : currentPayrollSettings.bank_account_name;
-  currentPayrollSettings.expense_account_name = expenseSelect ? expenseSelect.value || currentPayrollSettings.expense_account_name : currentPayrollSettings.expense_account_name;
-  currentPayrollSettings.default_memo = memoInput ? memoInput.value || null : null;
-  currentPayrollSettings.line_description_template = lineDescInput ? lineDescInput.value || null : null;
+  refreshCurrentPayrollSettingsFromInputs();
+  const checkboxRows = Array.from(document.querySelectorAll('.payroll-send-checkbox'));
+  const selectedEmployeeIds = new Set(
+    checkboxRows
+      .filter(cb => cb.checked)
+      .map(cb => Number(cb.dataset.employeeId))
+      .filter(Number.isFinite)
+  );
+  const unchecked = checkboxRows
+    .filter(cb => !cb.checked)
+    .map(cb => Number(cb.dataset.employeeId))
+    .filter(Number.isFinite);
   const overridesArray = [];
   const lineOverrides = [];
   Object.entries(payrollOverrides || {}).forEach(([key, ov]) => {
@@ -1271,6 +2911,7 @@ async function createChecksForCurrentRange() {
       const [empIdRaw, projectIdRaw] = key.split(':');
       const empId = Number(empIdRaw);
       if (!empId || !projectIdRaw) return;
+      if (!selectedEmployeeIds.has(empId)) return;
       lineOverrides.push({
         employeeId: empId,
         projectId: projectIdRaw,
@@ -1282,6 +2923,7 @@ async function createChecksForCurrentRange() {
     } else {
       const empId = Number(ov.employeeId || key);
       if (!empId) return;
+      if (!selectedEmployeeIds.has(empId)) return;
       overridesArray.push({
         employeeId: empId,
         expenseAccountName: ov.expenseAccountName || null,
@@ -1290,8 +2932,9 @@ async function createChecksForCurrentRange() {
       });
     }
   });
-  const customLines = Object.entries(additionalLinesByEmployee || {}).flatMap(([empId, lines]) =>
-    (lines || [])
+  const customLines = Object.entries(additionalLinesByEmployee || {}).flatMap(([empId, lines]) => {
+    if (!selectedEmployeeIds.has(Number(empId))) return [];
+    return (lines || [])
       .filter(l => Number(l.amount) > 0)
       .map(l => ({
         employeeId: Number(empId),
@@ -1300,19 +2943,18 @@ async function createChecksForCurrentRange() {
         expenseAccountName: l.expenseAccountName || null,
         className: l.className || null,
         projectId: l.projectId || null
-      }))
-  );
-  const unchecked = Array.from(document.querySelectorAll('.payroll-send-checkbox'))
-    .filter(cb => !cb.checked)
-    .map(cb => Number(cb.dataset.employeeId))
-    .filter(n => Number.isFinite(n));
+      }));
+  });
   // Basic pre-flight validation
   const errors = [];
+  if (!selectedEmployeeIds.size) {
+    errors.push('Select at least one employee with "Send to QB" before creating checks.');
+  }
   const classNames = new Set((payrollClasses || []).map(c => c.fullName || c.name).filter(Boolean));
-  if (!currentPayrollSettings.bank_account_name) {
+  if (selectedEmployeeIds.size && !currentPayrollSettings.bank_account_name) {
     errors.push('Bank account is not selected in payroll settings.');
   }
-  if (!currentPayrollSettings.expense_account_name) {
+  if (selectedEmployeeIds.size && !currentPayrollSettings.expense_account_name) {
     errors.push('Expense account is not selected in payroll settings.');
   }
   const missingLines = [];
@@ -1323,6 +2965,8 @@ async function createChecksForCurrentRange() {
   const debugLines = [];
   document.querySelectorAll('#payroll-summary-body .line-items-box tr').forEach(row => {
     const empId = row.dataset.employeeId || row.closest('tr')?.dataset.employeeId || '';
+    const empIdNum = Number(empId);
+    if (!Number.isFinite(empIdNum) || !selectedEmployeeIds.has(empIdNum)) return;
     const empName = row.dataset.employeeName || '';
     const projectSel = row.querySelector('.line-project-select');
     const projectLabelCell = (!projectSel && row.children[3] && row.children[3].dataset) ? row.children[3] : null;
@@ -1377,14 +3021,17 @@ async function createChecksForCurrentRange() {
   const runType = adjustmentSettings.enabled ? 'adjustment' : 'standard';
   const adjustmentReason = adjustmentSettings.enabled ? adjustmentSettings.reason : null;
   const includeOvertime = getPayrollOvertimeSetting();
+  const includeReceiptReimbursements = getPayrollIncludeReimbursementsSetting();
   const payload = {
     start,
     end,
     bankAccountName: currentPayrollSettings.bank_account_name || null,
     expenseAccountName: currentPayrollSettings.expense_account_name || null,
+    receiptExpenseAccountName: currentPayrollSettings.receipt_expense_account_name || null,
     memo: currentPayrollSettings.default_memo || null,
     lineDescriptionTemplate: currentPayrollSettings.line_description_template || null,
     includeOvertime,
+    includeReceiptReimbursements,
     overrides: overridesArray,
     customLines,
     lineOverrides,
@@ -1422,27 +3069,43 @@ async function createChecksForCurrentRange() {
   let conflictAttempts = 0;
 
   while (true) {
-    let res = null;
     let data = null;
+    let callErr = null;
     try {
       showPayrollLoading();
-      res = await fetch('/api/payroll/create-checks', {
+      data = await fetchJSON('/api/payroll/create-checks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(createPayload)
       });
-      data = await res.json();
     } catch (err) {
-      console.error('Error calling /api/payroll/create-checks:', err);
-      alert('There was a problem contacting the server while creating checks.\n\n' + (err.message || err));
-      if (retryBtn) retryBtn.disabled = false;
-      if (createBtn) createBtn.disabled = false;
-      return;
+      callErr = err;
     } finally {
       hidePayrollLoading();
     }
 
-    if (res && res.status === 409 && data && data.snapshot_hash && conflictAttempts < 1) {
+    if (callErr) {
+      const body = callErr && callErr.body ? callErr.body : null;
+      if (callErr.status === 409 && body && body.snapshot_hash && conflictAttempts < 1) {
+        data = body;
+      } else {
+        console.error('Error calling /api/payroll/create-checks:', callErr);
+        const msg = 'There was a problem contacting the server while creating checks.\n\n' +
+          buildPayrollApiErrorMessage(callErr);
+        await showPayrollRunReviewNotice(msg, {
+          isError: true,
+          runId: lastPayrollRunId || null,
+          preserveSelection: true,
+          scrollIntoView: true,
+          fallbackAlert: true
+        });
+        if (retryBtn) retryBtn.disabled = false;
+        if (createBtn) createBtn.disabled = false;
+        return;
+      }
+    }
+
+    if (data && data.snapshot_hash && conflictAttempts < 1) {
       const retryPreflight = confirm(
         'Time entries changed since preflight. Re-run preflight and try again?'
       );
@@ -1481,17 +3144,17 @@ async function createChecksForCurrentRange() {
     const backupWarnings = Array.isArray(data.warnings) ? data.warnings : [];
     if (!data.ok) {
       let msg = data.error || data.reason || 'Unknown error creating checks.';
-      if (data.fatal_qbo_error) {
-        msg += `\n\nFatal QuickBooks error:\n${data.fatal_qbo_error}`;
-      }
-      if (Array.isArray(data.results) && data.results.length) {
-        const failed = data.results.filter(r => r && r.ok === false);
-        if (failed.length) msg += '\n\nFailed:\n' + failed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
-      }
+      if (data.fatal_qbo_error) msg += `\n\nFatal QuickBooks error:\n${data.fatal_qbo_error}`;
       if (backupWarnings.length) {
         msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
       }
-      alert('Could not create checks:\n\n' + msg);
+      await showPayrollRunReviewNotice(msg, {
+        isError: true,
+        runId: lastPayrollRunId || null,
+        preserveSelection: false,
+        scrollIntoView: true,
+        fallbackAlert: true
+      });
       if (retryBtn) retryBtn.disabled = !(data.results || []).some(r => r && r.ok === false);
       break;
     }
@@ -1500,44 +3163,40 @@ async function createChecksForCurrentRange() {
     const okList = results.filter(r => r && r.ok !== false);
     const warnings = collectPayrollWarnings(results);
     const statusLabel = data.status ? String(data.status).toUpperCase() : null;
-    let msg = `Checks created successfully.\nPayroll run ID: ${data.payrollRunId || '(none)'}`;
+    let msg = `Create checks complete: ${okList.length} succeeded, ${failed.length} failed.`;
+    msg += `\nPayroll run ID: ${data.payrollRunId || '(none)'}`;
     if (statusLabel) msg += `\nStatus: ${statusLabel}`;
-    if (results.length) msg += `\n\nSummary: ${okList.length} succeeded, ${failed.length} failed.`;
-    if (failed.length) msg += '\n\nFailed:\n' + failed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
-    if (warnings.length) {
-      msg += '\n\nDiscrepancies:\n' + warnings.map(w => `• ${w.employee} – ${w.message}`).join('\n');
-    }
+    if (failed.length) msg += '\nUse Payroll Run Review to fix and retry only failed checks.';
+    if (warnings.length) msg += `\n${warnings.length} discrepancy warning(s) were returned.`;
     if (backupWarnings.length) {
       msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
     }
-    if (data.fatal_qbo_error) {
-      msg += `\n\nFatal QuickBooks error (run stopped early):\n${data.fatal_qbo_error}`;
-    }
-    alert(msg);
+    if (data.fatal_qbo_error) msg += `\n\nFatal QuickBooks error:\n${data.fatal_qbo_error}`;
+    await showPayrollRunReviewNotice(msg, {
+      isError: failed.length > 0 || !!data.fatal_qbo_error,
+      runId: lastPayrollRunId || null,
+      preserveSelection: false,
+      scrollIntoView: true,
+      fallbackAlert: true
+    });
     if (retryBtn) retryBtn.disabled = !failed.length;
     if (typeof loadPayrollSummary === 'function') loadPayrollSummary();
     break;
   }
 
   if (createBtn) createBtn.disabled = false;
+  updatePayrollRunReviewRetryButtonState();
 }
 
 async function retryFailedChecksForCurrentRun() {
-  const { start, end } = currentPayrollRange || {};
-  if (!validatePayrollDates(start, end)) return;
-  if (!Array.isArray(lastPayrollResults) || !lastPayrollResults.length) {
-    alert('There is no previous payroll run to retry.');
-    return;
-  }
-  if (!lastPayrollRunId) {
-    alert('Cannot retry: no original payroll run ID is available.');
-    return;
-  }
-  const failed = lastPayrollResults.filter(r => r && r.ok === false && r.employeeId);
+  const failed = Array.isArray(lastPayrollResults)
+    ? lastPayrollResults.filter(r => r && r.ok === false && r.employeeId)
+    : [];
   if (!failed.length) {
     alert('There are no failed employees to retry.');
     return;
   }
+  const failedEmployeeIds = [...new Set(failed.map(f => Number(f.employeeId)).filter(Number.isFinite))];
   const adjustmentSettings = getPayrollAdjustmentSettings();
   const runType =
     lastPayrollRunType ||
@@ -1546,171 +3205,109 @@ async function retryFailedChecksForCurrentRun() {
     runType === 'adjustment'
       ? (lastPayrollAdjustmentReason || adjustmentSettings.reason)
       : null;
-  const includeOvertime = getPayrollOvertimeSetting();
-  if (runType === 'adjustment' && !adjustmentReason) {
-    alert('Adjustment reason is required for an adjustment payroll retry.');
-    return;
-  }
-  const failedEmployeeIds = [...new Set(failed.map(f => Number(f.employeeId)).filter(Number.isFinite))];
-  const overridesArray = Object.entries(payrollOverrides || {})
-    .map(([key, ov]) => ({
-      employeeId: Number(ov.employeeId || key.split(':')[0]),
-      expenseAccountName: ov.expenseAccountName || null,
-      memo: ov.memo || null,
-      lineDescriptionTemplate: ov.lineDescriptionTemplate || null
-    }))
-    .filter(o => o.employeeId && failedEmployeeIds.includes(o.employeeId));
-  const payload = {
-    start,
-    end,
-    bankAccountName: currentPayrollSettings.bank_account_name || null,
-    expenseAccountName: currentPayrollSettings.expense_account_name || null,
-    memo: currentPayrollSettings.default_memo || null,
-    lineDescriptionTemplate: currentPayrollSettings.line_description_template || null,
-    includeOvertime,
-    overrides: overridesArray,
-    isRetry: true,
-    originalPayrollRunId: lastPayrollRunId,
-    onlyEmployeeIds: failedEmployeeIds,
-    run_type: runType,
-    adjustment_reason: adjustmentReason
-  };
-  const createBtn = document.getElementById('payroll-create-checks');
-  const retryBtn = document.getElementById('payroll-retry-failed');
-  if (createBtn) createBtn.disabled = true;
-  if (retryBtn) retryBtn.disabled = true;
+  const { start, end } = currentPayrollRange || {};
+  const reviewRun = currentPayrollRunReview?.run || null;
+  const retryStart = reviewRun?.start_date || start;
+  const retryEnd = reviewRun?.end_date || end;
+  const includeOvertime =
+    reviewRun && Object.prototype.hasOwnProperty.call(reviewRun, 'include_overtime')
+      ? !!reviewRun.include_overtime
+      : getPayrollOvertimeSetting();
 
-  const preflightData = await runPayrollPreflightWithConfirm(payload, {
-    mode: 'retry',
-    start,
-    end,
+  await retryPayrollEmployees({
+    start: retryStart,
+    end: retryEnd,
+    payrollRunId: reviewRun?.id || lastPayrollRunId,
+    failedEmployeeIds,
     runType,
     adjustmentReason,
-    failedEmployeeIds
+    includeOvertime,
+    sourceLabel: 'retry-button'
   });
-  if (!preflightData) {
-    if (createBtn) createBtn.disabled = false;
-    if (retryBtn) retryBtn.disabled = false;
+}
+
+async function retrySelectedFailedChecksFromReview() {
+  if (!currentPayrollRunReview || !currentPayrollRunReview.run) {
+    alert('Load a payroll run review first.');
     return;
   }
+  const run = currentPayrollRunReview.run;
+  const selectedEmployeeIds = getPayrollReviewSelectedFailedEmployeeIds();
+  if (!selectedEmployeeIds.length) {
+    alert('Select at least one failed employee to retry.');
+    return;
+  }
+  await retryPayrollEmployees({
+    start: run.start_date,
+    end: run.end_date,
+    payrollRunId: run.id,
+    failedEmployeeIds: selectedEmployeeIds,
+    runType: run.run_type || 'standard',
+    adjustmentReason: run.adjustment_reason || null,
+    includeOvertime: !!run.include_overtime,
+    sourceLabel: 'run-review'
+  });
+}
 
-  const basePayload = { ...payload };
-  let createPayload = {
-    ...payload,
-    preflight_id: preflightData.preflight_id,
-    payload_hash: preflightData.payload_hash
-  };
-  let conflictAttempts = 0;
+function setupPayrollRunReviewActions() {
+  const els = getPayrollRunReviewElements();
+  if (!els.wrap || els.wrap.dataset.bound) return;
+  els.wrap.dataset.bound = '1';
 
-  while (true) {
-    let res = null;
-    let data = null;
-    try {
-      showPayrollLoading();
-      res = await fetch('/api/payroll/create-checks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
-        body: JSON.stringify(createPayload)
-      });
-      data = await res.json();
-    } catch (err) {
-      console.error('Error calling /api/payroll/create-checks (retry):', err);
-      alert('There was a problem contacting the server while retrying failed checks.\n\n' + (err.message || err));
-      if (retryBtn) retryBtn.disabled = false;
-      if (createBtn) createBtn.disabled = false;
-      return;
-    } finally {
-      hidePayrollLoading();
-    }
-
-    if (res && res.status === 409 && data && data.snapshot_hash && conflictAttempts < 1) {
-      const retryPreflight = confirm(
-        'Time entries changed since preflight. Re-run preflight and try again?'
-      );
-      if (!retryPreflight) {
-        if (createBtn) createBtn.disabled = false;
-        if (retryBtn) retryBtn.disabled = false;
-        return;
+  if (els.loadPeriodBtn) {
+    els.loadPeriodBtn.addEventListener('click', async () => {
+      const run = currentPayrollRunReview?.run;
+      if (!run) return;
+      const startInput = document.getElementById('payroll-start');
+      const endInput = document.getElementById('payroll-end');
+      if (startInput) startInput.value = run.start_date || '';
+      if (endInput) endInput.value = run.end_date || '';
+      currentPayrollRange = { start: run.start_date || null, end: run.end_date || null };
+      try {
+        await loadPayrollSummary();
+      } catch (err) {
+        console.warn('Failed loading payroll summary for run-review period:', err);
       }
-
-      const refreshed = await runPayrollPreflightWithConfirm(basePayload, {
-        mode: 'retry',
-        start,
-        end,
-        runType,
-        adjustmentReason,
-        failedEmployeeIds
-      });
-      if (!refreshed) {
-        if (createBtn) createBtn.disabled = false;
-        if (retryBtn) retryBtn.disabled = false;
-        return;
-      }
-      createPayload = {
-        ...basePayload,
-        preflight_id: refreshed.preflight_id,
-        payload_hash: refreshed.payload_hash
-      };
-      conflictAttempts += 1;
-      continue;
-    }
-
-    lastPayrollResults = data.results || null;
-    lastPayrollRunId = data.payrollRunId || lastPayrollRunId;
-    lastPayrollRunStatus = data.status || null;
-    lastPayrollRunType = runType;
-    lastPayrollAdjustmentReason = adjustmentReason;
-    const backupWarnings = Array.isArray(data.warnings) ? data.warnings : [];
-    if (!data.ok) {
-      let msg = data.error || data.reason || 'Unknown error.';
-      if (data.fatal_qbo_error) {
-        msg += `\n\nFatal QuickBooks error:\n${data.fatal_qbo_error}`;
-      }
-      if (Array.isArray(data.results) && data.results.length) {
-        const stillFailed = data.results.filter(r => r && r.ok === false);
-        if (stillFailed.length) msg += '\n\nStill failing:\n' + stillFailed.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
-      }
-      if (backupWarnings.length) {
-        msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
-      }
-      alert('Could not retry checks:\n\n' + msg);
-      if (retryBtn) retryBtn.disabled = !(data.results || []).some(r => r && r.ok === false);
-      break;
-    }
-    const results = Array.isArray(data.results) ? data.results : [];
-    const failedAgain = results.filter(r => r && r.ok === false);
-    const succeeded = results.filter(r => r && r.ok !== false);
-    const warnings = collectPayrollWarnings(results);
-    const statusLabel = data.status ? String(data.status).toUpperCase() : null;
-    let msg = `Retry complete.\nPayroll run ID: ${data.payrollRunId || lastPayrollRunId || '(none)'}`;
-    if (statusLabel) msg += `\nStatus: ${statusLabel}`;
-    if (results.length) msg += `\n\nSummary: ${succeeded.length} succeeded, ${failedAgain.length} failed.`;
-    if (failedAgain.length) msg += '\n\nStill failing:\n' + failedAgain.map(f => `• ${f.employeeName} – ${f.error || 'Unknown error'}`).join('\n');
-    if (warnings.length) {
-      msg += '\n\nDiscrepancies:\n' + warnings.map(w => `• ${w.employee} – ${w.message}`).join('\n');
-    }
-    if (backupWarnings.length) {
-      msg += '\n\nBackup warnings:\n' + backupWarnings.map(w => `• ${w.message || 'Backup warning'}`).join('\n');
-    }
-    if (data.fatal_qbo_error) {
-      msg += `\n\nFatal QuickBooks error (run stopped early):\n${data.fatal_qbo_error}`;
-    }
-    alert(msg);
-    if (retryBtn) retryBtn.disabled = !failedAgain.length;
-    if (typeof loadPayrollSummary === 'function') loadPayrollSummary();
-    break;
+    });
   }
 
-  if (createBtn) createBtn.disabled = false;
+  if (els.refreshBtn) {
+    els.refreshBtn.addEventListener('click', async () => {
+      const runId = Number(currentPayrollRunReview?.run?.id);
+      try {
+        if (runId) {
+          await loadPayrollRunReviewById(runId, { preserveSelection: true, scrollIntoView: false });
+        } else {
+          await loadLatestUnresolvedPayrollRunReview({ allowHide: false });
+        }
+      } catch (err) {
+        console.warn('Failed refreshing payroll run review:', err);
+        setPayrollRunReviewAlert(err?.message || 'Failed to refresh run review.', true);
+      }
+    });
+  }
+
+  if (els.retryBtn) {
+    els.retryBtn.addEventListener('click', retrySelectedFailedChecksFromReview);
+  }
 }
 
 function setupPayrollActions() {
+  if (!isPayrollFeatureEnabled()) return;
   const createBtn = document.getElementById('payroll-create-checks');
   const retryBtn = document.getElementById('payroll-retry-failed');
   if (createBtn) createBtn.addEventListener('click', createChecksForCurrentRange);
   if (retryBtn) retryBtn.addEventListener('click', retryFailedChecksForCurrentRun);
   const tbody = document.getElementById('payroll-summary-body');
   if (tbody) {
+    tbody.addEventListener('change', e => {
+      const cb = e.target.closest('.payroll-send-checkbox');
+      if (!cb) return;
+      const empId = Number(cb.dataset.employeeId);
+      if (!Number.isFinite(empId)) return;
+      if (cb.checked) payrollSendSelections.add(empId);
+      else payrollSendSelections.delete(empId);
+    });
     tbody.addEventListener('click', async e => {
       const btn = e.target.closest('.btn-unpay');
       if (!btn) return;
@@ -1724,17 +3321,22 @@ function setupPayrollActions() {
       const reason = prompt('Reason for marking unpaid (optional):', 'manual unpay');
       if (reason === null) return;
       try {
-        const res = await fetch('/api/payroll/unpay', {
+        const data = await fetchJSON('/api/payroll/unpay', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getCsrfHeader() },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ payrollRunId, employeeId: empId, reason })
         });
-        const data = await res.json();
-        if (!res.ok || data.ok === false) {
+        if (data && data.ok === false) {
           throw new Error(data.error || 'Failed to mark unpaid.');
         }
         alert('Marked unpaid. Reloading payroll summary.');
         if (typeof loadPayrollSummary === 'function') loadPayrollSummary();
+        if (payrollRunId) {
+          loadPayrollRunReviewById(payrollRunId, { preserveSelection: true })
+            .catch(err => {
+              console.warn('Failed to refresh payroll run review after unpay:', err);
+            });
+        }
       } catch (err) {
         console.error('Unpay error:', err);
         alert('Failed to mark unpaid: ' + (err.message || err));
@@ -1744,34 +3346,66 @@ function setupPayrollActions() {
 }
 
 function initPayrollUiTab() {
+  if (!isPayrollFeatureEnabled()) {
+    window.payrollUiInitialized = true;
+    return;
+  }
   if (window.payrollUiInitialized) return;
   window.payrollUiInitialized = true;
   setupPayrollSettingsCollapse();
   setupPayrollRowToggle();
   setupViewTimeEntriesButtons();
+  setupPayrollPendingApprovalsBannerActions();
   bindInlineTimeEntryEditor();
   setupCustomLineButtons();
+  setupPayrollReimbursements();
+  setupPayrollRunReviewActions();
   const settingsSaveBtn = document.getElementById('payroll-settings-save');
   if (settingsSaveBtn) settingsSaveBtn.addEventListener('click', savePayrollSettings);
   const refreshBtn = document.getElementById('payroll-refresh');
   if (refreshBtn) refreshBtn.addEventListener('click', loadPayrollSummary);
+  const includeReimbursementsCheckbox = document.getElementById('payroll-include-reimbursements');
+  if (includeReimbursementsCheckbox && !includeReimbursementsCheckbox.dataset.bound) {
+    includeReimbursementsCheckbox.dataset.bound = '1';
+    includeReimbursementsCheckbox.addEventListener('change', () => {
+      if (currentPayrollRange?.start && currentPayrollRange?.end) {
+        loadPayrollSummary();
+      }
+    });
+  }
   const adjustmentToggle = document.getElementById('payroll-adjustment-toggle');
   if (adjustmentToggle) {
     adjustmentToggle.addEventListener('change', updatePayrollAdjustmentUI);
     updatePayrollAdjustmentUI();
   }
   setDefaultBillingCycleDates();
-  loadPayrollSettings();
+  ensurePayrollReimbursementDateDefault();
+  loadPayrollSettings()
+    .then(() => loadPayrollReimbursements())
+    .catch(err => {
+      console.warn('Failed to initialize payroll settings/reimbursements:', err);
+    });
   applyPayrollSettingsAccess();
   setupPayrollActions();
+  loadLatestUnresolvedPayrollRunReview()
+    .catch(err => {
+      console.warn('Failed to load latest unresolved payroll run review:', err);
+    });
 }
 
 // Expose for nav hook in app.js
 window.initPayrollUiTab = initPayrollUiTab;
-
-document.addEventListener('DOMContentLoaded', () => {
-  initPayrollUiTab();
-});
+window.openPayrollRunReviewById = async (runId, options = {}) => {
+  if (typeof window.initPayrollUiTab === 'function') {
+    window.initPayrollUiTab();
+  }
+  return loadPayrollRunReviewById(runId, {
+    preserveSelection: false,
+    scrollIntoView: true,
+    ...options
+  });
+};
+window.loadLatestUnresolvedPayrollRunReview = loadLatestUnresolvedPayrollRunReview;
 
 // Simple loading overlay helpers
 function showPayrollLoading() {
@@ -1807,16 +3441,11 @@ function updatePayrollRunDetailsCache(runId, checkId, updates = {}) {
 }
 
 async function patchPayrollCheck(checkId, updates) {
-  const res = await fetch(`/api/reports/checks/${checkId}`, {
+  return fetchJSON(`/api/reports/checks/${checkId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates)
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.ok === false) {
-    throw new Error(data.error || data.message || 'Failed to update check.');
-  }
-  return data;
 }
 
 function buildPayrollRunSummary(run) {
@@ -1831,19 +3460,327 @@ function buildPayrollRunSummary(run) {
   return text;
 }
 
+function normalizeRunStatusFilter(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeRunTypeFilter(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return 'standard';
+  return raw;
+}
+
+function getPayrollRunFiltersFromUi() {
+  const start = document.getElementById('reports-runs-filter-start')?.value || '';
+  const end = document.getElementById('reports-runs-filter-end')?.value || '';
+  const status = document.getElementById('reports-runs-filter-status')?.value || '';
+  const runType = document.getElementById('reports-runs-filter-type')?.value || '';
+  return {
+    start,
+    end,
+    status: normalizeRunStatusFilter(status),
+    runType: String(runType || '').trim().toLowerCase()
+  };
+}
+
+function resetPayrollRunFiltersInUi() {
+  const start = document.getElementById('reports-runs-filter-start');
+  const end = document.getElementById('reports-runs-filter-end');
+  const status = document.getElementById('reports-runs-filter-status');
+  const runType = document.getElementById('reports-runs-filter-type');
+  if (start) start.value = '';
+  if (end) end.value = '';
+  if (status) status.value = '';
+  if (runType) runType.value = '';
+}
+
+function getPayrollCheckFiltersFromUi() {
+  const employee = document.getElementById('reports-checks-filter-employee')?.value || '';
+  const paid = document.getElementById('reports-checks-filter-paid')?.value || '';
+  return {
+    employee: employee.trim().toLowerCase(),
+    paid: String(paid || '').trim().toLowerCase()
+  };
+}
+
+function resetPayrollCheckFiltersInUi() {
+  const employee = document.getElementById('reports-checks-filter-employee');
+  const paid = document.getElementById('reports-checks-filter-paid');
+  if (employee) employee.value = '';
+  if (paid) paid.value = '';
+}
+
+function refreshPayrollRunStatusFilterOptions(runs = []) {
+  const statusSelect = document.getElementById('reports-runs-filter-status');
+  if (!statusSelect) return;
+  const selectedStatus = payrollReportRunFilters.status || '';
+  const statuses = Array.from(
+    new Set(
+      (Array.isArray(runs) ? runs : [])
+        .map(run => normalizeRunStatusFilter(run?.status))
+        .filter(Boolean)
+    )
+  ).sort();
+  statusSelect.innerHTML = '<option value="">All statuses</option>';
+  statuses.forEach(status => {
+    const opt = document.createElement('option');
+    opt.value = status;
+    opt.textContent = formatPayrollRunStatus(status) || status;
+    statusSelect.appendChild(opt);
+  });
+  if (selectedStatus && statuses.includes(selectedStatus)) {
+    statusSelect.value = selectedStatus;
+  } else if (selectedStatus && !statuses.includes(selectedStatus)) {
+    payrollReportRunFilters.status = '';
+    statusSelect.value = '';
+  }
+}
+
+function filterPayrollRunsByFilters(runs = [], filters = {}) {
+  const start = String(filters.start || '').trim();
+  const end = String(filters.end || '').trim();
+  const status = normalizeRunStatusFilter(filters.status || '');
+  const runType = String(filters.runType || '').trim().toLowerCase();
+
+  return (Array.isArray(runs) ? runs : []).filter(run => {
+    const runStart = String(run?.start_date || '').slice(0, 10);
+    const runEnd = String(run?.end_date || '').slice(0, 10);
+    const runStatus = normalizeRunStatusFilter(run?.status);
+    const rowRunType = normalizeRunTypeFilter(run?.run_type);
+
+    if (start && (!runStart || runStart < start)) return false;
+    if (end && (!runEnd || runEnd > end)) return false;
+    if (status && runStatus !== status) return false;
+    if (runType && rowRunType !== runType) return false;
+    return true;
+  });
+}
+
+function filterPayrollChecksByFilters(rows = [], filters = {}) {
+  const employeeNeedle = String(filters.employee || '').trim().toLowerCase();
+  const paidFilter = String(filters.paid || '').trim().toLowerCase();
+
+  return (Array.isArray(rows) ? rows : []).filter(row => {
+    const name = String(row?.employee_name || '').toLowerCase();
+    const isPaid = row?.paid === 1 || row?.paid === true;
+    if (employeeNeedle && !name.includes(employeeNeedle)) return false;
+    if (paidFilter === 'paid' && !isPaid) return false;
+    if (paidFilter === 'unpaid' && isPaid) return false;
+    return true;
+  });
+}
+
+function setPayrollRunDetailsPlaceholder(message) {
+  const tbody = document.getElementById('reports-details-body');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="6">${escapeHTML(message)}</td></tr>`;
+}
+
+function renderPayrollRunDetailsRows(runId, rows = []) {
+  const tbody = document.getElementById('reports-details-body');
+  const downloadBtn = document.getElementById('reports-download');
+  if (!tbody) return;
+
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    setPayrollRunDetailsPlaceholder('(no checks found for this run)');
+    if (downloadBtn) downloadBtn.disabled = true;
+    return;
+  }
+
+  const filtered = filterPayrollChecksByFilters(list, payrollReportCheckFilters);
+  if (!filtered.length) {
+    setPayrollRunDetailsPlaceholder('(no checks match current filters)');
+    if (downloadBtn) downloadBtn.disabled = false;
+    return;
+  }
+
+  const canEdit = canModifyPayrollReports();
+  tbody.innerHTML = '';
+  filtered.forEach(row => {
+    const tr = document.createElement('tr');
+    const paidValue = row.paid === 1 || row.paid === true;
+    const paidDateLabel = row.paid_date ? formatDateUS(row.paid_date) : '';
+    if (canEdit) {
+      tr.innerHTML = `
+        <td>${escapeHTML(row.employee_name || '')}</td>
+        <td>${escapeHTML(Number(row.total_hours || 0).toFixed(2))}</td>
+        <td>${escapeHTML(formatMoney(Number(row.total_pay || 0)))}</td>
+        <td>
+          <input type="text" class="reports-check-input" value="${escapeHTML(row.check_number || '')}" />
+        </td>
+        <td>${escapeHTML(paidDateLabel)}</td>
+        <td>
+          <input type="checkbox" class="reports-paid-toggle" ${paidValue ? 'checked' : ''} />
+        </td>
+      `;
+
+      const checkInput = tr.querySelector('.reports-check-input');
+      const paidToggle = tr.querySelector('.reports-paid-toggle');
+      if (checkInput) {
+        checkInput.dataset.original = row.check_number || '';
+        checkInput.addEventListener('keydown', e => {
+          if (e.key === 'Enter') checkInput.blur();
+        });
+        checkInput.addEventListener('change', async () => {
+          const nextValue = checkInput.value.trim();
+          const original = checkInput.dataset.original || '';
+          if (nextValue === original) return;
+          checkInput.disabled = true;
+          try {
+            await patchPayrollCheck(row.id, { check_number: nextValue || null });
+            checkInput.dataset.original = nextValue;
+            row.check_number = nextValue || null;
+            updatePayrollRunDetailsCache(runId, row.id, { check_number: nextValue || null });
+            setReportsMessage('Check number updated.');
+          } catch (err) {
+            console.error('Failed updating check number:', err);
+            checkInput.value = original;
+            setReportsMessage('Failed to update check number: ' + (err.message || err), true);
+          } finally {
+            checkInput.disabled = false;
+          }
+        });
+      }
+
+      if (paidToggle) {
+        paidToggle.dataset.original = paidValue ? '1' : '0';
+        paidToggle.addEventListener('change', async () => {
+          const original = paidToggle.dataset.original === '1';
+          if (paidToggle.checked === original) return;
+          paidToggle.disabled = true;
+          try {
+            const result = await patchPayrollCheck(row.id, { paid: paidToggle.checked });
+            paidToggle.dataset.original = paidToggle.checked ? '1' : '0';
+            row.paid = paidToggle.checked ? 1 : 0;
+            const nextPaidDate =
+              Object.prototype.hasOwnProperty.call(result, 'paid_date') ? result.paid_date : null;
+            row.paid_date = nextPaidDate;
+            const dateCell = tr.querySelector('td:nth-child(5)');
+            if (dateCell) {
+              dateCell.textContent = nextPaidDate ? formatDateUS(nextPaidDate) : '';
+            }
+            updatePayrollRunDetailsCache(runId, row.id, {
+              paid: paidToggle.checked,
+              paid_date: nextPaidDate
+            });
+            setReportsMessage('Check updated.');
+          } catch (err) {
+            console.error('Failed updating paid status:', err);
+            paidToggle.checked = original;
+            setReportsMessage('Failed to update paid status: ' + (err.message || err), true);
+          } finally {
+            paidToggle.disabled = false;
+          }
+        });
+      }
+    } else {
+      tr.innerHTML = `
+        <td>${escapeHTML(row.employee_name || '')}</td>
+        <td>${escapeHTML(Number(row.total_hours || 0).toFixed(2))}</td>
+        <td>${escapeHTML(formatMoney(Number(row.total_pay || 0)))}</td>
+        <td>${escapeHTML(row.check_number || '')}</td>
+        <td>${escapeHTML(paidDateLabel)}</td>
+        <td>${paidValue ? 'Yes' : 'No'}</td>
+      `;
+    }
+    tbody.appendChild(tr);
+  });
+
+  if (downloadBtn) {
+    downloadBtn.disabled = false;
+  }
+}
+
+function rerenderCurrentPayrollRunDetails() {
+  const runId = Number(currentPayrollReportRunId);
+  if (!runId) return;
+  const rows = payrollRunDetailsCache[runId];
+  if (!Array.isArray(rows)) return;
+  renderPayrollRunDetailsRows(runId, rows);
+}
+
+function setupPayrollReportFilters() {
+  const runsForm = document.getElementById('reports-runs-filter-form');
+  if (runsForm && !runsForm.dataset.bound) {
+    runsForm.dataset.bound = '1';
+    const applyBtn = document.getElementById('reports-runs-filter-apply');
+    const clearBtn = document.getElementById('reports-runs-filter-clear');
+    const applyRunFilters = () => {
+      payrollReportRunFilters = getPayrollRunFiltersFromUi();
+      loadPayrollRuns();
+    };
+    if (applyBtn) applyBtn.addEventListener('click', applyRunFilters);
+    runsForm.addEventListener('submit', evt => {
+      evt.preventDefault();
+      applyRunFilters();
+    });
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        payrollReportRunFilters = { start: '', end: '', status: '', runType: '' };
+        resetPayrollRunFiltersInUi();
+        loadPayrollRuns();
+      });
+    }
+  }
+
+  const checksForm = document.getElementById('reports-checks-filter-form');
+  if (checksForm && !checksForm.dataset.bound) {
+    checksForm.dataset.bound = '1';
+    const applyBtn = document.getElementById('reports-checks-filter-apply');
+    const clearBtn = document.getElementById('reports-checks-filter-clear');
+    const applyCheckFilters = () => {
+      payrollReportCheckFilters = getPayrollCheckFiltersFromUi();
+      rerenderCurrentPayrollRunDetails();
+    };
+    if (applyBtn) applyBtn.addEventListener('click', applyCheckFilters);
+    checksForm.addEventListener('submit', evt => {
+      evt.preventDefault();
+      applyCheckFilters();
+    });
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        payrollReportCheckFilters = { employee: '', paid: '' };
+        resetPayrollCheckFiltersInUi();
+        rerenderCurrentPayrollRunDetails();
+      });
+    }
+  }
+}
+
 async function loadPayrollRuns() {
+  if (!isPayrollFeatureEnabled()) return;
   const tbody = document.getElementById('reports-runs-body');
   if (!tbody) return;
+  payrollReportRunFilters = getPayrollRunFiltersFromUi();
   tbody.innerHTML = '<tr><td colspan="8">(loading payroll runs...)</td></tr>';
   try {
     const runs = await fetchJSON('/api/reports/payroll-runs');
     payrollReportRuns = Array.isArray(runs) ? runs : [];
+    refreshPayrollRunStatusFilterOptions(payrollReportRuns);
     if (!payrollReportRuns.length) {
       tbody.innerHTML = '<tr><td colspan="8">(no payroll runs yet)</td></tr>';
+      currentPayrollReportRunId = null;
+      const downloadBtn = document.getElementById('reports-download');
+      if (downloadBtn) downloadBtn.disabled = true;
+      setPayrollRunDetailsPlaceholder('(select a payroll run above)');
+      setReportsMessage('');
       return;
     }
+
+    const visibleRuns = filterPayrollRunsByFilters(payrollReportRuns, payrollReportRunFilters);
+    if (!visibleRuns.length) {
+      tbody.innerHTML = '<tr><td colspan="8">(no payroll runs match current filters)</td></tr>';
+      currentPayrollReportRunId = null;
+      const downloadBtn = document.getElementById('reports-download');
+      if (downloadBtn) downloadBtn.disabled = true;
+      setPayrollRunDetailsPlaceholder('(select a payroll run above)');
+      setReportsMessage('');
+      return;
+    }
+
     tbody.innerHTML = '';
-    payrollReportRuns.forEach(run => {
+    visibleRuns.forEach(run => {
       const payPeriod = `${formatDateUS(run.start_date)} - ${formatDateUS(run.end_date)}`;
       const status = formatPayrollRunStatus(run.status) || '-';
       const typeLabel = formatPayrollRunType(run.run_type, run.adjustment_reason) || '-';
@@ -1880,6 +3817,19 @@ async function loadPayrollRuns() {
       });
       tbody.appendChild(tr);
     });
+
+    const selectedStillVisible = visibleRuns.some(
+      run => Number(run.id) === Number(currentPayrollReportRunId)
+    );
+    if (!selectedStillVisible) {
+      currentPayrollReportRunId = null;
+      const downloadBtn = document.getElementById('reports-download');
+      if (downloadBtn) downloadBtn.disabled = true;
+      setPayrollRunDetailsPlaceholder('(select a payroll run above)');
+      setReportsMessage('');
+    } else {
+      rerenderCurrentPayrollRunDetails();
+    }
   } catch (err) {
     console.error('Error loading payroll runs:', err);
     tbody.innerHTML = '<tr><td colspan="8">(error loading payroll runs)</td></tr>';
@@ -1888,10 +3838,9 @@ async function loadPayrollRuns() {
 }
 
 async function loadPayrollRunDetails(runId, runMeta = null) {
-  const tbody = document.getElementById('reports-details-body');
+  if (!isPayrollFeatureEnabled()) return;
   const downloadBtn = document.getElementById('reports-download');
-  if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="6">(loading run details...)</td></tr>';
+  setPayrollRunDetailsPlaceholder('(loading run details...)');
   if (downloadBtn) {
     downloadBtn.disabled = true;
     downloadBtn.dataset.runId = runId;
@@ -1910,113 +3859,16 @@ async function loadPayrollRunDetails(runId, runMeta = null) {
     const rows = await fetchJSON(`/api/reports/payroll-runs/${runId}`);
     const list = Array.isArray(rows) ? rows : [];
     payrollRunDetailsCache[runId] = list;
-    if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="6">(no checks found for this run)</td></tr>';
-      return;
-    }
-    const canEdit = canModifyPayrollReports();
-    tbody.innerHTML = '';
-    list.forEach(row => {
-      const tr = document.createElement('tr');
-      const paidValue = row.paid === 1 || row.paid === true;
-      const paidDateLabel = row.paid_date ? formatDateUS(row.paid_date) : '';
-      if (canEdit) {
-        tr.innerHTML = `
-          <td>${escapeHTML(row.employee_name || '')}</td>
-          <td>${escapeHTML(Number(row.total_hours || 0).toFixed(2))}</td>
-          <td>${escapeHTML(formatMoney(Number(row.total_pay || 0)))}</td>
-          <td>
-            <input type="text" class="reports-check-input" value="${escapeHTML(row.check_number || '')}" />
-          </td>
-          <td>${escapeHTML(paidDateLabel)}</td>
-          <td>
-            <input type="checkbox" class="reports-paid-toggle" ${paidValue ? 'checked' : ''} />
-          </td>
-        `;
-
-        const checkInput = tr.querySelector('.reports-check-input');
-        const paidToggle = tr.querySelector('.reports-paid-toggle');
-        if (checkInput) {
-          checkInput.dataset.original = row.check_number || '';
-          checkInput.addEventListener('keydown', e => {
-            if (e.key === 'Enter') checkInput.blur();
-          });
-          checkInput.addEventListener('change', async () => {
-            const nextValue = checkInput.value.trim();
-            const original = checkInput.dataset.original || '';
-            if (nextValue === original) return;
-            checkInput.disabled = true;
-            try {
-              await patchPayrollCheck(row.id, { check_number: nextValue || null });
-              checkInput.dataset.original = nextValue;
-              row.check_number = nextValue || null;
-              updatePayrollRunDetailsCache(runId, row.id, { check_number: nextValue || null });
-              setReportsMessage('Check number updated.');
-            } catch (err) {
-              console.error('Failed updating check number:', err);
-              checkInput.value = original;
-              setReportsMessage('Failed to update check number: ' + (err.message || err), true);
-            } finally {
-              checkInput.disabled = false;
-            }
-          });
-        }
-
-        if (paidToggle) {
-          paidToggle.dataset.original = paidValue ? '1' : '0';
-          paidToggle.addEventListener('change', async () => {
-            const original = paidToggle.dataset.original === '1';
-            if (paidToggle.checked === original) return;
-            paidToggle.disabled = true;
-            try {
-              const result = await patchPayrollCheck(row.id, { paid: paidToggle.checked });
-              paidToggle.dataset.original = paidToggle.checked ? '1' : '0';
-              row.paid = paidToggle.checked ? 1 : 0;
-              const nextPaidDate =
-                Object.prototype.hasOwnProperty.call(result, 'paid_date') ? result.paid_date : null;
-              row.paid_date = nextPaidDate;
-              const dateCell = tr.querySelector('td:nth-child(5)');
-              if (dateCell) {
-                dateCell.textContent = nextPaidDate ? formatDateUS(nextPaidDate) : '';
-              }
-              updatePayrollRunDetailsCache(runId, row.id, {
-                paid: paidToggle.checked,
-                paid_date: nextPaidDate
-              });
-              setReportsMessage('Check updated.');
-            } catch (err) {
-              console.error('Failed updating paid status:', err);
-              paidToggle.checked = original;
-              setReportsMessage('Failed to update paid status: ' + (err.message || err), true);
-            } finally {
-              paidToggle.disabled = false;
-            }
-          });
-        }
-      } else {
-        tr.innerHTML = `
-          <td>${escapeHTML(row.employee_name || '')}</td>
-          <td>${escapeHTML(Number(row.total_hours || 0).toFixed(2))}</td>
-          <td>${escapeHTML(formatMoney(Number(row.total_pay || 0)))}</td>
-          <td>${escapeHTML(row.check_number || '')}</td>
-          <td>${escapeHTML(paidDateLabel)}</td>
-          <td>${paidValue ? 'Yes' : 'No'}</td>
-        `;
-      }
-      tbody.appendChild(tr);
-    });
-
-    if (downloadBtn) {
-      downloadBtn.disabled = false;
-    }
+    renderPayrollRunDetailsRows(runId, list);
   } catch (err) {
     console.error('Error loading payroll run details:', err);
-    tbody.innerHTML = '<tr><td colspan="6">(error loading run details)</td></tr>';
+    setPayrollRunDetailsPlaceholder('(error loading run details)');
     setReportsMessage('Failed to load payroll run details.', true);
   }
 }
 
 async function loadPayrollAuditLog() {
+  if (!isPayrollFeatureEnabled()) return;
   const tbody = document.getElementById('reports-audit-body');
   if (!tbody) return;
   tbody.innerHTML = '<tr><td colspan="4">(loading audit log...)</td></tr>';
@@ -2178,12 +4030,13 @@ function renderAuditReportRows({ rows, domain, tbodyId }) {
 }
 
 function hasAuditAccess(requirement) {
+  const sectionEnabled = isPayrollFeatureEnabled();
   const perms = window.CURRENT_ACCESS_PERMS || {};
   const isSuperAdmin = window.CURRENT_IS_SUPER_ADMIN === true;
   if (!requirement) return true;
   if (requirement === 'super_admin') return isSuperAdmin;
   if (requirement === 'view_payroll') {
-    return perms.view_payroll === true || perms.view_payroll === 'true';
+    return sectionEnabled && (perms.view_payroll === true || perms.view_payroll === 'true');
   }
   if (requirement === 'see_shipments') {
     return perms.see_shipments === true || perms.see_shipments === 'true';

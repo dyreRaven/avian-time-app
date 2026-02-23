@@ -1,5 +1,99 @@
 # Change Log
 
+- 2026-02-23: Organization Settings > Kiosk Device Setup now shows geofence location context for each device (project geofence coordinates/radius) instead of `Last seen` time.
+- 2026-02-23: Receipt reimbursements now require super-admin approval before payroll inclusion: reimbursements flow `requested -> approved -> paid`, the Reimbursements page now supports approving requested receipts, payroll only includes approved reimbursements, and unpay returns paid reimbursements back to approved.
+- 2026-02-23: Fixed Reimbursements form button layout so `Request Reimbursement` text stays within the button instead of overflowing.
+- 2026-02-23: Kiosk Admin shipment details now include a `Messages` tab with shipment comment threads, message posting, and offline queue/sync support for queued comments.
+- 2026-02-23: Moved receipt upload/reimbursement request management out of Payroll into a dedicated `Reimbursements` page under Time & Pay; reimbursement behavior and payroll integration remain unchanged.
+- 2026-02-23: Kiosk enrollment codes now auto-rotate after each successful code-based enrollment (single-use), kiosk registration now tracks ownership metadata (registered admin + registered/enrolled timestamps), and Organization Settings > Kiosk Device Setup now lists enrolled devices with device ID, registered admin, registered time, and geofence location context.
+- 2026-02-23: Removed the sign-in device-mode chooser from `/auth`; login now always auto-detects mode (tablet defaults to kiosk, non-tablet defaults to desktop). Added explicit view switches for dual-access admins in Desktop `My Account` (switch to kiosk) and Kiosk Admin `Settings` (switch to desktop).
+- 2026-02-23: Refined payroll reimbursements: vendor is now required on receipt upload, reimbursement line descriptions now use `[Vendor] Reimbursement`, reimbursement lines no longer map Customer/Project refs to QuickBooks, checks with reimbursements append `+ Reimbursement` to memo/private note, and reimbursement lines now use a dedicated receipt expense default (`receipt_expense_account_name`, fallback to main expense) plus the reimbursement class default.
+- 2026-02-23: Added payroll receipt reimbursements: super admins can upload receipt requests (employee/project/amount/date/note/file), payroll settings include defaults for main expense account + dedicated receipt expense account + reimbursement class, and payroll summary/create-checks can include reimbursements as dedicated line items (including reimbursement-only checks for employees without time-entry pay in the selected period).
+- 2026-02-23: Payroll Run Review now adds per-failed-row `Suggested fix` guidance and uses in-panel inline status/error banners for create/retry outcomes instead of relying on browser pop-up alerts.
+- 2026-02-23: Payroll now includes a dedicated `Payroll Run Review` panel after create/retry, with failed checks grouped at the top, successful checks grouped below, selectable failed-employee retries, and persistent resume support for unresolved runs after reload (plus Dashboard `Payroll issues` now points to the latest unresolved run as `Resume run`).
+- 2026-02-23: Payroll `Include overtime in pay` control is hidden from the Payroll screen for now (deferred), while existing overtime logic remains in code for later re-enable.
+- 2026-02-23: Payroll adjustment-run controls are hidden from the Payroll screen for now (deferred), while existing backend/frontend adjustment-run logic remains in code for later re-enable.
+- 2026-02-23: Payroll `Send to QB` checkboxes now default to unchecked so super admins explicitly opt each employee in before creating checks.
+- 2026-02-23: Payroll `View Time Entries` now closes the modal after a successful inline save (instead of reopening into an empty-state modal), while still reloading payroll summary/check calculations in the background.
+- 2026-02-23: Left sidebar now includes an `Audit Reports` header under Reports, grouping all audit report links together.
+- 2026-02-23: Payroll `View Time Entries` edits now auto re-approve the edited entry after save (using the required edit note) so it stays in payroll summary/check calculations instead of dropping out as pending.
+- 2026-02-23: Left sidebar Reports navigation now places `Time Entries Report` directly below `Payroll Reports`.
+- 2026-02-23: Payroll `View Time Entries` inline edits now require a save confirmation that explains payroll/checks will update, and successful saves now reload payroll summary so check preview/line-item totals reflect the edit immediately.
+- 2026-02-23: Review Time Entries edit flow now asks for confirmation before `Update Time Entry` when `Approve for payroll now` is checked, reducing accidental instant payroll approvals from misclicks.
+- 2026-02-23: Payroll Reports now includes practical report filters: payroll-run filters (pay-period start/end, status, run type) and selected-run check filters (employee name + paid/unpaid), each with Apply/Clear actions.
+- 2026-02-23: Payroll expanded employee details were refined to a calmer neutral visual style (softer section headers, quieter accents, and cleaner table states) to reduce visual noise while preserving all existing payroll/QBO information and actions.
+- 2026-02-23: Payroll Reports was simplified to report-only content: removed the embedded payroll audit log table, clarified run/check wording, and added helper copy for selecting a run and viewing check details. Audit history now lives only in Payroll Audit Report.
+- 2026-02-23: Reordered the sidebar Reports nav so regular reports appear first (`Time Entries`, `Shipment Verification`, `Payroll Reports`) and all audit reports are grouped after them.
+- 2026-02-23: Payroll Reports and Payroll Audit Report descriptions now use the same explicit difference statement on both pages to reduce ambiguity (`Payroll Reports` = run/check summaries, `Payroll Audit Report` = who-did-what history).
+- 2026-02-23: Payroll Reports and Payroll Audit Report descriptions now include an explicit one-line distinction so users can tell which report is for run/check summaries vs action-by-action audit history.
+- 2026-02-23: Payroll Reports header description now renders directly under the title (instead of to the right) to match other report cards.
+- 2026-02-23: Time Entries Report and Shipment Verification Report header descriptions now render directly under their titles (matching other report cards) instead of appearing to the right.
+- 2026-02-23: Added short "what this report shows" helper text under each desktop report header (Review Time Entries, Time Entries, Shipment Verification, Payroll Reports, and audit reports) so users can quickly understand each report's purpose.
+- 2026-02-23: QuickBooks onboarding sync is now more resilient to QBO `Invalid query (errorCode=4001)` responses by retrying employee/project/payroll-account syncs with compatible fallback query shapes, and the onboarding progress UI now marks the actual failed sync step instead of leaving it as pending.
+- 2026-02-23: Payroll expanded employee details now use clearer panel grouping (Check Preview vs Line Items), stronger visual hierarchy, and improved row/table contrast to make check-level review easier to scan without removing any data.
+- 2026-02-23: QuickBooks project sync now imports only project/job rows (not top-level customers), and `/api/sync/projects` now reports how many top-level customers were skipped.
+- 2026-02-23: Project list APIs (`/api/projects` and `/api/kiosk/projects`) now return only real projects/jobs, so top-level QuickBooks customers are hidden from project views and counts.
+- 2026-02-23: QuickBooks `Create in QBO` now handles duplicate-name errors more clearly: it attempts an employee sync fallback, auto-links when an existing QBO employee is found, and otherwise returns actionable guidance/matches so admins can use `Mark linked` immediately.
+- 2026-02-23: Employees `Use suggested match` now reports clear errors when a suggestion is missing required QuickBooks/employee IDs, and suggested-name decoding is now fault-tolerant instead of failing silently.
+- 2026-02-23: Employee records now block duplicate names within the same org (case-insensitive, whitespace-trimmed), including both full employee save and quick name edits.
+- 2026-02-23: Project saves now require both project name and customer name; `/api/projects` rejects blank values and the Project modal surfaces validation before submit.
+- 2026-02-23: Projects table now shows rows missing a customer with a `Missing customer (click to add)` indicator, and the Project modal now allows editing/focusing customer name so admins can fix these quickly.
+- 2026-02-23: Dashboard Operations `Projects` count now uses all active projects to match the Projects list.
+- 2026-02-23: Review Time Entries `Approve selected for payroll` now also marks entry field-review status and linked punch-review flags as approved, so checked entries immediately flow into payroll/check creation in the same action.
+- 2026-02-23: Payroll summary/preflight no longer hard-block when some entries in the period are unapproved. Payroll now shows an in-page pending-approvals warning with `Continue with Approved Entries` and `Review Time Entries` actions, and create-check confirmations warn that only approved selected entries will run.
+- 2026-02-23: Employees `Needs QuickBooks link` table was cleaned up with clearer `QuickBooks status`/`Actions` columns, simplified suggested-match actions, and grouped manual ID inputs to reduce button clutter during linking.
+- 2026-02-23: Test-data seeding now uses custom employee names (`♛ Lisett Rodriguez`, `Mr. Krabs`, `John Johnson`, `Mrs. Puff`, `Patrick Star`, `Pearl Krabs`) for the primary seeded staff/workers, and seed upserts now match existing names first (with legacy-name/email fallback) so reruns reuse existing employees instead of duplicating them.
+- 2026-02-23: Dashboard `Today's focus` items now include contextual icons (time, shipment docs, notifications, pickup/storage, QuickBooks sync, payroll) for faster scanning.
+- 2026-02-23: Dashboard `People & Access > Permissions` now opens Organization Settings with the Permissions accordion pre-expanded.
+- 2026-02-23: Replaced Review Time Entries `Include payroll approved` checkbox with an Include dropdown (Payroll approved entries, Paid entries) so admins can opt into already-approved and paid rows.
+- 2026-02-23: Organization Settings label `Access Control` was renamed to `Permissions`.
+- 2026-02-23: Dashboard `People & Access` quick links now include `Vendors`, and the `Access control` shortcut label was renamed to `Permissions`.
+- 2026-02-23: Review Time Entries now defaults to all dates + unpaid + not payroll approved; approved entries are shown only when the include-approved filter option is enabled.
+- 2026-02-23: Dashboard "Today's focus" cards are now fully clickable (not just the right-side action button), with keyboard support via Enter/Space.
+- 2026-02-23: Setup checklist bottom actions were split by intent: `Mark as complete` now permanently retires the setup checklist for that org on the current browser profile, while `Finish Setup Later` only closes it for now and shows it again on next app load.
+- 2026-02-21: Seeded time-entry projects now use `Bikini Bottom` and `Jellyfish Fields`, and rerunning the seed script renames prior `${seedTag} Project A/B` records to those names instead of creating duplicate projects.
+- 2026-02-21: Payroll Create Checks now validates line/project/class details only for employees checked as "Send to QB"; unchecked employees no longer block payroll runs with missing QB-required fields.
+- 2026-02-21: Payroll summary load now enforces payroll approvals just like preflight/create-checks; if any time entries in the selected period are not payroll-approved, `/api/payroll-summary` returns a blocking error with the pending list instead of loading partial rows.
+- 2026-02-21: Payroll settings now persist across sessions in the UI (saved bank/expense accounts are preselected after sign-out/sign-in), and saving settings can immediately apply memo/line defaults to loaded checks with an overwrite confirmation when existing values are already filled.
+- 2026-02-21: Added a comprehensive local fixture seeding utility (`npm run seed:test-data`) that populates cross-module test data (users/employees, kiosks/sessions, time entries/exceptions, shipments/docs/payments/comments/templates, payroll history, notifications, and audit rows) for faster end-to-end QA.
+- 2026-02-21: Updated the local fixture seed data to include a payroll-ready unpaid time entry in the active pay period so Payroll > Load Payroll always has at least one eligible unpaid row to exercise end-to-end checks.
+- 2026-02-21: Payroll now shows only payroll-approved unpaid entries in summary/drafts, and payroll preflight errors now include a concrete list of pending approvals for the selected period.
+- 2026-02-21: Setup checklist `Dismiss` no longer behaves like completion when steps were only skipped; the checklist now auto-hides only after true completion (org complete + QuickBooks synced + admin setup not skipped).
+- 2026-02-21: Fixed payroll exception counting so manual time entries with no punches are no longer incorrectly treated as punch exceptions by null join rows; reviewed manual entries can now flow into payroll as intended.
+- 2026-02-21: Payroll approval now controls payroll readiness end-to-end: payroll summary, preflight, and check drafts include all payroll-approved unpaid entries even when field-review or punch exceptions are still open.
+- 2026-02-21: Onboarding admin-access step now keeps all permission options visible at once ("Set up admin logins", "I'm the only admin", and "Finish later"/"Undo skip") to avoid label-flip flicker.
+- 2026-02-21: Onboarding step 3 (admin access) now uses a single primary action button to open employee admin setup, removing duplicate buttons that led to the same destination.
+- 2026-02-21: Removed the duplicate Settings > Admin Accounts workflow; admin login creation/invites now live in Employee Details, and the "This employee is an admin" toggle now drives login enable/disable behavior.
+- 2026-02-21: Employee Details admin setup is now clearer: desktop access is labeled as "This employee is an admin," invite actions are driven from that toggle, and sending an invite now persists admin access first.
+- 2026-02-21: Dashboard now starts behind an app boot gate and only appears after onboarding visibility is resolved, preventing a brief dashboard flash before the setup checklist for orgs that still need onboarding.
+- 2026-02-21: QuickBooks Connection top card is now hidden during app boot and onboarding-first mode, preventing a brief QuickBooks card flash before the setup checklist.
+- 2026-02-21: Setup checklist now applies local skipped-state styling/content synchronously when shown, so skipped steps no longer flash the default non-skipped styling before async hydration completes.
+- 2026-02-21: QuickBooks skipped-state action now remains visible during checklist refresh (`Undo skip` no longer disappears after initial render).
+- 2026-02-21: Onboarding step 3 now uses admin-first language and guidance (review employees, set up admin logins, or continue as the only super admin) instead of routing new users straight to Access Control.
+- 2026-02-21: After QuickBooks OAuth callback, onboarding now resumes directly into the QuickBooks setup modal and shows a clear in-modal "QuickBooks connected. Starting sync..." message (removed the interim onboarding-card "finishing setup" message).
+- 2026-02-21: Onboarding skipped steps now show recovery actions in-place: QuickBooks uses a single "Undo skip" action after skip, and the permissions step toggles to "Undo skip" after being skipped.
+- 2026-02-21: Setup checklist QuickBooks actions now stay hidden until onboarding state hydrates, preventing the brief default "Connect QuickBooks" flicker before skipped-state UI appears.
+- 2026-02-20: Added a local test reset utility (`npm run reset:test-data`) to clear org/user/session data for a clean bootstrap replay without relying on manual DB editing.
+- 2026-02-20: Added a browser localStorage wipe hint for onboarding reset (`Object.keys(localStorage).filter(k => k.startsWith('avian_')).forEach(...)`) to support repeatable signup/bootstrap tests.
+- 2026-02-20: QuickBooks callback failures now redirect back to the admin app with explicit `qbo` status and reason/message query params, and the dashboard shows QuickBooks connect errors from the callback response.
+- 2026-02-20: QuickBooks connect errors (including missing config) now appear immediately in onboarding step 2, and the loading state is reset so the UI no longer looks stuck.
+- 2026-02-07: Payroll and Payroll Reports are now super-admin only; payroll permission toggles were removed from Access Control and Employee Details (pay rates remain separately permissioned).
+- 2026-02-07: Payroll Summary rendering is now XSS-safe, and view-only payroll users no longer see editable-looking memo/line-item controls.
+- 2026-02-07: Review Time Entries now includes a payroll approval filter (all entries vs not payroll approved only).
+- 2026-02-06: Payroll preflight no longer blocks when field review is pending; it now surfaces pending field review as a warning (payroll approvals are still required).
+- 2026-02-06: Fixed Review Time Entries "Approve selected for payroll" so it prompts for required notes, shows Approved status in the table, and no longer breaks if you open the screen before permissions finish loading.
+- 2026-02-06: Payroll UI now re-applies access gating after permissions finish loading (prevents create-checks/settings controls from getting stuck disabled on initial load).
+- 2026-02-06: Fixed shipment access checks to respect disabled admin logins for existing sessions.
+- 2026-02-06: Added per-admin personal shipment notes, editable from a note icon on each shipment card and surfaced in the Shipments Summary until completed or deleted.
+- 2026-02-06: Shipments Summary now flags unpaid forwarder/clearing payments (requires payroll access) and shows active shipment totals.
+- 2026-02-05: Removed daily summary notifications; clock-out reminders now live under Timekeeping with a shared reminder schedule (time + frequency).
+- 2026-02-05: Notification Preferences sections are now collapsible on the admin console to reduce initial clutter.
+- 2026-02-05: Removed Role Templates from Settings; admin permissions are managed directly in Access Control and Employee Details.
+- 2026-02-05: Onboarding permissions step now completes after the first admin exists (no extra employee required).
+- 2026-02-05: Shipments now capture country of origin per line item with a shipment-level apply-to-all option; removed internal ref input from shipment details.
+- 2026-02-05: Shipment board cards now show COO and flag missing item COO values.
+- 2026-02-05: Added a Shipments Summary tab with quick attention lists (missing COO/docs, ready for pickup, notes, and items needing verification).
+- 2026-02-05: Shipments now track requested clearing status/date and Summary flags arrived shipments missing a clearing request.
 - 2026-02-04: Review Time Entries table headers now match the displayed columns.
 - 2026-02-04: Added an "Approve checked entries" button to Review Time Entries for payroll approval.
 - 2026-02-04: Review Time Entries alerts now use in-app modals instead of browser alerts.
@@ -890,3 +984,6 @@
 - 2025-01-XX: Added migration scaffolding (schema_migrations + 0001 foundations), seed script defaults, and DB_PATH config doc updates.
 - 2026-02-02: Payroll approval no longer requires field review completion; approvals can proceed with optional warnings.
 - 2026-02-02: Added dedicated Audit Reports in Reports (Time, Payroll, Operations, Security) with domain-focused filters.
+- 2026-02-05: Refined shipment detail overview layout with grouped cards, cleaner tabs, and clearer notes section.
+- 2026-02-05: Moved shipment detail line items into a dedicated Items tab.
+- 2026-02-23: Kiosk admin shipment messages now match desktop behavior with thread search, thread rename (creator-only), and 5-minute undo/delete comment actions.

@@ -173,9 +173,13 @@ CREATE TABLE IF NOT EXISTS kiosks (
   device_id TEXT UNIQUE,
   device_secret TEXT,
   project_id INTEGER,
+  registered_by_employee_id INTEGER,
+  registered_at TEXT,
+  last_enrolled_at TEXT,
   last_seen_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
+  FOREIGN KEY (registered_by_employee_id) REFERENCES employees(id)
 );
 
 CREATE TABLE IF NOT EXISTS kiosk_sessions (
@@ -360,6 +364,8 @@ CREATE TABLE IF NOT EXISTS payroll_settings (
   org_id INTEGER NOT NULL,
   bank_account_name TEXT,
   expense_account_name TEXT,
+  receipt_expense_account_name TEXT,
+  receipt_class_name TEXT,
   default_memo TEXT,
   line_description_template TEXT,
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
@@ -398,6 +404,34 @@ CREATE TABLE IF NOT EXISTS payroll_checks (
   voided_at TEXT,
   voided_reason TEXT,
   FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS payroll_receipt_reimbursements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id INTEGER NOT NULL,
+  employee_id INTEGER NOT NULL,
+  project_id INTEGER NOT NULL,
+  amount REAL NOT NULL,
+  expense_date TEXT NOT NULL,
+  vendor_name TEXT,
+  note TEXT,
+  file_path TEXT NOT NULL,
+  original_filename TEXT,
+  mime_type TEXT,
+  status TEXT NOT NULL DEFAULT 'requested',
+  requested_by_employee_id INTEGER,
+  requested_at TEXT DEFAULT (datetime('now')),
+  approved_by_employee_id INTEGER,
+  approved_at TEXT,
+  paid_date TEXT,
+  payroll_run_id INTEGER,
+  payroll_check_id INTEGER,
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
+  FOREIGN KEY (employee_id) REFERENCES employees(id),
+  FOREIGN KEY (project_id) REFERENCES projects(id),
+  FOREIGN KEY (requested_by_employee_id) REFERENCES employees(id),
+  FOREIGN KEY (approved_by_employee_id) REFERENCES employees(id)
 );
 
 CREATE TABLE IF NOT EXISTS payroll_run_attempts (
@@ -512,6 +546,7 @@ CREATE TABLE IF NOT EXISTS shipments (
   project_id INTEGER,
   project_name_snapshot TEXT,
   sku TEXT,
+  country_of_origin TEXT,
   quantity REAL,
   total_price REAL,
   price_per_item REAL,
@@ -519,6 +554,8 @@ CREATE TABLE IF NOT EXISTS shipments (
   expected_arrival_date TEXT,
   tracking_number TEXT,
   bol_number TEXT,
+  requested_clearing INTEGER NOT NULL DEFAULT 0,
+  requested_clearing_date TEXT,
   is_container INTEGER NOT NULL DEFAULT 0,
   storage_due_date TEXT,
   storage_daily_late_fee REAL,
@@ -561,6 +598,7 @@ CREATE TABLE IF NOT EXISTS shipment_items (
   shipment_id INTEGER NOT NULL,
   description TEXT,
   sku TEXT,
+  country_of_origin TEXT,
   quantity REAL,
   unit_price REAL,
   line_total REAL,
@@ -664,6 +702,25 @@ CREATE INDEX IF NOT EXISTS idx_shipment_comment_threads_org_shipment
 CREATE INDEX IF NOT EXISTS idx_shipment_comments_thread
   ON shipment_comments(thread_id);
 
+CREATE TABLE IF NOT EXISTS shipment_personal_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id INTEGER NOT NULL,
+  shipment_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  note TEXT,
+  is_completed INTEGER NOT NULL DEFAULT 0,
+  completed_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(org_id, shipment_id, user_id),
+  FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
+  FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_shipment_personal_notes_lookup
+  ON shipment_personal_notes (org_id, user_id, shipment_id);
+
 CREATE TABLE IF NOT EXISTS shipment_templates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   org_id INTEGER NOT NULL,
@@ -674,6 +731,7 @@ CREATE TABLE IF NOT EXISTS shipment_templates (
   destination TEXT,
   project_id INTEGER,
   sku TEXT,
+  country_of_origin TEXT,
   quantity REAL,
   total_price REAL,
   price_per_item REAL,
@@ -691,6 +749,7 @@ CREATE TABLE IF NOT EXISTS shipment_template_items (
   template_id INTEGER NOT NULL,
   description TEXT,
   sku TEXT,
+  country_of_origin TEXT,
   quantity REAL,
   unit_price REAL,
   line_total REAL,
@@ -814,3 +873,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_org_employee_qbo_id
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_org_vendor_qbo_id
   ON employees(org_id, vendor_qbo_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_org_name_unique
+  ON employees(org_id, lower(trim(name)));
+
+CREATE INDEX IF NOT EXISTS idx_payroll_receipts_org_status_date
+  ON payroll_receipt_reimbursements(org_id, status, expense_date);
+
+CREATE INDEX IF NOT EXISTS idx_payroll_receipts_org_employee_date
+  ON payroll_receipt_reimbursements(org_id, employee_id, expense_date);
+
+CREATE INDEX IF NOT EXISTS idx_payroll_receipts_org_run_employee
+  ON payroll_receipt_reimbursements(org_id, payroll_run_id, employee_id);

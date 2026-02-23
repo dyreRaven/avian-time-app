@@ -7,7 +7,7 @@
 
 ## Identity and Access
 - `orgs`: id, name, timezone, status, created_at, updated_at.
-- `org_settings`: org_id, key, value (e.g., clock_in_photo_required, kiosk_enrollment_code, time_exception_rules, payroll_rules, notifications, branding, audit_log_retention_days).
+- `org_settings`: org_id, key, value (e.g., clock_in_photo_required, kiosk_enrollment_code, kiosk_enrollment_code_issued_by_employee_id, kiosk_enrollment_code_issued_at, time_exception_rules, payroll_rules, notifications, branding, audit_log_retention_days).
 - `users`: id, email, password_hash, password_reset_token_hash, password_reset_token_expires_at,
   password_reset_token_used_at, password_reset_token_created_at, password_reset_token_created_by,
   password_reset_org_id, created_at.
@@ -22,6 +22,7 @@
   start_date, termination_date,
   id_document_type, id_document_path, id_document_uploaded_at, id_document_uploaded_by,
   employee_photo_path, employee_photo_uploaded_at, employee_photo_uploaded_by, created_at.
+  Employee names are unique per org using a case-insensitive, trimmed comparison.
 - `employee_documents`: id, org_id, employee_id, doc_type, doc_label, title, file_path, uploaded_by, uploaded_at.
 - `employee_employment_history`: id, org_id, employee_id, start_date, termination_date, recorded_at, recorded_by.
 - `employee_permissions`: employee_id, see_shipments, modify_time,
@@ -32,7 +33,7 @@
 
 ## Kiosks and Timekeeping
 - `kiosks`: id, org_id, name, location, device_id, device_secret, project_id,
-  last_seen_at, created_at.
+  registered_by_employee_id, registered_at, last_enrolled_at, last_seen_at, created_at.
 - `kiosk_sessions` (timesheets): id, org_id, kiosk_id, device_id, project_id, date,
   created_by_employee_id, assigned_to_employee_id, shared_with_admins (legacy), geo_lat, geo_lng, geo_distance_m, geo_violation, created_at, ended_at.
 - `kiosk_session_shares`: id, org_id, kiosk_session_id, employee_id, created_at.
@@ -67,12 +68,16 @@
 
 ## Payroll
 - `payroll_settings`: id, org_id, bank_account_name, expense_account_name,
-  default_memo, line_description_template.
+  receipt_expense_account_name, receipt_class_name, default_memo, line_description_template.
 - `payroll_runs`: id, org_id, start_date, end_date, created_by, created_at,
   total_hours, total_pay, status, include_overtime, run_type, adjustment_reason,
   idempotency_key, last_attempt_id, last_error.
 - `payroll_checks`: id, org_id, payroll_run_id, employee_id, total_hours, total_pay,
   qbo_txn_id, paid, paid_date, check_number, voided_at, voided_reason.
+- `payroll_receipt_reimbursements`: id, org_id, employee_id, project_id, amount, expense_date,
+  vendor_name, note, file_path, original_filename, mime_type,
+  status (`requested|approved|paid|cancelled`), requested_by_employee_id, requested_at,
+  approved_by_employee_id, approved_at, paid_date, payroll_run_id, payroll_check_id, updated_at.
 - `payroll_run_attempts`: id, org_id, payroll_run_id, start_date, end_date,
   ok, fatal_error, created_at.
 - `payroll_attempt_results`: id, org_id, attempt_id, employee_id, employee_name,
@@ -91,8 +96,9 @@
 ## Shipments
 - `shipments`: id, org_id, title, po_number, vendor_id, vendor_name,
   freight_forwarder, destination, project_id, project_name_snapshot,
-  sku, quantity, total_price, price_per_item,
+  sku, country_of_origin, quantity, total_price, price_per_item,
   expected_ship_date, expected_arrival_date, tracking_number, bol_number,
+  requested_clearing, requested_clearing_date,
   is_container, storage_due_date, storage_daily_late_fee,
   picked_up_by, picked_up_date, picked_up_updated_by, picked_up_updated_at,
   vendor_paid, vendor_paid_amount, shipper_paid, shipper_paid_amount,
@@ -100,7 +106,7 @@
   storage_paid, storage_paid_amount, storage_paid_by, total_paid,
   items_verified, verified_by, verification_notes,
   website_url, notes, status, is_archived, archived_at, created_by, created_at, updated_at.
-- `shipment_items`: id, org_id, shipment_id, description, sku, quantity, unit_price,
+- `shipment_items`: id, org_id, shipment_id, description, sku, country_of_origin, quantity, unit_price,
   line_total, vendor_name, verified, notes, verification_json, created_at. Storage location is stored per item in verification_json.storage_override.
 - `shipment_status_history`: id, org_id, shipment_id, old_status, new_status, note, changed_at.
 - `shipment_payments`: id, org_id, shipment_id, type, amount, currency,
@@ -111,10 +117,11 @@
   file_path, uploaded_by, uploaded_at.
 - `shipment_comment_threads`: id, org_id, shipment_id, title, category, created_by, created_at, updated_at.
 - `shipment_comments`: id, org_id, shipment_id, thread_id, body, created_by, created_at, is_deleted, deleted_by, deleted_at.
+- `shipment_personal_notes`: id, org_id, shipment_id, user_id, note, is_completed, completed_at, created_at, updated_at. Private per-user notes; do not surface to other users.
 - `shipment_templates`: id, org_id, name, title, vendor_id, freight_forwarder,
-  destination, project_id, sku, quantity, total_price, price_per_item,
+  destination, project_id, sku, country_of_origin, quantity, total_price, price_per_item,
   website_url, notes, created_by, created_at, updated_at.
-- `shipment_template_items`: id, org_id, template_id, description, sku, quantity,
+- `shipment_template_items`: id, org_id, template_id, description, sku, country_of_origin, quantity,
   unit_price, line_total, vendor_name, created_at.
 - `shipment_notification_prefs`: id, org_id, user_id, employee_id,
   statuses_json, shipment_ids_json, project_ids_json, notify_time,

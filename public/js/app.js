@@ -6,6 +6,7 @@ console.log('[App] app.js loaded');
 let payrollTabInitialized = false;
 let timeEntriesInitialized = false;
 let timeEntriesReportInitialized = false;
+let payrollReportsInitialized = false;
 let dashboardSnapshotLoading = false;
 let dashboardSnapshotLast = 0;
 const timeEntryApprovalSelection = new Set();
@@ -20,14 +21,39 @@ let timeEntriesReportCurrentPage = 1;
 const timeEntriesReportPageSize = 50;
 let timeEntriesReportLastFilters = {};
 window.CURRENT_ACCESS_PERMS = window.CURRENT_ACCESS_PERMS || {};
+window.CURRENT_SECTION_FEATURES = window.CURRENT_SECTION_FEATURES || {};
+const SECTION_FEATURE_DEFAULTS = {
+  time: true,
+  payroll: true,
+  shipments: true
+};
 window.ONBOARDING_SHOW_QB = window.ONBOARDING_SHOW_QB || false;
+
+function coerceFeatureFlag(value, fallback = true) {
+  if (value === undefined || value === null) return fallback;
+  return value !== false && value !== 0 && value !== '0' && value !== 'false';
+}
+
+function normalizeSectionFeatures(raw = {}) {
+  return {
+    time: coerceFeatureFlag(raw.time, SECTION_FEATURE_DEFAULTS.time),
+    payroll: coerceFeatureFlag(raw.payroll, SECTION_FEATURE_DEFAULTS.payroll),
+    shipments: coerceFeatureFlag(raw.shipments, SECTION_FEATURE_DEFAULTS.shipments)
+  };
+}
+
+function isSectionFeatureEnabled(sectionName, features = window.CURRENT_SECTION_FEATURES) {
+  return coerceFeatureFlag(features?.[sectionName], true);
+}
 
 function coerceAccessFlag(value) {
   return value === true || value === 1 || value === '1' || value === 'true';
 }
 
 function applyShipmentsNavForAccess(perms = {}) {
-  if (coerceAccessFlag(perms.see_shipments)) return;
+  const featureEnabled = isSectionFeatureEnabled('shipments');
+  const hasPerm = coerceAccessFlag(perms.see_shipments);
+  if (featureEnabled && hasPerm) return;
 
   const navList = document.querySelector('.nav-list');
   const shipmentsItem = document.querySelector('.nav-item[data-section="shipments"]');
@@ -49,6 +75,74 @@ function applyShipmentsNavForAccess(perms = {}) {
     shipmentsSection.classList.remove('active');
     if (employeesSection) employeesSection.classList.add('active');
   }
+}
+
+function applyTimeSectionForAccess() {
+  const featureEnabled = isSectionFeatureEnabled('time');
+  if (featureEnabled) return;
+
+  const navItems = [
+    '.nav-item[data-section="kiosks"]',
+    '.nav-item[data-section="time-entries"]',
+    '.nav-item[data-section="time-entries-report"]',
+    '.nav-item[data-section="audit-time-report"]'
+  ];
+  const sectionIds = [
+    'section-kiosks',
+    'section-time-entries',
+    'section-time-entries-report',
+    'section-audit-time-report'
+  ];
+
+  navItems.forEach(selector => {
+    const item = document.querySelector(selector);
+    if (item && item.classList.contains('active')) {
+      navigateToSection('dashboard', { force: true });
+    }
+    if (item) item.remove();
+  });
+  sectionIds.forEach(id => {
+    const section = document.getElementById(id);
+    if (section) section.remove();
+  });
+}
+
+function applyPayrollNavForAccess(perms = {}) {
+  const featureEnabled = isSectionFeatureEnabled('payroll');
+  const hasPerm = coerceAccessFlag(perms.view_payroll);
+  if (featureEnabled && hasPerm) return;
+
+  const activeNav = document.querySelector('.nav-item.active');
+  const activeKey = activeNav && activeNav.dataset ? activeNav.dataset.section : '';
+  const payrollKeys = new Set(['payroll', 'reimbursements', 'reports', 'audit-payroll-report']);
+  if (payrollKeys.has(activeKey)) {
+    // Avoid leaving the user on a now-forbidden section.
+    navigateToSection('dashboard', { force: true });
+  }
+
+  const payrollItem = document.querySelector('.nav-item[data-section="payroll"]');
+  const reimbursementsItem = document.querySelector('.nav-item[data-section="reimbursements"]');
+  const payrollReportsItem = document.querySelector('.nav-item[data-section="reports"]');
+  const payrollAuditItem = document.querySelector('.nav-item[data-section="audit-payroll-report"]');
+  const payrollSection = document.getElementById('section-payroll');
+  const reimbursementsSection = document.getElementById('section-reimbursements');
+  const payrollReportsSection = document.getElementById('section-reports');
+  const payrollAuditSection = document.getElementById('section-audit-payroll-report');
+
+  if (payrollItem) payrollItem.remove();
+  if (reimbursementsItem) reimbursementsItem.remove();
+  if (payrollReportsItem) payrollReportsItem.remove();
+  if (payrollAuditItem) payrollAuditItem.remove();
+  if (payrollSection) payrollSection.remove();
+  if (reimbursementsSection) reimbursementsSection.remove();
+  if (payrollReportsSection) payrollReportsSection.remove();
+  if (payrollAuditSection) payrollAuditSection.remove();
+}
+
+function applySectionAccessNav(perms = {}) {
+  applyTimeSectionForAccess();
+  applyShipmentsNavForAccess(perms);
+  applyPayrollNavForAccess(perms);
 }
 
 function navigateToSection(sectionKey, { force = false } = {}) {
@@ -76,7 +170,7 @@ function navigateToSection(sectionKey, { force = false } = {}) {
     refreshDashboardSnapshot();
   }
 
-  if (sectionKey === 'payroll') {
+  if (sectionKey === 'payroll' || sectionKey === 'reimbursements') {
     initPayrollTabIfNeeded();
   }
 
@@ -86,6 +180,10 @@ function navigateToSection(sectionKey, { force = false } = {}) {
 
   if (sectionKey === 'time-entries-report') {
     initTimeEntriesReportIfNeeded();
+  }
+
+  if (sectionKey === 'reports') {
+    initPayrollReportsIfNeeded();
   }
 
   if (sectionKey === 'my-account' || sectionKey === 'settings' || sectionKey === 'notifications') {
@@ -239,6 +337,19 @@ function setDashboardTask(key, value, note = null) {
   }
 }
 
+function setDashboardPayrollIssuesAction(run = null) {
+  const btn = document.getElementById('dashboard-task-payroll-issues-action');
+  if (!btn) return;
+  const runId = Number(run?.id);
+  if (Number.isFinite(runId) && runId > 0) {
+    btn.textContent = 'Resume run';
+    btn.dataset.payrollRunId = String(runId);
+  } else {
+    btn.textContent = 'Open payroll';
+    delete btn.dataset.payrollRunId;
+  }
+}
+
 function formatDashboardCount(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return '--';
@@ -271,10 +382,14 @@ async function refreshDashboardSnapshot({ force = false } = {}) {
   dashboardSnapshotLast = now;
 
   const perms = window.CURRENT_ACCESS_PERMS || {};
-  const canViewPayroll = !!perms.view_payroll;
-  const canSeeShipments = !!perms.see_shipments;
-  const canViewTime = !!(perms.view_time_reports || perms.view_payroll);
-  const canViewTimesheets = !!(perms.view_time_reports || perms.view_payroll || perms.view_all_timesheets);
+  const sectionFeatures = window.CURRENT_SECTION_FEATURES || {};
+  const canViewPayroll = !!perms.view_payroll && isSectionFeatureEnabled('payroll', sectionFeatures);
+  const canSeeShipments = !!perms.see_shipments && isSectionFeatureEnabled('shipments', sectionFeatures);
+  const canViewTime = !!(perms.view_time_reports || perms.view_payroll) && isSectionFeatureEnabled('time', sectionFeatures);
+  const canViewTimesheets = !!(
+    (perms.view_time_reports || perms.view_payroll || perms.view_all_timesheets) &&
+    isSectionFeatureEnabled('time', sectionFeatures)
+  );
 
   if (!canViewPayroll) {
     setDashboardStat('employees', '--', 'Payroll access required');
@@ -301,6 +416,7 @@ async function refreshDashboardSnapshot({ force = false } = {}) {
   if (!canViewPayroll) {
     setDashboardTask('qbo-sync', '--', 'Payroll access required');
     setDashboardTask('payroll-issues', '--', 'Payroll access required');
+    setDashboardPayrollIssuesAction(null);
   }
 
   const tasks = [];
@@ -461,14 +577,30 @@ async function refreshDashboardSnapshot({ force = false } = {}) {
       fetchJSON('/api/reports/payroll-runs')
         .then(list => {
           const rows = Array.isArray(list) ? list : [];
-          const count = rows.filter(row => {
+          const unresolvedRows = rows.filter(row => {
             const status = String(row?.status || '').toLowerCase();
-            return status === 'failed' || status === 'partial' || !!row?.last_error;
-          }).length;
-          setDashboardTask('payroll-issues', formatDashboardCount(count));
+            return status === 'failed' || status === 'partial';
+          });
+          const count = unresolvedRows.length;
+          const latest = unresolvedRows.length ? unresolvedRows[0] : null;
+          if (latest) {
+            const start = latest.start_date || '';
+            const end = latest.end_date || '';
+            const period = start && end ? `${start} to ${end}` : 'selected period';
+            const status = String(latest.status || '').toUpperCase() || 'PARTIAL';
+            setDashboardTask(
+              'payroll-issues',
+              formatDashboardCount(count),
+              `Run #${latest.id} (${period}) is ${status}. Resume to retry failed checks.`
+            );
+          } else {
+            setDashboardTask('payroll-issues', formatDashboardCount(count));
+          }
+          setDashboardPayrollIssuesAction(latest);
         })
         .catch(() => {
           setDashboardTask('payroll-issues', '--', 'Unavailable');
+          setDashboardPayrollIssuesAction(null);
         })
     );
   }
@@ -505,17 +637,87 @@ function updateDashboardQboBadge(status = window.QBO_STATUS) {
 }
 
 function setupDashboardQuickLinks() {
+  const expandDashboardTargetCard = cardId => {
+    if (!cardId) return;
+    const card = document.getElementById(cardId);
+    if (!card || card.classList.contains('hidden')) return;
+    if (card.tagName === 'DETAILS') {
+      card.open = true;
+    }
+    requestAnimationFrame(() => {
+      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  const openDashboardSection = (key, options = {}) => {
+    if (!key) return;
+    const navItem = document.querySelector(`.nav-item[data-section="${key}"]`);
+    if (navItem) {
+      navItem.click();
+      const expandCardId = String(options?.expandCardId || '').trim();
+      if (expandCardId) {
+        // Click handlers may still be finishing section toggles; expand immediately and on next tick.
+        expandDashboardTargetCard(expandCardId);
+        setTimeout(() => expandDashboardTargetCard(expandCardId), 0);
+      }
+    }
+  };
+
   const links = document.querySelectorAll('[data-dashboard-link]');
   links.forEach(link => {
     if (link.dataset.bound) return;
     link.dataset.bound = '1';
     link.addEventListener('click', () => {
       const key = link.dataset.dashboardLink;
-      if (!key) return;
-      const navItem = document.querySelector(`.nav-item[data-section="${key}"]`);
-      if (navItem) {
-        navItem.click();
+      const payrollRunId = Number(link.dataset.payrollRunId);
+      openDashboardSection(key, {
+        expandCardId: link.dataset.dashboardExpandCard
+      });
+      if (
+        key === 'payroll' &&
+        Number.isFinite(payrollRunId) &&
+        payrollRunId > 0 &&
+        typeof window.openPayrollRunReviewById === 'function'
+      ) {
+        const openReview = () => {
+          window.openPayrollRunReviewById(payrollRunId).catch(err => {
+            console.warn('Failed to open payroll run review from dashboard link:', err);
+          });
+        };
+        setTimeout(openReview, 0);
+        setTimeout(openReview, 180);
       }
+    });
+  });
+
+  document.querySelectorAll('.dashboard-checklist-item').forEach(item => {
+    const action = item.querySelector('button[data-dashboard-link]');
+    const key = action?.dataset?.dashboardLink || '';
+    if (!key) return;
+
+    item.dataset.checklistLink = key;
+    item.classList.add('is-clickable');
+    item.setAttribute('role', 'button');
+    item.setAttribute('tabindex', '0');
+
+    if (item.dataset.checklistBound) return;
+    item.dataset.checklistBound = '1';
+
+    const goToLinkedSection = () => {
+      openDashboardSection(item.dataset.checklistLink || '');
+    };
+
+    item.addEventListener('click', event => {
+      // Let explicit nested actions handle their own click.
+      const nestedAction = event.target.closest('[data-dashboard-link]');
+      if (nestedAction && nestedAction !== item) return;
+      goToLinkedSection();
+    });
+
+    item.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      goToLinkedSection();
     });
   });
 }
@@ -559,21 +761,41 @@ async function checkStatus() {
     const res = await fetch('/api/status', { credentials: 'same-origin' });
     if (res.status === 401 || res.status === 403) {
       updateDashboardQboBadge();
+      const disconnectBtn = document.getElementById('disconnect-quickbooks');
+      if (disconnectBtn) {
+        disconnectBtn.style.display = 'none';
+      }
       return;
     }
     const data = await res.json();
     window.QBO_STATUS = data;
     updateDashboardQboBadge(data);
+    const disconnectBtn = document.getElementById('disconnect-quickbooks');
+    if (disconnectBtn) {
+      disconnectBtn.style.display = data.qbConnected ? '' : 'none';
+    }
     const el = document.getElementById('qb-status');
     if (data.qbConnected) {
-      el.textContent = '🔗 Connected to QuickBooks. Click “Connect” to refresh authorization.';
+      if (data.qbConnectionWarning) {
+        el.textContent = `🔗 Connected to QuickBooks, but last check failed: ${data.qbConnectionWarning}`;
+      } else {
+        el.textContent = '🔗 Connected to QuickBooks. Click “Connect” to refresh authorization.';
+      }
     } else {
-      el.textContent = '❌ Not connected to QuickBooks. Click “Connect” to authorize.';
+      if (data.qbConnectionWarning) {
+        el.textContent = `❌ ${data.qbConnectionWarning}`;
+      } else {
+        el.textContent = '❌ Not connected to QuickBooks. Click “Connect” to authorize.';
+      }
     }
   } catch (err) {
     document.getElementById('qb-status').textContent =
       'Error checking status: ' + err.message;
     updateDashboardQboBadge();
+    const disconnectBtn = document.getElementById('disconnect-quickbooks');
+    if (disconnectBtn) {
+      disconnectBtn.style.display = 'none';
+    }
   }
 }
 
@@ -650,7 +872,8 @@ function updateQbCardForSection(key) {
       break;
 
     case 'payroll':
-      // Show QB connection card on payroll so admins can connect before running checks
+    case 'reimbursements':
+      // Show QB connection card on payroll/reimbursements so admins can sync accounts.
       if (qbCard) qbCard.style.display = '';
       if (accountsBtn) {
         accountsBtn.style.display = '';
@@ -725,6 +948,22 @@ async function syncRoute(route, onSuccess, options = {}) {
   const connectBtn  = document.getElementById('connect');
   let delayUnlockMs = 0;
 
+  const getSyncErrorMessage = (payload, fallback) => {
+    const raw = payload && (payload.qbo_error || payload.error || payload.message);
+    const msg = typeof raw === 'string' ? raw.trim() : '';
+    const reason = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
+    const errorCode = typeof payload?.error_code === 'string' ? payload.error_code.trim() : '';
+    const message = msg || (typeof payload?.message === 'string' ? payload.message.trim() : '');
+    const normalized = message.toLowerCase();
+
+    if (errorCode === '003100' || normalized.includes('applicationauthorizationfailed')) {
+      return 'QuickBooks authorization is not valid for this company. Reconnect using a QuickBooks Company Admin and confirm the app is authorized.';
+    }
+
+    if (!msg) return fallback;
+    return reason ? `${msg} (${reason})` : msg;
+  };
+
   // ✅ include employeesBtn here
   const allButtons = [employeesBtn, vendorsBtn, projectsBtn, accountsBtn, connectBtn].filter(Boolean);
 
@@ -752,10 +991,10 @@ async function syncRoute(route, onSuccess, options = {}) {
         const retryAfter = res.headers.get('Retry-After');
         const backoffSeconds = computeQboSyncBackoffSeconds(route, retryAfter);
         delayUnlockMs = backoffSeconds * 1000;
-        const msg = data.error || data.message || 'QuickBooks sync is temporarily unavailable.';
+        const msg = getSyncErrorMessage(data, 'QuickBooks sync is temporarily unavailable.');
         throw new Error(`${msg} Please retry in ${backoffSeconds} seconds.`);
       }
-      const msg = data.error || data.message || 'Sync failed.';
+      const msg = getSyncErrorMessage(data, 'Sync failed.');
       throw new Error(msg);
     }
     resetQboSyncBackoff(route);
@@ -791,6 +1030,13 @@ async function syncRoute(route, onSuccess, options = {}) {
     } else if (statusEl) {
       statusEl.textContent = err.message || 'Sync failed.';
       statusEl.style.color = 'crimson';
+    }
+    if (typeof checkStatus === 'function') {
+      try {
+        await checkStatus();
+      } catch (statusErr) {
+        console.warn('Failed to refresh QuickBooks status:', statusErr);
+      }
     }
     if (throwOnError) {
       throw err;
@@ -961,10 +1207,10 @@ async function loadTimeEntryFlagsMap(filters = {}, entries = []) {
   }
 }
 
-async function loadTimeEntriesTable(filters = {}) {
-  const tbody   = document.getElementById('time-table-body');
-  const heading = document.getElementById('time-entries-heading');
-  if (!tbody) return;
+	async function loadTimeEntriesTable(filters = {}) {
+	  const tbody   = document.getElementById('time-table-body');
+	  const heading = document.getElementById('time-entries-heading');
+	  if (!tbody) return;
 
   // columns: Employee, Project, Date, Clock in, Clock out, Hours, Flags, Field Review, Approve
   tbody.innerHTML = '<tr><td colspan="9">Loading...</td></tr>';
@@ -1025,8 +1271,8 @@ async function loadTimeEntriesTable(filters = {}) {
 
     tbody.innerHTML = '';
 
-    entries.forEach(e => {
-      const tr = document.createElement('tr');
+	    entries.forEach(e => {
+	      const tr = document.createElement('tr');
 
       // ─────────────────────────────────────────────
       // DATE LOGIC: show single date unless truly multi-day
@@ -1061,18 +1307,31 @@ async function loadTimeEntriesTable(filters = {}) {
         }
       }
 
-      const flagsStr = '…';
-      let actionHtml = '—';
-      const canApprove = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
-      if (canApprove) {
-        actionHtml = `
-          <label class="checkbox-inline">
-            <input type="checkbox" class="te-approve-checkbox" data-approve-id="${e.id}" />
-          </label>
-        `;
-      } else {
-        actionHtml = '<span class="text-xs text-gray-600">No approval access</span>';
-      }
+	      const flagsStr = '…';
+	      let actionHtml = '—';
+	      const canApprove = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
+	      const isPayrollApproved = String(e.approval_status || '').toLowerCase() === 'approved';
+	      if (canApprove) {
+	        if (isPayrollApproved) {
+	          const approvedAt = e.approved_at ? formatDateTimeLocal(e.approved_at) : '';
+	          const approvedBy = e.approved_by_name || e.approved_by_employee_id || '';
+	          const titleParts = [];
+	          if (approvedBy) titleParts.push(`by ${approvedBy}`);
+	          if (approvedAt) titleParts.push(`at ${approvedAt}`);
+	          const title = titleParts.length
+	            ? ` title="${escapeHTML(`Approved ${titleParts.join(' ')}`)}"`
+	            : '';
+	          actionHtml = `<span class="te-approved-badge"${title}>Approved</span>`;
+	        } else {
+	          actionHtml = `
+	            <label class="checkbox-inline">
+	              <input type="checkbox" class="te-approve-checkbox" data-approve-id="${e.id}" />
+	            </label>
+	          `;
+	        }
+	      } else {
+	        actionHtml = '<span class="text-xs text-gray-600">No payroll approval access</span>';
+	      }
 
       const clockInLabel = formatTime12(e.start_time);
       const clockOutLabel = formatTime12(e.end_time);
@@ -1306,7 +1565,7 @@ async function handleTimeEntryApproveToggle(evt) {
     const row = cb.closest('tr');
     if (row && row.dataset.fieldReviewed !== '1') {
       const ok = await showTimeEntryReviewWarningModal(
-        'Field review has not been completed for this entry. Approve anyway?'
+        'Field review is still pending for this entry. Approve for payroll anyway?'
       );
       if (!ok) {
         cb.checked = false;
@@ -1354,7 +1613,10 @@ function updateApproveSelectedButton() {
   if (!btn) return;
   const count = timeEntryApprovalSelection.size;
   btn.disabled = count === 0;
-  btn.textContent = count > 0 ? `Approve checked entries (${count})` : 'Approve checked entries';
+  btn.textContent =
+    count > 0
+      ? `Approve selected for payroll (${count})`
+      : 'Approve selected for payroll';
 }
 
 function setApproveSelectionForVisibleRows(checked) {
@@ -1372,25 +1634,59 @@ function setApproveSelectionForVisibleRows(checked) {
   updateApproveSelectedButton();
 }
 
+function isApproveNoteRequiredError(err) {
+  if (!err || err.status !== 400) return false;
+  const msg = String(err.message || '').toLowerCase();
+  return msg.includes('note') && msg.includes('required');
+}
+
 async function approveSelectedTimeEntries() {
   const ids = Array.from(timeEntryApprovalSelection);
   if (!ids.length) return;
 
-  for (const id of ids) {
-    try {
-      const row = document.querySelector(`.te-approve-checkbox[data-approve-id="${CSS.escape(String(id))}"]`)?.closest('tr');
+  if (!navigator.onLine) {
+    showTimeEntryNoteModal('Payroll approval requires an online connection.');
+    return;
+  }
+
+  const approveBtn = document.getElementById('te-approve-selected');
+  if (approveBtn) {
+    approveBtn.disabled = true;
+  }
+
+  try {
+    // Build a stable map of currently-visible approve rows so we can read flags/updated_at safely.
+    const rowMap = new Map();
+    document.querySelectorAll('.te-approve-checkbox').forEach(cb => {
+      const id = cb.getAttribute('data-approve-id');
+      const row = cb.closest('tr');
+      if (!id || !row) return;
+      rowMap.set(String(id), row);
+    });
+
+    let approvedCount = 0;
+    const approvedIds = [];
+
+    for (const id of ids) {
+      if (approveBtn) {
+        approveBtn.textContent = `Approving ${approvedCount + 1} of ${ids.length}...`;
+      }
+
+      const row = rowMap.get(String(id)) || null;
+
       if (entryRequiresNote(row) && !timeEntryApprovalNotes.get(String(id))) {
         const noteInput = await showTimeEntryApproveNoteModal({
           message: 'A note is required because this entry has flags or manual edits. Enter a note to continue.',
           required: true
         });
-        if (noteInput === null) return;
+        if (noteInput === null) break;
+
         const note = String(noteInput || '').trim();
         if (!note) {
           showTimeEntryNoteModal(
             'A note is required because this entry has flags or manual edits. Enter a note to continue.'
           );
-          return;
+          break;
         }
         timeEntryApprovalNotes.set(String(id), note);
       }
@@ -1398,24 +1694,71 @@ async function approveSelectedTimeEntries() {
       const payload = {};
       const note = timeEntryApprovalNotes.get(String(id));
       if (note) payload.note = note;
-      await fetchJSON(`/api/time-entries/${encodeURIComponent(id)}/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-    } catch (err) {
-      showTimeEntryNoteModal(err?.message || `Failed to approve entry ${id}.`);
-      return;
-    }
-  }
+      const updatedAt = row && row.dataset && row.dataset.updatedAt ? row.dataset.updatedAt : '';
+      if (updatedAt) payload.if_match_updated_at = updatedAt;
 
-  const filters = getTimeEntryFiltersFromUi();
-  if (hasActiveTimeEntryFilters(filters)) {
-    resetTimeEntryPagination();
-    await loadTimeEntriesTable(filters);
-  } else {
-    resetTimeEntryPagination();
-    await loadTimeEntriesTable();
+      try {
+        await fetchJSON(`/api/time-entries/${encodeURIComponent(id)}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } catch (err) {
+        // If the server requires a note that we didn't pre-detect, prompt and retry once.
+        if (isApproveNoteRequiredError(err) && !payload.note) {
+          const noteInput = await showTimeEntryApproveNoteModal({
+            message: err?.message || 'A note is required to approve this entry. Enter a note to continue.',
+            required: true
+          });
+          if (noteInput === null) break;
+
+          const noteVal = String(noteInput || '').trim();
+          if (!noteVal) {
+            showTimeEntryNoteModal('A note is required to approve this entry.');
+            break;
+          }
+
+          timeEntryApprovalNotes.set(String(id), noteVal);
+          payload.note = noteVal;
+
+          try {
+            await fetchJSON(`/api/time-entries/${encodeURIComponent(id)}/approve`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+          } catch (retryErr) {
+            showTimeEntryNoteModal(retryErr?.message || `Failed to approve entry ${id}.`);
+            break;
+          }
+        } else {
+          showTimeEntryNoteModal(err?.message || `Failed to approve entry ${id}.`);
+          break;
+        }
+      }
+
+      approvedIds.push(String(id));
+      approvedCount += 1;
+    }
+
+    if (approvedCount) {
+      approvedIds.forEach(id => {
+        timeEntryApprovalSelection.delete(String(id));
+        timeEntryApprovalNotes.delete(String(id));
+      });
+      showToast(`Approved ${approvedCount} ${approvedCount === 1 ? 'entry' : 'entries'} for payroll.`);
+      const filters = getTimeEntryFiltersFromUi();
+      resetTimeEntryPagination();
+      if (hasActiveTimeEntryFilters(filters)) {
+        await loadTimeEntriesTable(filters);
+      } else {
+        await loadTimeEntriesTable();
+      }
+    }
+  } finally {
+    if (approveBtn) {
+      updateApproveSelectedButton();
+    }
   }
 }
 
@@ -1735,7 +2078,9 @@ function showTimeEntryReviewWarningModal(message) {
     return Promise.resolve(window.confirm(message));
   }
 
-  msgEl.textContent = message || 'Field review has not been completed for this entry. Approve anyway?';
+  msgEl.textContent =
+    message ||
+    'Field review is still pending for this entry. Approve for payroll anyway?';
   backdrop.classList.remove('hidden');
   modal.classList.remove('hidden');
 
@@ -1824,7 +2169,7 @@ async function approveAllTimeEntries() {
   const end = filters.end || start;
 
   const confirmed = window.confirm(
-    `Approve all clean entries from ${start} to ${end}? Entries still awaiting field review or requiring a note will be skipped.`
+    `Approve all clean entries for payroll from ${start} to ${end}? Entries still awaiting field review or requiring a note will be skipped.`
   );
   if (!confirmed) return;
 
@@ -1881,7 +2226,8 @@ function applyTimeEntryApprovalAccess() {
   const approveAllBtn = document.getElementById('te-approve-all');
   const approveNowWrap = document.getElementById('te-approve-now-wrap');
   const approveNowInput = document.getElementById('te-approve-now');
-  if (!approveAllBtn && !approveNowWrap) return;
+  const approveSelectedBtn = document.getElementById('te-approve-selected');
+  if (!approveAllBtn && !approveNowWrap && !approveSelectedBtn) return;
   const canApprove = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
   if (approveAllBtn) {
     approveAllBtn.style.display = canApprove ? 'inline-flex' : 'none';
@@ -1889,6 +2235,14 @@ function applyTimeEntryApprovalAccess() {
   if (approveNowWrap) {
     approveNowWrap.style.display = canApprove ? 'flex' : 'none';
     approveNowWrap.classList.toggle('hidden', !canApprove);
+  }
+  if (approveSelectedBtn) {
+    approveSelectedBtn.style.display = canApprove ? 'inline-flex' : 'none';
+    if (!canApprove) {
+      timeEntryApprovalSelection.clear();
+      timeEntryApprovalNotes.clear();
+      updateApproveSelectedButton();
+    }
   }
   if (!canApprove && approveNowInput) {
     approveNowInput.checked = false;
@@ -1997,13 +2351,27 @@ function applyTimeEntryDateRangeMode(mode) {
   }
 }
 
+function updateTimeEntryIncludeToggleLabel() {
+  const labelEl = document.getElementById('te-filter-include-toggle-label');
+  const includeApproved = document.getElementById('te-filter-include-approved');
+  const includePaid = document.getElementById('te-filter-include-paid');
+  if (!labelEl) return;
+
+  let count = 0;
+  if (includeApproved && includeApproved.checked) count += 1;
+  if (includePaid && includePaid.checked) count += 1;
+  labelEl.textContent = count > 0 ? `Include (${count})` : 'Include';
+}
+
 function getTimeEntryFiltersFromUi() {
   const empFilter   = document.getElementById('te-filter-employee');
   const projFilter  = document.getElementById('te-filter-project');
+  const includeApproved = document.getElementById('te-filter-include-approved');
+  const includePaid = document.getElementById('te-filter-include-paid');
+  const payrollApprovalLegacy = document.getElementById('te-filter-payroll-approval');
   const rangeFilter = document.getElementById('te-filter-date-range');
   const startFilter = document.getElementById('te-filter-start');
   const endFilter   = document.getElementById('te-filter-end');
-  const hideApproved = document.getElementById('te-filter-hide-approved');
 
   const rangeMode = rangeFilter && rangeFilter.value ? rangeFilter.value : 'all';
   let startValue = startFilter && startFilter.value ? startFilter.value : '';
@@ -2020,14 +2388,27 @@ function getTimeEntryFiltersFromUi() {
     }
   }
 
+  // Default behavior: show unpaid + unapproved only.
+  // Include dropdown options can widen the result set.
+  let hideApproved = true;
+  if (includeApproved) {
+    hideApproved = !includeApproved.checked;
+  } else if (payrollApprovalLegacy) {
+    const payrollApprovalMode = payrollApprovalLegacy.value
+      ? String(payrollApprovalLegacy.value)
+      : 'all';
+    hideApproved = payrollApprovalMode === 'unapproved';
+  }
+  const hidePaid = includePaid ? !includePaid.checked : true;
+
   return {
     employee_id: empFilter && empFilter.value ? empFilter.value : '',
     project_id:  projFilter && projFilter.value ? projFilter.value : '',
     start:       startValue,
     end:         endValue,
     all_dates:   rangeMode === 'all',
-    hide_paid:   true,
-    hide_approved: hideApproved ? !!hideApproved.checked : false
+    hide_paid:   hidePaid,
+    hide_approved: hideApproved
   };
 }
 
@@ -2056,6 +2437,8 @@ function buildTimeEntriesExportUrl(format) {
   if (filters.start) params.set('start', filters.start);
   if (filters.end) params.set('end', filters.end);
   if (filters.all_dates) params.set('all_dates', '1');
+  if (filters.hide_paid) params.set('hide_paid', '1');
+  if (filters.hide_approved) params.set('hide_payroll_approved', '1');
 
   const qs = params.toString();
   return `/api/time-entries/export/${format}` + (qs ? `?${qs}` : '');
@@ -2412,11 +2795,6 @@ async function saveTimeEntry() {
     hoursInput.value = hours.toFixed(2);
   }
 
-  if (msgEl) {
-    msgEl.textContent = 'Saving...';
-    msgEl.style.color = 'black';
-  }
-
   if (!change_note.trim()) {
     if (msgEl) {
       msgEl.textContent = isEdit
@@ -2425,6 +2803,24 @@ async function saveTimeEntry() {
       msgEl.style.color = 'red';
     }
     return;
+  }
+
+  if (isEdit && canApproveNow && navigator.onLine) {
+    const confirmed = window.confirm(
+      'Are you sure you want to approve this entry for payroll when you update it?'
+    );
+    if (!confirmed) {
+      if (msgEl) {
+        msgEl.textContent = 'Update canceled.';
+        msgEl.style.color = '#b45309';
+      }
+      return;
+    }
+  }
+
+  if (msgEl) {
+    msgEl.textContent = 'Saving...';
+    msgEl.style.color = 'black';
   }
 
   const payload = {
@@ -2782,21 +3178,42 @@ function bindTimeExceptionModalListeners() {
 
 function initPayrollTabIfNeeded() {
   if (payrollTabInitialized) return;
+  if (!isSectionFeatureEnabled('payroll')) {
+    payrollTabInitialized = true;
+    return;
+  }
+
+  const perms = window.CURRENT_ACCESS_PERMS || null;
+  const permsHydrated =
+    !!(perms && Object.prototype.hasOwnProperty.call(perms, 'view_payroll'));
+  if (!permsHydrated) {
+    // If you navigate early during app boot, permissions may not be ready yet.
+    // Retry shortly so we can safely decide whether to init payroll.
+    setTimeout(initPayrollTabIfNeeded, 75);
+    return;
+  }
+
+  const payrollSection = document.getElementById('section-payroll');
+  const reimbursementsSection = document.getElementById('section-reimbursements');
+  const payrollActive = !!(payrollSection && payrollSection.classList.contains('active'));
+  const reimbursementsActive = !!(
+    reimbursementsSection && reimbursementsSection.classList.contains('active')
+  );
+  if (!payrollActive && !reimbursementsActive) {
+    // User navigated away before permissions hydrated.
+    return;
+  }
+
+  if (!coerceAccessFlag(perms.view_payroll)) {
+    payrollTabInitialized = true;
+    return;
+  }
+
   payrollTabInitialized = true;
 
-  console.log('[PAYROLL] Initializing payroll tab data');
+  console.log('[PAYROLL] Initializing payroll UI');
 
-  // 1) Time entries → today's entries by default
-  if (typeof loadTimeEntriesTable === 'function') {
-    loadTimeEntriesTable({});  // no filters = "Today's Entries"
-  }
-
-  // 2) Live open punches
-  if (typeof loadOpenPunches === 'function') {
-    loadOpenPunches();
-  }
-
-  // Also initialize the dedicated payroll UI (settings/summary) if present.
+  // Initialize the dedicated payroll UI (settings/summary) if present.
   if (typeof window.initPayrollUiTab === 'function') {
     window.initPayrollUiTab();
   }
@@ -2804,7 +3221,26 @@ function initPayrollTabIfNeeded() {
 
 function initTimeEntriesIfNeeded() {
   if (timeEntriesInitialized) return;
+
+  const perms = window.CURRENT_ACCESS_PERMS || null;
+  const permsHydrated =
+    !!(perms && Object.prototype.hasOwnProperty.call(perms, 'view_payroll'));
+  if (!permsHydrated) {
+    // If you navigate early during app boot, permissions may not be ready yet.
+    // Retry shortly so the table renders with the correct approval/access controls.
+    setTimeout(initTimeEntriesIfNeeded, 75);
+    return;
+  }
+
   timeEntriesInitialized = true;
+
+  // Bind the critical approval handler even if the full wiring hasn't run yet.
+  const approveSelectedBtn = document.getElementById('te-approve-selected');
+  if (approveSelectedBtn && !approveSelectedBtn.dataset.bound) {
+    approveSelectedBtn.dataset.bound = '1';
+    approveSelectedBtn.addEventListener('click', approveSelectedTimeEntries);
+  }
+  applyTimeEntryApprovalAccess();
 
   if (typeof loadTimeEntriesTable === 'function') {
     resetTimeEntryPagination();
@@ -2829,16 +3265,67 @@ function initTimeEntriesReportIfNeeded() {
   }
 }
 
+function initPayrollReportsIfNeeded() {
+  if (payrollReportsInitialized) return;
+  if (!isSectionFeatureEnabled('payroll')) {
+    payrollReportsInitialized = true;
+    return;
+  }
+
+  const section = document.getElementById('section-reports');
+  if (!section) {
+    payrollReportsInitialized = true;
+    return;
+  }
+
+  const perms = window.CURRENT_ACCESS_PERMS || null;
+  const permsHydrated =
+    !!(perms && Object.prototype.hasOwnProperty.call(perms, 'view_payroll'));
+  if (!permsHydrated) {
+    setTimeout(initPayrollReportsIfNeeded, 75);
+    return;
+  }
+
+  if (!section.classList.contains('active')) {
+    // User navigated away before permissions hydrated.
+    return;
+  }
+
+  if (!coerceAccessFlag(perms.view_payroll)) {
+    payrollReportsInitialized = true;
+    return;
+  }
+
+  payrollReportsInitialized = true;
+
+  if (typeof setupPayrollReportFilters === 'function') {
+    setupPayrollReportFilters();
+  }
+  if (typeof loadPayrollRuns === 'function') {
+    loadPayrollRuns();
+  }
+  if (typeof setupReportsDownload === 'function') {
+    setupReportsDownload();
+  }
+}
+
 
 
 document.addEventListener('DOMContentLoaded', async () => {
   const url = new URL(window.location.href);
+  let qboReturnError = null;
   if (url.searchParams.has('qbo')) {
     const qboParam = String(url.searchParams.get('qbo') || '').toLowerCase();
     if (qboParam === 'connected' || qboParam === '1' || qboParam === 'true') {
       window.QBO_JUST_CONNECTED = true;
+    } else if (qboParam === 'error' || qboParam === 'failed') {
+      const reason = String(url.searchParams.get('qbo_reason') || '').trim();
+      const message = String(url.searchParams.get('qbo_message') || '').trim();
+      qboReturnError = message || reason || 'QuickBooks connection failed.';
     }
     url.searchParams.delete('qbo');
+    url.searchParams.delete('qbo_reason');
+    url.searchParams.delete('qbo_message');
     window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
   }
 
@@ -2855,12 +3342,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   const postBootstrapBadge = document.getElementById('post-bootstrap-badge');
   const postBootstrapTitle = document.getElementById('post-bootstrap-title');
   const postBootstrapSubtitle = document.getElementById('post-bootstrap-subtitle');
-  const postBootstrapEmployeesBtn = document.getElementById('post-bootstrap-employees');
   const postBootstrapQboBtn = document.getElementById('post-bootstrap-qbo');
   const postBootstrapQboSkipBtn = document.getElementById('post-bootstrap-qbo-skip');
   const postBootstrapQboStatus = document.getElementById('post-bootstrap-qbo-status');
   const postBootstrapPermissionsBtn = document.getElementById('post-bootstrap-permissions');
+  const postBootstrapPermissionsOnlyAdminBtn = document.getElementById(
+    'post-bootstrap-permissions-only-admin'
+  );
+  const postBootstrapPermissionsSkipBtn = document.getElementById('post-bootstrap-permissions-skip');
+  const postBootstrapPermissionsStatus = document.getElementById('post-bootstrap-permissions-status');
+  const postBootstrapSkipAllBtn = document.getElementById('post-bootstrap-skip-all');
   const postBootstrapDismissBtn = document.getElementById('post-bootstrap-dismiss');
+  const postBootstrapPermissionsStepText = postBootstrapCard
+    ? postBootstrapCard.querySelector('[data-step="permissions"] .onboarding-step-text')
+    : null;
   let qboOnboardingModal = null;
   let qboOnboardingBackdrop = null;
   let qboOnboardingWizard = null;
@@ -2888,11 +3383,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   let qboStep1Cancel = null;
   let qboStep2Back = null;
   let qboStep2Connect = null;
+  let qboStep2Error = null;
   let qboStep4Employees = null;
   let qboStep4Done = null;
 
   let pendingBootstrapFormBound = false;
   let qboInitialSyncRunning = false;
+  let onboardingPermissionsDraftChanged = false;
+  let onboardingEmployeeCountCache = null;
+  let onboardingEmployeeCountCachedAt = 0;
 
   function setPostBootstrapOrgStatus(text, color) {
     if (!postBootstrapOrgStatus) return;
@@ -2906,9 +3405,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     postBootstrapQboStatus.style.color = color || '';
   }
 
+  function setPostBootstrapPermissionsStatus(text, color) {
+    if (!postBootstrapPermissionsStatus) return;
+    postBootstrapPermissionsStatus.textContent = text || '';
+    postBootstrapPermissionsStatus.style.color = color || '';
+  }
+
   const ONBOARDING_PENDING_KEY = 'avian_onboarding_pending_v1';
   const LAST_ORG_ID_KEY = 'avian_last_org_id_v1';
   const ONBOARDING_FORCE_VISIBLE_KEY = 'avian_onboarding_force_visible_v1';
+  const ONBOARDING_SKIPPED_KEY = 'avian_onboarding_skipped_v1';
+  const ONBOARDING_PERMISSIONS_COMPLETE_KEY = 'avian_onboarding_permissions_complete_v1';
+  const ONBOARDING_PERMISSIONS_SKIPPED_KEY = 'avian_onboarding_permissions_skipped_v1';
   const QBO_ONBOARDING_STORAGE_KEY = 'avian_qbo_onboarding_v2';
   const QBO_ONBOARDING_SELECTIONS_KEY = 'avian_qbo_onboarding_selections_v1';
   const QBO_SUGGEST_DISMISS_KEY = 'avian_qbo_suggest_dismiss_v1';
@@ -2941,6 +3449,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     return keys;
   }
 
+  function getOnboardingSkippedKeys(orgId) {
+    if (!orgId) return [];
+    const keys = [];
+    const fingerprint = getOrgFingerprint(orgId);
+    if (fingerprint) {
+      keys.push(`${ONBOARDING_SKIPPED_KEY}:${fingerprint}`);
+    }
+    const fallback = String(orgId);
+    if (fallback && fingerprint !== fallback) {
+      keys.push(`${ONBOARDING_SKIPPED_KEY}:${fallback}`);
+    }
+    return keys;
+  }
+
+  function getOnboardingPermissionsCompleteKeys(orgId) {
+    if (!orgId) return [];
+    const keys = [];
+    const fingerprint = getOrgFingerprint(orgId);
+    if (fingerprint) {
+      keys.push(`${ONBOARDING_PERMISSIONS_COMPLETE_KEY}:${fingerprint}`);
+    }
+    const fallback = String(orgId);
+    if (fallback && fingerprint !== fallback) {
+      keys.push(`${ONBOARDING_PERMISSIONS_COMPLETE_KEY}:${fallback}`);
+    }
+    return keys;
+  }
+
+  function getOnboardingPermissionsSkippedKeys(orgId) {
+    if (!orgId) return [];
+    const keys = [];
+    const fingerprint = getOrgFingerprint(orgId);
+    if (fingerprint) {
+      keys.push(`${ONBOARDING_PERMISSIONS_SKIPPED_KEY}:${fingerprint}`);
+    }
+    const fallback = String(orgId);
+    if (fallback && fingerprint !== fallback) {
+      keys.push(`${ONBOARDING_PERMISSIONS_SKIPPED_KEY}:${fallback}`);
+    }
+    return keys;
+  }
+
   function isOnboardingForceVisible(orgId) {
     const keys = getOnboardingForceKeys(orgId);
     if (!keys.length) return false;
@@ -2957,6 +3507,84 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       keys.forEach(key => {
         if (enabled) {
+          localStorage.setItem(key, '1');
+        } else {
+          localStorage.removeItem(key);
+        }
+      });
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function isOnboardingSkipped(orgId) {
+    const keys = getOnboardingSkippedKeys(orgId);
+    if (!keys.length) return false;
+    try {
+      return keys.some(key => localStorage.getItem(key) === '1');
+    } catch {
+      return false;
+    }
+  }
+
+  function setOnboardingSkipped(orgId, skipped) {
+    const keys = getOnboardingSkippedKeys(orgId);
+    if (!keys.length) return;
+    try {
+      keys.forEach(key => {
+        if (skipped) {
+          localStorage.setItem(key, '1');
+        } else {
+          localStorage.removeItem(key);
+        }
+      });
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function isOnboardingPermissionsComplete(orgId) {
+    const keys = getOnboardingPermissionsCompleteKeys(orgId);
+    if (!keys.length) return false;
+    try {
+      return keys.some(key => localStorage.getItem(key) === '1');
+    } catch {
+      return false;
+    }
+  }
+
+  function setOnboardingPermissionsComplete(orgId, complete) {
+    const keys = getOnboardingPermissionsCompleteKeys(orgId);
+    if (!keys.length) return;
+    try {
+      keys.forEach(key => {
+        if (complete) {
+          localStorage.setItem(key, '1');
+        } else {
+          localStorage.removeItem(key);
+        }
+      });
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function isOnboardingPermissionsSkipped(orgId) {
+    const keys = getOnboardingPermissionsSkippedKeys(orgId);
+    if (!keys.length) return false;
+    try {
+      return keys.some(key => localStorage.getItem(key) === '1');
+    } catch {
+      return false;
+    }
+  }
+
+  function setOnboardingPermissionsSkipped(orgId, skipped) {
+    const keys = getOnboardingPermissionsSkippedKeys(orgId);
+    if (!keys.length) return;
+    try {
+      keys.forEach(key => {
+        if (skipped) {
           localStorage.setItem(key, '1');
         } else {
           localStorage.removeItem(key);
@@ -3052,6 +3680,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch {
       // ignore storage failures
     }
+  }
+
+  function clearBootstrapOnboardingLocalState(orgId) {
+    if (!orgId) return;
+    clearOnboardingPending();
+    setOnboardingForceVisible(orgId, false);
+    setOnboardingSkipped(orgId, false);
+    setOnboardingPermissionsComplete(orgId, false);
+    setOnboardingPermissionsSkipped(orgId, false);
+    setQboSkipped(orgId, false);
+    clearQboOnboardingState();
   }
 
   function getQboSuggestDismissKey(orgId, empId) {
@@ -3182,7 +3821,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       const isDashboard = item.dataset.section === 'dashboard';
       item.classList.toggle('active', isDashboard);
       if (!isDashboard) {
-        item.dataset.disabled = 'true';
+        item.removeAttribute('data-disabled');
+        item.removeAttribute('title');
+        item.removeAttribute('aria-disabled');
+      } else {
+        item.removeAttribute('title');
+        item.setAttribute('aria-disabled', 'false');
       }
     });
 
@@ -3237,7 +3881,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         setPostBootstrapOrgStatus('Creating organization...', 'black');
 
         try {
-          await fetchJSON('/api/auth/bootstrap', {
+          const bootstrapData = await fetchJSON('/api/auth/bootstrap', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -3246,6 +3890,9 @@ document.addEventListener('DOMContentLoaded', async () => {
               admin_name: adminName
             })
           });
+          if (bootstrapData && bootstrapData.orgId) {
+            clearBootstrapOnboardingLocalState(bootstrapData.orgId);
+          }
           setPostBootstrapOrgStatus('Organization created. Redirecting...', 'green');
           window.location.href = '/';
         } catch (err) {
@@ -3260,11 +3907,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   let prefetchMeData = null;
   let prefetchMeStatus = null;
   try {
-    const meRes = await fetch('/api/auth/me', { credentials: 'same-origin' });
-    prefetchMeStatus = meRes.status;
-    if (meRes.ok) {
-      prefetchMeData = await meRes.json();
-    }
+  const meRes = await fetch('/api/auth/me', { credentials: 'same-origin' });
+  const prefetchMeCsrf = meRes.headers.get('X-CSRF-Token');
+  if (prefetchMeCsrf) {
+    storeCsrfToken(prefetchMeCsrf);
+  }
+  prefetchMeStatus = meRes.status;
+  if (meRes.ok) {
+    prefetchMeData = await meRes.json();
+  }
   } catch (err) {
     prefetchMeData = null;
   }
@@ -3272,6 +3923,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (prefetchMeStatus === 401 || prefetchMeStatus === 403) {
     window.location.href = '/auth';
     return;
+  }
+
+  if (qboReturnError) {
+    showToast(`QuickBooks: ${qboReturnError}`, { durationMs: 8000 });
   }
 
   if (prefetchMeData && prefetchMeData.pending_bootstrap) {
@@ -3341,11 +3996,45 @@ if (typeof loadProjectsForTimeEntries === 'function') {
 }
 
 // 5) QUICKBOOKS CONNECT (FULL PAGE REDIRECT — NO POPUP)
-async function startQboConnect() {
+async function refreshSessionCsrfToken() {
   try {
+    const meRes = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    const prefetchMeCsrf = meRes && meRes.headers ? meRes.headers.get('X-CSRF-Token') : null;
+    if (prefetchMeCsrf) {
+      storeCsrfToken(prefetchMeCsrf);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+  function getQboConnectErrorMessage(err) {
+    const payload = err && err.body && typeof err.body === 'object' ? err.body : null;
+    const primary =
+      (payload && typeof payload.error === 'string' && payload.error.trim()) ||
+      (payload && typeof payload.message === 'string' && payload.message.trim()) ||
+      (err && err.message ? String(err.message).trim() : '');
+    const missing = payload && Array.isArray(payload.missing)
+      ? payload.missing.map(item => String(item).trim()).filter(Boolean)
+      : [];
+    const suffix = missing.length ? `Missing config: ${missing.join(', ')}` : '';
+    return [primary, suffix].filter(Boolean).join(' ') || 'Unable to start QuickBooks authorization.';
+  }
+
+  async function startQboConnect({ silent = false, _retry = false } = {}) {
+  try {
+    qboReturnError = null;
+    const returnTo =
+      (window && window.location && window.location.href
+        ? String(window.location.href)
+        : '/');
     const res = await fetchJSON('/api/qbo/connect', {
       method: 'POST',
-      headers: getCsrfHeader()
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCsrfHeader()
+      },
+      body: JSON.stringify({ return_to: returnTo })
     });
     if (res && res.url) {
       window.location.href = res.url;
@@ -3353,15 +4042,69 @@ async function startQboConnect() {
     }
     throw new Error('QuickBooks auth URL missing.');
   } catch (err) {
+    const rawMessage = String(err && err.message ? err.message : '');
+    const userMessage = getQboConnectErrorMessage(err);
+    const isCsrfError =
+      !_retry &&
+      (err && (err.status === 403 || /CSRF validation failed/i.test(rawMessage)));
+    if (isCsrfError) {
+      await refreshSessionCsrfToken();
+      return startQboConnect({ silent, _retry: true });
+    }
+
     console.error('Failed to start QuickBooks auth:', err);
-    alert(err?.message || 'Failed to start QuickBooks auth.');
+    if (!silent) {
+      alert(userMessage || 'Failed to start QuickBooks auth.');
+    }
+    const wrapped = new Error(userMessage || 'Failed to start QuickBooks auth.');
+    wrapped.status = err && err.status;
+    wrapped.body = err && err.body;
+    wrapped.code = err && err.code;
+    throw wrapped;
   }
 }
 
 const connectBtn = document.getElementById('connect');
 if (connectBtn) {
   connectBtn.addEventListener('click', () => {
-    startQboConnect();
+    startQboConnect().catch(err => {
+      const userMessage = getQboConnectErrorMessage(err);
+      console.error('Connect button error:', err);
+      showToast(`QuickBooks: ${userMessage}`, { durationMs: 8000 });
+    });
+  });
+}
+
+const disconnectBtn = document.getElementById('disconnect-quickbooks');
+if (disconnectBtn) {
+  disconnectBtn.addEventListener('click', async () => {
+    if (!window.confirm('Disconnect QuickBooks for this organization?')) {
+      return;
+    }
+
+    disconnectBtn.disabled = true;
+    try {
+      const res = await fetch('/api/qbo/disconnect', {
+        method: 'POST',
+        headers: getCsrfHeader()
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || 'Unable to disconnect QuickBooks.');
+      }
+
+      if (typeof checkStatus === 'function') {
+        await checkStatus();
+      }
+      showToast('QuickBooks disconnected.', { durationMs: 3000 });
+    } catch (err) {
+      console.error('Failed to disconnect QuickBooks:', err);
+      showToast(`QuickBooks: ${err.message || 'Unable to disconnect QuickBooks.'}`, {
+        durationMs: 6000
+      });
+    } finally {
+      disconnectBtn.disabled = false;
+    }
   });
 }
 
@@ -3445,6 +4188,9 @@ if (connectBtn) {
   const accountEmailPassword = document.getElementById('account-email-password');
   const accountEmailSave = document.getElementById('account-email-save');
   const accountEmailStatus = document.getElementById('account-email-status');
+  const accountViewModeCard = document.getElementById('account-view-mode-card');
+  const accountViewModeBtn = document.getElementById('account-view-mode-btn');
+  const accountViewModeStatus = document.getElementById('account-view-mode-status');
   const backupCard = document.getElementById('settings-backup-card');
   const auditCard = document.getElementById('settings-audit-card');
   const backupBtn = document.getElementById('settings-backup-now');
@@ -3452,16 +4198,10 @@ if (connectBtn) {
   const deviceSetupCard = document.getElementById('settings-device-setup-card');
   const kioskCodeEl = document.getElementById('settings-kiosk-enrollment-code');
   const kioskRotateBtn = document.getElementById('settings-kiosk-rotate');
+  const kioskDevicesBody = document.getElementById('settings-kiosk-devices-body');
+  const kioskDevicesStatus = document.getElementById('settings-kiosk-devices-status');
   const kioskOpenBtn = document.getElementById('settings-kiosk-open');
   const kioskStatus = document.getElementById('settings-kiosk-status');
-  const adminUsersCard = document.getElementById('settings-admin-users-card');
-  const adminUsersBody = document.getElementById('settings-admin-users-body');
-  const adminUserEmployee = document.getElementById('settings-admin-user-employee');
-  const adminUserEmail = document.getElementById('settings-admin-user-email');
-  const adminUserPassword = document.getElementById('settings-admin-user-password');
-  const adminUserPasswordConfirm = document.getElementById('settings-admin-user-password-confirm');
-  const adminUserCreateBtn = document.getElementById('settings-admin-user-create');
-  const adminUserStatus = document.getElementById('settings-admin-user-status');
   const roleTemplatesCard = document.getElementById('settings-role-templates-card');
   const roleTemplatesBody = document.getElementById('settings-role-templates-body');
   const templateNameInput = document.getElementById('settings-template-name');
@@ -3483,10 +4223,9 @@ if (connectBtn) {
   const templateStatus = document.getElementById('settings-template-status');
   const templatePresetsBtn = document.getElementById('settings-template-presets-create');
   const templatePresetsStatus = document.getElementById('settings-template-presets-status');
+  let currentUiMode = 'desktop';
   let editingTemplateId = null;
   let permissionTemplates = [];
-  let adminUserEmployeesCache = [];
-  const adminUserEmployeeMap = new Map();
   let adminUsersCache = [];
 
   let postBootstrapPollTimer = null;
@@ -3543,6 +4282,46 @@ if (connectBtn) {
     }
   }
 
+  async function getOnboardingActiveEmployeeCount({ force = false } = {}) {
+    const now = Date.now();
+    if (
+      !force &&
+      onboardingEmployeeCountCache != null &&
+      now - onboardingEmployeeCountCachedAt < 15000
+    ) {
+      return onboardingEmployeeCountCache;
+    }
+    try {
+      const list = await fetchJSON('/api/employees?status=active');
+      const count = Array.isArray(list) ? list.length : 0;
+      onboardingEmployeeCountCache = count;
+      onboardingEmployeeCountCachedAt = now;
+      return count;
+    } catch {
+      return onboardingEmployeeCountCache;
+    }
+  }
+
+  function openEmployeesFromOnboarding() {
+    const navItem = document.querySelector('.nav-item[data-section="employees"]');
+    if (navItem) navItem.click();
+    setTimeout(() => {
+      const section = document.getElementById('section-employees');
+      if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }
+
+  function openAdminLoginsFromOnboarding() {
+    onboardingPermissionsDraftChanged = false;
+    openEmployeesFromOnboarding();
+    setTimeout(() => {
+      setPostBootstrapPermissionsStatus(
+        'Open an employee, click Edit, then check "This employee is an admin" to manage admin login access.',
+        '#0f766e'
+      );
+    }, 80);
+  }
+
   function setPostBootstrapStepExpanded(stepKey, expanded) {
     if (!postBootstrapCard) return;
     const step = postBootstrapCard.querySelector(`[data-step="${stepKey}"]`);
@@ -3583,26 +4362,51 @@ if (connectBtn) {
   }
 
   function bindPostBootstrapActions() {
-    if (postBootstrapEmployeesBtn && !postBootstrapEmployeesBtn.dataset.bound) {
-      postBootstrapEmployeesBtn.dataset.bound = '1';
-      postBootstrapEmployeesBtn.addEventListener('click', () => {
-        const navItem = document.querySelector('.nav-item[data-section="employees"]');
-        if (navItem) navItem.click();
-        setTimeout(() => {
-          const section = document.getElementById('section-employees');
-          if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 50);
-      });
-    }
-
     if (postBootstrapQboBtn && !postBootstrapQboBtn.dataset.bound) {
       postBootstrapQboBtn.dataset.bound = '1';
-      postBootstrapQboBtn.addEventListener('click', () => {
+      postBootstrapQboBtn.addEventListener('click', async () => {
         const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+        const action = String(postBootstrapQboBtn.dataset.action || '').trim();
+        if (action === 'undo-skip') {
+          if (!orgId) return;
+          setQboSkipped(orgId, false);
+          setPostBootstrapStepSkipped('qbo', false);
+          setPostBootstrapStepExpanded('qbo', true);
+          updatePostBootstrapChecklist();
+          return;
+        }
         if (orgId) {
           setQboSkipped(orgId, false);
           setPostBootstrapStepSkipped('qbo', false);
         }
+        const shouldContinue = postBootstrapQboBtn.dataset.continue === '1';
+        const selectedDefaults = {
+          employees: true,
+          projects: true,
+          vendors: true,
+          accounts: true
+        };
+        const savedSelections = getQboOnboardingSelections(orgId);
+        const selections = savedSelections && typeof savedSelections === 'object'
+          ? { ...selectedDefaults, ...savedSelections }
+          : selectedDefaults;
+
+        if (shouldContinue && orgId) {
+          setQboOnboardingSelections(orgId, selections);
+          setPostBootstrapQboStatus('QuickBooks is connected. Resuming setup...', '#0f766e');
+          clearQboOnboardingState();
+          await openQboOnboardingModal({ step: 3 });
+          setQboSelectionsInInputs(selections);
+          runQboOnboardingSync(selections).catch(err => {
+            if (qboOnboardingError) {
+              qboOnboardingError.textContent = err?.message || 'QuickBooks sync failed.';
+              qboOnboardingError.style.color = '#b91c1c';
+            }
+          });
+          return;
+        }
+
+        setQboOnboardingSelections(orgId, selectedDefaults);
         clearQboOnboardingState();
         openQboOnboardingModal({ step: 1, resetSelections: true }).catch(err => {
           console.error('Failed to open QBO onboarding modal:', err);
@@ -3626,19 +4430,71 @@ if (connectBtn) {
 
     if (postBootstrapPermissionsBtn && !postBootstrapPermissionsBtn.dataset.bound) {
       postBootstrapPermissionsBtn.dataset.bound = '1';
-      postBootstrapPermissionsBtn.addEventListener('click', () => {
-        const navItem = document.querySelector('.nav-item[data-section="settings"]');
-        if (navItem) navItem.click();
-        setTimeout(() => {
-          const card = document.getElementById('settings-role-templates-card');
-          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 50);
+      postBootstrapPermissionsBtn.addEventListener('click', openAdminLoginsFromOnboarding);
+    }
+
+    if (
+      postBootstrapPermissionsOnlyAdminBtn &&
+      !postBootstrapPermissionsOnlyAdminBtn.dataset.bound
+    ) {
+      postBootstrapPermissionsOnlyAdminBtn.dataset.bound = '1';
+      postBootstrapPermissionsOnlyAdminBtn.addEventListener('click', () => {
+        const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+        if (!orgId) return;
+        setOnboardingPermissionsComplete(orgId, true);
+        setOnboardingPermissionsSkipped(orgId, false);
+        setPostBootstrapStepComplete('permissions', true);
+        setPostBootstrapStepSkipped('permissions', false);
+        setPostBootstrapStepExpanded('permissions', false);
+        onboardingPermissionsDraftChanged = false;
+        updatePostBootstrapChecklist();
+      });
+    }
+
+    if (postBootstrapPermissionsSkipBtn && !postBootstrapPermissionsSkipBtn.dataset.bound) {
+      postBootstrapPermissionsSkipBtn.dataset.bound = '1';
+      postBootstrapPermissionsSkipBtn.addEventListener('click', () => {
+        const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+        if (!orgId) return;
+        const currentlySkipped =
+          !isOnboardingForceVisible(orgId) && isOnboardingPermissionsSkipped(orgId);
+        if (currentlySkipped) {
+          setOnboardingPermissionsComplete(orgId, false);
+          setOnboardingPermissionsSkipped(orgId, false);
+          setPostBootstrapStepComplete('permissions', false);
+          setPostBootstrapStepSkipped('permissions', false);
+          setPostBootstrapStepExpanded('permissions', true);
+          onboardingPermissionsDraftChanged = false;
+          updatePostBootstrapChecklist();
+          return;
+        }
+        setOnboardingPermissionsComplete(orgId, true);
+        setOnboardingPermissionsSkipped(orgId, true);
+        setPostBootstrapStepComplete('permissions', true);
+        setPostBootstrapStepSkipped('permissions', true);
+        setPostBootstrapStepExpanded('permissions', false);
+        onboardingPermissionsDraftChanged = false;
+        updatePostBootstrapChecklist();
+      });
+    }
+
+    if (postBootstrapSkipAllBtn && !postBootstrapSkipAllBtn.dataset.bound) {
+      postBootstrapSkipAllBtn.dataset.bound = '1';
+      postBootstrapSkipAllBtn.addEventListener('click', () => {
+        // "Finish Setup Later" only hides setup for now.
+        showPostBootstrapCard(false);
       });
     }
 
     if (postBootstrapDismissBtn && !postBootstrapDismissBtn.dataset.bound) {
       postBootstrapDismissBtn.dataset.bound = '1';
       postBootstrapDismissBtn.addEventListener('click', () => {
+        // "Mark as complete" permanently retires onboarding for this org on this device/session profile.
+        const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+        if (orgId) {
+          setOnboardingSkipped(orgId, true);
+          setOnboardingForceVisible(orgId, false);
+        }
         showPostBootstrapCard(false);
       });
     }
@@ -3702,9 +4558,10 @@ if (connectBtn) {
                   <button id="qbo-step1-cancel" class="btn secondary" type="button">Cancel</button>
                 </div>
               </div>
-              <div class="qbo-onboarding-pane hidden" data-qbo-step="2">
+                <div class="qbo-onboarding-pane hidden" data-qbo-step="2">
                 <h4>Connect your QuickBooks account</h4>
                 <p class="qbo-step-text">We'll open QuickBooks in a new tab for secure authorization.</p>
+                <p id="qbo-step2-error" class="message"></p>
                 <div class="qbo-onboarding-actions">
                   <button id="qbo-step2-back" class="btn secondary" type="button">Back</button>
                   <button id="qbo-step2-connect" class="btn primary" type="button">Connect QuickBooks</button>
@@ -3768,6 +4625,7 @@ if (connectBtn) {
     qboStep1Cancel = document.getElementById('qbo-step1-cancel');
     qboStep2Back = document.getElementById('qbo-step2-back');
     qboStep2Connect = document.getElementById('qbo-step2-connect');
+    qboStep2Error = document.getElementById('qbo-step2-error');
     qboStep4Employees = document.getElementById('qbo-step4-employees');
     qboStep4Done = document.getElementById('qbo-step4-done');
 
@@ -3809,7 +4667,11 @@ if (connectBtn) {
   async function openQboOnboardingModal(options = {}) {
     const ok = await ensureQboOnboardingModal();
     if (!ok || !qboOnboardingModal || !qboOnboardingBackdrop) {
-      startQboConnect();
+      startQboConnect().catch(err => {
+        const userMessage = getQboConnectErrorMessage(err);
+        console.error('Failed to start QuickBooks auth from fallback modal flow:', err);
+        showToast(`QuickBooks: ${userMessage}`, { durationMs: 8000 });
+      });
       return;
     }
     setQboOnboardingLoading(false);
@@ -3821,6 +4683,7 @@ if (connectBtn) {
     if (qboStep4Employees) qboStep4Employees.disabled = false;
     if (qboStep4Done) qboStep4Done.disabled = false;
     if (qboOnboardingError) qboOnboardingError.textContent = '';
+    if (qboStep2Error) qboStep2Error.textContent = '';
     const step = options.step || 1;
     if (options.resetSelections) {
       setQboSelectionsInInputs({
@@ -4071,7 +4934,10 @@ if (connectBtn) {
   async function runQboOnboardingSync(selections) {
     if (qboInitialSyncRunning) return;
     qboInitialSyncRunning = true;
-    if (qboSyncStatus) qboSyncStatus.textContent = '';
+    if (qboSyncStatus) {
+      qboSyncStatus.textContent = 'QuickBooks connected. Starting sync...';
+      qboSyncStatus.style.color = '#0f766e';
+    }
     renderQboSyncProgress(selections);
     setQboOnboardingStep(3);
     const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
@@ -4085,6 +4951,7 @@ if (connectBtn) {
       { key: 'vendors', route: '/api/sync/vendors' },
       { key: 'accounts', route: '/api/sync/payroll-accounts' }
     ];
+    let currentTaskKey = null;
 
     try {
       for (const task of tasks) {
@@ -4092,6 +4959,7 @@ if (connectBtn) {
           updateQboSyncStatus(task.key, 'is-done', 'Skipped');
           continue;
         }
+        currentTaskKey = task.key;
         updateQboSyncStatus(task.key, 'is-running', 'Syncing...');
         await syncRoute(task.route, {
           silent: true,
@@ -4102,6 +4970,7 @@ if (connectBtn) {
           await loadPayrollSettings();
         }
         updateQboSyncStatus(task.key, 'is-done', 'Done');
+        currentTaskKey = null;
       }
       if (qboSyncStatus) {
         qboSyncStatus.textContent = 'Sync complete.';
@@ -4112,11 +4981,7 @@ if (connectBtn) {
       await loadQboMatchList();
       setQboOnboardingStep(4);
     } catch (err) {
-      updateQboSyncStatus(
-        tasks.find(t => selections[t.key])?.key || 'employees',
-        'is-error',
-        'Failed'
-      );
+      updateQboSyncStatus(currentTaskKey || 'employees', 'is-error', 'Failed');
       if (qboSyncStatus) {
         qboSyncStatus.textContent = err?.message || 'Sync failed.';
         qboSyncStatus.style.color = 'crimson';
@@ -4150,6 +5015,7 @@ if (connectBtn) {
           return;
         }
         if (qboOnboardingError) qboOnboardingError.textContent = '';
+        if (qboStep2Error) qboStep2Error.textContent = '';
         setQboOnboardingStep(2);
       });
     }
@@ -4162,6 +5028,7 @@ if (connectBtn) {
     if (qboStep2Back && !qboStep2Back.dataset.bound) {
       qboStep2Back.dataset.bound = '1';
       qboStep2Back.addEventListener('click', () => {
+        if (qboStep2Error) qboStep2Error.textContent = '';
         setQboOnboardingStep(1);
       });
     }
@@ -4176,9 +5043,26 @@ if (connectBtn) {
         if (qboStep2Connect) qboStep2Connect.disabled = true;
         if (qboStep2Back) qboStep2Back.disabled = true;
         if (qboOnboardingClose) qboOnboardingClose.disabled = true;
-        setTimeout(() => {
-          startQboConnect();
-        }, 60);
+        setTimeout(async () => {
+              try {
+                await startQboConnect({ silent: true });
+              } catch (err) {
+                const userMessage = getQboConnectErrorMessage(err);
+                if (qboStep2Connect) qboStep2Connect.disabled = false;
+                if (qboStep2Back) qboStep2Back.disabled = false;
+                if (qboOnboardingClose) qboOnboardingClose.disabled = false;
+                setQboOnboardingLoading(false);
+                if (qboOnboardingError) {
+                  qboOnboardingError.textContent = userMessage;
+                  qboOnboardingError.style.color = '#b91c1c';
+                }
+                if (qboStep2Error) {
+                  qboStep2Error.textContent = userMessage;
+                  qboStep2Error.style.color = '#b91c1c';
+                }
+                console.error('QuickBooks connect start failed:', err);
+              }
+            }, 60);
       });
     }
 
@@ -4196,8 +5080,8 @@ if (connectBtn) {
       qboStep4Done.addEventListener('click', () => {
         const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
         if (orgId) {
-          setQboSkipped(orgId, true);
-          setPostBootstrapStepSkipped('qbo', true);
+          setQboSkipped(orgId, false);
+          setPostBootstrapStepSkipped('qbo', false);
           setOnboardingForceVisible(orgId, true);
         }
         closeQboOnboardingModal();
@@ -4245,22 +5129,50 @@ if (connectBtn) {
   async function resumeQboOnboardingIfNeeded() {
     if (!window.QBO_JUST_CONNECTED) return;
     const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+    const defaultSelections = {
+      employees: true,
+      projects: true,
+      vendors: true,
+      accounts: true
+    };
     const state = getQboOnboardingState(orgId);
-    if (!state || !state.selections) return;
+    const stateSelections = state && state.selections && typeof state.selections === 'object'
+      ? state.selections
+      : null;
+    const storedSelections = getQboOnboardingSelections(orgId);
+    const selections = {
+      ...defaultSelections,
+      ...(storedSelections && typeof storedSelections === 'object' ? storedSelections : {}),
+      ...(stateSelections || {})
+    };
+
     const status = await fetchJSON('/api/status').catch(() => null);
-    if (!status?.qbConnected) {
-      await openQboOnboardingModal({ step: 1 });
-      if (qboOnboardingError) {
-        qboOnboardingError.textContent = 'QuickBooks connection did not complete. Please try again.';
-        qboOnboardingError.style.color = 'crimson';
+    const qbConnected = !!status?.qbConnected;
+    const qbConnectionWarning = String(status?.qbConnectionWarning || '').trim();
+
+    try {
+      if (!qbConnected || qbConnectionWarning) {
+        await openQboOnboardingModal({ step: 1 });
+        if (qboOnboardingError) {
+          qboOnboardingError.textContent = qbConnectionWarning
+            ? `QuickBooks connection check needs attention: ${qbConnectionWarning}`
+            : 'QuickBooks connection did not complete. Please try again.';
+          qboOnboardingError.style.color = 'crimson';
+        }
+        return;
       }
-      return;
+
+      if (orgId) {
+        setQboOnboardingSelections(orgId, selections);
+        clearQboOnboardingState();
+      }
+      await openQboOnboardingModal({ step: 3 });
+      setQboOnboardingLoading(false);
+      setQboSelectionsInInputs(selections);
+      await runQboOnboardingSync(selections);
+    } finally {
+      window.QBO_JUST_CONNECTED = false;
     }
-    await openQboOnboardingModal({ step: 3 });
-    setQboOnboardingLoading(false);
-    setQboSelectionsInInputs(state.selections);
-    await runQboOnboardingSync(state.selections);
-    window.QBO_JUST_CONNECTED = false;
   }
 
   async function updatePostBootstrapChecklist() {
@@ -4278,30 +5190,16 @@ if (connectBtn) {
         return;
       }
 
-      const [employeesResult, statusResult, templatesResult] = await Promise.allSettled([
-        fetchJSON('/api/employees?status=active'),
-        fetchJSON('/api/status'),
-        fetchJSON('/api/permission-templates')
-      ]);
+      const status = await fetchJSON('/api/status').catch(() => null);
 
-      const employees =
-        employeesResult.status === 'fulfilled' ? employeesResult.value : [];
-      const status =
-        statusResult.status === 'fulfilled' ? statusResult.value : null;
-      const templates =
-        templatesResult.status === 'fulfilled' ? templatesResult.value?.templates || [] : [];
-
-      const currentEmpId = window.CURRENT_EMPLOYEE?.id ? Number(window.CURRENT_EMPLOYEE.id) : null;
-      const nonAdminCount = Array.isArray(employees)
-        ? employees.filter(emp => {
-          if (!emp || emp.id == null) return false;
-          if (!currentEmpId) return true;
-          return Number(emp.id) !== currentEmpId;
-        }).length
-        : 0;
-      const employeesComplete = nonAdminCount > 0;
-      const qboSkipped = isQboSkipped(orgId);
-      const qbConnected = !!status?.qbConnected;
+      const qbConnectionWarning = String(status?.qbConnectionWarning || '').trim();
+      const callbackQboError = String(qboReturnError || '').trim();
+      const qbConnected = !!status?.qbConnected && !qbConnectionWarning;
+      const storedQboSkipped = isQboSkipped(orgId);
+      const qboSkipped = storedQboSkipped && !qbConnected;
+      if (storedQboSkipped && qbConnected) {
+        setQboSkipped(orgId, false);
+      }
       const lastSync = status?.lastSync || {};
       const storedSelections = getQboOnboardingSelections(orgId);
       const selectionMap = storedSelections && typeof storedSelections === 'object'
@@ -4316,24 +5214,89 @@ if (connectBtn) {
       const qboSyncReady =
         qbConnected &&
         effectiveRequired.every(key => !!lastSync?.[key]);
-      const templatesComplete = Array.isArray(templates) && templates.length > 0;
       const orgIdForForce = orgId;
       const forceVisible = isOnboardingForceVisible(orgIdForForce);
-      const permissionsComplete = forceVisible ? false : (employeesComplete || templatesComplete);
+      const activeEmployeeCountRaw = await getOnboardingActiveEmployeeCount();
+      const activeEmployeeCount = Number.isFinite(Number(activeEmployeeCountRaw))
+        ? Math.max(1, Math.floor(Number(activeEmployeeCountRaw)))
+        : 2;
+      const additionalEmployeesCount = Math.max(0, activeEmployeeCount - 1);
+      const hasAdditionalEmployees = additionalEmployeesCount > 0;
+      const storedPermissionsComplete = !forceVisible && isOnboardingPermissionsComplete(orgId);
+      const permissionsSkipped =
+        !forceVisible && isOnboardingPermissionsSkipped(orgId);
+      const autoPermissionsComplete = !forceVisible && !hasAdditionalEmployees;
+      const permissionsComplete = forceVisible
+        ? false
+        : (storedPermissionsComplete || autoPermissionsComplete);
+      setPostBootstrapStepSkipped('permissions', permissionsSkipped);
+      if (postBootstrapPermissionsBtn) {
+        postBootstrapPermissionsBtn.textContent = 'Set up admin logins';
+      }
+      if (postBootstrapPermissionsOnlyAdminBtn) {
+        postBootstrapPermissionsOnlyAdminBtn.textContent = "I'm the only admin";
+      }
+      if (postBootstrapPermissionsSkipBtn) {
+        postBootstrapPermissionsSkipBtn.textContent = permissionsSkipped
+          ? 'Undo skip'
+          : 'Finish later';
+      }
+      if (postBootstrapPermissionsStepText) {
+        if (hasAdditionalEmployees && qbConnected) {
+          postBootstrapPermissionsStepText.textContent =
+            'QuickBooks synced employees. Choose who should also have admin login access.';
+        } else if (hasAdditionalEmployees) {
+          postBootstrapPermissionsStepText.textContent =
+            'Add employees, then choose who should have admin login access.';
+        } else {
+          postBootstrapPermissionsStepText.textContent =
+            "You're already the default super admin. Add another admin only if needed.";
+        }
+      }
+      if (permissionsSkipped) {
+        setPostBootstrapPermissionsStatus(
+          'Skipped for now. You can set additional admins anytime in Employees.',
+          '#b45309'
+        );
+      } else if (hasAdditionalEmployees) {
+        const label = additionalEmployeesCount === 1 ? 'employee is' : 'employees are';
+        setPostBootstrapPermissionsStatus(
+          `${additionalEmployeesCount} ${label} ready for admin setup.`,
+          '#0f766e'
+        );
+      } else {
+        setPostBootstrapPermissionsStatus(
+          'No additional employees yet. You can continue with just your super admin account.',
+          '#6b7280'
+        );
+      }
 
-      const showConnectActions = !qboSkipped && !qbConnected;
+      const needsQuickbooksSetup = !qboSyncReady;
+      const showConnectActions = needsQuickbooksSetup || qboSkipped;
+      const showQboSkipAction = needsQuickbooksSetup && !qboSkipped;
       if (postBootstrapQboBtn) {
-        postBootstrapQboBtn.textContent = 'Connect QuickBooks';
+        postBootstrapQboBtn.textContent = qboSkipped
+          ? 'Undo skip'
+          : (qbConnected && !qboSyncReady
+            ? 'Continue QuickBooks setup'
+            : 'Connect QuickBooks');
+        postBootstrapQboBtn.dataset.action = qboSkipped ? 'undo-skip' : 'start';
+        postBootstrapQboBtn.dataset.continue = qbConnected && !qboSyncReady ? '1' : '0';
         postBootstrapQboBtn.style.display = showConnectActions ? '' : 'none';
       }
       if (postBootstrapQboSkipBtn) {
-        postBootstrapQboSkipBtn.style.display = showConnectActions ? '' : 'none';
+        postBootstrapQboSkipBtn.textContent = 'Finish later';
+        postBootstrapQboSkipBtn.style.display = showQboSkipAction ? '' : 'none';
       }
       if (postBootstrapQboStatus) {
         if (qboSkipped) {
           setPostBootstrapQboStatus('Skipped for now. You can connect QuickBooks anytime.', '#b45309');
+        } else if (callbackQboError) {
+          setPostBootstrapQboStatus(`QuickBooks connect failed: ${callbackQboError}`, '#b91c1c');
         } else if (!qbConnected) {
           setPostBootstrapQboStatus('', '');
+        } else if (qboConnectionWarning) {
+          setPostBootstrapQboStatus(`QuickBooks check failed: ${qbConnectionWarning}`, '#b45309');
         } else if (qboSyncReady) {
           setPostBootstrapQboStatus('Connected and synced.', 'green');
         } else {
@@ -4351,11 +5314,20 @@ if (connectBtn) {
         }
       }
 
+      const qboStepComplete = qbConnected;
       setPostBootstrapStepSkipped('qbo', qboSkipped);
-      setPostBootstrapStepComplete('qbo', qboSyncReady && !qboSkipped);
+      setPostBootstrapStepComplete('qbo', qboStepComplete);
       setPostBootstrapStepComplete('permissions', permissionsComplete);
 
-      if (!forceVisible && orgComplete && (qboSyncReady || qboSkipped) && permissionsComplete) {
+      // Only auto-retire checklist after true completion (not skipped steps).
+      const onboardingFullyCompleted =
+        orgComplete &&
+        qboSyncReady &&
+        !qboSkipped &&
+        permissionsComplete &&
+        !permissionsSkipped;
+
+      if (!forceVisible && onboardingFullyCompleted) {
         showPostBootstrapCard(false);
       }
     } catch (err) {
@@ -4381,9 +5353,39 @@ if (connectBtn) {
     if (!postBootstrapCard) return;
     postBootstrapCard.classList.toggle('hidden', !show);
     if (show) {
+      const currentOrgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+      const forceVisible = currentOrgId ? isOnboardingForceVisible(currentOrgId) : false;
+      const qboConnected =
+        !!window.QBO_STATUS?.qbConnected &&
+        !String(window.QBO_STATUS?.qbConnectionWarning || '').trim();
+      const qboSkipped = currentOrgId ? (isQboSkipped(currentOrgId) && !qboConnected) : false;
+      const permissionsSkipped =
+        !!currentOrgId && !forceVisible && isOnboardingPermissionsSkipped(currentOrgId);
       if (postBootstrapChecklist) postBootstrapChecklist.classList.remove('hidden');
       if (postBootstrapOrgStep) postBootstrapOrgStep.classList.remove('hidden');
+      if (postBootstrapQboBtn) postBootstrapQboBtn.style.display = 'none';
+      if (postBootstrapQboSkipBtn) postBootstrapQboSkipBtn.style.display = 'none';
       bindPostBootstrapStepToggles();
+      bindPostBootstrapActions();
+      setPostBootstrapStepSkipped('qbo', qboSkipped);
+      setPostBootstrapStepSkipped('permissions', permissionsSkipped);
+      if (postBootstrapQboBtn) {
+        postBootstrapQboBtn.textContent = qboSkipped ? 'Undo skip' : 'Connect QuickBooks';
+        postBootstrapQboBtn.dataset.action = qboSkipped ? 'undo-skip' : 'start';
+        postBootstrapQboBtn.dataset.continue = '0';
+        postBootstrapQboBtn.style.display = '';
+      }
+      if (postBootstrapQboSkipBtn) {
+        postBootstrapQboSkipBtn.textContent = 'Finish later';
+        postBootstrapQboSkipBtn.style.display = qboSkipped ? 'none' : '';
+      }
+      if (postBootstrapQboStatus) {
+        if (qboSkipped) {
+          setPostBootstrapQboStatus('Skipped for now. You can connect QuickBooks anytime.', '#b45309');
+        } else {
+          setPostBootstrapQboStatus('', '');
+        }
+      }
       const showQboStep = !!window.QBO_JUST_CONNECTED;
       setPostBootstrapStepExpanded('org', !showQboStep);
       setPostBootstrapStepExpanded('qbo', showQboStep);
@@ -4391,14 +5393,13 @@ if (connectBtn) {
       setPostBootstrapStepComplete('org', true);
       setPostBootstrapStepDisabled('qbo', false);
       setPostBootstrapStepDisabled('permissions', false);
-      const currentOrgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
       setOnboardingPending(currentOrgId);
       window.ONBOARDING_SHOW_QB = false;
       if (typeof updateQbCardForSection === 'function') {
         updateQbCardForSection('dashboard');
       }
       if (showQboStep) {
-        setPostBootstrapQboStatus('QuickBooks connected. Finishing setup...', '#0f766e');
+        setPostBootstrapQboStatus('', '');
       }
       startPostBootstrapPolling();
     } else {
@@ -4427,22 +5428,158 @@ if (connectBtn) {
     accountEmailStatus.style.color = color || '';
   }
 
+  function setAccountViewModeStatus(text, color) {
+    if (!accountViewModeStatus) return;
+    accountViewModeStatus.textContent = text || '';
+    accountViewModeStatus.style.color = color || '';
+  }
+
+  function canSwitchAdminViewMode() {
+    const employee = window.CURRENT_EMPLOYEE || {};
+    return !!(employee.desktop_access && employee.kiosk_admin_access);
+  }
+
+  function applyAccountViewModeSwitcher() {
+    if (!accountViewModeCard || !accountViewModeBtn) return;
+    const canSwitch = canSwitchAdminViewMode();
+    accountViewModeCard.classList.toggle('hidden', !canSwitch);
+    if (!canSwitch) {
+      setAccountViewModeStatus('', '');
+      return;
+    }
+
+    const inKioskMode = currentUiMode === 'kiosk';
+    accountViewModeBtn.textContent = inKioskMode
+      ? 'Switch to Desktop View'
+      : 'Switch to Kiosk View';
+  }
+
   function setBackupStatus(text, color) {
     if (!backupStatus) return;
     backupStatus.textContent = text || '';
     backupStatus.style.color = color || '';
   }
 
-  function setAdminUserStatus(text, color) {
-    if (!adminUserStatus) return;
-    adminUserStatus.textContent = text || '';
-    adminUserStatus.style.color = color || '';
-  }
-
   function setKioskStatus(text, color) {
     if (!kioskStatus) return;
     kioskStatus.textContent = text || '';
     kioskStatus.style.color = color || '';
+  }
+
+  function setKioskDevicesStatus(text, color) {
+    if (!kioskDevicesStatus) return;
+    kioskDevicesStatus.textContent = text || '';
+    kioskDevicesStatus.style.color = color || '';
+  }
+
+  function formatKioskRegistryDate(value) {
+    if (!value) return '—';
+    if (typeof formatDateTimeLocal === 'function') {
+      const formatted = formatDateTimeLocal(value);
+      return formatted || '—';
+    }
+    return String(value);
+  }
+
+  function formatKioskGeofenceLocation(device) {
+    const projectName = String(device?.geofence_project_name || '').trim();
+    const customerName = String(device?.geofence_customer_name || '').trim();
+    const latNum = Number(device?.geofence_lat);
+    const lngNum = Number(device?.geofence_lng);
+    const radiusNum = Number(device?.geofence_radius);
+    const hasLatLng = Number.isFinite(latNum) && Number.isFinite(lngNum);
+    const hasRadius = Number.isFinite(radiusNum) && radiusNum > 0;
+
+    let projectLabel = '';
+    if (projectName) {
+      projectLabel = customerName
+        ? `${projectName} (${customerName})`
+        : projectName;
+    }
+
+    if (hasLatLng) {
+      const coords = `${latNum.toFixed(5)}, ${lngNum.toFixed(5)}`;
+      const radius = hasRadius ? ` • ${Math.round(radiusNum)}m` : '';
+      return projectLabel
+        ? `${projectLabel} • ${coords}${radius}`
+        : `${coords}${radius}`;
+    }
+
+    if (projectLabel) {
+      return `${projectLabel} (geofence not set)`;
+    }
+
+    return 'No geofence location';
+  }
+
+  function renderKioskDeviceRegistry(rows = []) {
+    if (!kioskDevicesBody) return;
+    if (!rows.length) {
+      kioskDevicesBody.innerHTML = '<tr><td colspan="6">(no registered devices)</td></tr>';
+      return;
+    }
+
+    kioskDevicesBody.innerHTML = '';
+    rows.forEach(device => {
+      const tr = document.createElement('tr');
+
+      const kioskIdCell = document.createElement('td');
+      kioskIdCell.textContent = device?.id ? String(device.id) : '—';
+      tr.appendChild(kioskIdCell);
+
+      const deviceCell = document.createElement('td');
+      deviceCell.textContent = device?.name || 'Unnamed kiosk';
+      tr.appendChild(deviceCell);
+
+      const idCell = document.createElement('td');
+      idCell.textContent = device?.device_id || '—';
+      tr.appendChild(idCell);
+
+      const adminCell = document.createElement('td');
+      const registeredByName = String(device?.registered_by_name || '').trim();
+      const registeredByEmployeeId = Number.isFinite(Number(device?.registered_by_employee_id))
+        ? Number(device.registered_by_employee_id)
+        : null;
+      if (registeredByName && registeredByEmployeeId) {
+        adminCell.textContent = `${registeredByName} (#${registeredByEmployeeId})`;
+      } else if (registeredByName) {
+        adminCell.textContent = registeredByName;
+      } else if (registeredByEmployeeId) {
+        adminCell.textContent = `Employee #${registeredByEmployeeId}`;
+      } else {
+        adminCell.textContent = 'Unknown (legacy/unspecified)';
+      }
+      tr.appendChild(adminCell);
+
+      const registeredCell = document.createElement('td');
+      registeredCell.textContent = formatKioskRegistryDate(device?.registered_at);
+      tr.appendChild(registeredCell);
+
+      const geofenceCell = document.createElement('td');
+      geofenceCell.textContent = formatKioskGeofenceLocation(device);
+      tr.appendChild(geofenceCell);
+
+      kioskDevicesBody.appendChild(tr);
+    });
+  }
+
+  async function loadKioskDeviceRegistry() {
+    if (!window.CURRENT_IS_SUPER_ADMIN || !kioskDevicesBody) return;
+    kioskDevicesBody.innerHTML = '<tr><td colspan="6">(loading devices…)</td></tr>';
+    setKioskDevicesStatus('', '');
+    try {
+      const res = await fetchJSON('/api/kiosks/registry');
+      const rows = Array.isArray(res?.kiosks) ? res.kiosks : [];
+      renderKioskDeviceRegistry(rows);
+      setKioskDevicesStatus(
+        rows.length === 1 ? '1 registered device.' : `${rows.length} registered devices.`,
+        '#374151'
+      );
+    } catch (err) {
+      console.error('Error loading kiosk device registry', err);
+      kioskDevicesBody.innerHTML = '<tr><td colspan="6">(failed to load devices)</td></tr>';
+      setKioskDevicesStatus(err?.message || 'Failed to load devices.', 'crimson');
+    }
   }
 
   function setKioskCode(code) {
@@ -4457,10 +5594,15 @@ if (connectBtn) {
       const res = await fetchJSON('/api/kiosks/enrollment-code');
       setKioskCode(res?.code || '—');
       setKioskStatus('', '');
+      await loadKioskDeviceRegistry();
     } catch (err) {
       console.error('Error loading enrollment code', err);
       setKioskCode('—');
       setKioskStatus(err?.message || 'Failed to load enrollment code.', 'crimson');
+      if (kioskDevicesBody) {
+        kioskDevicesBody.innerHTML = '<tr><td colspan="6">(failed to load devices)</td></tr>';
+      }
+      setKioskDevicesStatus(err?.message || 'Failed to load devices.', 'crimson');
     }
   }
 
@@ -4477,25 +5619,11 @@ if (connectBtn) {
       });
       setKioskCode(res?.code || '—');
       setKioskStatus('Enrollment code rotated.', 'green');
+      await loadKioskDeviceRegistry();
     } catch (err) {
       console.error('Error rotating enrollment code', err);
       setKioskStatus(err?.message || 'Failed to rotate enrollment code.', 'crimson');
     }
-  }
-
-
-  function setAdminUserEmployeeCache(list = []) {
-    adminUserEmployeesCache = Array.isArray(list) ? list : [];
-    adminUserEmployeeMap.clear();
-    adminUserEmployeesCache.forEach(emp => {
-      if (!emp || emp.id == null) return;
-      adminUserEmployeeMap.set(Number(emp.id), emp);
-    });
-  }
-
-  function getAdminUserEmployeeById(id) {
-    if (!id) return null;
-    return adminUserEmployeeMap.get(Number(id)) || null;
   }
 
   function setAdminUsersCache(list = []) {
@@ -4513,9 +5641,6 @@ if (connectBtn) {
     const data = await fetchJSON('/api/auth/users');
     const list = (data && data.users) || [];
     setAdminUsersCache(list);
-    if (render && adminUsersBody) {
-      renderAdminUsers(adminUsersCache);
-    }
     return adminUsersCache;
   }
 
@@ -4546,15 +5671,6 @@ if (connectBtn) {
       deviceSetupCard.classList.remove('hidden');
     } else {
       deviceSetupCard.classList.add('hidden');
-    }
-  }
-
-  function applyAdminUsersVisibility() {
-    if (!adminUsersCard) return;
-    if (window.CURRENT_IS_SUPER_ADMIN) {
-      adminUsersCard.classList.remove('hidden');
-    } else {
-      adminUsersCard.classList.add('hidden');
     }
   }
 
@@ -4816,161 +5932,53 @@ if (connectBtn) {
     if (templateSaveBtn) templateSaveBtn.textContent = 'Update template';
   }
 
-  function getAdminUserStatus(user) {
-    const enabled =
-      user.login_enabled === true ||
-      user.login_enabled === 1 ||
-      user.login_enabled === '1';
-    const employeeActive = !!user.employee_active;
-    const desktopAccess = !!user.desktop_access;
-    if (!enabled) return 'Disabled';
-    if (user.password_setup_pending) return 'Setup pending';
-    if (!user.is_super_admin) return 'Blocked (not super admin)';
-    if (!employeeActive) return 'Blocked (inactive employee)';
-    if (!desktopAccess) return 'Blocked (no desktop access)';
-    return 'Enabled';
-  }
-
-  function renderAdminUsers(users = []) {
-    if (!adminUsersBody) return;
-    if (!users.length) {
-      adminUsersBody.innerHTML = '<tr><td colspan="6">(no admin accounts yet)</td></tr>';
-      return;
-    }
-    adminUsersBody.innerHTML = '';
-    users.forEach(user => {
-      const isSelf = Number(window.CURRENT_USER?.id) === Number(user.user_id);
-      const enabled =
-        user.login_enabled === true ||
-        user.login_enabled === 1 ||
-        user.login_enabled === '1';
-      const canEnable = !!user.employee_active && !!user.desktop_access;
-      const linkedEmployee = getAdminUserEmployeeById(user.employee_id);
-      const kioskAccess = linkedEmployee ? !!linkedEmployee.kiosk_admin_access : false;
-      const hasPin = linkedEmployee ? !!linkedEmployee.has_pin : false;
-      const tr = document.createElement('tr');
-
-      const emailCell = document.createElement('td');
-      const emailText = user.email || '';
-      emailCell.textContent = isSelf && emailText ? `${emailText} (you)` : emailText;
-
-      const employeeCell = document.createElement('td');
-      employeeCell.textContent = user.employee_name || '—';
-
-      const statusCell = document.createElement('td');
-      statusCell.textContent = getAdminUserStatus(user);
-
-      const kioskCell = document.createElement('td');
-      kioskCell.textContent = linkedEmployee ? (kioskAccess ? 'Enabled' : 'Off') : '—';
-
-      const pinCell = document.createElement('td');
-      pinCell.textContent = linkedEmployee ? (hasPin ? 'Set' : 'Not set') : '—';
-
-      const actionsCell = document.createElement('td');
-      actionsCell.classList.add('admin-accounts-actions-cell');
-
-      const toggleBtn = document.createElement('button');
-      toggleBtn.type = 'button';
-      toggleBtn.className = 'btn secondary btn-sm';
-      toggleBtn.dataset.userId = user.user_id;
-      toggleBtn.dataset.userEmail = emailText;
-      toggleBtn.dataset.userAction = enabled ? 'disable' : 'enable';
-      toggleBtn.textContent = enabled ? 'Disable login' : 'Enable login';
-      if (!enabled && !canEnable) {
-        toggleBtn.disabled = true;
-        toggleBtn.title = 'Employee must be active with desktop access to enable login.';
-      }
-
-      actionsCell.appendChild(toggleBtn);
-
-      tr.appendChild(emailCell);
-      tr.appendChild(employeeCell);
-      tr.appendChild(statusCell);
-      tr.appendChild(kioskCell);
-      tr.appendChild(pinCell);
-      tr.appendChild(actionsCell);
-      adminUsersBody.appendChild(tr);
-    });
-  }
-
-  async function loadAdminUsers() {
-    if (!adminUsersBody || !window.CURRENT_IS_SUPER_ADMIN) return;
-    try {
-      await refreshAdminUsersCache({ render: true });
-    } catch (err) {
-      console.error('Error loading admin accounts', err);
-      setAdminUsersCache([]);
-      adminUsersBody.innerHTML = '<tr><td colspan="6">(error loading accounts)</td></tr>';
-    }
-  }
-
-  async function handleAdminUserAction(event) {
-    if (!adminUsersBody) return;
-    const button = event.target.closest('button[data-user-action]');
-    if (!button) return;
-    if (button.disabled) return;
-
-    const action = button.dataset.userAction;
-    const userId = Number(button.dataset.userId);
-    const userEmail = button.dataset.userEmail || 'this user';
-
-    if (!userId || !action) return;
-
-    const originalText = button.textContent || '';
-    button.disabled = true;
-
-    try {
-      if (action === 'disable') {
-        const ok = window.confirm(
-          `Disable login for ${userEmail}? They will no longer be able to sign in.`
-        );
-        if (!ok) return;
-        await fetchJSON(`/api/auth/users/${userId}/disable`, { method: 'POST' });
-        setAdminUserStatus(`Login disabled for ${userEmail}.`, 'green');
-        await loadAdminUsers();
-      } else if (action === 'enable') {
-        const ok = window.confirm(
-          `Enable login for ${userEmail}? This grants super admin sign-in access.`
-        );
-        if (!ok) return;
-        await fetchJSON(`/api/auth/users/${userId}/enable`, { method: 'POST' });
-        setAdminUserStatus(`Login enabled for ${userEmail}.`, 'green');
-        await loadAdminUsers();
-      }
-    } catch (err) {
-      console.error('Admin user action error:', err);
-      setAdminUserStatus(err?.message || 'Action failed.', 'crimson');
-    } finally {
-      button.disabled = false;
-      button.textContent = originalText;
-    }
-  }
-
-  if (adminUsersBody) {
-    adminUsersBody.addEventListener('click', handleAdminUserAction);
-  }
-
-  if (postBootstrapEmployeesBtn && !postBootstrapEmployeesBtn.dataset.bound) {
-    postBootstrapEmployeesBtn.dataset.bound = '1';
-    postBootstrapEmployeesBtn.addEventListener('click', () => {
-      const navItem = document.querySelector('.nav-item[data-section="employees"]');
-      if (navItem) navItem.click();
-      setTimeout(() => {
-        const section = document.getElementById('section-employees');
-        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 50);
-    });
-  }
-
   if (postBootstrapQboBtn && !postBootstrapQboBtn.dataset.bound) {
     postBootstrapQboBtn.dataset.bound = '1';
-    postBootstrapQboBtn.addEventListener('click', () => {
+    postBootstrapQboBtn.addEventListener('click', async () => {
       const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+      const action = String(postBootstrapQboBtn.dataset.action || '').trim();
+      if (action === 'undo-skip') {
+        if (!orgId) return;
+        setQboSkipped(orgId, false);
+        setPostBootstrapStepSkipped('qbo', false);
+        setPostBootstrapStepExpanded('qbo', true);
+        updatePostBootstrapChecklist();
+        return;
+      }
       if (orgId) {
         setQboSkipped(orgId, false);
         setPostBootstrapStepSkipped('qbo', false);
       }
-      openQboOnboardingModal().catch(err => {
+      const shouldContinue = postBootstrapQboBtn.dataset.continue === '1';
+      const selectedDefaults = {
+        employees: true,
+        projects: true,
+        vendors: true,
+        accounts: true
+      };
+      const savedSelections = getQboOnboardingSelections(orgId);
+      const selections = savedSelections && typeof savedSelections === 'object'
+        ? { ...selectedDefaults, ...savedSelections }
+        : selectedDefaults;
+
+      if (shouldContinue && orgId) {
+        setQboOnboardingSelections(orgId, selections);
+        setPostBootstrapQboStatus('QuickBooks is connected. Resuming setup...', '#0f766e');
+        clearQboOnboardingState();
+        await openQboOnboardingModal({ step: 3 });
+        setQboSelectionsInInputs(selections);
+        runQboOnboardingSync(selections).catch(err => {
+          if (qboOnboardingError) {
+            qboOnboardingError.textContent = err?.message || 'QuickBooks sync failed.';
+            qboOnboardingError.style.color = '#b91c1c';
+          }
+        });
+        return;
+      }
+
+      setQboOnboardingSelections(orgId, selectedDefaults);
+      clearQboOnboardingState();
+      openQboOnboardingModal({ step: 1, resetSelections: true }).catch(err => {
         console.error('Failed to open QBO onboarding modal:', err);
       });
     });
@@ -4982,30 +5990,18 @@ if (connectBtn) {
       const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
       if (!orgId) return;
       setQboSkipped(orgId, true);
+      clearQboOnboardingState();
       setPostBootstrapStepSkipped('qbo', true);
       setPostBootstrapStepExpanded('qbo', false);
+      setPostBootstrapStepExpanded('permissions', true);
       updatePostBootstrapChecklist();
     });
   }
 
   if (postBootstrapPermissionsBtn && !postBootstrapPermissionsBtn.dataset.bound) {
     postBootstrapPermissionsBtn.dataset.bound = '1';
-    postBootstrapPermissionsBtn.addEventListener('click', () => {
-      const navItem = document.querySelector('.nav-item[data-section="settings"]');
-      if (navItem) navItem.click();
-      setTimeout(() => {
-        const card = document.getElementById('settings-role-templates-card');
-        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 50);
-    });
+    postBootstrapPermissionsBtn.addEventListener('click', openAdminLoginsFromOnboarding);
   }
-
-  if (postBootstrapDismissBtn) {
-    postBootstrapDismissBtn.addEventListener('click', () => {
-      showPostBootstrapCard(false);
-    });
-  }
-
 
   if (kioskRotateBtn) {
     kioskRotateBtn.addEventListener('click', () => {
@@ -5124,28 +6120,6 @@ if (connectBtn) {
     });
   }
 
-  async function loadAdminUserEmployees() {
-    if (!adminUserEmployee || !window.CURRENT_IS_SUPER_ADMIN) return;
-    adminUserEmployee.innerHTML = '<option value="">Select employee</option>';
-    try {
-      const list = await fetchJSON('/api/employees?status=all');
-      setAdminUserEmployeeCache(list || []);
-      const eligible = (list || []).filter(emp => {
-        if (!emp || !emp.desktop_access) return false;
-        return emp.active !== 0 && emp.active !== false;
-      });
-      eligible.forEach(emp => {
-        const option = document.createElement('option');
-        option.value = emp.id;
-        option.textContent = `${emp.name || '(Unnamed)'}${emp.email ? ` — ${emp.email}` : ''}`;
-        adminUserEmployee.appendChild(option);
-      });
-      await loadAdminUsers();
-    } catch (err) {
-      console.error('Error loading employee list for admin accounts', err);
-    }
-  }
-
   function clearPasswordInputs() {
     if (passwordFields.current) passwordFields.current.value = '';
     if (passwordFields.next) passwordFields.next.value = '';
@@ -5159,21 +6133,19 @@ if (connectBtn) {
   }
 
   function deriveCurrentAdminAccess(perms = {}) {
-    const fallbackModifyPayroll =
-      typeof perms.modify_payroll === 'undefined'
-        ? (perms.view_payroll === true || perms.view_payroll === 'true')
-        : (perms.modify_payroll === true || perms.modify_payroll === 'true');
-    const approveTime = coerceAccessFlag(perms.approve_time) || coerceAccessFlag(perms.view_payroll) || fallbackModifyPayroll;
+    const isSuperAdmin = !!window.CURRENT_IS_SUPER_ADMIN;
+    const approveTime = coerceAccessFlag(perms.approve_time) || isSuperAdmin;
     const modifyTime = coerceAccessFlag(perms.modify_time) || approveTime;
     return {
       see_shipments: coerceAccessFlag(perms.see_shipments),
       modify_time: modifyTime,
       approve_time: approveTime,
-      view_all_timesheets: perms.view_all_timesheets === true || perms.view_all_timesheets === 'true',
-      assign_timesheets: perms.assign_timesheets === true || perms.assign_timesheets === 'true',
-      modify_pay_rates: perms.modify_pay_rates === true || perms.modify_pay_rates === 'true',
-      modify_payroll: fallbackModifyPayroll,
-      view_payroll: perms.view_payroll === true || perms.view_payroll === 'true'
+      view_time_reports: coerceAccessFlag(perms.view_time_reports) || isSuperAdmin,
+      view_all_timesheets: coerceAccessFlag(perms.view_all_timesheets) || isSuperAdmin,
+      assign_timesheets: coerceAccessFlag(perms.assign_timesheets) || isSuperAdmin,
+      modify_pay_rates: coerceAccessFlag(perms.modify_pay_rates) || isSuperAdmin,
+      modify_payroll: isSuperAdmin,
+      view_payroll: isSuperAdmin
     };
   }
 
@@ -5406,14 +6378,14 @@ if (connectBtn) {
     const tbody = document.getElementById('settings-access-body');
     if (!tbody) return;
 
-    tbody.innerHTML = '<tr><td colspan="9">(loading admins…)</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7">(loading admins…)</td></tr>';
     try {
       const employees = await fetchJSON('/api/employees?status=active');
       const admins = (employees || []).filter(
         e => e.desktop_access || e.kiosk_admin_access
       );
       if (!admins.length) {
-        tbody.innerHTML = '<tr><td colspan="9">(no admins found)</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7">(no admins found)</td></tr>';
         return;
       }
 
@@ -5425,29 +6397,30 @@ if (connectBtn) {
           view_time_reports: !!admin.view_time_reports,
           view_all_timesheets: !!admin.view_all_timesheets,
           assign_timesheets: !!admin.assign_timesheets,
-          view_payroll: !!admin.view_payroll,
-          modify_payroll: !!admin.modify_payroll,
           modify_pay_rates: !!admin.modify_pay_rates
         };
-        const canModifyPayroll = perms.modify_payroll;
         const tr = document.createElement('tr');
         tr.dataset.adminId = admin.id;
         tr.innerHTML = `
-          <td>${admin.name || ''}</td>
+          <td>${escapeHTML(admin.name || '')}</td>
           <td class="center"><input type="checkbox" data-perm="see_shipments" ${perms.see_shipments ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="modify_time" ${perms.modify_time ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="view_time_reports" ${perms.view_time_reports ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="view_all_timesheets" ${perms.view_all_timesheets ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="assign_timesheets" ${perms.assign_timesheets ? 'checked' : ''}></td>
-          <td class="center"><input type="checkbox" data-perm="view_payroll" ${perms.view_payroll ? 'checked' : ''}></td>
-          <td class="center"><input type="checkbox" data-perm="modify_payroll" ${canModifyPayroll ? 'checked' : ''}></td>
           <td class="center"><input type="checkbox" data-perm="modify_pay_rates" ${perms.modify_pay_rates ? 'checked' : ''}></td>
         `;
+
+        tr.querySelectorAll('input[data-perm]').forEach(input => {
+          input.addEventListener('change', () => {
+            onboardingPermissionsDraftChanged = true;
+          });
+        });
         tbody.appendChild(tr);
       });
     } catch (err) {
       console.error('Error loading admins for access control', err);
-      tbody.innerHTML = '<tr><td colspan="9">(error loading admins)</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7">(error loading admins)</td></tr>';
     }
   }
 
@@ -5465,6 +6438,8 @@ if (connectBtn) {
         if (meData) {
           window.CURRENT_EMPLOYEE = meData.employee || null;
           window.CURRENT_USER = meData.user || null;
+          currentUiMode = meData?.ui_mode === 'kiosk' ? 'kiosk' : 'desktop';
+          window.CURRENT_UI_MODE = currentUiMode;
           if (accountEmailCurrent) {
             accountEmailCurrent.value = meData?.user?.email || '';
           }
@@ -5472,7 +6447,14 @@ if (connectBtn) {
           window.CURRENT_ORG = meData.org || null;
           storeLastOrgId(meData?.org?.id);
           window.CURRENT_ORG_TIMEZONE = meData?.org?.timezone || null;
-          if (window.CURRENT_IS_SUPER_ADMIN) {
+          window.CURRENT_SECTION_FEATURES = normalizeSectionFeatures(
+            meData?.features || {}
+          );
+          const currentOrgId = meData?.org?.id || null;
+          if (meData?.just_bootstrapped && currentOrgId) {
+            clearBootstrapOnboardingLocalState(currentOrgId);
+          }
+          if (window.CURRENT_IS_SUPER_ADMIN && !isOnboardingSkipped(currentOrgId)) {
             showPostBootstrapCard(true);
           } else {
             showPostBootstrapCard(false);
@@ -5482,7 +6464,7 @@ if (connectBtn) {
             ...(window.CURRENT_ACCESS_PERMS || {}),
             ...currentAccess
           };
-          applyShipmentsNavForAccess(window.CURRENT_ACCESS_PERMS);
+          applySectionAccessNav(window.CURRENT_ACCESS_PERMS);
           if (typeof loadAssignableAdmins === 'function' &&
               typeof canAssignTimesheets === 'function' &&
               canAssignTimesheets()) {
@@ -5497,6 +6479,9 @@ if (connectBtn) {
           if (typeof applyTimeEntryApprovalAccess === 'function') {
             applyTimeEntryApprovalAccess();
           }
+          if (typeof window.applyPayrollSettingsAccess === 'function') {
+            window.applyPayrollSettingsAccess();
+          }
           if (typeof applyRateAccessToEmployees === 'function') {
             applyRateAccessToEmployees(window.CURRENT_ACCESS_PERMS);
           }
@@ -5506,7 +6491,6 @@ if (connectBtn) {
           applyBackupCardVisibility();
           applyAuditCardVisibility();
           applyDeviceSetupVisibility();
-          applyAdminUsersVisibility();
           applyRoleTemplatesVisibility();
           applyDashboardLinkVisibility();
           updateDashboardHero();
@@ -5516,10 +6500,12 @@ if (connectBtn) {
             initAuditReports();
           }
           if (window.CURRENT_IS_SUPER_ADMIN) {
-            await loadAdminUserEmployees();
-            await loadRoleTemplates({ force: true });
             await loadEnrollmentCode();
           }
+        }
+        applyAccountViewModeSwitcher();
+        if (window.QBO_JUST_CONNECTED) {
+          await resumeQboOnboardingIfNeeded();
         }
       } catch (err) {
         console.warn('Failed to load current user context', err);
@@ -5574,6 +6560,9 @@ if (connectBtn) {
         settingsStatus.textContent = 'Could not load settings (using defaults).';
         settingsStatus.style.color = '#b45309';
       }
+    } finally {
+      // Safety fallback: ensure boot gate is removed even if profile/settings fetch fails.
+      clearAppBooting();
     }
   }
 
@@ -5588,8 +6577,6 @@ if (connectBtn) {
         view_time_reports: row.querySelector('input[data-perm="view_time_reports"]')?.checked || false,
         view_all_timesheets: row.querySelector('input[data-perm="view_all_timesheets"]')?.checked || false,
         assign_timesheets: row.querySelector('input[data-perm="assign_timesheets"]')?.checked || false,
-        view_payroll: row.querySelector('input[data-perm="view_payroll"]')?.checked || false,
-        modify_payroll: row.querySelector('input[data-perm="modify_payroll"]')?.checked || false,
         modify_pay_rates: row.querySelector('input[data-perm="modify_pay_rates"]')?.checked || false
       };
     });
@@ -5597,6 +6584,8 @@ if (connectBtn) {
   }
 
   async function saveSettings() {
+    const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+    const permissionsEdited = !!onboardingPermissionsDraftChanged;
     const rawStorageFee = settingsFields.storage_daily_late_fee_default?.value || '';
     const storageFee =
       rawStorageFee.trim() === '' ? null : Number(rawStorageFee);
@@ -5658,6 +6647,11 @@ if (connectBtn) {
             })
           )
         );
+        if (permissionsEdited && orgId) {
+          setOnboardingPermissionsComplete(orgId, true);
+          setOnboardingPermissionsSkipped(orgId, false);
+          onboardingPermissionsDraftChanged = false;
+        }
       }
 
       if (typeof window.clearShipmentSettingsCache === 'function') {
@@ -5671,6 +6665,14 @@ if (connectBtn) {
         setTimeout(() => {
           settingsStatus.textContent = '';
         }, 3500);
+      }
+
+      if (permissionsEdited && orgId) {
+        setPostBootstrapStepComplete('permissions', true);
+        setPostBootstrapStepSkipped('permissions', false);
+        if (postBootstrapCard && !postBootstrapCard.classList.contains('hidden')) {
+          updatePostBootstrapChecklist();
+        }
       }
     } catch (err) {
       console.error('Error saving settings:', err);
@@ -5692,7 +6694,9 @@ if (connectBtn) {
   }
 
   await loadSettings();
-  await resumeQboOnboardingIfNeeded();
+  if (window.QBO_JUST_CONNECTED) {
+    await resumeQboOnboardingIfNeeded();
+  }
 
   if (settingsSaveBtn) {
     settingsSaveBtn.addEventListener('click', saveSettings);
@@ -5800,6 +6804,37 @@ if (connectBtn) {
     accountEmailSave.addEventListener('click', updateAccountEmail);
   }
 
+  async function switchAccountViewMode() {
+    if (!accountViewModeBtn || !canSwitchAdminViewMode()) return;
+    const targetMode = currentUiMode === 'kiosk' ? 'desktop' : 'kiosk';
+    const targetLabel = targetMode === 'kiosk' ? 'kiosk view' : 'desktop view';
+    const originalText = accountViewModeBtn.textContent || 'Switch View';
+    accountViewModeBtn.disabled = true;
+    accountViewModeBtn.textContent = 'Switching…';
+    setAccountViewModeStatus(`Opening ${targetLabel}…`, '');
+
+    try {
+      await fetchJSON('/api/auth/ui-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: targetMode })
+      });
+      currentUiMode = targetMode;
+      window.CURRENT_UI_MODE = currentUiMode;
+      window.location.href = targetMode === 'kiosk' ? '/kiosk' : '/';
+    } catch (err) {
+      console.error('UI mode switch error:', err);
+      setAccountViewModeStatus(err.message || 'Failed to switch views.', 'crimson');
+      accountViewModeBtn.disabled = false;
+      accountViewModeBtn.textContent = originalText;
+      applyAccountViewModeSwitcher();
+    }
+  }
+
+  if (accountViewModeBtn) {
+    accountViewModeBtn.addEventListener('click', switchAccountViewMode);
+  }
+
   async function runManualBackup() {
     if (!backupBtn) return;
     const originalText = backupBtn.textContent || 'Backup Now';
@@ -5822,87 +6857,6 @@ if (connectBtn) {
   if (backupBtn) {
     backupBtn.addEventListener('click', runManualBackup);
   }
-
-  function updateAdminLoginActionLabel() {
-    if (!adminUserCreateBtn) return;
-    const hasPassword = !!(
-      (adminUserPassword && adminUserPassword.value) ||
-      (adminUserPasswordConfirm && adminUserPasswordConfirm.value)
-    );
-    adminUserCreateBtn.textContent = hasPassword ? 'Save admin login' : 'Send setup link';
-  }
-
-  async function createAdminUser() {
-    if (!adminUserCreateBtn) return;
-    const employeeId = adminUserEmployee ? Number(adminUserEmployee.value) : null;
-    const email = adminUserEmail ? String(adminUserEmail.value || '').trim() : '';
-    const password = adminUserPassword ? String(adminUserPassword.value || '') : '';
-    const confirm = adminUserPasswordConfirm ? String(adminUserPasswordConfirm.value || '') : '';
-    const sendInvite = !password && !confirm;
-
-    if (!employeeId) {
-      setAdminUserStatus('Select an employee to link.', '#b45309');
-      return;
-    }
-    if (!email) {
-      setAdminUserStatus('Login email is required.', '#b45309');
-      return;
-    }
-    if (!sendInvite && (password || confirm)) {
-      if (password !== confirm) {
-        setAdminUserStatus('Passwords do not match.', 'crimson');
-        return;
-      }
-      if (password.length < 8) {
-        setAdminUserStatus('Password must be at least 8 characters.', '#b45309');
-        return;
-      }
-    }
-
-    adminUserCreateBtn.disabled = true;
-    setAdminUserStatus(sendInvite ? 'Sending setup link…' : 'Saving account…', '');
-
-    const payload = {
-      email,
-      employee_id: employeeId
-    };
-    if (password) payload.password = password;
-    if (sendInvite) payload.send_invite = true;
-
-    try {
-      await fetchJSON('/api/auth/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (sendInvite) {
-        setAdminUserStatus('Setup link sent.', 'green');
-      } else {
-        setAdminUserStatus('Admin login saved.', 'green');
-      }
-      if (adminUserPassword) adminUserPassword.value = '';
-      if (adminUserPasswordConfirm) adminUserPasswordConfirm.value = '';
-      updateAdminLoginActionLabel();
-      await loadAdminUserEmployees();
-    } catch (err) {
-      console.error('Error saving admin login', err);
-      setAdminUserStatus(err.message || 'Failed to save admin login.', 'crimson');
-    } finally {
-      adminUserCreateBtn.disabled = false;
-    }
-  }
-
-  if (adminUserCreateBtn) {
-    adminUserCreateBtn.addEventListener('click', createAdminUser);
-  }
-  if (adminUserPassword) {
-    adminUserPassword.addEventListener('input', updateAdminLoginActionLabel);
-  }
-  if (adminUserPasswordConfirm) {
-    adminUserPasswordConfirm.addEventListener('input', updateAdminLoginActionLabel);
-  }
-  updateAdminLoginActionLabel();
-
 
     // ───────── Time Entries (table + manual entry auto-hours) ─────────
   const teStart     = document.getElementById('te-start');
@@ -6042,11 +6996,40 @@ if (connectBtn) {
   const timeFilterClearBtn  = document.getElementById('time-filter-clear');
   const timeFilterEmployee  = document.getElementById('te-filter-employee');
   const timeFilterProject   = document.getElementById('te-filter-project');
+  const timeFilterIncludeToggle = document.getElementById('te-filter-include-toggle');
+  const timeFilterIncludeMenu = document.getElementById('te-filter-include-menu');
+  const timeFilterIncludeApproved = document.getElementById('te-filter-include-approved');
+  const timeFilterIncludePaid = document.getElementById('te-filter-include-paid');
+  const timeFilterPayrollApprovalLegacy = document.getElementById('te-filter-payroll-approval');
   const timeFilterRange     = document.getElementById('te-filter-date-range');
   const timeFilterStart     = document.getElementById('te-filter-start');
   const timeFilterEnd       = document.getElementById('te-filter-end');
-  const timeFilterHideApproved = document.getElementById('te-filter-hide-approved');
   const approveSelectedBtn  = document.getElementById('te-approve-selected');
+
+  function closeTimeEntryIncludeMenu() {
+    if (timeFilterIncludeMenu) timeFilterIncludeMenu.classList.add('hidden');
+    if (timeFilterIncludeToggle) {
+      timeFilterIncludeToggle.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  if (timeFilterIncludeToggle && timeFilterIncludeMenu) {
+    timeFilterIncludeToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = timeFilterIncludeMenu.classList.contains('hidden');
+      timeFilterIncludeMenu.classList.toggle('hidden');
+      timeFilterIncludeToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    });
+    timeFilterIncludeMenu.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+    document.addEventListener('click', (e) => {
+      if (!timeFilterIncludeMenu.contains(e.target) && !timeFilterIncludeToggle.contains(e.target)) {
+        closeTimeEntryIncludeMenu();
+      }
+    });
+  }
+  updateTimeEntryIncludeToggleLabel();
 
   if (timeFilterApplyBtn) {
     timeFilterApplyBtn.addEventListener('click', () => {
@@ -6065,10 +7048,14 @@ if (connectBtn) {
     timeFilterClearBtn.addEventListener('click', () => {
       if (timeFilterEmployee) timeFilterEmployee.value = '';
       if (timeFilterProject)  timeFilterProject.value  = '';
+      if (timeFilterIncludeApproved) timeFilterIncludeApproved.checked = false;
+      if (timeFilterIncludePaid) timeFilterIncludePaid.checked = false;
+      if (timeFilterPayrollApprovalLegacy) timeFilterPayrollApprovalLegacy.value = 'all';
       if (timeFilterRange)    timeFilterRange.value    = 'all';
       if (timeFilterStart)    timeFilterStart.value    = '';
       if (timeFilterEnd)      timeFilterEnd.value      = '';
-      if (timeFilterHideApproved) timeFilterHideApproved.checked = false;
+      updateTimeEntryIncludeToggleLabel();
+      closeTimeEntryIncludeMenu();
       applyTimeEntryDateRangeMode(timeFilterRange ? timeFilterRange.value : 'all');
 
       resetTimeEntryPagination();
@@ -6092,8 +7079,24 @@ if (connectBtn) {
     });
   }
 
-  if (timeFilterHideApproved) {
-    timeFilterHideApproved.addEventListener('change', () => {
+  if (timeFilterIncludeApproved) {
+    timeFilterIncludeApproved.addEventListener('change', () => {
+      updateTimeEntryIncludeToggleLabel();
+      resetTimeEntryPagination();
+      const filters = getTimeEntryFiltersFromUi();
+      loadTimeEntriesTable(filters);
+    });
+  }
+  if (timeFilterIncludePaid) {
+    timeFilterIncludePaid.addEventListener('change', () => {
+      updateTimeEntryIncludeToggleLabel();
+      resetTimeEntryPagination();
+      const filters = getTimeEntryFiltersFromUi();
+      loadTimeEntriesTable(filters);
+    });
+  }
+  if (timeFilterPayrollApprovalLegacy) {
+    timeFilterPayrollApprovalLegacy.addEventListener('change', () => {
       const filters = getTimeEntryFiltersFromUi();
       loadTimeEntriesTable(filters);
     });
@@ -6109,7 +7112,10 @@ if (connectBtn) {
   }
 
   if (approveSelectedBtn) {
-    approveSelectedBtn.addEventListener('click', approveSelectedTimeEntries);
+    if (!approveSelectedBtn.dataset.bound) {
+      approveSelectedBtn.dataset.bound = '1';
+      approveSelectedBtn.addEventListener('click', approveSelectedTimeEntries);
+    }
     const canApprove = !!(window.CURRENT_ACCESS_PERMS && window.CURRENT_ACCESS_PERMS.approve_time);
     approveSelectedBtn.style.display = canApprove ? 'inline-flex' : 'none';
   }
@@ -6242,12 +7248,28 @@ if (connectBtn) {
   // }
 
   // ───────── Sessions (kiosks) ─────────
-  if (typeof loadSessionsSection === 'function') {
+  const canLoadTimeSections =
+    isSectionFeatureEnabled('time', window.CURRENT_SECTION_FEATURES) &&
+    !!(
+      (window.CURRENT_ACCESS_PERMS &&
+        (window.CURRENT_ACCESS_PERMS.modify_time ||
+          window.CURRENT_ACCESS_PERMS.view_time_reports ||
+          window.CURRENT_ACCESS_PERMS.view_payroll ||
+          window.CURRENT_ACCESS_PERMS.view_all_timesheets ||
+          window.CURRENT_ACCESS_PERMS.assign_timesheets)) ||
+      window.CURRENT_IS_SUPER_ADMIN
+    );
+
+  if (canLoadTimeSections && typeof loadSessionsSection === 'function') {
     loadSessionsSection();
   }
 
   // ───────── Shipments ─────────
-  if (window.CURRENT_ACCESS_PERMS?.see_shipments) {
+  const canSeeShipments =
+    window.CURRENT_ACCESS_PERMS?.see_shipments &&
+    isSectionFeatureEnabled('shipments', window.CURRENT_SECTION_FEATURES);
+
+  if (canSeeShipments) {
     if (typeof loadShipmentsSection === 'function') {
       loadShipmentsSection();
     }
@@ -6280,9 +7302,11 @@ if (connectBtn) {
           document.getElementById('shipment-create-form')?.dataset.step ||
           '1';
         if (step === '1') {
+          const shipmentId = document.getElementById('shipment-id')?.value || '';
+          const hasExistingShipment = !!shipmentId;
           await saveShipmentFromModal({
             stayOpen: false,
-            skipItems: true,
+            skipItems: !hasExistingShipment,
             successMessage: 'Draft saved.'
           });
         } else {
@@ -6477,16 +7501,7 @@ if (connectBtn) {
     saveEmployeeBtn.addEventListener('click', saveEmployee);
   }
 
-  // Payroll reports & audit log (these can stay eager – lighter than time table)
-  if (typeof loadPayrollRuns === 'function') {
-    loadPayrollRuns();
-  }
-  if (typeof loadPayrollAuditLog === 'function') {
-    loadPayrollAuditLog();
-  }
-  if (typeof setupReportsDownload === 'function') {
-    setupReportsDownload();
-  }
+  // Payroll reports are initialized when navigating to the Payroll Reports section.
 
   // Time Exceptions moved to Payroll lazy init
   // if (typeof setupTimeExceptionsSection === 'function') {

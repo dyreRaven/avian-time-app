@@ -1,13 +1,14 @@
 // public/service-worker.js
 
-const CACHE_NAME = 'avian-kiosk-cache-v88';
+const CACHE_NAME = 'avian-kiosk-cache-v94';
 
 // List of assets we want to cache for offline
 const OFFLINE_ASSETS = [
   '/',           // main app (optional)
   '/index.html', // main app shell (optional)
   '/js/app.js',
-  '/js/app.js?v=reviewfix51',
+  '/js/app.js?v=reviewfix24',
+  '/js/payroll.js?v=reviewfix22',
   '/styles.css',
   '/kiosk',
   '/kiosk.html',

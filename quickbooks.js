@@ -229,10 +229,243 @@ function getAuthUrl(state) {
     redirect_uri: QBO_REDIRECT_URI,
     response_type: 'code',
     scope: 'com.intuit.quickbooks.accounting',
-    state
+    state,
+    prompt: 'login'
   });
 
   return `${AUTH_BASE}?${params.toString()}`;
+}
+
+async function verifyQuickBooksConnection(orgId) {
+  if (!orgId) {
+    return {
+      ok: false,
+      status: null,
+      reason: 'No organization id.',
+      invalidate: false,
+      capabilities: {
+        companyInfo: false,
+        employeeQuery: false
+      },
+      warnings: []
+    };
+  }
+
+  try {
+    await qboQuery(orgId, 'SELECT Id FROM CompanyInfo');
+
+    const capabilities = { companyInfo: true, employeeQuery: false };
+    let employeeWarning = null;
+
+    try {
+      await qboQuery(orgId, 'SELECT Id FROM Employee STARTPOSITION 1 MAXRESULTS 1');
+      capabilities.employeeQuery = true;
+    } catch (err) {
+      const employeeStatus = err?.response?.status || null;
+      const employeePayload = err?.response?.data || null;
+      const employeeCode = extractQboQueryErrorCode(employeePayload);
+      const employeeMessage =
+        extractQboQueryErrorMessage(employeePayload) ||
+        err?.message ||
+        'Employee query check failed.';
+
+      const isEmployeeReauthRequired = isQboReauthRequiredError({
+        status: employeeStatus,
+        message: employeeMessage,
+        errorCode: employeeCode
+      });
+      if (isEmployeeReauthRequired) {
+        return {
+          ok: false,
+          status: employeeStatus,
+          reason: employeeMessage,
+          invalidate: true,
+          capabilities,
+          warnings: []
+        };
+      }
+
+      employeeWarning =
+        employeeStatus === 403
+          ? `Employee read check is limited (${employeeMessage})`
+          : `Employee read check failed (${employeeMessage})`;
+    }
+
+    return {
+      ok: true,
+      status: null,
+      reason: employeeWarning || null,
+      invalidate: false,
+      capabilities,
+      warnings: employeeWarning ? [employeeWarning] : []
+    };
+  } catch (err) {
+    const status = err?.response?.status || null;
+    const payload = err?.response?.data || null;
+    const code = extractQboQueryErrorCode(payload);
+    const parsedMessage =
+      extractQboQueryErrorMessage(payload) ||
+      (typeof err?.message === 'string' ? err.message : null) ||
+      'QuickBooks connection test failed.';
+    const isCritical = isQboReauthRequiredError({
+      status,
+      message: parsedMessage,
+      errorCode: code
+    });
+    const reason =
+      isCritical && status === 403 && /ApplicationAuthorizationFailed/i.test(String(parsedMessage))
+        ? `${parsedMessage}. Reconnect using a QuickBooks Account Admin.`
+        : parsedMessage;
+
+    return {
+      ok: false,
+      status,
+      reason,
+      invalidate: isCritical,
+      capabilities: {
+        companyInfo: false,
+        employeeQuery: false
+      },
+      warnings: []
+    };
+  }
+}
+
+function extractQboQueryErrorCode(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const candidates = [
+    payload.errorCode,
+    payload.ErrorCode,
+    payload.error_code,
+    payload.code,
+    payload.Code
+  ];
+  for (const value of candidates) {
+    const text = typeof value === 'string' ? value.trim() : value == null ? null : String(value).trim();
+    if (text) return text;
+  }
+  if (payload.error && typeof payload.error === 'object') {
+    const nested = extractQboQueryErrorCode(payload.error);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function isQboReauthRequiredError({ status = null, message = '', errorCode = '' } = {}) {
+  const normalizedStatus = Number(status);
+  const code = String(errorCode || '').trim();
+  const normalizedMessage = String(message || '')
+    .toLowerCase()
+    .trim();
+
+  if (normalizedStatus === 401) return true;
+  if (normalizedStatus !== 403) return false;
+  if (code && code === '003100') return true;
+  if (code && code === '3200') return true;
+
+  const genericForbiddenMessage =
+    normalizedMessage.includes('request failed with status code 403') ||
+    normalizedMessage.includes('status code 403') ||
+    normalizedMessage.includes('http 403');
+
+  if (genericForbiddenMessage) return true;
+
+  return (
+    normalizedMessage.includes('qbo_forbidden') ||
+    normalizedMessage.includes('insufficient permissions') ||
+    normalizedMessage.includes('permission to access the requested data is denied') ||
+    normalizedMessage.includes('cannot perform the requested operation') ||
+    normalizedMessage.includes('access to this resource is forbidden') ||
+    normalizedMessage.includes('applicationauthorizationfailed') ||
+    normalizedMessage.includes('quickbooks app authorization was rejected') ||
+    normalizedMessage.includes('not valid for this company') ||
+    normalizedMessage.includes('super admin access required') ||
+    normalizedMessage.includes('superadmin access required') ||
+    normalizedMessage.includes('account admin must reconnect') ||
+    normalizedMessage.includes('invalid access token') ||
+    normalizedMessage.includes('reconnect using a quickbooks account admin') ||
+    normalizedMessage.includes('reconnect using a quickbooks company admin')
+  );
+}
+
+function shouldClearQboTokensForError({ status = null, message = '', errorCode = '' }) {
+  return isQboReauthRequiredError({ status, message, errorCode });
+}
+
+function isQboInvalidQueryError(err) {
+  if (!err) return false;
+  const status = Number(err?.response?.status || 0);
+  if (status !== 400) return false;
+
+  const payload = err?.response?.data || null;
+  const code = String(extractQboQueryErrorCode(payload) || '').trim();
+  const message = String(
+    extractQboQueryErrorMessage(payload) ||
+    err?.message ||
+    ''
+  )
+    .toLowerCase()
+    .trim();
+
+  return code === '4001' || message.includes('invalid query');
+}
+
+async function qboQueryWithFallback(orgId, queries = []) {
+  const list = Array.isArray(queries) ? queries.filter(Boolean) : [queries];
+  if (!list.length) {
+    throw new Error('QuickBooks query is required.');
+  }
+
+  let lastErr = null;
+  for (let i = 0; i < list.length; i += 1) {
+    const query = list[i];
+    try {
+      return await qboQuery(orgId, query);
+    } catch (err) {
+      lastErr = err;
+      const canRetry = i < list.length - 1;
+      if (!canRetry || !isQboInvalidQueryError(err)) {
+        throw err;
+      }
+      if (QBO_DEBUG) {
+        console.warn(`[QBO] Retrying query with fallback shape (${i + 2}/${list.length}).`);
+      }
+    }
+  }
+
+  throw lastErr || new Error('QuickBooks query failed.');
+}
+
+async function qboQueryAllWithFallback(
+  orgId,
+  baseQueries = [],
+  entityKey,
+  maxResults = 1000,
+  orderBy = 'Id'
+) {
+  const list = Array.isArray(baseQueries) ? baseQueries.filter(Boolean) : [baseQueries];
+  if (!list.length) {
+    throw new Error('QuickBooks query is required.');
+  }
+
+  let lastErr = null;
+  for (let i = 0; i < list.length; i += 1) {
+    const baseQuery = list[i];
+    try {
+      return await qboQueryAll(orgId, baseQuery, entityKey, maxResults, orderBy);
+    } catch (err) {
+      lastErr = err;
+      const canRetry = i < list.length - 1;
+      if (!canRetry || !isQboInvalidQueryError(err)) {
+        throw err;
+      }
+      if (QBO_DEBUG) {
+        console.warn(`[QBO] Retrying ${entityKey} query with fallback shape (${i + 2}/${list.length}).`);
+      }
+    }
+  }
+
+  throw lastErr || new Error('QuickBooks query failed.');
 }
 
 /* ───────── 2. PAYROLL SETTINGS LOADER ───────── */
@@ -243,6 +476,8 @@ function getPayrollSettings(orgId) {
       return resolve({
         bankAccountName: null,
         expenseAccountName: null,
+        receiptExpenseAccountName: null,
+        receiptClassName: null,
         memoTemplate: 'Payroll {start} – {end}',
         lineDescriptionTemplate: 'Labor {hours} hrs – {project}'
       });
@@ -252,6 +487,8 @@ function getPayrollSettings(orgId) {
         SELECT
           bank_account_name,
           expense_account_name,
+          receipt_expense_account_name,
+          receipt_class_name,
           default_memo,
           line_description_template
         FROM payroll_settings
@@ -265,6 +502,8 @@ function getPayrollSettings(orgId) {
 
         const bankAccountName = row?.bank_account_name || null;
         const expenseAccountName = row?.expense_account_name || null;
+        const receiptExpenseAccountName = row?.receipt_expense_account_name || null;
+        const receiptClassName = row?.receipt_class_name || null;
         const memoTemplate = row?.default_memo || 'Payroll {start} – {end}';
         const lineDescriptionTemplate =
           row?.line_description_template || 'Labor {hours} hrs – {project}';
@@ -272,6 +511,8 @@ function getPayrollSettings(orgId) {
         resolve({
           bankAccountName,
           expenseAccountName,
+          receiptExpenseAccountName,
+          receiptClassName,
           memoTemplate,
           lineDescriptionTemplate
         });
@@ -467,28 +708,43 @@ async function listClasses(orgId) {
 
 /* ───────── 5. TOKEN STORAGE HELPERS (SQLite) ───────── */
 
-function saveTokens({ orgId, access_token, refresh_token, expires_in, realm_id }) {
+async function saveTokens({
+  orgId,
+  access_token,
+  refresh_token,
+  expires_in,
+  realm_id
+}) {
   // expires_in = seconds from now
   if (!orgId) {
     throw new Error('orgId is required to save QuickBooks tokens.');
   }
-  const expiresAt = Date.now() + (expires_in - 60) * 1000; // minus 60s for safety
+  if (!access_token || !refresh_token) {
+    throw new Error('Missing QuickBooks access token or refresh token.');
+  }
+  if (!Number.isFinite(Number(expires_in)) || Number(expires_in) <= 0) {
+    throw new Error('Missing or invalid QuickBooks token expiration.');
+  }
+  const expiresAt = Date.now() + (Number(expires_in) - 60) * 1000; // minus 60s for safety
 
   const encAccess = encryptValue(access_token);
   const encRefresh = encryptValue(refresh_token);
 
-  db.run(
-    `
-      INSERT INTO qbo_tokens (org_id, access_token, refresh_token, expires_at, realm_id)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(org_id) DO UPDATE SET
-        access_token  = excluded.access_token,
-        refresh_token = excluded.refresh_token,
-        expires_at    = excluded.expires_at,
-        realm_id      = COALESCE(excluded.realm_id, qbo_tokens.realm_id)
-    `,
-    [orgId, encAccess, encRefresh, expiresAt, realm_id || null]
-  );
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+        INSERT INTO qbo_tokens (org_id, access_token, refresh_token, expires_at, realm_id)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(org_id) DO UPDATE SET
+          access_token  = excluded.access_token,
+          refresh_token = excluded.refresh_token,
+          expires_at    = excluded.expires_at,
+          realm_id      = COALESCE(excluded.realm_id, qbo_tokens.realm_id)
+      `,
+      [orgId, encAccess, encRefresh, expiresAt, realm_id || null],
+      err => (err ? reject(err) : resolve())
+    );
+  });
 }
 
 function getTokensFromDb(orgId) {
@@ -525,6 +781,12 @@ function clearTokensForRealmId(realmId) {
 /* ───────── 6. EXCHANGE / REFRESH TOKENS ───────── */
 
 async function exchangeCodeForTokens(code, { orgId, realmId } = {}) {
+  if (!code) {
+    throw new Error('Missing OAuth authorization code.');
+  }
+  if (!orgId) {
+    throw new Error('Missing organization for QuickBooks token exchange.');
+  }
   const basicAuth = Buffer.from(
     `${QBO_CLIENT_ID}:${QBO_CLIENT_SECRET}`
   ).toString('base64');
@@ -541,25 +803,31 @@ async function exchangeCodeForTokens(code, { orgId, realmId } = {}) {
       'Content-Type': 'application/x-www-form-urlencoded'
     }
   });
+  const accessToken = res?.data?.access_token;
+  const refreshToken = res?.data?.refresh_token;
+  const expiresIn = res?.data?.expires_in;
+  if (!accessToken || !refreshToken) {
+    throw new Error('QuickBooks token exchange returned incomplete credentials.');
+  }
 
-  saveTokens({
+  await saveTokens({
     orgId,
     realm_id: realmId || null,
-    access_token: res.data.access_token,
-    refresh_token: res.data.refresh_token,
-    expires_in: res.data.expires_in
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_in: expiresIn
   });
   return res.data;
 }
 
-async function refreshAccessToken(refreshToken, orgId) {
+async function refreshAccessToken(currentRefreshToken, orgId) {
   const basicAuth = Buffer.from(
     `${QBO_CLIENT_ID}:${QBO_CLIENT_SECRET}`
   ).toString('base64');
 
   const params = new URLSearchParams({
     grant_type: 'refresh_token',
-    refresh_token: refreshToken
+    refresh_token: currentRefreshToken
   });
 
   const res = await axios.post(TOKEN_URL, params.toString(), {
@@ -570,12 +838,19 @@ async function refreshAccessToken(refreshToken, orgId) {
   });
 
   const existing = await getTokensFromDb(orgId);
-  saveTokens({
+  const accessToken = res?.data?.access_token;
+  const nextRefreshToken = res?.data?.refresh_token;
+  const expiresIn = res?.data?.expires_in;
+  if (!accessToken || !nextRefreshToken) {
+    throw new Error('QuickBooks token refresh returned incomplete credentials.');
+  }
+
+  await saveTokens({
     orgId,
     realm_id: existing?.realm_id || null,
-    access_token: res.data.access_token,
-    refresh_token: res.data.refresh_token,
-    expires_in: res.data.expires_in
+    access_token: accessToken,
+    refresh_token: nextRefreshToken,
+    expires_in: expiresIn
   });
   return res.data;
 }
@@ -621,7 +896,15 @@ async function getAccessToken(orgId) {
       );
 
       const status = err.response?.status;
-      if (status === 400 || status === 401) {
+      const code = extractQboQueryErrorCode(err?.response?.data);
+      const message = err?.message || '';
+      const shouldClear = status === 400 || status === 401 || shouldClearQboTokensForError({
+        status,
+        message,
+        errorCode: code
+      });
+
+      if (shouldClear) {
         console.warn('[QBO] Clearing stored tokens; please reconnect QuickBooks.');
         try {
           await clearTokens(orgId);
@@ -643,6 +926,106 @@ async function getRealmId(orgId) {
 }
 
 /* ───────── 8. GENERIC QBO QUERY HELPER ───────── */
+
+function extractQboQueryErrorMessage(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const asText = value => {
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (text) return text;
+    }
+    return null;
+  };
+
+  const extractCode = source => {
+    if (!source || typeof source !== 'object') return null;
+    const codeCandidates = [
+      source.errorCode,
+      source.ErrorCode,
+      source.error_code,
+      source.code,
+      source.Code
+    ];
+    for (const value of codeCandidates) {
+      const text = asText(value);
+      if (text) return text;
+    }
+    if (source.error && typeof source.error === 'object' && !Array.isArray(source.error)) {
+      return extractCode(source.error);
+    }
+    return null;
+  };
+
+  const appendCode = (message, source) => {
+    if (!message) return null;
+    const code = extractCode(source || payload);
+    if (!code) return message;
+    const normalized = String(code).trim();
+    if (!normalized) return message;
+    return message.includes(`errorCode=${normalized}`) ? message : `${message} (errorCode=${normalized})`;
+  };
+
+  const candidates = [
+    payload.error_description,
+    payload.error,
+    payload.message,
+    payload.description,
+    payload.details,
+    payload.metaData && payload.metaData.Error
+  ];
+  for (const value of candidates) {
+    const msg = asText(value);
+    if (msg) return appendCode(msg, payload);
+  }
+
+  const firstItemMessage = list => {
+    if (!Array.isArray(list) || !list.length) return null;
+    const first = list[0];
+    if (typeof first === 'string') return asText(first);
+    if (first && typeof first === 'object') {
+      const raw = (
+        asText(first.Message) ||
+        asText(first.message) ||
+        asText(first.Detail) ||
+        asText(first.LongMessage) ||
+        asText(first.detail)
+      );
+      return appendCode(raw, first);
+    }
+    return null;
+  };
+
+  const directArrayMessage = firstItemMessage(payload.error) || firstItemMessage(payload.errors);
+  if (directArrayMessage) return directArrayMessage;
+
+  if (payload.error && typeof payload.error === 'object' && !Array.isArray(payload.error)) {
+    const nested = appendCode(
+      asText(payload.error.message) ||
+        asText(payload.error.Message) ||
+        asText(payload.error.error) ||
+        asText(payload.error.error_description) ||
+        asText(payload.error.detail) ||
+        asText(payload.error.Detail),
+      payload.error
+    );
+    if (nested) return nested;
+  }
+
+  const parseFault = fault => {
+    if (!fault || typeof fault !== 'object') return null;
+    const listMessage = firstItemMessage(fault.Error) || firstItemMessage(fault.errors) || firstItemMessage(fault.error);
+    if (listMessage) return listMessage;
+    return appendCode(asText(fault.Message) || asText(fault.message) || asText(fault.type), fault);
+  };
+
+  const faultMessage = parseFault(payload.Fault) || parseFault(payload.fault);
+  if (faultMessage) {
+    return faultMessage;
+  }
+
+  return null;
+}
 
 async function qboQuery(orgId, query) {
   if (QBO_DEBUG) {
@@ -671,18 +1054,35 @@ async function qboQuery(orgId, query) {
     });
     return res.data;
   } catch (err) {
-    if (err.response) {
-      if (QBO_DEBUG) {
-        console.error(
-          'QBO query error:',
-          err.response.status,
-          JSON.stringify(err.response.data, null, 2)
-        );
-      } else {
-        console.error('QBO query error:', err.response.status);
+    const status = err?.response ? err.response.status : null;
+    const payload = err?.response?.data;
+    const friendly = extractQboQueryErrorMessage(payload);
+    const baseMessage = status
+      ? `QuickBooks request failed (HTTP ${status}).`
+      : 'QuickBooks request failed.';
+    const fallbackMessage = friendly
+      ? `${baseMessage} ${friendly}`
+      : baseMessage;
+
+    if (status) {
+      const logParts = ['QBO query error:', status];
+      if (payload && typeof payload === 'object') {
+        if (friendly) {
+          logParts.push(friendly);
+        }
+        if (QBO_DEBUG) {
+          logParts.push(JSON.stringify(payload));
+        }
       }
+      console.error(logParts.join(' | '));
     } else {
-      console.error('QBO query error:', err.message);
+      console.error('QBO query error:', err.message || baseMessage);
+    }
+
+    if (friendly) {
+      err.message = friendly;
+    } else if (!err.message && status) {
+      err.message = fallbackMessage;
     }
     throw err;
   }
@@ -718,15 +1118,22 @@ async function listPayrollAccounts(orgId) {
     throw new Error('Not connected to QuickBooks');
   }
 
-  const data = await qboQuery(
-    orgId,
+  const accountQueries = [
     "SELECT Id, Name, FullyQualifiedName, AccountType, SubAccount " +
       "FROM Account " +
       "WHERE AccountType IN ('Bank','Expense','Cost of Goods Sold','Other Expense') " +
+      "ORDER BY FullyQualifiedName",
+    "SELECT Id, Name, FullyQualifiedName, AccountType " +
+      "FROM Account " +
+      "WHERE AccountType IN ('Bank','Expense','Cost of Goods Sold','Other Expense') " +
+      "ORDER BY FullyQualifiedName",
+    "SELECT Id, Name, FullyQualifiedName, AccountType " +
+      "FROM Account " +
       "ORDER BY FullyQualifiedName"
-  );
+  ];
+  const data = await qboQueryWithFallback(orgId, accountQueries);
 
-  const accounts = data.QueryResponse?.Account || [];
+  const accounts = normalizeQboResults(data, 'Account');
 
   const bankAccounts = accounts.filter(a => a.AccountType === 'Bank');
   const expenseAccounts = accounts.filter(
@@ -827,16 +1234,19 @@ async function syncEmployeesFromQuickBooks(orgId) {
   if (!orgId) {
     throw new Error('orgId is required for employee sync.');
   }
-  const baseQuery =
-    'SELECT Id, DisplayName, GivenName, FamilyName, Active, PrintOnCheckName, PrimaryEmailAddr, MetaData FROM Employee';
-  const active = await qboQueryAll(
+  const baseQueries = [
+    'SELECT Id, DisplayName, GivenName, FamilyName, Active, PrintOnCheckName, PrimaryEmailAddr, MetaData FROM Employee',
+    'SELECT Id, DisplayName, GivenName, FamilyName, Active, PrintOnCheckName, MetaData FROM Employee',
+    'SELECT Id, DisplayName, GivenName, FamilyName, Active, PrintOnCheckName FROM Employee'
+  ];
+  const active = await qboQueryAllWithFallback(
     orgId,
-    `${baseQuery} WHERE Active = true`,
+    baseQueries.map(query => `${query} WHERE Active = true`),
     'Employee'
   );
-  const inactive = await qboQueryAll(
+  const inactive = await qboQueryAllWithFallback(
     orgId,
-    `${baseQuery} WHERE Active = false`,
+    baseQueries.map(query => `${query} WHERE Active = false`),
     'Employee'
   );
   const employeeMap = new Map();
@@ -872,6 +1282,25 @@ async function syncEmployeesFromQuickBooks(orgId) {
           qbo_conflict_updated_at = ?,
           active = ?
         WHERE employee_qbo_id = ? AND org_id = ?
+      `;
+      const updateByIdSql = `
+        UPDATE employees
+        SET
+          employee_qbo_id = ?,
+          name = ?,
+          given_name = ?,
+          family_name = ?,
+          name_on_checks = ?,
+          name_on_checks_updated_at = ?,
+          name_on_checks_qbo_updated_at = ?,
+          qbo_last_seen_given_name = ?,
+          qbo_last_seen_family_name = ?,
+          qbo_last_seen_name_on_checks = ?,
+          qbo_conflict_fields_json = ?,
+          qbo_conflict_updated_at = ?,
+          active = ?,
+          needs_qbo_sync = 0
+        WHERE id = ? AND org_id = ?
       `;
 
       const insertSql = `
@@ -1030,22 +1459,59 @@ async function syncEmployeesFromQuickBooks(orgId) {
                 orgId
               ]);
             } else {
-              await runSql(insertSql, [
-                orgId,
-                qboId,
-                nextName || qboDisplay || qboPrintName || null,
-                qboGiven,
-                qboFamily,
-                nextNameOnChecks || null,
-                isActive,
-                null,
-                qboUpdatedIso || null,
-                qboGiven,
-                qboFamily,
-                qboPrintName,
-                null,
-                null
-              ]);
+              const candidateName = normalizeString(
+                nextName || qboDisplay || qboPrintName || `Employee ${qboId}`
+              );
+              let matchedByName = null;
+              if (candidateName) {
+                matchedByName = await getRow(
+                  `
+                    SELECT id
+                    FROM employees
+                    WHERE org_id = ?
+                      AND lower(trim(name)) = lower(trim(?))
+                      AND (employee_qbo_id IS NULL OR employee_qbo_id = ?)
+                    LIMIT 1
+                  `,
+                  [orgId, candidateName, qboId]
+                );
+              }
+              if (matchedByName) {
+                await runSql(updateByIdSql, [
+                  qboId,
+                  candidateName,
+                  qboGiven,
+                  qboFamily,
+                  nextNameOnChecks || null,
+                  null,
+                  qboUpdatedIso || null,
+                  qboGiven,
+                  qboFamily,
+                  qboPrintName,
+                  null,
+                  null,
+                  isActive,
+                  matchedByName.id,
+                  orgId
+                ]);
+              } else {
+                await runSql(insertSql, [
+                  orgId,
+                  qboId,
+                  candidateName || null,
+                  qboGiven,
+                  qboFamily,
+                  nextNameOnChecks || null,
+                  isActive,
+                  null,
+                  qboUpdatedIso || null,
+                  qboGiven,
+                  qboFamily,
+                  qboPrintName,
+                  null,
+                  null
+                ]);
+              }
             }
             processed += 1;
           }
@@ -1119,9 +1585,10 @@ async function setPrintOnCheckName(payeeRef, desiredName, orgId) {
     return { ok: true };
   } catch (err) {
     const status = err.response ? err.response.status : null;
+    const payload = err.response ? err.response.data : null;
     let friendly = status ? `HTTP ${status}` : err.message;
-    if (err.response && err.response.data) {
-      const fault = err.response.data.Fault;
+    if (payload) {
+      const fault = payload.Fault;
       const firstError =
         fault && Array.isArray(fault.Error) && fault.Error[0]
           ? fault.Error[0]
@@ -1131,14 +1598,24 @@ async function setPrintOnCheckName(payeeRef, desiredName, orgId) {
         if (firstError.Detail) friendly += ' – ' + firstError.Detail;
       }
     }
-    if ((status === 401 || status === 403) && orgId) {
+    const qboStatusMessage =
+      payload && extractQboQueryErrorMessage(payload)
+        ? extractQboQueryErrorMessage(payload)
+        : friendly;
+    const qboStatusCode = payload ? extractQboQueryErrorCode(payload) : '';
+    const shouldClearTokens = shouldClearQboTokensForError({
+      status,
+      message: qboStatusMessage,
+      errorCode: qboStatusCode
+    });
+    if (shouldClearTokens && orgId) {
       try {
         await clearTokens(orgId);
       } catch (clearErr) {
         console.warn('[QBO] Failed to clear tokens after auth error:', clearErr.message || clearErr);
       }
     }
-    return { ok: false, error: friendly, status };
+    return { ok: false, error: qboStatusMessage, status };
   }
 }
 
@@ -1229,7 +1706,7 @@ async function updateEmployeeInQuickBooks({
       return { ok: false, error: 'Employee not found in QuickBooks.' };
     }
 
-    const payload = {
+    const updatePayload = {
       sparse: true,
       Id: entity.Id,
       SyncToken: entity.SyncToken
@@ -1241,28 +1718,28 @@ async function updateEmployeeInQuickBooks({
 
     const updatedFields = [];
     if (givenName !== undefined) {
-      payload.GivenName = givenName || null;
+      updatePayload.GivenName = givenName || null;
       updatedFields.push('given_name');
     }
     if (familyName !== undefined) {
-      payload.FamilyName = familyName || null;
+      updatePayload.FamilyName = familyName || null;
       updatedFields.push('family_name');
     }
     if (combined) {
-      payload.DisplayName = combined;
+      updatePayload.DisplayName = combined;
     } else if (entity.DisplayName) {
-      payload.DisplayName = entity.DisplayName;
+      updatePayload.DisplayName = entity.DisplayName;
     }
     if (printName !== undefined) {
-      payload.PrintOnCheckName = printName || null;
+      updatePayload.PrintOnCheckName = printName || null;
       updatedFields.push('name_on_checks');
-      if (!payload.DisplayName && entity.DisplayName) {
-        payload.DisplayName = entity.DisplayName;
+      if (!updatePayload.DisplayName && entity.DisplayName) {
+        updatePayload.DisplayName = entity.DisplayName;
       }
     }
 
     const url = `${API_BASE}/${realmId}/employee`;
-    await axios.post(url, payload, {
+    await axios.post(url, updatePayload, {
       params: { minorversion: 62 },
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -1274,9 +1751,10 @@ async function updateEmployeeInQuickBooks({
     return { ok: true, updatedFields };
   } catch (err) {
     const status = err.response ? err.response.status : null;
+    const errorPayload = err.response ? err.response.data : null;
     let friendly = status ? `HTTP ${status}` : err.message;
-    if (err.response && err.response.data) {
-      const fault = err.response.data.Fault;
+    if (errorPayload) {
+    const fault = errorPayload.Fault;
       const firstError =
         fault && Array.isArray(fault.Error) && fault.Error[0]
           ? fault.Error[0]
@@ -1286,7 +1764,13 @@ async function updateEmployeeInQuickBooks({
         if (firstError.Detail) friendly += ' – ' + firstError.Detail;
       }
     }
-    if ((status === 401 || status === 403) && orgId) {
+    const qboStatusCode = errorPayload ? extractQboQueryErrorCode(errorPayload) : '';
+    const shouldClearTokens = orgId && shouldClearQboTokensForError({
+      status,
+      message: friendly,
+      errorCode: qboStatusCode
+    });
+    if (shouldClearTokens) {
       try {
         await clearTokens(orgId);
       } catch (clearErr) {
@@ -1306,16 +1790,19 @@ async function syncProjects(orgId) {
   if (!orgId) {
     throw new Error('orgId is required for project sync.');
   }
-  const baseQuery =
-    'SELECT Id, DisplayName, FullyQualifiedName, Active FROM Customer';
-  const active = await qboQueryAll(
+  const baseQueries = [
+    'SELECT Id, DisplayName, FullyQualifiedName, Active, ParentRef, Job, IsProject FROM Customer',
+    'SELECT Id, DisplayName, FullyQualifiedName, Active, ParentRef, Job FROM Customer',
+    'SELECT Id, DisplayName, FullyQualifiedName, Active, ParentRef FROM Customer'
+  ];
+  const active = await qboQueryAllWithFallback(
     orgId,
-    `${baseQuery} WHERE Active = true`,
+    baseQueries.map(query => `${query} WHERE Active = true`),
     'Customer'
   );
-  const inactive = await qboQueryAll(
+  const inactive = await qboQueryAllWithFallback(
     orgId,
-    `${baseQuery} WHERE Active = false`,
+    baseQueries.map(query => `${query} WHERE Active = false`),
     'Customer'
   );
   const customerMap = new Map();
@@ -1325,8 +1812,31 @@ async function syncProjects(orgId) {
     }
   });
   const customers = Array.from(customerMap.values());
+  const asTruthy = value =>
+    value === true || value === 1 || value === '1' || value === 'true';
+  const projectCustomers = customers.filter(cust => {
+    if (!cust) return false;
+    const fq = String(cust.FullyQualifiedName || '');
+    const hasHierarchy = fq.includes(':');
+    const hasParentRef = !!(cust.ParentRef && (cust.ParentRef.value || cust.ParentRef.name));
+    const isJob = asTruthy(cust.Job);
+    const isProject = asTruthy(cust.IsProject);
+    return isProject || isJob || hasParentRef || hasHierarchy;
+  });
+  const projectQboIds = new Set(
+    projectCustomers
+      .map(cust => (cust && cust.Id !== undefined && cust.Id !== null ? String(cust.Id) : ''))
+      .filter(Boolean)
+  );
+  const topLevelCustomerIds = customers
+    .map(cust => (cust && cust.Id !== undefined && cust.Id !== null ? String(cust.Id) : ''))
+    .filter(qboId => qboId && !projectQboIds.has(qboId));
+  const skippedTopLevelCustomers = Math.max(0, customers.length - projectCustomers.length);
   if (QBO_DEBUG) {
-    console.log(`syncProjects: received ${customers.length} customers from QBO.`);
+    console.log(
+      `syncProjects: received ${customers.length} customers from QBO; ` +
+      `syncing ${projectCustomers.length} project/job rows and skipping ${skippedTopLevelCustomers} top-level customers.`
+    );
   }
 
   const upsertSql = `
@@ -1362,46 +1872,61 @@ async function syncProjects(orgId) {
           errUpdate => {
             if (errUpdate) return rollback(errUpdate);
 
-            // 3) Upsert each QBO customer with active status
-            const stmt = db.prepare(upsertSql);
-            customers.forEach(cust => {
-              const qboId = String(cust.Id);
-              const displayName = cust.DisplayName || cust.CompanyName || '';
-              const isActive =
-                cust.Active === undefined || cust.Active === null
-                  ? 1
-                  : cust.Active
-                  ? 1
-                  : 0;
+            const upsertProjects = () => {
+              // 3) Upsert only QBO projects/jobs (not top-level customers)
+              const stmt = db.prepare(upsertSql);
+              projectCustomers.forEach(cust => {
+                const qboId = String(cust.Id);
+                const fq = String(cust.FullyQualifiedName || '');
+                const fqParts = fq ? fq.split(':').map(part => String(part || '').trim()).filter(Boolean) : [];
+                const nameFromFq = fqParts.length ? fqParts[fqParts.length - 1] : '';
+                const displayName = nameFromFq || cust.DisplayName || cust.CompanyName || '';
+                const isActive =
+                  cust.Active === undefined || cust.Active === null
+                    ? 1
+                    : cust.Active
+                    ? 1
+                    : 0;
 
-              let customerName = null;
-              const fq = cust.FullyQualifiedName || '';
-
-              if (fq) {
-                const parts = fq.split(':');
-
-                if (parts.length > 1) {
-                  // Everything except the last segment = customer
-                  // Last segment = the job/project (which is already displayName)
-                  customerName = parts.slice(0, -1).join(':').trim();
-                } else {
-                  // Top-level customer → don’t duplicate name in the customer column
-                  customerName = null;
+                let customerName = null;
+                if (cust.ParentRef && cust.ParentRef.name) {
+                  customerName = String(cust.ParentRef.name || '').trim() || null;
                 }
-              }
-
-              stmt.run(
-                [orgId, qboId, displayName, customerName, isActive],
-                errRun => {
-                  if (errRun) return rollback(errRun);
+                if (!customerName && fqParts.length > 1) {
+                  customerName = fqParts.slice(0, -1).join(':').trim() || null;
                 }
-              );
-            });
 
-            stmt.finalize(err2 => {
-              if (err2) return rollback(err2);
-              commit();
-            });
+                stmt.run(
+                  [orgId, qboId, displayName, customerName, isActive],
+                  errRun => {
+                    if (errRun) return rollback(errRun);
+                  }
+                );
+              });
+
+              stmt.finalize(err2 => {
+                if (err2) return rollback(err2);
+                commit();
+              });
+            };
+
+            if (topLevelCustomerIds.length > 0) {
+              // Ensure previously imported top-level customers stay hidden from project lists.
+              const placeholders = topLevelCustomerIds.map(() => '?').join(',');
+              const resetSql = `
+                UPDATE projects
+                SET customer_name = NULL
+                WHERE org_id = ?
+                  AND qbo_id IN (${placeholders})
+              `;
+              db.run(resetSql, [orgId, ...topLevelCustomerIds], errReset => {
+                if (errReset) return rollback(errReset);
+                upsertProjects();
+              });
+              return;
+            }
+
+            upsertProjects();
           }
         );
       });
@@ -1411,7 +1936,11 @@ async function syncProjects(orgId) {
   if (QBO_DEBUG) {
     console.log('syncProjects: upsert complete.');
   }
-  return customers.length;
+  return {
+    count: projectCustomers.length,
+    skipped_top_level_customers: skippedTopLevelCustomers,
+    total_qbo_customers: customers.length
+  };
 }
 
 /* ───────── 11. ACCOUNT LOOKUP BY NAME ───────── */
@@ -1434,7 +1963,14 @@ async function getAccountIdByName(name, accessToken, realmId) {
     const acc = data?.QueryResponse?.Account?.[0];
     return acc?.Id || null;
   } catch (err) {
-    if ((err.response?.status === 401 || err.response?.status === 403) && realmId) {
+    const status = err.response?.status || null;
+    const payload = err.response?.data || null;
+    const qboMessage =
+      payload ? extractQboQueryErrorMessage(payload) : (err.message || '');
+    const qboCode = payload ? extractQboQueryErrorCode(payload) : '';
+    const shouldClearTokens = realmId &&
+      shouldClearQboTokensForError({ status, message: qboMessage, errorCode: qboCode });
+    if (shouldClearTokens) {
       try {
         await clearTokensForRealmId(realmId);
       } catch (clearErr) {
@@ -1463,7 +1999,14 @@ async function getClassIdByName(name, accessToken, realmId) {
     const cls = data?.QueryResponse?.Class?.[0];
     return cls?.Id || null;
   } catch (err) {
-    if ((err.response?.status === 401 || err.response?.status === 403) && realmId) {
+    const status = err.response?.status || null;
+    const payload = err.response?.data || null;
+    const qboMessage =
+      payload ? extractQboQueryErrorMessage(payload) : (err.message || '');
+    const qboCode = payload ? extractQboQueryErrorCode(payload) : '';
+    const shouldClearTokens = realmId &&
+      shouldClearQboTokensForError({ status, message: qboMessage, errorCode: qboCode });
+    if (shouldClearTokens) {
       try {
         await clearTokensForRealmId(realmId);
       } catch (clearErr) {
@@ -1564,11 +2107,127 @@ function appendPayrollPrivateNote(baseMemo, runContext = {}) {
   return `${baseMemo} | ${parts.join(' | ')}`;
 }
 
+function normalizeReceiptVendorName(value) {
+  const trimmed = String(value || '').trim();
+  return trimmed || null;
+}
+
+function buildReceiptLineProjectId(projectId, vendorName) {
+  const projectNum = Number(projectId) || 0;
+  const vendor = normalizeReceiptVendorName(vendorName) || 'vendor';
+  const vendorHash = crypto
+    .createHash('sha1')
+    .update(vendor.toLowerCase())
+    .digest('hex')
+    .slice(0, 8);
+  return `receipt-${projectNum}-${vendorHash}`;
+}
+
+function appendReimbursementMemoSuffix(baseMemo, hasReimbursementLines) {
+  if (!hasReimbursementLines) return baseMemo;
+  const suffix = ' + Reimbursement';
+  if (!baseMemo) return '+ Reimbursement';
+  if (String(baseMemo).endsWith(suffix)) return baseMemo;
+  return `${baseMemo}${suffix}`;
+}
+
+function buildReceiptReimbursementDescription(line) {
+  const vendor = normalizeReceiptVendorName(line?.vendor_name) || 'Unknown Vendor';
+  return `[${vendor}] Reimbursement`;
+}
+
+async function loadPendingReceiptReimbursementRollups({
+  orgId,
+  start,
+  end,
+  excludeEmployeeIds = [],
+  onlyEmployeeIds = []
+}) {
+  if (!orgId || !start || !end) return [];
+
+  let sql = `
+    SELECT
+      rr.employee_id,
+      COALESCE(e.name, '(Unknown employee)') AS employee_name,
+      e.name_on_checks AS employee_name_on_checks,
+      e.vendor_qbo_id AS employee_vendor_qbo_id,
+      e.employee_qbo_id AS employee_employee_qbo_id,
+      rr.project_id,
+      rr.vendor_name,
+      COALESCE(p.name, '(No project)') AS project_name,
+      COALESCE(p.name, '(No project)') AS project_name_raw,
+      p.qbo_id AS project_qbo_id,
+      p.customer_name AS project_customer_name,
+      COUNT(rr.id) AS reimbursement_count,
+      IFNULL(SUM(rr.amount), 0) AS reimbursement_amount
+    FROM payroll_receipt_reimbursements rr
+    JOIN employees e
+      ON e.id = rr.employee_id
+     AND e.org_id = rr.org_id
+    LEFT JOIN projects p
+      ON p.id = rr.project_id
+     AND p.org_id = rr.org_id
+    WHERE rr.org_id = ?
+      AND rr.status = 'requested'
+      AND rr.expense_date >= ?
+      AND rr.expense_date <= ?
+  `;
+  const params = [orgId, start, end];
+
+  const normalizedExclude = (Array.isArray(excludeEmployeeIds) ? excludeEmployeeIds : [])
+    .map(Number)
+    .filter(Number.isFinite);
+  if (normalizedExclude.length) {
+    sql += ` AND rr.employee_id NOT IN (${normalizedExclude.map(() => '?').join(',')})`;
+    params.push(...normalizedExclude);
+  }
+
+  const normalizedOnly = (Array.isArray(onlyEmployeeIds) ? onlyEmployeeIds : [])
+    .map(Number)
+    .filter(Number.isFinite);
+  if (normalizedOnly.length) {
+    sql += ` AND rr.employee_id IN (${normalizedOnly.map(() => '?').join(',')})`;
+    params.push(...normalizedOnly);
+  }
+
+  sql += `
+    GROUP BY
+      rr.employee_id,
+      e.name,
+      e.name_on_checks,
+      e.vendor_qbo_id,
+      e.employee_qbo_id,
+      rr.project_id,
+      rr.vendor_name,
+      p.name,
+      p.qbo_id,
+      p.customer_name
+    ORDER BY
+      employee_name,
+      project_name,
+      rr.vendor_name
+  `;
+
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows || []);
+    });
+  });
+}
+
 /* ───────── 13. BUILD DRAFTS FROM time_entries (DB ONLY) ───────── */
 
 async function buildCheckDrafts(start, end, options = {}) {
   const orgId = options.orgId;
-  const { excludeEmployeeIds = [], includeOvertime = true } = options;
+  const {
+    excludeEmployeeIds = [],
+    onlyEmployeeIds = [],
+    includeOvertime = true,
+    includeReceiptReimbursements = true,
+    reimbursementExpenseAccountName = null,
+    receiptClassName = null
+  } = options;
   const HOURS_EPSILON = 0.1; // keep in sync with payroll/time-entries endpoint
   const payrollRulesRaw = await loadPayrollRulesMap(orgId);
   const payrollRules = normalizePayrollRules(payrollRulesRaw);
@@ -1640,11 +2299,14 @@ async function buildCheckDrafts(start, end, options = {}) {
   }
   // Weekly hours exceptions are evaluated separately with org timezone rules.
 
-  const punchExceptionCase = punchExceptionConditions.length
-    ? `CASE ${punchExceptionConditions.map(c => `WHEN ${c} THEN 1`).join(' ')} ELSE 0 END`
+  const guardedPunchExceptionConditions = punchExceptionConditions.map(
+    c => `(tp.id IS NOT NULL AND (${c}))`
+  );
+  const punchExceptionCase = guardedPunchExceptionConditions.length
+    ? `CASE ${guardedPunchExceptionConditions.map(c => `WHEN ${c} THEN 1`).join(' ')} ELSE 0 END`
     : '0';
-  const punchExceptionUnapprovedCase = punchExceptionConditions.length
-    ? `CASE ${punchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
+  const punchExceptionUnapprovedCase = guardedPunchExceptionConditions.length
+    ? `CASE ${guardedPunchExceptionConditions.map(c => `WHEN (${c}) AND LOWER(COALESCE(tp.exception_review_status, 'open')) NOT IN ('approved','modified') THEN 1`).join(' ')} ELSE 0 END`
     : '0';
 
   const entryExceptionConditions = [];
@@ -1685,6 +2347,7 @@ async function buildCheckDrafts(start, end, options = {}) {
         LEFT JOIN time_punches tp ON tp.time_entry_id = t.id AND tp.org_id = t.org_id
         LEFT JOIN kiosk_sessions ks ON ks.id = tp.kiosk_session_id AND ks.org_id = t.org_id
         WHERE t.org_id = ? AND t.start_date >= ? AND t.end_date <= ?
+          AND LOWER(COALESCE(t.approval_status, 'pending')) = 'approved'
           AND (t.paid IS NULL OR t.paid = 0)
         GROUP BY
           t.id,
@@ -1720,19 +2383,7 @@ async function buildCheckDrafts(start, end, options = {}) {
       FROM entry_flags f
       JOIN employees e ON f.employee_id = e.id AND e.org_id = ?
       LEFT JOIN projects p ON f.project_id = p.id AND p.org_id = ?
-      WHERE
-        LOWER(COALESCE(f.resolved_status, 'open')) != 'rejected'
-        AND
-        (
-          -- entry-level exception gate: allow when no exception OR approved
-          ${entryExceptionExpr} = 0
-          OR LOWER(COALESCE(f.resolved_status, 'open')) IN ('approved', 'modified')
-        )
-        AND (
-          -- punch-level exceptions gate: allow when none OR all are approved
-          IFNULL(f.punch_exception_count, 0) = 0
-          OR IFNULL(f.punch_exception_unapproved_count, 0) = 0
-        )
+      WHERE 1=1
     `;
 
   const params = [orgId, start, end, orgId, orgId];
@@ -1758,22 +2409,7 @@ async function buildCheckDrafts(start, end, options = {}) {
     });
   });
 
-  if (ruleWeeklyHours && weeklyHoursThreshold && rows && rows.length) {
-    const orgTimezone = await getOrgTimezone(orgId);
-    const weeklyCounts = await loadWeeklyHoursExceptionCounts({
-      orgId,
-      start,
-      end,
-      orgTimezone,
-      weeklyHoursThreshold
-    });
-    rows = rows.filter(r => {
-      const entryId = Number(r.time_entry_id || 0);
-      if (!entryId) return false;
-      const counts = weeklyCounts.perEntry.get(entryId);
-      return !counts || counts.unapproved === 0;
-    });
-  }
+  // Payroll approval is authoritative for payroll eligibility.
 
   const entriesByEmployee = new Map();
   for (const r of rows) {
@@ -1851,6 +2487,72 @@ async function buildCheckDrafts(start, end, options = {}) {
     });
   });
 
+  if (includeReceiptReimbursements) {
+    const receiptRollups = await loadPendingReceiptReimbursementRollups({
+      orgId,
+      start,
+      end,
+      excludeEmployeeIds,
+      onlyEmployeeIds
+    });
+
+    receiptRollups.forEach(row => {
+      const employeeId = Number(row.employee_id || 0);
+      const sourceProjectId = Number(row.project_id || 0);
+      const vendorName = normalizeReceiptVendorName(row.vendor_name) || 'Unknown Vendor';
+      if (!employeeId || !sourceProjectId) return;
+
+      let draft = byEmployee.get(employeeId);
+      if (!draft) {
+        const displayName = row.employee_name_on_checks || row.employee_name || '(Unknown employee)';
+        draft = {
+          employee_id: employeeId,
+          employee_name: displayName,
+          employee_name_raw: row.employee_name || displayName,
+          name_on_checks: row.employee_name_on_checks || null,
+          vendor_qbo_id: row.employee_vendor_qbo_id || null,
+          employee_qbo_id: row.employee_employee_qbo_id || null,
+          total_hours: 0,
+          total_pay: 0,
+          lines: [],
+          _lineMap: new Map()
+        };
+        byEmployee.set(employeeId, draft);
+      }
+
+      const lineKey = buildReceiptLineProjectId(sourceProjectId, vendorName);
+      if (!draft._lineMap.has(lineKey)) {
+        const baseLine = {
+          project_id: lineKey,
+          source_project_id: sourceProjectId,
+          project_name: '',
+          project_name_raw: '',
+          project_qbo_id: null,
+          project_customer_name: null,
+          vendor_name: vendorName,
+          project_hours: 0,
+          project_pay: 0,
+          is_receipt_reimbursement: true,
+          reimbursement_count: 0,
+          class_name: receiptClassName || null,
+          expense_account_name: reimbursementExpenseAccountName || null,
+          description_override: null
+        };
+        baseLine.description_override = buildReceiptReimbursementDescription(baseLine);
+        draft._lineMap.set(lineKey, baseLine);
+      }
+
+      const line = draft._lineMap.get(lineKey);
+      const rollupAmount = Number(row.reimbursement_amount || 0);
+      const rollupCount = Number(row.reimbursement_count || 0);
+      line.project_pay += rollupAmount;
+      line.reimbursement_count += rollupCount;
+      line.vendor_name = vendorName;
+      line.description_override = buildReceiptReimbursementDescription(line);
+      draft.total_pay += rollupAmount;
+    });
+  }
+
   const drafts = [];
   for (const draft of byEmployee.values()) {
     draft.lines = Array.from(draft._lineMap.values()).map(line => ({
@@ -1877,10 +2579,16 @@ async function computePayrollDraftsSnapshot(start, end, options = {}) {
     : [];
   const includeOvertime =
     typeof options.includeOvertime === 'boolean' ? options.includeOvertime : true;
+  const includeReceiptReimbursements =
+    typeof options.includeReceiptReimbursements === 'boolean'
+      ? options.includeReceiptReimbursements
+      : true;
   const allowNameOnChecksSync = options.allowNameOnChecksSync === true;
   const drafts = await buildCheckDrafts(start, end, {
     excludeEmployeeIds,
+    onlyEmployeeIds,
     includeOvertime,
+    includeReceiptReimbursements,
     orgId
   });
 
@@ -1934,11 +2642,25 @@ async function createChecksForPeriod(start, end, options = {}) {
   const runContext = options.runContext || {};
   const includeOvertime =
     typeof options.includeOvertime === 'boolean' ? options.includeOvertime : true;
+  const includeReceiptReimbursements =
+    typeof options.includeReceiptReimbursements === 'boolean'
+      ? options.includeReceiptReimbursements
+      : true;
 
   const bankName =
     options.bankAccountName || settings.bank_account_name || settings.bankAccountName || BANK_ACCOUNT_NAME;
   const expenseName =
     options.expenseAccountName || settings.expense_account_name || settings.expenseAccountName || EXPENSE_ACCOUNT_NAME;
+  const reimbursementExpenseName =
+    options.receiptExpenseAccountName ||
+    settings.receipt_expense_account_name ||
+    settings.receiptExpenseAccountName ||
+    expenseName;
+  const receiptClassName =
+    options.receiptClassName ||
+    settings.receipt_class_name ||
+    settings.receiptClassName ||
+    null;
 
   const memoTemplate =
     options.memo || settings.memoTemplate || `Payroll {start} – {end}`;
@@ -2032,7 +2754,11 @@ async function createChecksForPeriod(start, end, options = {}) {
   if (!accessToken || !realmId) {
     const drafts = await buildCheckDrafts(start, end, {
       excludeEmployeeIds,
+      onlyEmployeeIds,
       includeOvertime,
+      includeReceiptReimbursements,
+      reimbursementExpenseAccountName: reimbursementExpenseName,
+      receiptClassName,
       orgId
     });
 
@@ -2081,11 +2807,15 @@ async function createChecksForPeriod(start, end, options = {}) {
       }));
 
       // Also attach memo / expense used for this draft so UI can show them
-      draft.memo = effectiveMemoTemplate
+      const memoBase = effectiveMemoTemplate
         .replace('{employee}', draft.employee_name || '')
         .replace('{start}', startUS)
         .replace('{end}', endUS)
         .replace('{dateRange}', `${startUS} – ${endUS}`);
+      const hasReimbursementLines = (draft.lines || []).some(
+        line => !!line?.is_receipt_reimbursement
+      );
+      draft.memo = appendReimbursementMemoSuffix(memoBase, hasReimbursementLines);
       draft.expense_account_name = effectiveExpenseName;
     });
 
@@ -2137,7 +2867,11 @@ async function createChecksForPeriod(start, end, options = {}) {
 
   const drafts = await buildCheckDrafts(start, end, {
     excludeEmployeeIds,
+    onlyEmployeeIds,
     includeOvertime,
+    includeReceiptReimbursements,
+    reimbursementExpenseAccountName: reimbursementExpenseName,
+    receiptClassName,
     orgId
   });
 
@@ -2266,7 +3000,7 @@ async function createChecksForPeriod(start, end, options = {}) {
       const detail = {
         AccountRef: { value: expenseIdForLine }
       };
-      if (line.project_qbo_id) {
+      if (!line.is_receipt_reimbursement && line.project_qbo_id) {
         detail.CustomerRef = { value: line.project_qbo_id };
       }
       if (classId) {
@@ -2286,6 +3020,13 @@ async function createChecksForPeriod(start, end, options = {}) {
       .replace('{start}', startUS)
       .replace('{end}', endUS)
       .replace('{dateRange}', `${startUS} – ${endUS}`);
+    const hasReimbursementLines = (draft.lines || []).some(
+      line => !!line?.is_receipt_reimbursement
+    );
+    const finalMemoText = appendReimbursementMemoSuffix(
+      baseMemoText,
+      hasReimbursementLines
+    );
 
     const issues = [...previewIssues, ...lineErrors];
     if (!lineItems.length) {
@@ -2336,7 +3077,7 @@ async function createChecksForPeriod(start, end, options = {}) {
       AccountRef: { value: bankAccountId },
       EntityRef: payeeRef,
       TxnDate: end,
-      PrivateNote: appendPayrollPrivateNote(baseMemoText, runContext),
+      PrivateNote: appendPayrollPrivateNote(finalMemoText, runContext),
       PrintStatus: 'NeedToPrint',
       Line: lineItems
     };
@@ -2412,14 +3153,25 @@ async function createChecksForPeriod(start, end, options = {}) {
         warningCodes: nameWarning ? ['print_name_sync_failed'] : []
       });
 
-      // Decide if this looks "catastrophic" (platform / network) vs per-employee.
+    // Decide if this looks "catastrophic" (platform / network) vs per-employee.
       const status = err.response ? err.response.status : null;
+      const payload = err.response ? err.response.data : null;
       const isNetworkLevel = !err.response; // no HTTP response at all
       const isServerError = status && status >= 500;
+      const qboErrorCode = payload ? extractQboQueryErrorCode(payload) : '';
+      const qboErrorMessage = payload
+        ? extractQboQueryErrorMessage(payload)
+        : (err.message || '');
+      const isReauthError =
+        status === 401 || shouldClearQboTokensForError({
+          status,
+          message: qboErrorMessage,
+          errorCode: qboErrorCode
+        });
       const isAuthOrRateLimit =
-        status === 401 || status === 403 || status === 429;
+        isReauthError || status === 429;
 
-      if ((status === 401 || status === 403) && !clearedTokens) {
+      if (isReauthError && !clearedTokens) {
         clearedTokens = true;
         try {
           await clearTokens(orgId);
@@ -2465,6 +3217,8 @@ module.exports = {
   listClasses,
   createEmployeeInQuickBooks,
   updateEmployeeInQuickBooks,
+  isQboReauthRequiredError,
   setPrintOnCheckName,
-  ensureNameOnChecksColumns
+  ensureNameOnChecksColumns,
+  verifyQuickBooksConnection
 };

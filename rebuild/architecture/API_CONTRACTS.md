@@ -32,9 +32,9 @@
 ## QuickBooks
 - GET  `/api/status`
 - Note: /api/status returns lastSync timestamps for employees/vendors/projects/payroll_accounts/employee_updates.
-- POST `/api/qbo/connect` [view_payroll + super admin]
+- POST `/api/qbo/connect` [super admin]
 - GET  `/quickbooks/oauth/callback` [public callback]
-- POST `/api/qbo/disconnect` [view_payroll + super admin]
+- POST `/api/qbo/disconnect` [super admin]
 - POST `/api/sync/employees` [view_payroll]
 - POST `/api/sync/vendors` [view_payroll]
 - POST `/api/sync/projects` [view_payroll]
@@ -95,6 +95,9 @@
 
 ## Kiosks
 - Note: Timesheets are stored as kiosk_sessions; endpoints keep the `/kiosk-sessions` naming.
+- GET  `/api/kiosks/enrollment-code` [super admin]
+- POST `/api/kiosks/enrollment-code/rotate` [super admin]
+- GET  `/api/kiosks/registry` [super admin]
 - GET  `/api/kiosks` [view_payroll]
 - POST `/api/kiosks` [view_payroll]
 - POST `/api/kiosks/register` [enrollment code]
@@ -115,9 +118,9 @@
 - POST `/api/kiosk-sessions/:id/close` [kiosk admin]
 
 ## Kiosk Rate Unlock
-- POST `/api/kiosk/rates/unlock` [modify_pay_rates + view_payroll]
-- GET  `/api/kiosk/rates` [modify_pay_rates + view_payroll]
-- POST `/api/kiosk/rates/:id` [modify_pay_rates + view_payroll]
+- POST `/api/kiosk/rates/unlock` [kiosk admin + modify_pay_rates]
+- GET  `/api/kiosk/rates` [kiosk admin + modify_pay_rates]
+- POST `/api/kiosk/rates/:id` [kiosk admin + modify_pay_rates]
 
 ## Timekeeping
 - POST `/api/kiosk/punch` [kiosk]
@@ -141,17 +144,21 @@
 - GET  `/api/kiosk/time-entries/pending` [kiosk admin + view_time_reports or view_payroll]
 
 ## Payroll
-- GET  `/api/payroll/account-options` [view_payroll]
-- GET  `/api/payroll/classes` [view_payroll]
-- GET  `/api/payroll/settings` [view_payroll]
-- POST `/api/payroll/settings` [modify_payroll]
-- GET  `/api/payroll-summary` [view_payroll]
-- GET  `/api/payroll/time-entries` [view_payroll]
-- POST `/api/payroll/preflight-checks` [modify_payroll]
-- POST `/api/payroll/preview-checks` [modify_payroll, deprecated]
-- POST `/api/payroll/create-checks` [modify_payroll]
-- POST `/api/payroll/unpay` [modify_payroll]
-- GET  `/api/payroll/audit-log` [view_payroll]
+- GET  `/api/payroll/account-options` [super admin]
+- GET  `/api/payroll/classes` [super admin]
+- GET  `/api/payroll/settings` [super admin]
+- POST `/api/payroll/settings` [super admin]
+- GET  `/api/payroll/reimbursements` [super admin]
+- POST `/api/payroll/reimbursements` [super admin]
+- POST `/api/payroll/reimbursements/:id/approve` [super admin]
+- GET  `/api/payroll/reimbursements/:id/receipt` [super admin]
+- GET  `/api/payroll-summary` [super admin]
+- GET  `/api/payroll/time-entries` [super admin]
+- POST `/api/payroll/preflight-checks` [super admin]
+- POST `/api/payroll/preview-checks` [super admin, deprecated]
+- POST `/api/payroll/create-checks` [super admin]
+- POST `/api/payroll/unpay` [super admin]
+- GET  `/api/payroll/audit-log` [super admin]
 
 ## Shipments
 - GET  `/api/shipments` [see_shipments]
@@ -162,6 +169,9 @@
 - POST `/api/shipments/:id/status` [see_shipments]
 - POST `/api/shipments/:id/storage` [see_shipments]
 - POST `/api/shipments/:id/notes` [see_shipments]
+- GET  `/api/shipments/:id/personal-note` [see_shipments]
+- PUT  `/api/shipments/:id/personal-note` [see_shipments]
+- DELETE `/api/shipments/:id/personal-note` [see_shipments]
 - GET  `/api/shipments/:id/payments` [view_payroll]
 - POST `/api/shipments/:id/payments` [view_payroll]
 - GET  `/api/shipments/:id/timeline` [see_shipments]
@@ -187,11 +197,11 @@
 - PUT  `/api/shipments/notifications` [see_shipments]
 
 ## Reports
-- GET  `/api/reports/payroll-runs` [view_payroll]
-- GET  `/api/reports/payroll-runs/:id` [view_payroll]
-- PATCH `/api/reports/checks/:id` [modify_payroll]
-- GET  `/api/reports/payroll-audit` [view_payroll]
-- GET  `/api/reports/payroll-audit-log` [view_payroll]
+- GET  `/api/reports/payroll-runs` [super admin]
+- GET  `/api/reports/payroll-runs/:id` [super admin]
+- PATCH `/api/reports/checks/:id` [super admin]
+- GET  `/api/reports/payroll-audit` [super admin]
+- GET  `/api/reports/payroll-audit-log` [super admin]
 - GET  `/api/reports/time-entry-audit` [view_time_reports or view_payroll]
 - GET  `/api/reports/audit-log` [admin; domain-specific perms]
 - GET  `/api/reports/shipment-verification` [see_shipments]

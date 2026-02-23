@@ -53,12 +53,21 @@ function openProjectModal(project) {
   }
 
   if (msgEl) {
-    msgEl.textContent = '';
-    msgEl.style.color = 'black';
+    const hasCustomer = !!(customerInput && customerInput.value.trim());
+    if (hasCustomer) {
+      msgEl.textContent = '';
+      msgEl.style.color = 'black';
+    } else {
+      msgEl.textContent = 'Customer name is required before saving this project.';
+      msgEl.style.color = '#b45309';
+    }
   }
 
   if (modal) modal.classList.remove('hidden');
   if (backdrop) backdrop.classList.remove('hidden');
+  if (customerInput && !customerInput.value.trim()) {
+    requestAnimationFrame(() => customerInput.focus());
+  }
 }
 
 function closeProjectEditModal() {
@@ -94,6 +103,22 @@ async function saveProjectFromModal() {
 
   const name = nameInput ? nameInput.value.trim() : '';
   const customer_name = customerInput ? customerInput.value.trim() : '';
+
+  if (!name) {
+    if (msgEl) {
+      msgEl.textContent = 'Project name is required.';
+      msgEl.style.color = 'red';
+    }
+    return;
+  }
+
+  if (!customer_name) {
+    if (msgEl) {
+      msgEl.textContent = 'Customer name is required.';
+      msgEl.style.color = 'red';
+    }
+    return;
+  }
 
   const latStr = latInput ? latInput.value.trim() : '';
   const lngStr = lngInput ? lngInput.value.trim() : '';
@@ -152,7 +177,7 @@ async function saveProjectFromModal() {
     });
 
     if (msgEl) {
-      msgEl.textContent = 'Geofence updated.';
+      msgEl.textContent = 'Project updated.';
       msgEl.style.color = 'green';
     }
 
@@ -224,8 +249,8 @@ async function loadProjectsTable() {
 
   tbody.innerHTML =
     projectsListStatus === 'active'
-      ? '<tr><td colspan="3">Loading active projects...</td></tr>'
-      : '<tr><td colspan="3">Loading inactive projects...</td></tr>';
+      ? '<tr><td colspan="2">Loading active projects...</td></tr>'
+      : '<tr><td colspan="2">Loading inactive projects...</td></tr>';
 
   try {
     const projects = await fetchJSON(
@@ -276,9 +301,6 @@ function renderProjectsTable(filterTerm = '') {
 
   let rows = projectsTableData || [];
 
-  // 🔥 Hide top-level customers (only show jobs that have a customer)
-  rows = rows.filter(p => p.customer_name);
-
   if (term) {
     rows = rows.filter(p => {
       const projectName = (p.name || '').toLowerCase();
@@ -305,11 +327,20 @@ function renderProjectsTable(filterTerm = '') {
     const projectLabel = isActive
       ? (p.name || '')
       : `${p.name || ''} (inactive)`;
+    const projectLabelEscaped = escapeHTML(projectLabel);
+    const customerName = String(p.customer_name || '').trim();
+    const hasCustomerName = !!customerName;
+    const customerCell = hasCustomerName
+      ? escapeHTML(customerName)
+      : '<span class="project-customer-missing">Missing customer (click to add)</span>';
 
     const tr = document.createElement('tr');
+    if (!hasCustomerName) {
+      tr.classList.add('project-row-missing-customer');
+    }
     tr.innerHTML = `
-      <td>${projectLabel}</td>
-      <td>${p.customer_name || ''}</td>
+      <td>${projectLabelEscaped}</td>
+      <td>${customerCell}</td>
     `;
 
     tr.addEventListener('click', () => openProjectModal(p));

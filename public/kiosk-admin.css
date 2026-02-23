@@ -1855,10 +1855,12 @@ table.vendors-table th:first-child {
               box-shadow 0.15s ease;
 }
 
+/* KIOSK ADMIN: finalized visual spacing — avoid changing without approval */
 /* Every card after the first overlaps the previous one */
 .shipments-column-body .shipment-card + .shipment-card {
   margin-top: -70px;  /* adjust overlap amount (more negative = tighter stack) */
 }
+/* END KIOSK ADMIN: finalized visual spacing */
 
 /* Hover: lift the card slightly and bring it to front */
 .shipments-column-body .shipment-card:hover {
@@ -11676,6 +11678,360 @@ body.ka-modal-open .ka-bottom-nav {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+#ka-items-comments.active {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 320px;
+}
+
+.ka-ship-msg-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ka-ship-msg-thread-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+
+.ka-ship-msg-thread-select span {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.ka-ship-msg-thread-select select,
+.ka-ship-msg-thread-select input,
+.ka-ship-msg-thread-new input,
+.ka-ship-msg-thread-new select,
+.ka-ship-msg-form textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 0.95rem;
+  padding: 10px 12px;
+}
+
+#ka-ship-msg-thread-search {
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 0.85rem;
+}
+
+.ka-ship-msg-thread-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ka-ship-msg-thread-head-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ka-ship-msg-thread-head-title strong {
+  color: #0f172a;
+  font-size: 1.02rem;
+}
+
+.ka-ship-msg-thread-sub {
+  margin-top: -4px;
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.ka-ship-msg-thread-tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: #dbeafe;
+  color: #1e3a8a;
+  font-size: 0.67rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+}
+
+.ka-ship-msg-thread-edit-btn {
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.ka-ship-msg-thread-edit-form {
+  border: 1px solid #dbe5ee;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ka-ship-msg-thread-edit-form input {
+  border-radius: 12px;
+  border: 1px solid #cbd5e1;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+  color: #0f172a;
+  background: #ffffff;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ka-ship-msg-thread-edit-form input:focus {
+  border-color: #0c816d;
+  box-shadow: 0 0 0 1px rgba(12, 129, 109, 0.25);
+}
+
+.ka-ship-msg-thread-edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ka-ship-msg-thread-new {
+  border: 1px solid #dbe5ee;
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ka-ship-msg-thread-new-row {
+  display: grid;
+  grid-template-columns: 1fr 180px;
+  gap: 8px;
+}
+
+.ka-ship-msg-thread-new-actions,
+.ka-ship-msg-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ka-ship-msg-offline {
+  border: 1px solid #fcd34d;
+  background: #fffbeb;
+  color: #92400e;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+}
+
+.ka-ship-msg-list {
+  border: 1px solid #dbe5ee;
+  border-radius: 14px;
+  background: #f8fafc;
+  padding: 12px;
+  min-height: 220px;
+  max-height: 46vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ka-ship-msg-empty {
+  color: #64748b;
+  text-align: center;
+  padding: 28px 10px;
+}
+
+.ka-ship-msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.ka-ship-msg-row.mine {
+  flex-direction: row-reverse;
+}
+
+.ka-ship-msg-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  flex: 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #dbeafe;
+  color: #1e3a8a;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.ka-ship-msg-bubble {
+  background: #ffffff;
+  border: 1px solid #dbe5ee;
+  border-radius: 12px;
+  padding: 8px 34px 8px 10px;
+  max-width: min(680px, 88%);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+  position: relative;
+}
+
+.ka-ship-msg-row.mine .ka-ship-msg-bubble {
+  background: #ecfdf3;
+  border-color: #bbf7d0;
+}
+
+.ka-ship-msg-row.mine .ka-ship-msg-meta {
+  justify-content: flex-end;
+}
+
+.ka-ship-msg-row.pending .ka-ship-msg-bubble {
+  border-style: dashed;
+}
+
+.ka-ship-msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 3px;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.ka-ship-msg-author {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.ka-ship-msg-tag {
+  font-size: 0.67rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: #fef3c7;
+  color: #92400e;
+  font-weight: 700;
+}
+
+.ka-ship-msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #0f172a;
+  line-height: 1.45;
+  font-size: 0.92rem;
+}
+
+.ka-ship-msg-menu {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.ka-ship-msg-menu-toggle {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 1rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.ka-ship-msg-menu-toggle:hover {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.ka-ship-msg-menu-popover {
+  position: absolute;
+  top: 26px;
+  right: 0;
+  min-width: 130px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid #dbe5ee;
+  background: #ffffff;
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 2;
+}
+
+.ka-ship-msg-menu-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  color: #334155;
+  cursor: pointer;
+}
+
+.ka-ship-msg-menu-item:hover {
+  background: #f8fafc;
+}
+
+.ka-ship-msg-menu-item[data-comment-action="delete"] {
+  color: #b91c1c;
+}
+
+.ka-ship-msg-menu-item[data-comment-action="delete"]:hover {
+  background: #fee2e2;
+}
+
+.ka-ship-msg-form {
+  border: 1px solid #dbe5ee;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ka-ship-msg-form textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+@media (max-width: 700px) {
+  .ka-ship-msg-thread-head {
+    align-items: flex-start;
+  }
+
+  .ka-ship-msg-thread-new-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ka-ship-msg-bubble {
+    max-width: 100%;
+  }
 }
 
 /* Overview panel */
