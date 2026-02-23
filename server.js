@@ -384,6 +384,166 @@ async function releasePayrollLock(orgId) {
   }
 }
 
+function normalizePayrollStatus(status) {
+  return String(status || '').trim().toLowerCase();
+}
+
+function mapActivePayrollRunRow(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id) || null,
+    status: row.status || null,
+    start_date: row.start_date || null,
+    end_date: row.end_date || null,
+    created_at: row.created_at || null,
+    run_type: row.run_type || 'standard',
+    adjustment_reason: row.adjustment_reason || null,
+    last_error: row.last_error || null,
+    last_attempt_id: row.last_attempt_id || null,
+    idempotency_key: row.idempotency_key || null
+  };
+}
+
+function mapPayrollLockRow(row) {
+  if (!row) return null;
+  return {
+    locked_by: row.locked_by || null,
+    locked_at: row.locked_at || null
+  };
+}
+
+async function loadActivePayrollRunContext({
+  orgId,
+  preferredRunId = null,
+  preferredIdempotencyKey = null
+} = {}) {
+  if (!orgId) {
+    return {
+      run: null,
+      payroll_lock: null
+    };
+  }
+
+  const activeStatuses = [PAYROLL_STATUS.PENDING, PAYROLL_STATUS.IN_PROGRESS];
+  const activePlaceholders = activeStatuses.map(() => '?').join(',');
+  let runRow = null;
+
+  const runIdNum = Number(preferredRunId);
+  if (Number.isFinite(runIdNum) && runIdNum > 0) {
+    runRow = await dbGet(
+      `
+        SELECT
+          id,
+          status,
+          start_date,
+          end_date,
+          created_at,
+          run_type,
+          adjustment_reason,
+          last_error,
+          last_attempt_id,
+          idempotency_key
+        FROM payroll_runs
+        WHERE org_id = ?
+          AND id = ?
+          AND LOWER(COALESCE(status, '')) IN (${activePlaceholders})
+        LIMIT 1
+      `,
+      [orgId, runIdNum, ...activeStatuses]
+    );
+  }
+
+  if (!runRow && preferredIdempotencyKey) {
+    runRow = await dbGet(
+      `
+        SELECT
+          id,
+          status,
+          start_date,
+          end_date,
+          created_at,
+          run_type,
+          adjustment_reason,
+          last_error,
+          last_attempt_id,
+          idempotency_key
+        FROM payroll_runs
+        WHERE org_id = ?
+          AND idempotency_key = ?
+          AND LOWER(COALESCE(status, '')) IN (${activePlaceholders})
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `,
+      [orgId, String(preferredIdempotencyKey), ...activeStatuses]
+    );
+  }
+
+  if (!runRow) {
+    runRow = await dbGet(
+      `
+        SELECT
+          id,
+          status,
+          start_date,
+          end_date,
+          created_at,
+          run_type,
+          adjustment_reason,
+          last_error,
+          last_attempt_id,
+          idempotency_key
+        FROM payroll_runs
+        WHERE org_id = ?
+          AND LOWER(COALESCE(status, '')) IN (${activePlaceholders})
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `,
+      [orgId, ...activeStatuses]
+    );
+  }
+
+  const lockRow = await dbGet(
+    `
+      SELECT locked_by, locked_at
+      FROM payroll_lock
+      WHERE org_id = ?
+      LIMIT 1
+    `,
+    [orgId]
+  );
+
+  return {
+    run: mapActivePayrollRunRow(runRow),
+    payroll_lock: mapPayrollLockRow(lockRow)
+  };
+}
+
+async function sendPayrollRunInProgressConflict(
+  res,
+  {
+    orgId,
+    preferredRunId = null,
+    preferredIdempotencyKey = null,
+    error = 'A payroll run is already in progress. Please wait for it to finish before starting another.'
+  } = {}
+) {
+  const context = await loadActivePayrollRunContext({
+    orgId,
+    preferredRunId,
+    preferredIdempotencyKey
+  });
+  const activeRun = context.run || null;
+  return res.status(409).json({
+    ok: false,
+    code: 'payroll_run_in_progress',
+    error,
+    payrollRunId: activeRun?.id || (Number(preferredRunId) || null),
+    status: activeRun?.status || PAYROLL_STATUS.IN_PROGRESS,
+    active_run: activeRun,
+    payroll_lock: context.payroll_lock || null
+  });
+}
+
 // Auto clock-out DB lock helpers (multi-instance safety)
 const AUTO_CLOCKOUT_LOCK_TTL_MS = 5 * 60 * 1000;
 const AUTO_CLOCKOUT_LOCKER_ID = `${os.hostname()}:${process.pid}`;
@@ -1001,6 +1161,18 @@ function makeRuleChecker(rulesMap) {
       val === '0'
     );
   };
+}
+
+function resolveOfflinePunchMaxAgeDays(rulesMap) {
+  const fallbackDays = DEFAULT_OFFLINE_PUNCH_MAX_AGE_DAYS;
+  const raw =
+    rulesMap && rulesMap.offline_punch_max_age_days != null
+      ? Number(rulesMap.offline_punch_max_age_days)
+      : fallbackDays;
+  if (!Number.isFinite(raw)) return fallbackDays;
+  const normalized = Math.floor(raw);
+  if (normalized < 1) return fallbackDays;
+  return Math.min(normalized, MAX_OFFLINE_PUNCH_MAX_AGE_DAYS);
 }
 
 function buildPunchFlagSql({
@@ -3439,7 +3611,7 @@ async function saveSession(req) {
   });
 }
 
-function createRateLimiter({ windowMs, max, keyFn }) {
+function createRateLimiter({ windowMs, max, keyFn, onLimit }) {
   const hits = new Map();
 
   return (req, res, next) => {
@@ -3454,6 +3626,17 @@ function createRateLimiter({ windowMs, max, keyFn }) {
     entry.count += 1;
     if (entry.count > max) {
       const retryAfterSeconds = Math.ceil((entry.start + windowMs - now) / 1000);
+      if (typeof onLimit === 'function') {
+        return onLimit({
+          req,
+          res,
+          next,
+          retryAfterSeconds: Math.max(retryAfterSeconds, 1),
+          key,
+          count: entry.count,
+          windowMs
+        });
+      }
       res.setHeader('Retry-After', String(Math.max(retryAfterSeconds, 1)));
       return res.status(429).json({ error: 'Too many requests. Please retry shortly.' });
     }
@@ -3539,6 +3722,26 @@ function getKioskDeviceIdForRateLimit(req) {
   ).trim();
 }
 
+function getKioskPunchEmployeeIdForRateLimit(req) {
+  const rawEmployeeId =
+    (req.body && req.body.employee_id) ||
+    (req.query && req.query.employee_id) ||
+    '';
+  const parsedEmployeeId = Number(rawEmployeeId);
+  if (Number.isFinite(parsedEmployeeId) && parsedEmployeeId > 0) {
+    return String(parsedEmployeeId);
+  }
+  const fallback = String(rawEmployeeId || '').trim();
+  return fallback || 'unknown';
+}
+
+function isOfflineQueuedPunchRequest(req) {
+  const queuedAtRaw = req && req.body && req.body.queued_at;
+  if (!queuedAtRaw) return false;
+  const queuedAt = new Date(String(queuedAtRaw));
+  return !Number.isNaN(queuedAt.getTime());
+}
+
 const loginRateLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -3558,6 +3761,36 @@ const kioskPinRateLimiter = createRateLimiter({
     return `${keyBase}:${adminId}:kiosk-pin`;
   }
 });
+
+const KIOSK_PUNCH_RATE_LIMIT_WINDOW_MS = 10 * 1000;
+const KIOSK_PUNCH_RATE_LIMIT_MAX_ATTEMPTS = 6;
+
+const kioskPunchRateLimiter = createRateLimiter({
+  windowMs: KIOSK_PUNCH_RATE_LIMIT_WINDOW_MS,
+  max: KIOSK_PUNCH_RATE_LIMIT_MAX_ATTEMPTS,
+  keyFn: (req) => {
+    const deviceId = getKioskDeviceIdForRateLimit(req);
+    const employeeId = getKioskPunchEmployeeIdForRateLimit(req);
+    const keyBase = deviceId || getClientIp(req) || 'unknown';
+    return `${keyBase}:${employeeId}:kiosk-punch`;
+  },
+  onLimit: ({ res, retryAfterSeconds }) => {
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+    return res.status(429).json({
+      ok: false,
+      code: 'punch_rate_limited',
+      retry_after_seconds: retryAfterSeconds,
+      error:
+        `Too many punch attempts. Please wait ${retryAfterSeconds} ` +
+        `second${retryAfterSeconds === 1 ? '' : 's'} and try again.`
+    });
+  }
+});
+
+function maybeRateLimitKioskPunch(req, res, next) {
+  if (isOfflineQueuedPunchRequest(req)) return next();
+  return kioskPunchRateLimiter(req, res, next);
+}
 
 const bootstrapRateLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000,
@@ -3872,7 +4105,8 @@ app.post('/api/auth/bootstrap', bootstrapRateLimiter, async (req, res) => {
     const timeExceptionRules = {
       weekly_hours_threshold: null,
       auto_clockout_daily_max_hours: null,
-      auto_clockout_weekly_max_hours: null
+      auto_clockout_weekly_max_hours: null,
+      offline_punch_max_age_days: DEFAULT_OFFLINE_PUNCH_MAX_AGE_DAYS
     };
 
     const enrollmentCode = await generateUniqueEnrollmentCode();
@@ -8459,12 +8693,12 @@ app.post('/api/payroll/create-checks', requireSectionEnabled('payroll'), require
         existingStatus === PAYROLL_STATUS.PENDING ||
         existingStatus === PAYROLL_STATUS.IN_PROGRESS
       ) {
-        return res.status(409).json({
-          ok: false,
-          payrollRunId: existingByKey.id,
-          status: existingStatus,
+        return sendPayrollRunInProgressConflict(res, {
+          orgId,
+          preferredRunId: existingByKey.id,
+          preferredIdempotencyKey: providedIdempotencyKey,
           error:
-            'A payroll run is already in progress for this idempotency key. Please wait or use a new key.'
+            'A payroll run is already in progress for this idempotency key. Please wait, check Run Status, or cancel a stuck run before retrying.'
         });
       }
       return res.status(409).json({
@@ -8523,6 +8757,16 @@ app.post('/api/payroll/create-checks', requireSectionEnabled('payroll'), require
     return res.status(409).json({
       ok: false,
       error: 'Time entries changed since preflight. Please re-run preflight checks.',
+      snapshot_hash: currentSnapshot.snapshot_hash,
+      snapshot_count: currentSnapshot.snapshot_count
+    });
+  }
+  if (Number(currentSnapshot.snapshot_count || 0) <= 0) {
+    return res.status(400).json({
+      ok: false,
+      code: 'no_eligible_checks',
+      error:
+        'No payroll-approved unpaid entries are eligible for this request. No checks were sent.',
       snapshot_hash: currentSnapshot.snapshot_hash,
       snapshot_count: currentSnapshot.snapshot_count
     });
@@ -8593,10 +8837,11 @@ app.post('/api/payroll/create-checks', requireSectionEnabled('payroll'), require
   const locker = `emp:${req.session && req.session.employeeId ? req.session.employeeId : 'unknown'}`;
   const gotLock = await acquirePayrollLock(orgId, locker);
   if (!gotLock) {
-    return res.status(409).json({
-      ok: false,
+    return sendPayrollRunInProgressConflict(res, {
+      orgId,
+      preferredIdempotencyKey: idempotencyKey,
       error:
-        'A payroll run is already in progress. Please wait for it to finish before starting another.'
+        'A payroll run is already in progress. Open Run Status to review it or cancel a stuck run.'
     });
   }
 
@@ -8634,12 +8879,12 @@ app.post('/api/payroll/create-checks', requireSectionEnabled('payroll'), require
           existingStatus === PAYROLL_STATUS.PENDING ||
           existingStatus === PAYROLL_STATUS.IN_PROGRESS
         ) {
-          return res.status(409).json({
-            ok: false,
-            payrollRunId,
-            status: existingStatus,
+          return sendPayrollRunInProgressConflict(res, {
+            orgId,
+            preferredRunId: payrollRunId,
+            preferredIdempotencyKey: idempotencyKey,
             error:
-              'A payroll run is already in progress for this idempotency key. Please wait or use a new key.'
+              'A payroll run is already in progress for this idempotency key. Please wait, check Run Status, or cancel a stuck run before retrying.'
           });
         }
         return res.status(409).json({
@@ -8736,26 +8981,6 @@ app.post('/api/payroll/create-checks', requireSectionEnabled('payroll'), require
     } else {
       // ───────── NORMAL (FIRST) RUN PATH ─────────
       await validatePayrollRangeServer(start, end);
-
-      if (runType !== 'adjustment') {
-        const overlapping = await dbGet(
-          `
-            SELECT id, start_date, end_date
-            FROM payroll_runs
-            WHERE start_date <= ? AND end_date >= ? AND org_id = ?
-            ORDER BY id DESC
-            LIMIT 1
-          `,
-          [end, start, orgId]
-        );
-        if (overlapping && (!payrollRunId || overlapping.id !== payrollRunId)) {
-          return res.status(400).json({
-            ok: false,
-            error:
-              'A payroll run already exists for an overlapping period. Use retry/unpay for the same period, or create an adjustment run explicitly.'
-          });
-        }
-      }
 
       if (!payrollRunId) {
         const runInsert = await dbRun(
@@ -9395,6 +9620,141 @@ app.post('/api/payroll/create-checks', requireSectionEnabled('payroll'), require
     });
   } finally {
     await releasePayrollLock(orgId);
+  }
+});
+
+app.get('/api/payroll/active-run', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+    }
+    const context = await loadActivePayrollRunContext({ orgId });
+    return res.json({
+      ok: true,
+      run: context.run || null,
+      payroll_lock: context.payroll_lock || null
+    });
+  } catch (err) {
+    console.error('Failed loading active payroll run status:', err);
+    return res.status(500).json({
+      ok: false,
+      error: 'Failed to load active payroll run status.'
+    });
+  }
+});
+
+app.post('/api/payroll/active-run/cancel', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated.' });
+    }
+
+    const actorEmployeeId =
+      req.session && req.session.employeeId ? req.session.employeeId : null;
+    const requestedRunId = Number(
+      req.body?.payrollRunId || req.body?.payroll_run_id || 0
+    );
+    const cancelReason = String(req.body?.reason || '').trim();
+
+    let targetRun = null;
+    if (Number.isFinite(requestedRunId) && requestedRunId > 0) {
+      targetRun = await dbGet(
+        `
+          SELECT id, status, start_date, end_date
+          FROM payroll_runs
+          WHERE org_id = ? AND id = ?
+          LIMIT 1
+        `,
+        [orgId, requestedRunId]
+      );
+    }
+    if (!targetRun) {
+      targetRun = await dbGet(
+        `
+          SELECT id, status, start_date, end_date
+          FROM payroll_runs
+          WHERE org_id = ?
+            AND LOWER(COALESCE(status, '')) IN (?, ?)
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        `,
+        [orgId, PAYROLL_STATUS.PENDING, PAYROLL_STATUS.IN_PROGRESS]
+      );
+    }
+
+    const lockBefore = await dbGet(
+      `SELECT id, locked_by, locked_at FROM payroll_lock WHERE org_id = ? LIMIT 1`,
+      [orgId]
+    );
+
+    let cancelledRunId = null;
+    const targetStatus = normalizePayrollStatus(targetRun?.status);
+    const isCancelableRun =
+      targetStatus === PAYROLL_STATUS.PENDING ||
+      targetStatus === PAYROLL_STATUS.IN_PROGRESS;
+
+    if (targetRun && isCancelableRun) {
+      const cancelError = cancelReason
+        ? `Cancelled from Payroll Run Status. ${cancelReason}`
+        : 'Cancelled from Payroll Run Status.';
+      await markPayrollRunStatus(orgId, targetRun.id, PAYROLL_STATUS.FAILED, {
+        lastError: cancelError
+      });
+      cancelledRunId = targetRun.id;
+
+      await logPayrollEvent({
+        orgId,
+        actor_employee_id: actorEmployeeId,
+        event_type: 'PAYROLL_RUN_CANCELLED',
+        message: `Payroll run #${targetRun.id} cancelled from Payroll Run Status.`,
+        payroll_run_id: targetRun.id,
+        details: {
+          previous_status: targetRun.status || null,
+          start_date: targetRun.start_date || null,
+          end_date: targetRun.end_date || null,
+          reason: cancelReason || null,
+          lock_before: lockBefore
+            ? {
+                locked_by: lockBefore.locked_by || null,
+                locked_at: lockBefore.locked_at || null
+              }
+            : null
+        }
+      });
+
+      await logAuditEvent({
+        req,
+        orgId,
+        action: 'payroll.run.cancel_active',
+        entityType: 'payroll_run',
+        entityId: targetRun.id,
+        after: {
+          status: PAYROLL_STATUS.FAILED,
+          previous_status: targetRun.status || null,
+          reason: cancelReason || null
+        }
+      });
+    }
+
+    await releasePayrollLock(orgId);
+    const context = await loadActivePayrollRunContext({ orgId });
+
+    return res.json({
+      ok: true,
+      cancelled: !!cancelledRunId,
+      cancelled_run_id: cancelledRunId,
+      had_lock: !!lockBefore,
+      run: context.run || null,
+      payroll_lock: context.payroll_lock || null
+    });
+  } catch (err) {
+    console.error('Failed cancelling active payroll run:', err);
+    return res.status(500).json({
+      ok: false,
+      error: 'Failed to cancel active payroll run.'
+    });
   }
 });
 
@@ -15853,6 +16213,46 @@ app.get('/api/time-exceptions', requireViewTimeReports, async (req, res) => {
       return { row: r, startTs, endTs, durationHours, weekKey };
     });
 
+    const overlappingPunchIds = new Set();
+    const punchIntervalsByEmployee = new Map();
+    for (const { row: r, startTs, endTs } of punchRows) {
+      if (!r || !r.employee_id || !r.id) continue;
+      if (!startTs || Number.isNaN(startTs.getTime())) continue;
+      const startMs = startTs.getTime();
+      const rawEndMs =
+        endTs && !Number.isNaN(endTs.getTime())
+          ? endTs.getTime()
+          : Number.POSITIVE_INFINITY;
+      const endMs = Math.max(startMs, rawEndMs);
+      const employeeKey = String(r.employee_id);
+      const list = punchIntervalsByEmployee.get(employeeKey) || [];
+      list.push({ punchId: Number(r.id), startMs, endMs });
+      punchIntervalsByEmployee.set(employeeKey, list);
+    }
+    for (const intervals of punchIntervalsByEmployee.values()) {
+      if (!intervals || intervals.length < 2) continue;
+      intervals.sort((a, b) => {
+        if (a.startMs !== b.startMs) return a.startMs - b.startMs;
+        if (a.endMs !== b.endMs) return a.endMs - b.endMs;
+        return a.punchId - b.punchId;
+      });
+      const active = [];
+      for (const current of intervals) {
+        for (let i = active.length - 1; i >= 0; i -= 1) {
+          if (active[i].endMs <= current.startMs) {
+            active.splice(i, 1);
+          }
+        }
+        if (active.length) {
+          overlappingPunchIds.add(current.punchId);
+          for (const prior of active) {
+            overlappingPunchIds.add(prior.punchId);
+          }
+        }
+        active.push(current);
+      }
+    }
+
     const weeksOverThreshold = new Map();
     if (WEEKLY_HOURS_THRESHOLD) {
       for (const [key, hours] of punchWeekTotals.entries()) {
@@ -15912,6 +16312,14 @@ app.get('/api/time-exceptions', requireViewTimeReports, async (req, res) => {
         if (minutes >= 0 && minutes < 5) {
           flags.push('Tiny punch (<5 min)');
         }
+      }
+
+      // 6a) Overlapping punches for the same employee
+      if (
+        isRuleEnabled('overlapping_punches') &&
+        overlappingPunchIds.has(Number(r.id))
+      ) {
+        flags.push('Overlapping punch window');
       }
 
       // 6b) Weekly overtime threshold
@@ -19387,7 +19795,7 @@ app.post('/api/time-entries/approve', requireModifyTime, requireApproveTime, asy
 
 /* ───────── 7. KIOSKS & KIOSK PUNCHES ───────── */
 
-app.post('/api/kiosk/punch', async (req, res) => {
+app.post('/api/kiosk/punch', maybeRateLimitKioskPunch, async (req, res) => {
   const {
     client_id,
     employee_id,
@@ -19553,6 +19961,24 @@ app.post('/api/kiosk/punch', async (req, res) => {
       geo_distance_m: existing.geo_distance_m,
       geo_radius_m: null
     });
+  }
+
+  if (queuedAt) {
+    const rulesMap = await loadExceptionRulesMap(orgId);
+    const maxAgeDays = resolveOfflinePunchMaxAgeDays(rulesMap);
+    const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+    const ageMs = now.getTime() - punchDate.getTime();
+    if (Number.isFinite(ageMs) && ageMs > maxAgeMs) {
+      const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+      return res.status(422).json({
+        ok: false,
+        code: 'offline_punch_too_old',
+        max_age_days: maxAgeDays,
+        age_days: ageDays,
+        punch_time: punchDate.toISOString(),
+        error: `Offline punch is older than ${maxAgeDays} day${maxAgeDays === 1 ? '' : 's'} and was not synced. Ask an admin to review and add time manually if needed.`
+      });
+    }
   }
 
   const open = await dbGet(
@@ -21198,20 +21624,82 @@ app.delete('/api/kiosks/:id/sessions/:sessionId', async (req, res) => {
     const counts = await dbGet(
       `
         SELECT
-          COUNT(*) AS entry_count,
-          SUM(CASE WHEN tp.clock_out_ts IS NULL THEN 1 ELSE 0 END) AS open_count
+          SUM(
+            CASE
+              WHEN tp.kiosk_session_id = ? THEN 1
+              ELSE 0
+            END
+          ) AS session_entry_count,
+          SUM(
+            CASE
+              WHEN tp.kiosk_session_id = ?
+                   AND tp.clock_out_ts IS NULL THEN 1
+              ELSE 0
+            END
+          ) AS session_open_count,
+          SUM(
+            CASE
+              WHEN tp.kiosk_session_id IS NULL
+                   AND tp.project_id = ?
+                   AND tp.clock_in_local_date = ?
+                   AND ((? IS NULL AND tp.device_id IS NULL) OR tp.device_id = ?)
+                THEN 1
+              ELSE 0
+            END
+          ) AS orphan_entry_count,
+          SUM(
+            CASE
+              WHEN tp.kiosk_session_id IS NULL
+                   AND tp.clock_out_ts IS NULL
+                   AND tp.project_id = ?
+                   AND tp.clock_in_local_date = ?
+                   AND ((? IS NULL AND tp.device_id IS NULL) OR tp.device_id = ?)
+                THEN 1
+              ELSE 0
+            END
+          ) AS orphan_open_count
         FROM time_punches tp
         WHERE tp.org_id = ?
-          AND tp.kiosk_session_id = ?
+          AND (
+            tp.kiosk_session_id = ?
+            OR (
+              tp.kiosk_session_id IS NULL
+              AND tp.project_id = ?
+              AND tp.clock_in_local_date = ?
+              AND ((? IS NULL AND tp.device_id IS NULL) OR tp.device_id = ?)
+            )
+          )
       `,
       [
+        sessionRow.id,
+        sessionRow.id,
+        sessionRow.project_id,
+        sessionRow.date,
+        sessionRow.device_id || null,
+        sessionRow.device_id || null,
+        sessionRow.project_id,
+        sessionRow.date,
+        sessionRow.device_id || null,
+        sessionRow.device_id || null,
         adminCtx.orgId,
-        sessionRow.id
+        sessionRow.id,
+        sessionRow.project_id,
+        sessionRow.date,
+        sessionRow.device_id || null,
+        sessionRow.device_id || null
       ]
     );
 
-    const entryCount = counts && counts.entry_count ? Number(counts.entry_count) : 0;
-    const openCount = counts && counts.open_count ? Number(counts.open_count) : 0;
+    const sessionEntryCount =
+      counts && counts.session_entry_count ? Number(counts.session_entry_count) : 0;
+    const sessionOpenCount =
+      counts && counts.session_open_count ? Number(counts.session_open_count) : 0;
+    const orphanEntryCount =
+      counts && counts.orphan_entry_count ? Number(counts.orphan_entry_count) : 0;
+    const orphanOpenCount =
+      counts && counts.orphan_open_count ? Number(counts.orphan_open_count) : 0;
+    const entryCount = sessionEntryCount + orphanEntryCount;
+    const openCount = sessionOpenCount + orphanOpenCount;
     const perms = await getAdminAccessPerms({
       employeeId: admin.id,
       orgId: adminCtx.orgId
@@ -23169,6 +23657,8 @@ const LONG_SHIFT_THRESHOLD_HOURS = 12;
 const MULTI_DAY_SHIFT_THRESHOLD_HOURS = 24;
 const WEEKLY_THRESHOLD_WARNING_RATIO = 0.9;
 const MANUAL_ENTRY_GUARDRAIL_MISMATCH_HOURS = 0.25;
+const DEFAULT_OFFLINE_PUNCH_MAX_AGE_DAYS = 14;
+const MAX_OFFLINE_PUNCH_MAX_AGE_DAYS = 365;
 
 function normalizeEventTypeList(raw, allowed) {
   if (!Array.isArray(raw)) return [];

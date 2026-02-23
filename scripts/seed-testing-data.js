@@ -1175,7 +1175,8 @@ async function main() {
       weekly_hours: true,
       weekly_hours_threshold: 45,
       auto_clockout_daily_max_hours: 13,
-      auto_clockout_weekly_max_hours: 55
+      auto_clockout_weekly_max_hours: 55,
+      offline_punch_max_age_days: 14
     });
 
     await ensureOrgSetting(db, orgId, 'company_name', `${seedTag} Construction`);

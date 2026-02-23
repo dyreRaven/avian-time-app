@@ -85,7 +85,7 @@ All listed sections were smoke-tested at least at the API/surface level. Fixes c
 - APNs delivery not validated (APNs unsupported).
 - Offline kiosk queue/resync validated for worker punches and kiosk-admin time-entry review actions.
 - Restore workflow validated in sandbox (DB + uploads).
-- Kiosk punch double-click dedupe not validated (ensure rapid taps do not enqueue duplicate punches).
+- Kiosk punch double-click dedupe validated (rapid taps did not enqueue duplicate punches in follow-up validation).
 
 ## Recommendation (rebuild vs cleanup)
 Cleanup is recommended. Core flows exist; the highest risks are access control, security hardening, environment/config, and a few logic gaps (geofence and payroll gating). Targeted fixes are likely lower risk and faster than a full rewrite.

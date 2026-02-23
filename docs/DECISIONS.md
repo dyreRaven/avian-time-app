@@ -1,5 +1,7 @@
 # Decisions Log
 
+- 2026-02-23: Returning from QuickBooks OAuth during onboarding now defers checklist rendering until after the QuickBooks modal opens, so users land directly in setup sync without intermediate onboarding flashes.
+- 2026-02-23: Offline kiosk punches now enforce a max sync age (`time_exception_rules.offline_punch_max_age_days`, default 14); older queued punches are rejected with `offline_punch_too_old` and surfaced to kiosk admins via sync warning.
 - 2026-02-23: Shift-shape exception flags are displayed with a priority order to avoid duplicate labels on the same punch: `multi_day` first, then `long_shift`, then `crosses_midnight`.
 - 2026-02-23: Kiosk Admin receipts behavior is upload-first for all kiosk admins; receipt list visibility is permission-scoped so super admins or admins with `view_payroll` can see all receipts, while other kiosk admins can only see receipts they uploaded.
 - 2026-02-23: Reimbursement lists (desktop + kiosk) are paginated and default to a server-applied 30-day window when no explicit start/end filters are provided.
@@ -16,6 +18,8 @@
 - 2026-02-23: Payroll reimbursements require a vendor at upload; reimbursement lines use `[Vendor] Reimbursement`, do not map Customer/Project to QBO line CustomerRef, use a dedicated receipt expense default (`receipt_expense_account_name`, fallback to main expense), use the reimbursement class default, and append `+ Reimbursement` to check memo/private note when present.
 - 2026-02-23: Payroll receipt reimbursements are first-class payroll inputs: super admins can submit receipt requests (employee + project + amount + file), payroll defaults include main expense account + dedicated receipt expense account + reimbursement class settings, and payroll can include reimbursements as dedicated lines (including reimbursement-only checks for employees with no time-entry pay in the period).
 - 2026-02-23: Payroll create/retry now uses a persistent run-review workflow: each run shows failed checks first and successful checks second, retries can target only selected failed employees, and unresolved runs (partial/failed) are resumable after leaving/reloading.
+- 2026-02-23: Payroll stuck-run recovery is admin-managed in-app: create/retry 409 in-progress responses return active run + lock context, and admins can inspect/cancel active runs (or clear stale payroll locks) directly from a Payroll `Run Status` modal.
+- 2026-02-23: Payroll standard runs may overlap date ranges; duplicate payment is prevented by eligibility rules (`approval_status=approved` and `paid=0`) so previously paid time entries are excluded from new checks.
 - 2026-02-23: Payroll overtime toggle (`Include overtime in pay`) is deferred from the Payroll UI for now; the control is hidden, but underlying overtime-run logic remains for future re-enable.
 - 2026-02-23: Adjustment payroll runs are deferred for now; the payroll UI control is hidden, but underlying adjustment-run code remains for future re-enable.
 - 2026-02-23: Employee display names must be unique per org (case-insensitive, trimmed). Employee create/update/name-edit now block duplicates and the DB enforces this with a unique index.

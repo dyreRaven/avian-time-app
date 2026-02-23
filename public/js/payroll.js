@@ -68,6 +68,10 @@ let payrollReimbursementCurrentPage = 1;
 let payrollReimbursementTotalPages = 1;
 let payrollReimbursementTotalCount = 0;
 let payrollReimbursementLastFilters = null;
+let payrollPreflightFailureResolver = null;
+let currentPayrollActiveRunState = { run: null, payrollLock: null };
+let payrollActiveRunContextMessage = '';
+let payrollActiveRunActionsBound = false;
 
 function collectPayrollWarnings(results) {
   if (!Array.isArray(results)) return [];
@@ -102,36 +106,6 @@ function buildPendingApprovalsMessage(pendingRows) {
   return `\n\nPending approvals in this period:\n${preview.join('\n')}${moreLine}`;
 }
 
-function buildPendingApprovalsConfirmWarning({ pendingRows = [], pendingCount = null } = {}) {
-  const rows = Array.isArray(pendingRows) ? pendingRows : [];
-  const parsedCount = Number(pendingCount);
-  const totalCount =
-    Number.isFinite(parsedCount) && parsedCount >= 0
-      ? parsedCount
-      : rows.length;
-  if (totalCount <= 0) return '';
-
-  const maxRows = 6;
-  const preview = rows.slice(0, maxRows).map(row => {
-    const employee = row?.employee_name || '(Employee)';
-    const start = row?.start_date || '';
-    const end = row?.end_date || '';
-    const dateLabel = start && end
-      ? (start === end ? formatDateUS(start) : `${formatDateUS(start)} to ${formatDateUS(end)}`)
-      : (start ? formatDateUS(start) : (end ? formatDateUS(end) : 'Unknown date'));
-    return `• ${employee} (${dateLabel})`;
-  });
-  const remaining = Math.max(0, totalCount - preview.length);
-  const heading = totalCount === 1
-    ? 'Warning: 1 time entry in this period is not payroll-approved yet.'
-    : `Warning: ${totalCount} time entries in this period are not payroll-approved yet.`;
-  const previewText = preview.length
-    ? `\n${preview.join('\n')}${remaining > 0 ? `\n• +${remaining} more` : ''}`
-    : '';
-
-  return `\n\n${heading}\nPayroll will run only for approved selected entries.${previewText}`;
-}
-
 function buildPayrollApiErrorMessage(err) {
   const base = (err && err.message) ? err.message : String(err || 'Unknown error');
   const pendingRows = Array.isArray(err?.body?.pending)
@@ -143,6 +117,221 @@ function buildPayrollApiErrorMessage(err) {
     return base + buildPendingApprovalsMessage(pendingRows);
   }
   return base;
+}
+
+function buildPayrollRequestErrorMessage(actionLabel, err) {
+  const label = String(actionLabel || 'Request').trim();
+  const status = Number(err?.status);
+  const statusSuffix = Number.isFinite(status) && status > 0 ? ` (HTTP ${status})` : '';
+  const detail = String(buildPayrollApiErrorMessage(err) || '').trim();
+  if (detail) {
+    return `${label} failed${statusSuffix}.\n\n${detail}`;
+  }
+  return `${label} failed${statusSuffix}.`;
+}
+
+function extractPayrollRunIdFromError(err) {
+  const body = err?.body || {};
+  const candidates = [
+    body?.payrollRunId,
+    body?.payroll_run_id,
+    body?.run_id,
+    body?.run?.id,
+    body?.active_run?.id,
+    body?.overlapping_run_id,
+    body?.overlapping_run?.id
+  ];
+  for (const raw of candidates) {
+    const id = Number(raw);
+    if (Number.isFinite(id) && id > 0) return id;
+  }
+  return null;
+}
+
+function isPayrollRunInProgressConflict(body = {}) {
+  const code = String(body?.code || '').trim().toLowerCase();
+  if (code === 'payroll_run_in_progress') return true;
+  const text = String(body?.error || body?.message || '').toLowerCase();
+  return text.includes('already in progress');
+}
+
+function getPayrollOverlapNoticeMeta(body = {}) {
+  const overlapStatus = String(body?.overlapping_run?.status || '').trim().toUpperCase();
+  const normalizedStatus = overlapStatus.toLowerCase();
+  const hasIssues =
+    normalizedStatus.includes('fail') ||
+    normalizedStatus.includes('error') ||
+    normalizedStatus.includes('partial');
+  return {
+    overlapStatus,
+    hasIssues
+  };
+}
+
+function buildPayrollOverlapRunNotice(actionLabel, overlapRunId, body = {}) {
+  const safeAction = String(actionLabel || 'Request').trim();
+  const { overlapStatus } = getPayrollOverlapNoticeMeta(body);
+  const runLabel = overlapStatus
+    ? `run #${overlapRunId} (${overlapStatus})`
+    : `run #${overlapRunId}`;
+  const lead = safeAction === 'Retry checks'
+    ? 'Retry was not started because a payroll run already exists for an overlapping period.'
+    : 'Checks were not created because a payroll run already exists for an overlapping period.';
+  return `${lead}\n\nLoaded existing ${runLabel} in Payroll Run Review below.\nUse retry/unpay for that run, or create an adjustment run explicitly.`;
+}
+
+function closePayrollPreflightFailureModal(result = false) {
+  const backdrop = document.getElementById('payroll-preflight-failure-backdrop');
+  const modal = document.getElementById('payroll-preflight-failure-modal');
+  if (backdrop) backdrop.classList.add('hidden');
+  if (modal) modal.classList.add('hidden');
+  if (payrollPreflightFailureResolver) {
+    payrollPreflightFailureResolver(result);
+    payrollPreflightFailureResolver = null;
+  }
+}
+
+function buildPayrollPreflightFailureFallbackMessage(mode, failures) {
+  const list = Array.isArray(failures) ? failures : [];
+  const header = mode === 'retry'
+    ? 'Some retry checks still look like they will fail:'
+    : 'Some checks still look like they will fail:';
+  const preview = list
+    .slice(0, 8)
+    .map(row => `• ${row?.employeeName || 'Employee'} — ${row?.error || 'Unknown error'}`)
+    .join('\n');
+  const remaining = Math.max(0, list.length - 8);
+  const tail = remaining > 0 ? `\n• +${remaining} more` : '';
+  const action = mode === 'retry'
+    ? '\n\nRetry ready checks now and leave these for later fixes?'
+    : '\n\nCreate ready checks now and leave these for later fixes?';
+  return `${header}\n\n${preview}${tail}${action}`;
+}
+
+function buildPayrollPreflightDecisionFallbackMessage({
+  title = '',
+  message = '',
+  confirmLabel = 'Continue'
+} = {}) {
+  const parts = [String(title || '').trim(), String(message || '').trim()].filter(Boolean);
+  const suffix = String(confirmLabel || 'Continue').trim();
+  return `${parts.join('\n\n')}\n\n${suffix}?`.trim();
+}
+
+function formatPayrollPreflightDate(dateValue) {
+  const raw = String(dateValue || '').trim();
+  if (!raw) return '';
+  const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (ymd) return `${ymd[2]}/${ymd[3]}/${ymd[1]}`;
+  return formatDateUS(raw);
+}
+
+function showPayrollPreflightDecisionModal({
+  title = 'Continue?',
+  message = '',
+  confirmLabel = 'Continue',
+  cancelLabel = 'Cancel and Back',
+  failures = [],
+  failureMode = 'create'
+} = {}) {
+  const backdrop = document.getElementById('payroll-preflight-failure-backdrop');
+  const modal = document.getElementById('payroll-preflight-failure-modal');
+  const titleEl = document.getElementById('payroll-preflight-failure-title');
+  const messageEl = document.getElementById('payroll-preflight-failure-message');
+  const listEl = document.getElementById('payroll-preflight-failure-list');
+  const cancelBtn = document.getElementById('payroll-preflight-failure-cancel');
+  const confirmBtn = document.getElementById('payroll-preflight-failure-confirm');
+
+  if (!backdrop || !modal || !titleEl || !messageEl || !listEl || !cancelBtn || !confirmBtn) {
+    const fallback = Array.isArray(failures) && failures.length
+      ? buildPayrollPreflightFailureFallbackMessage(failureMode, failures)
+      : buildPayrollPreflightDecisionFallbackMessage({ title, message, confirmLabel });
+    return Promise.resolve(window.confirm(fallback));
+  }
+
+  titleEl.textContent = title;
+  messageEl.textContent = message;
+  confirmBtn.textContent = confirmLabel;
+  cancelBtn.textContent = cancelLabel;
+
+  listEl.innerHTML = '';
+  const rows = Array.isArray(failures) ? failures : [];
+  const maxRows = 10;
+  if (rows.length) {
+    rows.slice(0, maxRows).forEach(row => {
+      const li = document.createElement('li');
+      const employee = row?.employeeName || 'Employee';
+      const reason = row?.error || 'Unknown error';
+      li.textContent = `${employee}: ${reason}`;
+      listEl.appendChild(li);
+    });
+    const remaining = Math.max(0, rows.length - maxRows);
+    if (remaining > 0) {
+      const li = document.createElement('li');
+      li.textContent = `+${remaining} more`;
+      listEl.appendChild(li);
+    }
+    listEl.classList.remove('hidden');
+  } else {
+    listEl.classList.add('hidden');
+  }
+
+  backdrop.classList.remove('hidden');
+  modal.classList.remove('hidden');
+
+  return new Promise(resolve => {
+    payrollPreflightFailureResolver = resolve;
+    setTimeout(() => confirmBtn.focus(), 0);
+  });
+}
+
+function showPayrollPreflightFailureModal({ mode = 'create', failures = [] } = {}) {
+  const isRetry = mode === 'retry';
+  return showPayrollPreflightDecisionModal({
+    title: isRetry ? 'Some retry checks still need fixes' : 'Some checks still need fixes',
+    message: isRetry
+      ? 'You can retry the ready checks now. The checks below will stay in Payroll Run Review so you can fix and retry them later.'
+      : 'You can create the ready checks now. The checks below will stay in Payroll Run Review so you can fix and retry them later.',
+    confirmLabel: isRetry ? 'Retry Ready Checks' : 'Create Ready Checks',
+    cancelLabel: 'Cancel and Back',
+    failures,
+    failureMode: isRetry ? 'retry' : 'create'
+  });
+}
+
+function setupPayrollPreflightFailureModal() {
+  const backdrop = document.getElementById('payroll-preflight-failure-backdrop');
+  const modal = document.getElementById('payroll-preflight-failure-modal');
+  const closeBtn = document.getElementById('payroll-preflight-failure-close');
+  const cancelBtn = document.getElementById('payroll-preflight-failure-cancel');
+  const confirmBtn = document.getElementById('payroll-preflight-failure-confirm');
+
+  if (backdrop && !backdrop.dataset.bound) {
+    backdrop.dataset.bound = '1';
+    backdrop.addEventListener('click', event => {
+      if (event.target === backdrop) closePayrollPreflightFailureModal(false);
+    });
+  }
+  if (closeBtn && !closeBtn.dataset.bound) {
+    closeBtn.dataset.bound = '1';
+    closeBtn.addEventListener('click', () => closePayrollPreflightFailureModal(false));
+  }
+  if (cancelBtn && !cancelBtn.dataset.bound) {
+    cancelBtn.dataset.bound = '1';
+    cancelBtn.addEventListener('click', () => closePayrollPreflightFailureModal(false));
+  }
+  if (confirmBtn && !confirmBtn.dataset.bound) {
+    confirmBtn.dataset.bound = '1';
+    confirmBtn.addEventListener('click', () => closePayrollPreflightFailureModal(true));
+  }
+  if (modal && !modal.dataset.boundEscape) {
+    modal.dataset.boundEscape = '1';
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      if (modal.classList.contains('hidden')) return;
+      closePayrollPreflightFailureModal(false);
+    });
+  }
 }
 
 function openPayrollReviewTimeEntries() {
@@ -295,6 +484,11 @@ function applyPayrollSettingsAccess() {
       retryBtn.title = '';
     }
   }
+  const activeRunBtn = document.getElementById('payroll-active-run-manage');
+  if (activeRunBtn) {
+    activeRunBtn.disabled = !canEdit;
+    activeRunBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
+  }
   const runReviewRetryBtn = document.getElementById('payroll-run-review-retry-selected');
   if (runReviewRetryBtn) {
     runReviewRetryBtn.title = canEdit ? '' : 'Requires modify payroll permission.';
@@ -304,6 +498,7 @@ function applyPayrollSettingsAccess() {
     el.title = canEdit ? '' : 'Requires modify payroll permission.';
   });
   updatePayrollRunReviewRetryButtonState();
+  renderPayrollActiveRunModal(currentPayrollActiveRunState);
 
   const reimbursementFieldIds = [
     'payroll-reimbursement-employee',
@@ -744,9 +939,347 @@ function setReportsMessage(text, isError = false) {
   msgEl.style.color = isError ? '#b91c1c' : '';
 }
 
+function getPayrollActiveRunElements() {
+  return {
+    manageBtn: document.getElementById('payroll-active-run-manage'),
+    backdrop: document.getElementById('payroll-active-run-backdrop'),
+    modal: document.getElementById('payroll-active-run-modal'),
+    title: document.getElementById('payroll-active-run-title'),
+    message: document.getElementById('payroll-active-run-message'),
+    runMeta: document.getElementById('payroll-active-run-run-meta'),
+    lockMeta: document.getElementById('payroll-active-run-lock-meta'),
+    refreshBtn: document.getElementById('payroll-active-run-refresh'),
+    viewBtn: document.getElementById('payroll-active-run-view'),
+    cancelBtn: document.getElementById('payroll-active-run-cancel'),
+    closeBtn: document.getElementById('payroll-active-run-close'),
+    doneBtn: document.getElementById('payroll-active-run-done')
+  };
+}
+
+function openPayrollActiveRunModal() {
+  const { modal, backdrop } = getPayrollActiveRunElements();
+  if (backdrop) backdrop.classList.remove('hidden');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closePayrollActiveRunModal() {
+  const { modal, backdrop } = getPayrollActiveRunElements();
+  if (modal) modal.classList.add('hidden');
+  if (backdrop) backdrop.classList.add('hidden');
+}
+
+function normalizePayrollActiveRunPayload(payload = {}) {
+  const body = payload && typeof payload === 'object' ? payload : {};
+  const runRaw = body.run || body.active_run || null;
+  const runIdFallback = Number(
+    body.payrollRunId ||
+      body.payroll_run_id ||
+      body.run_id ||
+      body.active_run_id ||
+      0
+  );
+  const run =
+    runRaw && typeof runRaw === 'object'
+      ? {
+          id: Number(runRaw.id) || null,
+          status: runRaw.status || body.status || null,
+          start_date: runRaw.start_date || null,
+          end_date: runRaw.end_date || null,
+          created_at: runRaw.created_at || null,
+          run_type: runRaw.run_type || 'standard',
+          adjustment_reason: runRaw.adjustment_reason || null,
+          last_error: runRaw.last_error || null,
+          last_attempt_id: runRaw.last_attempt_id || null
+        }
+      : (Number.isFinite(runIdFallback) && runIdFallback > 0
+        ? {
+            id: runIdFallback,
+            status: body.status || null,
+            start_date: null,
+            end_date: null,
+            created_at: null,
+            run_type: 'standard',
+            adjustment_reason: null,
+            last_error: null,
+            last_attempt_id: null
+          }
+        : null);
+
+  const lockRaw = body.payroll_lock || body.lock || null;
+  const payrollLock =
+    lockRaw && typeof lockRaw === 'object'
+      ? {
+          locked_by: lockRaw.locked_by || null,
+          locked_at: lockRaw.locked_at || null
+        }
+      : null;
+
+  return { run, payrollLock };
+}
+
+function renderPayrollActiveRunModal(state = currentPayrollActiveRunState) {
+  const { title, message, runMeta, lockMeta, viewBtn, cancelBtn } = getPayrollActiveRunElements();
+  if (!message || !runMeta || !lockMeta || !cancelBtn) return;
+
+  const run = state?.run || null;
+  const payrollLock = state?.payrollLock || null;
+  const runStatus = String(run?.status || '').trim().toLowerCase();
+  const runStatusLabel = formatPayrollRunStatus(run?.status || '') || '-';
+  const hasCancelableRun = runStatus === 'pending' || runStatus === 'in_progress';
+  const canCancel = hasCancelableRun || !!payrollLock;
+
+  if (title) title.textContent = 'Payroll Run Status';
+
+  if (payrollActiveRunContextMessage) {
+    message.textContent = payrollActiveRunContextMessage;
+  } else if (hasCancelableRun && run?.id) {
+    message.textContent =
+      `Run #${run.id} is still ${runStatusLabel}. If this run appears stuck, cancel it before creating checks again.`;
+  } else if (payrollLock) {
+    message.textContent =
+      'Payroll is currently locked, but no active run was found. You can clear the lock if a request was interrupted.';
+  } else {
+    message.textContent = 'No payroll run is currently in progress.';
+  }
+
+  if (run && run.id) {
+    const period = run.start_date && run.end_date
+      ? `${formatDateUS(run.start_date)} - ${formatDateUS(run.end_date)}`
+      : '-';
+    const created = run.created_at ? formatDateTimeLocal(run.created_at) : '';
+    const lastError = run.last_error ? ` | Last Error: ${run.last_error}` : '';
+    runMeta.textContent =
+      `Run #${run.id} | Status ${runStatusLabel} | Period ${period}${created ? ` | Created ${created}` : ''}${lastError}`;
+    runMeta.classList.remove('hidden');
+  } else {
+    runMeta.textContent = '';
+    runMeta.classList.add('hidden');
+  }
+
+  if (payrollLock) {
+    const lockedBy = payrollLock.locked_by || 'unknown';
+    const lockedAt = payrollLock.locked_at
+      ? formatDateTimeLocal(payrollLock.locked_at) || payrollLock.locked_at
+      : 'unknown time';
+    lockMeta.textContent = `Payroll lock held by ${lockedBy} at ${lockedAt}.`;
+    lockMeta.classList.remove('hidden');
+  } else {
+    lockMeta.textContent = '';
+    lockMeta.classList.add('hidden');
+  }
+
+  if (viewBtn) {
+    const hasRun = !!(run && run.id);
+    viewBtn.disabled = !hasRun;
+    viewBtn.classList.toggle('hidden', !hasRun);
+  }
+
+  const canEdit = canModifyPayrollReports();
+  cancelBtn.disabled = !canEdit || !canCancel;
+  cancelBtn.title = !canEdit
+    ? 'Requires modify payroll permission.'
+    : (canCancel ? '' : 'No active payroll run or lock to cancel.');
+  cancelBtn.textContent = hasCancelableRun ? 'Cancel Active Run' : 'Clear Payroll Lock';
+}
+
+async function loadPayrollActiveRunStatus(options = {}) {
+  const {
+    openModal = false,
+    payload = null,
+    contextMessage = ''
+  } = options;
+
+  let sourcePayload = payload;
+  if (!sourcePayload) {
+    sourcePayload = await fetchJSON('/api/payroll/active-run');
+  }
+
+  currentPayrollActiveRunState = normalizePayrollActiveRunPayload(sourcePayload);
+  payrollActiveRunContextMessage = String(contextMessage || '').trim();
+  renderPayrollActiveRunModal(currentPayrollActiveRunState);
+  if (openModal) openPayrollActiveRunModal();
+  return currentPayrollActiveRunState;
+}
+
+async function showPayrollRunInProgressModal(actionLabel, errorBody = null) {
+  const action = String(actionLabel || 'Create checks').trim();
+  const contextMessage =
+    `${action} was not started because another payroll run is in progress. ` +
+    'Use Run Status to refresh, open the run review, or cancel a stuck run.';
+  try {
+    await loadPayrollActiveRunStatus({
+      openModal: true,
+      payload: errorBody,
+      contextMessage
+    });
+  } catch (err) {
+    console.warn('Failed loading active payroll run status:', err);
+    alert(contextMessage);
+  }
+}
+
+async function cancelPayrollActiveRunFromModal() {
+  const canEdit = canModifyPayrollReports();
+  if (!canEdit) {
+    alert('Requires modify payroll permission.');
+    return;
+  }
+
+  const run = currentPayrollActiveRunState?.run || null;
+  const payrollLock = currentPayrollActiveRunState?.payrollLock || null;
+  if (!run && !payrollLock) {
+    alert('No active payroll run or lock was found.');
+    return;
+  }
+
+  const confirmText = run && run.id
+    ? `Cancel payroll run #${run.id} and clear the payroll lock? Use this only if payroll is stuck.`
+    : 'Clear the payroll lock? Use this only if payroll is stuck.';
+  if (!window.confirm(confirmText)) return;
+
+  const { cancelBtn } = getPayrollActiveRunElements();
+  if (cancelBtn) cancelBtn.disabled = true;
+
+  try {
+    const payload = await fetchJSON('/api/payroll/active-run/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        payrollRunId: run?.id || null,
+        reason: 'Cancelled from Payroll Run Status modal.'
+      })
+    });
+
+    const cancelledRunId = Number(payload?.cancelled_run_id || 0);
+    const contextMessage = cancelledRunId > 0
+      ? `Cancelled payroll run #${cancelledRunId}.`
+      : (payload?.had_lock ? 'Cleared payroll lock.' : 'No active payroll run was found to cancel.');
+
+    await loadPayrollActiveRunStatus({
+      openModal: true,
+      payload,
+      contextMessage
+    });
+
+    if (cancelledRunId > 0) {
+      try {
+        await loadPayrollRunReviewById(cancelledRunId, {
+          preserveSelection: false,
+          scrollIntoView: false
+        });
+      } catch (err) {
+        console.warn('Failed loading payroll run review after cancel:', err);
+      }
+    }
+
+    if (
+      typeof loadPayrollSummary === 'function' &&
+      currentPayrollRange?.start &&
+      currentPayrollRange?.end
+    ) {
+      loadPayrollSummary();
+    }
+  } catch (err) {
+    console.error('Failed cancelling active payroll run:', err);
+    alert('Failed to cancel active payroll run: ' + (err?.message || 'Unknown error.'));
+  } finally {
+    renderPayrollActiveRunModal(currentPayrollActiveRunState);
+  }
+}
+
+function setupPayrollActiveRunActions() {
+  if (payrollActiveRunActionsBound) return;
+  const els = getPayrollActiveRunElements();
+  if (!els.modal) return;
+  payrollActiveRunActionsBound = true;
+
+  if (els.manageBtn) {
+    els.manageBtn.addEventListener('click', async () => {
+      payrollActiveRunContextMessage = '';
+      if (els.message) els.message.textContent = 'Checking payroll run status...';
+      if (els.runMeta) els.runMeta.classList.add('hidden');
+      if (els.lockMeta) els.lockMeta.classList.add('hidden');
+      openPayrollActiveRunModal();
+      try {
+        await loadPayrollActiveRunStatus({
+          openModal: true,
+          contextMessage: ''
+        });
+      } catch (err) {
+        console.warn('Failed loading payroll run status:', err);
+        if (els.message) {
+          els.message.textContent = err?.message || 'Failed to load payroll run status.';
+        }
+      }
+    });
+  }
+
+  if (els.refreshBtn) {
+    els.refreshBtn.addEventListener('click', async () => {
+      try {
+        await loadPayrollActiveRunStatus({ openModal: true, contextMessage: '' });
+      } catch (err) {
+        console.warn('Failed refreshing payroll run status:', err);
+        if (els.message) {
+          els.message.textContent = err?.message || 'Failed to refresh payroll run status.';
+        }
+      }
+    });
+  }
+
+  if (els.viewBtn) {
+    els.viewBtn.addEventListener('click', async () => {
+      const runId = Number(currentPayrollActiveRunState?.run?.id || 0);
+      if (!runId) return;
+      try {
+        await loadPayrollRunReviewById(runId, {
+          preserveSelection: true,
+          scrollIntoView: false
+        });
+        closePayrollActiveRunModal();
+        openPayrollRunReviewModal();
+      } catch (err) {
+        console.warn('Failed loading payroll run review from run-status modal:', err);
+        alert('Failed to open payroll run review: ' + (err?.message || 'Unknown error.'));
+      }
+    });
+  }
+
+  if (els.cancelBtn) {
+    els.cancelBtn.addEventListener('click', cancelPayrollActiveRunFromModal);
+  }
+
+  if (els.closeBtn) {
+    els.closeBtn.addEventListener('click', closePayrollActiveRunModal);
+  }
+
+  if (els.doneBtn) {
+    els.doneBtn.addEventListener('click', closePayrollActiveRunModal);
+  }
+
+  if (els.backdrop) {
+    els.backdrop.addEventListener('click', event => {
+      if (event.target === els.backdrop) closePayrollActiveRunModal();
+    });
+  }
+
+  if (!document.body.dataset.payrollActiveRunEscapeBound) {
+    document.body.dataset.payrollActiveRunEscapeBound = '1';
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      const { modal } = getPayrollActiveRunElements();
+      if (!modal || modal.classList.contains('hidden')) return;
+      closePayrollActiveRunModal();
+    });
+  }
+}
+
 function getPayrollRunReviewElements() {
   return {
+    backdrop: document.getElementById('payroll-run-review-backdrop'),
     wrap: document.getElementById('payroll-run-review'),
+    closeBtn: document.getElementById('payroll-run-review-close'),
+    doneBtn: document.getElementById('payroll-run-review-done'),
     subtext: document.getElementById('payroll-run-review-subtext'),
     meta: document.getElementById('payroll-run-review-meta'),
     alert: document.getElementById('payroll-run-review-alert'),
@@ -758,6 +1291,18 @@ function getPayrollRunReviewElements() {
     loadPeriodBtn: document.getElementById('payroll-run-review-load-period'),
     refreshBtn: document.getElementById('payroll-run-review-refresh')
   };
+}
+
+function openPayrollRunReviewModal() {
+  const { wrap, backdrop } = getPayrollRunReviewElements();
+  if (backdrop) backdrop.classList.remove('hidden');
+  if (wrap) wrap.classList.remove('hidden');
+}
+
+function closePayrollRunReviewModal() {
+  const { wrap, backdrop } = getPayrollRunReviewElements();
+  if (wrap) wrap.classList.add('hidden');
+  if (backdrop) backdrop.classList.add('hidden');
 }
 
 function getPayrollReviewFailedRows(review = currentPayrollRunReview) {
@@ -774,6 +1319,24 @@ function getPayrollReviewSelectedFailedEmployeeIds() {
   return [...payrollRunReviewRetrySelections]
     .map(id => Number(id))
     .filter(Number.isFinite);
+}
+
+function applyPayrollRunReviewNoticeContext(message = '') {
+  const { subtext } = getPayrollRunReviewElements();
+  if (!subtext) return;
+  const text = String(message || '').toLowerCase();
+  if (text.includes('already exists for an overlapping period')) {
+    subtext.textContent =
+      'Create checks failed for this attempt. An existing payroll run was loaded for this period and no new checks were sent.';
+    return;
+  }
+  if (
+    text.includes('no payroll-approved unpaid entries are eligible') ||
+    text.includes('no checks were sent')
+  ) {
+    subtext.textContent =
+      'Create checks failed for this attempt. There were no eligible unpaid entries to send.';
+  }
 }
 
 function setPayrollRunReviewAlert(message, isError = true) {
@@ -856,6 +1419,7 @@ async function showPayrollRunReviewNotice(message, options = {}) {
     scrollIntoView = true,
     fallbackAlert = true
   } = options;
+  void scrollIntoView;
   const text = String(message || '').trim();
   if (!text) return false;
 
@@ -875,9 +1439,7 @@ async function showPayrollRunReviewNotice(message, options = {}) {
 
   const { wrap } = getPayrollRunReviewElements();
   if (wrap && !wrap.classList.contains('hidden')) {
-    if (scrollIntoView) {
-      wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    applyPayrollRunReviewNoticeContext(text);
     setPayrollRunReviewAlert(text, isError);
     return true;
   }
@@ -885,6 +1447,7 @@ async function showPayrollRunReviewNotice(message, options = {}) {
   if (fallbackAlert && !rendered) {
     alert(text);
   } else if (rendered) {
+    applyPayrollRunReviewNoticeContext(text);
     setPayrollRunReviewAlert(text, isError);
   }
   return rendered;
@@ -946,7 +1509,8 @@ function renderPayrollRunReview(review, options = {}) {
   if (!review || !review.run) {
     currentPayrollRunReview = null;
     payrollRunReviewRetrySelections = new Set();
-    els.wrap.classList.add('hidden');
+    closePayrollRunReviewModal();
+    setPayrollRunReviewAlert('');
     return;
   }
 
@@ -985,12 +1549,16 @@ function renderPayrollRunReview(review, options = {}) {
   }
 
   if (els.subtext) {
-    if (failedRows.length) {
+    const normalizedRunStatus = String(run.status || '').trim().toLowerCase();
+    if (normalizedRunStatus === 'pending' || normalizedRunStatus === 'in_progress') {
+      els.subtext.textContent =
+        'This payroll run is still in progress. Refresh to see the latest failed/successful check results.';
+    } else if (failedRows.length) {
       els.subtext.textContent =
         'Some checks failed. Fix any payroll details, then retry only the failed employees you select.';
     } else {
       els.subtext.textContent =
-        'No failures in the latest attempt. Successful checks are listed here for reference.';
+        'Completed successfully. No failed checks were returned for this run. Review successful checks below.';
     }
   }
 
@@ -1012,7 +1580,14 @@ function renderPayrollRunReview(review, options = {}) {
     (latestAttempt && latestAttempt.fatal_error) ||
     run.last_error ||
     '';
-  setPayrollRunReviewAlert(alertMessage, true);
+  if (failedRows.length) {
+    setPayrollRunReviewAlert(alertMessage, true);
+  } else {
+    setPayrollRunReviewAlert(
+      'Completed successfully. All checks in this run are listed below.',
+      false
+    );
+  }
 
   if (els.failedCount) {
     els.failedCount.textContent = String(failedRows.length);
@@ -1097,23 +1672,18 @@ function renderPayrollRunReview(review, options = {}) {
     }
   }
 
-  els.wrap.classList.remove('hidden');
+  openPayrollRunReviewModal();
   updatePayrollRunReviewRetryButtonState();
 }
 
 async function loadPayrollRunReviewById(runId, options = {}) {
   const { preserveSelection = false, scrollIntoView = false } = options;
+  void scrollIntoView;
   const normalizedRunId = Number(runId);
   if (!Number.isFinite(normalizedRunId) || normalizedRunId <= 0) return null;
   const payload = await fetchJSON(`/api/reports/payroll-runs/${normalizedRunId}/review`);
   const review = payload?.review || null;
   renderPayrollRunReview(review, { preserveSelection });
-  if (scrollIntoView) {
-    const { wrap } = getPayrollRunReviewElements();
-    if (wrap && !wrap.classList.contains('hidden')) {
-      wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }
   return review;
 }
 
@@ -1619,61 +2189,60 @@ async function runPayrollPreflightWithConfirm(payload, options) {
     return null;
   }
 
+  if (Number(preflightData.snapshot_count || 0) <= 0) {
+    const prefix = mode === 'retry' ? 'Retry failed' : 'Create checks failed';
+    alert(`${prefix}.\n\nNo payroll-approved unpaid entries are eligible for this request.`);
+    return null;
+  }
+
   lastPayrollPreflightId = preflightData.preflight_id;
   lastPayrollPayloadHash = preflightData.payload_hash;
-
-  const pendingFieldReviewCount = Number(preflightData?.field_review?.pending_count || 0);
-  const pendingApprovalRows = Array.isArray(preflightData?.pending_approvals?.pending)
-    ? preflightData.pending_approvals.pending
-    : [];
-  const pendingApprovalCountRaw = Number(preflightData?.pending_approvals?.pending_count);
-  const pendingApprovalCount =
-    Number.isFinite(pendingApprovalCountRaw) && pendingApprovalCountRaw >= 0
-      ? pendingApprovalCountRaw
-      : pendingApprovalRows.length;
-  const pendingApprovalsWarning = buildPendingApprovalsConfirmWarning({
-    pendingRows: pendingApprovalRows,
-    pendingCount: pendingApprovalCount
-  });
-  const fieldReviewWarning = pendingFieldReviewCount > 0
-    ? `\n\nNote: ${pendingFieldReviewCount} time entries are still awaiting field review. Payroll can proceed, but you may want to double-check those entries.`
-    : '';
 
   const previewFailures = Array.isArray(preflightData.results)
     ? preflightData.results.filter(r => r && r.ok === false)
     : [];
 
   if (previewFailures.length) {
-    const failureText = previewFailures
-      .map(f => `• ${f.employeeName || 'Employee'} – ${f.error || 'Unknown error'}`)
-      .join('\n');
-    const prompt = mode === 'retry'
-      ? 'The following retry checks still look like they will fail:\n\n' +
-        failureText +
-        '\n\nSend the rest to QuickBooks and leave these in the queue?' +
-        pendingApprovalsWarning +
-        fieldReviewWarning
-      : 'The following checks look like they will fail:\n\n' +
-        failureText +
-        '\n\nSend the rest to QuickBooks and leave these in the queue?' +
-        pendingApprovalsWarning +
-        fieldReviewWarning;
-    if (!confirm(prompt)) {
+    const proceed = await showPayrollPreflightFailureModal({
+      mode,
+      failures: previewFailures
+    });
+    if (!proceed) {
       return null;
     }
   } else {
-    let confirmText = '';
+    let confirmTitle = '';
+    let confirmMessage = '';
+    let confirmLabel = '';
+    const startFormatted = formatPayrollPreflightDate(start);
+    const endFormatted = formatPayrollPreflightDate(end);
+    const payPeriodLabel = startFormatted && endFormatted
+      ? `${startFormatted} to ${endFormatted}`
+      : (startFormatted || endFormatted || `${start || ''} to ${end || ''}`);
     if (mode === 'retry') {
       const failedCount = Array.isArray(failedEmployeeIds) ? failedEmployeeIds.length : 0;
-      confirmText = `Retry QuickBooks checks for ${failedCount} failed employees?`;
+      confirmTitle = 'Retry QuickBooks checks?';
+      confirmMessage = failedCount === 1
+        ? `Retry checks for 1 failed employee now. Pay period: ${payPeriodLabel}.`
+        : `Retry checks for ${failedCount} failed employees now. Pay period: ${payPeriodLabel}.`;
+      confirmLabel = 'Retry Checks';
     } else if (runType === 'adjustment') {
-      confirmText = `Create an adjustment payroll run for ${start} to ${end}?` +
-        (adjustmentReason ? `\nReason: ${adjustmentReason}` : '');
+      confirmTitle = 'Create adjustment payroll run?';
+      confirmMessage = `Pay period: ${payPeriodLabel}.` +
+        (adjustmentReason ? ` Reason: ${adjustmentReason}` : '');
+      confirmLabel = 'Create Checks';
     } else {
-      confirmText = `Create QuickBooks checks for the period ${start} to ${end}?`;
+      confirmTitle = 'Create QuickBooks checks?';
+      confirmMessage = `Pay period: ${payPeriodLabel}.`;
+      confirmLabel = 'Create Checks';
     }
-    confirmText += pendingApprovalsWarning + fieldReviewWarning;
-    if (!confirm(confirmText)) {
+    const confirmed = await showPayrollPreflightDecisionModal({
+      title: confirmTitle,
+      message: confirmMessage,
+      confirmLabel,
+      cancelLabel: 'Cancel and Back'
+    });
+    if (!confirmed) {
       return null;
     }
   }
@@ -3469,6 +4038,9 @@ function setupPayrollOverrideInputs() {
     }
     el.addEventListener('input', updateOverride);
     el.addEventListener('change', updateOverride);
+    // Seed override state from the current UI value so untouched defaults
+    // (especially class selections) are still included in payloads.
+    updateOverride();
   });
 }
 
@@ -3611,14 +4183,20 @@ function refreshCurrentPayrollSettingsFromInputs() {
 
 function buildRetryOverridesForEmployeeIds(employeeIds = []) {
   const targetIds = new Set((employeeIds || []).map(Number).filter(Number.isFinite));
-  return Object.entries(payrollOverrides || {})
-    .map(([key, ov]) => ({
-      employeeId: Number(ov?.employeeId || key.split(':')[0]),
+  const byEmployee = new Map();
+  Object.entries(payrollOverrides || {}).forEach(([key, ov]) => {
+    // Retry employee overrides should only include employee-level edits, not per-line overrides.
+    if (String(key || '').includes(':')) return;
+    const employeeId = Number(ov?.employeeId || key);
+    if (!employeeId || !targetIds.has(employeeId)) return;
+    byEmployee.set(employeeId, {
+      employeeId,
       expenseAccountName: ov?.expenseAccountName || null,
       memo: ov?.memo || null,
       lineDescriptionTemplate: ov?.lineDescriptionTemplate || null
-    }))
-    .filter(o => o.employeeId && targetIds.has(o.employeeId));
+    });
+  });
+  return Array.from(byEmployee.values());
 }
 
 async function retryPayrollEmployees(options = {}) {
@@ -3722,13 +4300,22 @@ async function retryPayrollEmployees(options = {}) {
       const body = callErr && callErr.body ? callErr.body : null;
       if (callErr.status === 409 && body && body.snapshot_hash && conflictAttempts < 1) {
         data = body;
+      } else if (callErr.status === 409 && isPayrollRunInProgressConflict(body || {})) {
+        await showPayrollRunInProgressModal('Retry checks', body || {});
+        if (retryBtn) retryBtn.disabled = false;
+        if (createBtn) createBtn.disabled = false;
+        updatePayrollRunReviewRetryButtonState();
+        return;
       } else {
         console.error(`Error calling /api/payroll/create-checks (${sourceLabel}):`, callErr);
-        const msg = 'There was a problem contacting the server while retrying failed checks.\n\n' +
-          buildPayrollApiErrorMessage(callErr);
+        const overlapRunId = extractPayrollRunIdFromError(callErr);
+        const isOverlap = body?.code === 'overlapping_payroll_run' && overlapRunId;
+        const msg = isOverlap
+          ? buildPayrollOverlapRunNotice('Retry checks', overlapRunId, body)
+          : buildPayrollRequestErrorMessage('Retry checks', callErr);
         await showPayrollRunReviewNotice(msg, {
           isError: true,
-          runId: lastPayrollRunId || normalizedRunId,
+          runId: overlapRunId || lastPayrollRunId || normalizedRunId,
           preserveSelection: true,
           scrollIntoView: true,
           fallbackAlert: true
@@ -3741,9 +4328,12 @@ async function retryPayrollEmployees(options = {}) {
     }
 
     if (data && data.snapshot_hash && conflictAttempts < 1) {
-      const retryPreflight = confirm(
-        'Time entries changed since preflight. Re-run preflight and try again?'
-      );
+      const retryPreflight = await showPayrollPreflightDecisionModal({
+        title: 'Time entries changed since preflight',
+        message: 'Payroll entries were updated after preflight. Re-run preflight now to refresh this retry and continue?',
+        confirmLabel: 'Re-run Preflight',
+        cancelLabel: 'Cancel and Back'
+      });
       if (!retryPreflight) {
         if (createBtn) createBtn.disabled = false;
         if (retryBtn) retryBtn.disabled = false;
@@ -4047,13 +4637,21 @@ async function createChecksForCurrentRange() {
       const body = callErr && callErr.body ? callErr.body : null;
       if (callErr.status === 409 && body && body.snapshot_hash && conflictAttempts < 1) {
         data = body;
+      } else if (callErr.status === 409 && isPayrollRunInProgressConflict(body || {})) {
+        await showPayrollRunInProgressModal('Create checks', body || {});
+        if (retryBtn) retryBtn.disabled = false;
+        if (createBtn) createBtn.disabled = false;
+        return;
       } else {
         console.error('Error calling /api/payroll/create-checks:', callErr);
-        const msg = 'There was a problem contacting the server while creating checks.\n\n' +
-          buildPayrollApiErrorMessage(callErr);
+        const overlapRunId = extractPayrollRunIdFromError(callErr);
+        const isOverlap = body?.code === 'overlapping_payroll_run' && overlapRunId;
+        const msg = isOverlap
+          ? buildPayrollOverlapRunNotice('Create checks', overlapRunId, body)
+          : buildPayrollRequestErrorMessage('Create checks', callErr);
         await showPayrollRunReviewNotice(msg, {
           isError: true,
-          runId: lastPayrollRunId || null,
+          runId: overlapRunId || null,
           preserveSelection: true,
           scrollIntoView: true,
           fallbackAlert: true
@@ -4065,9 +4663,12 @@ async function createChecksForCurrentRange() {
     }
 
     if (data && data.snapshot_hash && conflictAttempts < 1) {
-      const retryPreflight = confirm(
-        'Time entries changed since preflight. Re-run preflight and try again?'
-      );
+      const retryPreflight = await showPayrollPreflightDecisionModal({
+        title: 'Time entries changed since preflight',
+        message: 'Payroll entries were updated after preflight. Re-run preflight now to refresh this run and continue?',
+        confirmLabel: 'Re-run Preflight',
+        cancelLabel: 'Cancel and Back'
+      });
       if (!retryPreflight) {
         if (createBtn) createBtn.disabled = false;
         if (retryBtn) retryBtn.disabled = false;
@@ -4213,6 +4814,23 @@ function setupPayrollRunReviewActions() {
   if (!els.wrap || els.wrap.dataset.bound) return;
   els.wrap.dataset.bound = '1';
 
+  if (els.backdrop && !els.backdrop.dataset.bound) {
+    els.backdrop.dataset.bound = '1';
+    els.backdrop.addEventListener('click', event => {
+      if (event.target === els.backdrop) closePayrollRunReviewModal();
+    });
+  }
+
+  if (els.closeBtn && !els.closeBtn.dataset.bound) {
+    els.closeBtn.dataset.bound = '1';
+    els.closeBtn.addEventListener('click', closePayrollRunReviewModal);
+  }
+
+  if (els.doneBtn && !els.doneBtn.dataset.bound) {
+    els.doneBtn.dataset.bound = '1';
+    els.doneBtn.addEventListener('click', closePayrollRunReviewModal);
+  }
+
   if (els.loadPeriodBtn) {
     els.loadPeriodBtn.addEventListener('click', async () => {
       const run = currentPayrollRunReview?.run;
@@ -4224,6 +4842,7 @@ function setupPayrollRunReviewActions() {
       currentPayrollRange = { start: run.start_date || null, end: run.end_date || null };
       try {
         await loadPayrollSummary();
+        closePayrollRunReviewModal();
       } catch (err) {
         console.warn('Failed loading payroll summary for run-review period:', err);
       }
@@ -4248,6 +4867,16 @@ function setupPayrollRunReviewActions() {
 
   if (els.retryBtn) {
     els.retryBtn.addEventListener('click', retrySelectedFailedChecksFromReview);
+  }
+
+  if (!document.body.dataset.payrollRunReviewEscapeBound) {
+    document.body.dataset.payrollRunReviewEscapeBound = '1';
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      const { wrap } = getPayrollRunReviewElements();
+      if (!wrap || wrap.classList.contains('hidden')) return;
+      closePayrollRunReviewModal();
+    });
   }
 }
 
@@ -4318,9 +4947,11 @@ function initPayrollUiTab() {
   setupPayrollRowToggle();
   setupViewTimeEntriesButtons();
   setupPayrollPendingApprovalsBannerActions();
+  setupPayrollPreflightFailureModal();
   bindInlineTimeEntryEditor();
   setupCustomLineButtons();
   setupPayrollReimbursements();
+  setupPayrollActiveRunActions();
   setupPayrollRunReviewActions();
   const settingsSaveBtn = document.getElementById('payroll-settings-save');
   if (settingsSaveBtn) settingsSaveBtn.addEventListener('click', savePayrollSettings);

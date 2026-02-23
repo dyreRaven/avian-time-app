@@ -83,7 +83,7 @@ This file tracks the issues discovered in smoke testing. Each ticket lists prior
 - Priority: P1
 - Area: Backup/Restore
 - Problem: Backup exists but no restore script/tooling.
-- Status: Implemented (2026-01-22), not yet validated.
+- Status: Validated (2026-01-23)
 - Acceptance criteria:
   - Provide a restore script and document its usage.
   - Restore tested against a backup artifact.
@@ -196,7 +196,7 @@ This file tracks the issues discovered in smoke testing. Each ticket lists prior
 - Priority: P2
 - Area: Timekeeping/Timesheets
 - Problem: Timesheets can be deleted even when they contain entries, risking loss of time data.
-- Status: Open
+- Status: Fixed (2026-02-23)
 - Acceptance criteria:
   - Server blocks deletion when a timesheet has any entries.
   - UI prevents deletion or surfaces a clear error when blocked.
@@ -350,6 +350,7 @@ This file tracks the issues discovered in smoke testing. Each ticket lists prior
 - Priority: P3
 - Area: Testing
 - Problem: OAuth flow and live sync were not exercised.
+- Status: Validated in sandbox (2026-01-23)
 - Acceptance criteria:
   - Execute OAuth connect, sync customers/projects/employees in a non-prod org.
   - Verify disconnect and reconnect behaviors.
@@ -375,7 +376,7 @@ This file tracks the issues discovered in smoke testing. Each ticket lists prior
 ### T-032 Restore workflow validation
 - Priority: P3
 - Area: Testing
-- Problem: Restore workflow not tested because tooling is missing.
+- Problem: Restore workflow had not been tested end-to-end after tooling was added.
 - Status: Validated in sandbox (DB + uploads) (2026-01-23)
 - Acceptance criteria:
   - Restore script available and used to restore a backup into a clean DB.
@@ -411,7 +412,7 @@ This file tracks the issues discovered in smoke testing. Each ticket lists prior
 - Priority: P3
 - Area: Timekeeping
 - Problem: Overlapping punches for the same employee are not explicitly flagged.
-- Status: Open
+- Status: Fixed (2026-02-23)
 - Acceptance criteria:
   - Detect and flag overlapping punch windows for the same employee.
   - Surface in time exceptions or admin review UI.
@@ -420,7 +421,7 @@ This file tracks the issues discovered in smoke testing. Each ticket lists prior
 - Priority: P3
 - Area: Timekeeping
 - Problem: Very old offline punches can sync without a max-age guard.
-- Status: Open
+- Status: Fixed (2026-02-23)
 - Acceptance criteria:
   - Define and enforce a max offline age (reject or flag).
   - Provide a clear admin-visible error or exception.
@@ -429,7 +430,7 @@ This file tracks the issues discovered in smoke testing. Each ticket lists prior
 - Priority: P3
 - Area: Timekeeping
 - Problem: No throttling for excessive punch attempts per device/employee.
-- Status: Open
+- Status: Fixed (2026-02-23)
 - Acceptance criteria:
   - Add a soft rate limit for punch attempts to prevent spam/accidents.
 

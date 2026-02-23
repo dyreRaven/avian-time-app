@@ -16,6 +16,9 @@ timekeeping system and the current implementation status for this app.
 - Manual time entry create/edit requires start/end times, hours match, and a note.
 - Paid time entries are locked; edits reset approvals and are audited.
 - Exception review actions are logged with before/after snapshots.
+- Overlapping punches for the same employee are flagged in time exceptions/admin review.
+- Offline punch sync enforces a max-age policy (stale queued punches are rejected with admin-visible sync warnings).
+- Kiosk punch attempts are soft-rate-limited per device/employee to reduce accidental spam taps.
 - RBAC and CSRF protection for session-based admin endpoints.
 
 ## Implemented (data integrity)
@@ -25,7 +28,4 @@ timekeeping system and the current implementation status for this app.
 - Idempotency keys for manual time entry create/edit.
 
 ## Follow-ups (recommended)
-- Detect and flag overlapping punches for the same employee.
-- Add a max-age policy for offline punches (e.g., reject or flag entries older than N days).
-- Add per-device punch rate limiting (soft throttle on excessive attempts).
 - Backfill utility to repair legacy time_entries missing start/end times.

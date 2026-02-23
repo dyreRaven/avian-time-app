@@ -1589,6 +1589,11 @@
                         <input id="settings-auto-clockout-weekly-max" type="number" min="0" step="0.25" placeholder="Disabled" />
                         <p class="card-sub">Set blank or 0 to disable weekly auto clock-out.</p>
                       </div>
+                      <div class="form-field">
+                        <label for="settings-offline-punch-max-age-days">Offline punch max age (days)</label>
+                        <input id="settings-offline-punch-max-age-days" type="number" min="1" step="1" placeholder="14" />
+                        <p class="card-sub">Queued punches older than this are rejected during sync and require manual admin review.</p>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2236,83 +2241,9 @@
                   <button id="payroll-retry-failed" class="btn secondary" type="button" disabled>
                     Retry Failed Checks
                   </button>
-                </div>
-              </div>
-
-              <div id="payroll-run-review" class="payroll-run-review hidden">
-                <div class="payroll-run-review-head">
-                  <div>
-                    <h3>Payroll Run Review</h3>
-                    <p id="payroll-run-review-subtext" class="card-sub">
-                      Review exactly what failed and succeeded, then retry only what you select.
-                    </p>
-                  </div>
-                  <div class="payroll-run-review-actions">
-                    <button id="payroll-run-review-load-period" class="btn tertiary btn-sm" type="button">
-                      Load Period For Edits
-                    </button>
-                    <button id="payroll-run-review-retry-selected" class="btn primary btn-sm" type="button" disabled>
-                      Retry Selected Failed
-                    </button>
-                    <button id="payroll-run-review-refresh" class="btn secondary btn-sm" type="button">
-                      Refresh
-                    </button>
-                  </div>
-                </div>
-                <div id="payroll-run-review-meta" class="payroll-run-review-meta"></div>
-                <div id="payroll-run-review-alert" class="payroll-run-review-alert hidden"></div>
-                <div class="payroll-run-review-panels">
-                  <section class="payroll-run-review-panel payroll-run-review-panel-failed">
-                    <div class="payroll-run-review-panel-head">
-                      <h4>Failed Checks</h4>
-                      <span id="payroll-run-review-failed-count" class="payroll-run-review-count">0</span>
-                    </div>
-                    <p id="payroll-run-review-failed-note" class="card-sub">
-                      Select failed employees to retry. Unchecked rows are skipped.
-                    </p>
-                    <div class="table-wrapper payroll-run-review-table-wrap">
-                      <table id="payroll-run-review-failed-table">
-                        <thead>
-                          <tr>
-                            <th>Retry</th>
-                            <th>Employee</th>
-                            <th>Error</th>
-                            <th>Suggested Fix</th>
-                            <th>Total Hours</th>
-                            <th>Total Pay</th>
-                          </tr>
-                        </thead>
-                        <tbody id="payroll-run-review-failed-body">
-                          <tr>
-                            <td colspan="6">(no failed checks in this run)</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
-                  <section class="payroll-run-review-panel payroll-run-review-panel-success">
-                    <div class="payroll-run-review-panel-head">
-                      <h4>Successful Checks</h4>
-                      <span id="payroll-run-review-success-count" class="payroll-run-review-count">0</span>
-                    </div>
-                    <div class="table-wrapper payroll-run-review-table-wrap">
-                      <table id="payroll-run-review-success-table">
-                        <thead>
-                          <tr>
-                            <th>Employee</th>
-                            <th>Check Number</th>
-                            <th>Total Hours</th>
-                            <th>Total Pay</th>
-                          </tr>
-                        </thead>
-                        <tbody id="payroll-run-review-success-body">
-                          <tr>
-                            <td colspan="4">(no successful checks yet)</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
+                  <button id="payroll-active-run-manage" class="btn tertiary" type="button">
+                    Run Status
+                  </button>
                 </div>
               </div>
 
@@ -2525,6 +2456,138 @@
             </div>
           </div>
         </div>
+
+        <div id="payroll-run-review-backdrop" class="modal-backdrop hidden"></div>
+        <div
+          id="payroll-run-review"
+          class="modal payroll-run-review-modal hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="payroll-run-review-title"
+        >
+          <div class="modal-card payroll-run-review-modal-card">
+            <div class="payroll-run-review">
+              <div class="payroll-run-review-head">
+                <div>
+                  <h3 id="payroll-run-review-title">Payroll Run Review</h3>
+                  <p id="payroll-run-review-subtext" class="card-sub">
+                    Review exactly what failed and succeeded, then retry only what you select.
+                  </p>
+                </div>
+                <button
+                  id="payroll-run-review-close"
+                  class="icon-button"
+                  type="button"
+                  aria-label="Close payroll run review"
+                >
+                  ×
+                </button>
+              </div>
+              <div id="payroll-run-review-meta" class="payroll-run-review-meta"></div>
+              <div id="payroll-run-review-alert" class="payroll-run-review-alert hidden"></div>
+              <div class="payroll-run-review-actions">
+                <button id="payroll-run-review-load-period" class="btn tertiary btn-sm" type="button">
+                  Load Period For Edits
+                </button>
+                <button id="payroll-run-review-retry-selected" class="btn primary btn-sm" type="button" disabled>
+                  Retry Selected Failed
+                </button>
+                <button id="payroll-run-review-refresh" class="btn secondary btn-sm" type="button">
+                  Refresh
+                </button>
+              </div>
+              <div class="payroll-run-review-panels">
+                <section class="payroll-run-review-panel payroll-run-review-panel-failed">
+                  <div class="payroll-run-review-panel-head">
+                    <h4>Failed Checks</h4>
+                    <span id="payroll-run-review-failed-count" class="payroll-run-review-count">0</span>
+                  </div>
+                  <p id="payroll-run-review-failed-note" class="card-sub">
+                    Select failed employees to retry. Unchecked rows are skipped.
+                  </p>
+                  <div class="table-wrapper payroll-run-review-table-wrap">
+                    <table id="payroll-run-review-failed-table">
+                      <thead>
+                        <tr>
+                          <th>Retry</th>
+                          <th>Employee</th>
+                          <th>Error</th>
+                          <th>Suggested Fix</th>
+                          <th>Total Hours</th>
+                          <th>Total Pay</th>
+                        </tr>
+                      </thead>
+                      <tbody id="payroll-run-review-failed-body">
+                        <tr>
+                          <td colspan="6">(no failed checks in this run)</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+                <section class="payroll-run-review-panel payroll-run-review-panel-success">
+                  <div class="payroll-run-review-panel-head">
+                    <h4>Successful Checks</h4>
+                    <span id="payroll-run-review-success-count" class="payroll-run-review-count">0</span>
+                  </div>
+                  <div class="table-wrapper payroll-run-review-table-wrap">
+                    <table id="payroll-run-review-success-table">
+                      <thead>
+                        <tr>
+                          <th>Employee</th>
+                          <th>Check Number</th>
+                          <th>Total Hours</th>
+                          <th>Total Pay</th>
+                        </tr>
+                      </thead>
+                      <tbody id="payroll-run-review-success-body">
+                        <tr>
+                          <td colspan="4">(no successful checks yet)</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </div>
+              <div class="modal-footer payroll-run-review-footer">
+                <button id="payroll-run-review-done" class="btn secondary" type="button">Back to Payroll</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="payroll-active-run-backdrop" class="modal-backdrop hidden"></div>
+        <div
+          id="payroll-active-run-modal"
+          class="modal hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="payroll-active-run-title"
+        >
+          <div class="modal-card payroll-active-run-modal-card">
+            <div class="modal-header">
+              <h3 id="payroll-active-run-title">Payroll Run Status</h3>
+              <button
+                id="payroll-active-run-close"
+                class="icon-button"
+                type="button"
+                aria-label="Close payroll run status"
+              >
+                ×
+              </button>
+            </div>
+            <p id="payroll-active-run-message" class="payroll-active-run-message"></p>
+            <div id="payroll-active-run-run-meta" class="payroll-active-run-meta hidden"></div>
+            <div id="payroll-active-run-lock-meta" class="payroll-active-run-meta hidden"></div>
+            <div class="modal-footer">
+              <button id="payroll-active-run-refresh" class="btn secondary" type="button">Refresh Status</button>
+              <button id="payroll-active-run-view" class="btn tertiary" type="button">Open Run Review</button>
+              <button id="payroll-active-run-cancel" class="btn danger" type="button">Cancel Active Run</button>
+              <button id="payroll-active-run-done" class="btn secondary" type="button">Close</button>
+            </div>
+          </div>
+        </div>
+
         <div id="payroll-preflight-failure-backdrop" class="modal-backdrop hidden"></div>
         <div
           id="payroll-preflight-failure-modal"

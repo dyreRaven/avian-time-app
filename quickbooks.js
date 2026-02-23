@@ -2811,7 +2811,6 @@ async function computePayrollDraftsSnapshot(start, end, options = {}) {
     typeof options.includeReceiptReimbursements === 'boolean'
       ? options.includeReceiptReimbursements
       : true;
-  const allowNameOnChecksSync = options.allowNameOnChecksSync === true;
   const drafts = await buildCheckDrafts(start, end, {
     excludeEmployeeIds,
     onlyEmployeeIds,
@@ -2874,6 +2873,7 @@ async function createChecksForPeriod(start, end, options = {}) {
     typeof options.includeReceiptReimbursements === 'boolean'
       ? options.includeReceiptReimbursements
       : true;
+  const allowNameOnChecksSync = options.allowNameOnChecksSync === true;
 
   const bankName =
     options.bankAccountName || settings.bank_account_name || settings.bankAccountName || BANK_ACCOUNT_NAME;
@@ -3211,6 +3211,12 @@ async function createChecksForPeriod(start, end, options = {}) {
         lineErrors.push(`Class "${classNameForLine}" not found in QuickBooks.`);
         continue;
       }
+      if (!line.is_receipt_reimbursement && !line.project_qbo_id) {
+        lineErrors.push(
+          `Project "${line.project_name || '(project)'}" is not linked to QuickBooks. Billable payroll lines require a linked QuickBooks project.`
+        );
+        continue;
+      }
       const description =
         lineOv?.description ||
         line.description_override ||
@@ -3230,6 +3236,9 @@ async function createChecksForPeriod(start, end, options = {}) {
       };
       if (!line.is_receipt_reimbursement && line.project_qbo_id) {
         detail.CustomerRef = { value: line.project_qbo_id };
+        detail.BillableStatus = 'Billable';
+      } else if (line.is_receipt_reimbursement) {
+        detail.BillableStatus = 'NotBillable';
       }
       if (classId) {
         detail.ClassRef = { value: classId };

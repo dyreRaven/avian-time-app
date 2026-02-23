@@ -113,6 +113,8 @@ const LANG_COPY = {
     statusSynced: 'Synced',
     statusSyncCount: 'Sync {{count}}',
     statusSyncReenroll: 'Re-enroll to sync punches',
+    statusSyncOfflineTooOld: 'Queued punch too old to sync (limit {{days}} days).',
+    statusSyncRateLimited: 'Sync delayed by punch rate limit - retrying in about {{seconds}}s.',
     statusSyncNeedsAdmin: 'Sync needs admin attention',
     clockingModuleDisabled: 'Clock-in is disabled for this deployment.',
     summaryCloseLabel: 'OK',
@@ -202,6 +204,8 @@ const LANG_COPY = {
     statusSynced: 'Sincronizado',
     statusSyncCount: 'Sincronizar {{count}}',
     statusSyncReenroll: 'Reinscribe para sincronizar marcaciones',
+    statusSyncOfflineTooOld: 'Una marcación en cola era demasiado antigua para sincronizarse (límite {{days}} días).',
+    statusSyncRateLimited: 'Sincronización retrasada por límite de marcaciones - reintentando en ~{{seconds}} s.',
     statusSyncNeedsAdmin: 'La sincronización necesita atención del administrador',
     clockingModuleDisabled: 'El registro de horas está desactivado para este despliegue.',
     summaryCloseLabel: 'Aceptar',
@@ -292,6 +296,8 @@ const LANG_COPY = {
     statusSynced: 'Senkronize',
     statusSyncCount: 'Senkronize {{count}}',
     statusSyncReenroll: 'Re-anrejistre pou senkronize makaj yo',
+    statusSyncOfflineTooOld: 'Yon makaj ki nan lis la twò ansyen pou senkronize (limit {{days}} jou).',
+    statusSyncRateLimited: 'Senkronizasyon retade pa limit makaj - ap eseye ankò nan apeprè {{seconds}}s.',
     statusSyncNeedsAdmin: 'Senkronizasyon bezwen atansyon admin',
     clockingModuleDisabled: 'Antre sòti anrejistre pou aplikasyon sa a dezaktive.',
     summaryCloseLabel: 'Dakò',
@@ -1123,8 +1129,15 @@ function isHardPunchQueueError(err) {
   if (typeof status !== 'number') return false;
 
   if (status === 401 || status === 403) return false;
+  if (status === 429) return false;
   if (status >= 500) return false;
   return status >= 400 && status < 500;
+}
+
+function getRetryAfterSeconds(err) {
+  const retryAfter = Number(err && err.data && err.data.retry_after_seconds);
+  if (!Number.isFinite(retryAfter) || retryAfter <= 0) return null;
+  return Math.max(1, Math.ceil(retryAfter));
 }
 
 function saveCache(key, v) {
@@ -3457,8 +3470,30 @@ async function syncQueueToServer() {
         setSyncWarning(getCopy('statusSyncReenroll'));
         break;
       }
+      if (err && err.status === 429) {
+        const retryAfterSeconds = getRetryAfterSeconds(err) || 10;
+        setSyncWarning(
+          formatCopy('statusSyncRateLimited', {
+            seconds: String(retryAfterSeconds)
+          })
+        );
+        break;
+      }
       if (isHardPunchQueueError(err)) {
         removeFromQueue(punch.client_id);
+        if (err && err.data && err.data.code === 'offline_punch_too_old') {
+          const maxAgeDays = Number(err.data.max_age_days);
+          if (Number.isFinite(maxAgeDays) && maxAgeDays > 0) {
+            setSyncWarning(
+              formatCopy('statusSyncOfflineTooOld', {
+                days: String(Math.floor(maxAgeDays))
+              })
+            );
+          } else {
+            setSyncWarning(getCopy('statusSyncNeedsAdmin'));
+          }
+          continue;
+        }
         setSyncWarning(getCopy('statusSyncNeedsAdmin'));
         continue;
       }

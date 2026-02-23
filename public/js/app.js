@@ -3473,6 +3473,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let pendingBootstrapFormBound = false;
   let qboInitialSyncRunning = false;
+  let qboStepTransitionTimer = null;
   let onboardingPermissionsDraftChanged = false;
   let onboardingEmployeeCountCache = null;
   let onboardingEmployeeCountCachedAt = 0;
@@ -4257,7 +4258,8 @@ if (disconnectBtn) {
   const exceptionRuleFields = {
     weekly_hours_threshold: document.getElementById('settings-weekly-hours-threshold'),
     auto_clockout_daily_max_hours: document.getElementById('settings-auto-clockout-daily-max'),
-    auto_clockout_weekly_max_hours: document.getElementById('settings-auto-clockout-weekly-max')
+    auto_clockout_weekly_max_hours: document.getElementById('settings-auto-clockout-weekly-max'),
+    offline_punch_max_age_days: document.getElementById('settings-offline-punch-max-age-days')
   };
   const passwordFields = {
     current: document.getElementById('settings-password-current'),
@@ -4735,18 +4737,69 @@ if (disconnectBtn) {
     }
   }
 
+  function qboPrefersReducedMotion() {
+    try {
+      return !!(
+        window.matchMedia &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      );
+    } catch {
+      return false;
+    }
+  }
+
   function setQboOnboardingStep(step) {
+    const targetStep = Number(step) || 1;
     if (qboOnboardingPanes && qboOnboardingPanes.length) {
-      qboOnboardingPanes.forEach(pane => {
-        const paneStep = Number(pane.dataset.qboStep || 0);
-        pane.classList.toggle('hidden', paneStep !== step);
-      });
+      const targetPane = qboOnboardingPanes.find(
+        pane => Number(pane.dataset.qboStep || 0) === targetStep
+      );
+      const activePane = qboOnboardingPanes.find(
+        pane => !pane.classList.contains('hidden')
+      );
+
+      if (qboStepTransitionTimer) {
+        clearTimeout(qboStepTransitionTimer);
+        qboStepTransitionTimer = null;
+      }
+
+      if (!targetPane || qboPrefersReducedMotion()) {
+        qboOnboardingPanes.forEach(pane => {
+          const paneStep = Number(pane.dataset.qboStep || 0);
+          pane.classList.toggle('hidden', paneStep !== targetStep);
+          pane.classList.remove('is-entering', 'is-entered');
+        });
+      } else if (activePane === targetPane) {
+        targetPane.classList.remove('is-entering', 'is-entered');
+      } else {
+        qboOnboardingPanes.forEach(pane => {
+          if (pane !== targetPane) {
+            pane.classList.add('hidden');
+            pane.classList.remove('is-entering', 'is-entered');
+          }
+        });
+        targetPane.classList.remove('hidden');
+        targetPane.classList.remove('is-entered');
+        targetPane.classList.add('is-entering');
+        const startTransition = () => {
+          targetPane.classList.add('is-entered');
+          qboStepTransitionTimer = setTimeout(() => {
+            targetPane.classList.remove('is-entering', 'is-entered');
+            qboStepTransitionTimer = null;
+          }, 200);
+        };
+        if (typeof window.requestAnimationFrame === 'function') {
+          window.requestAnimationFrame(startTransition);
+        } else {
+          setTimeout(startTransition, 0);
+        }
+      }
     }
     if (qboOnboardingStepIndicators && qboOnboardingStepIndicators.length) {
       qboOnboardingStepIndicators.forEach(item => {
         const itemStep = Number(item.dataset.qboStepIndicator || 0);
-        item.classList.toggle('is-active', itemStep === step);
-        item.classList.toggle('is-complete', itemStep < step);
+        item.classList.toggle('is-active', itemStep === targetStep);
+        item.classList.toggle('is-complete', itemStep < targetStep);
       });
     }
   }
@@ -4788,6 +4841,15 @@ if (disconnectBtn) {
   function closeQboOnboardingModal() {
     if (qboOnboardingModal) qboOnboardingModal.classList.add('hidden');
     if (qboOnboardingBackdrop) qboOnboardingBackdrop.classList.add('hidden');
+    if (qboStepTransitionTimer) {
+      clearTimeout(qboStepTransitionTimer);
+      qboStepTransitionTimer = null;
+    }
+    if (qboOnboardingPanes && qboOnboardingPanes.length) {
+      qboOnboardingPanes.forEach(pane => {
+        pane.classList.remove('is-entering', 'is-entered');
+      });
+    }
     setQboOnboardingLoading(false);
     if (qboOnboardingClose) qboOnboardingClose.disabled = false;
   }
@@ -5216,6 +5278,19 @@ if (disconnectBtn) {
   async function resumeQboOnboardingIfNeeded() {
     if (!window.QBO_JUST_CONNECTED) return;
     const orgId = window.CURRENT_ORG && window.CURRENT_ORG.id;
+    const shouldShowChecklist =
+      !!orgId &&
+      !!window.CURRENT_IS_SUPER_ADMIN &&
+      !isOnboardingSkipped(orgId);
+    const ensureChecklistVisible = () => {
+      if (!shouldShowChecklist) return;
+      if (postBootstrapCard && postBootstrapCard.classList.contains('hidden')) {
+        showPostBootstrapCard(true);
+      }
+      setPostBootstrapStepExpanded('org', false);
+      setPostBootstrapStepExpanded('qbo', true);
+      setPostBootstrapStepExpanded('permissions', false);
+    };
     const defaultSelections = {
       employees: true,
       projects: true,
@@ -5240,6 +5315,7 @@ if (disconnectBtn) {
     try {
       if (!qbConnected || qbConnectionWarning) {
         await openQboOnboardingModal({ step: 1 });
+        ensureChecklistVisible();
         if (qboOnboardingError) {
           qboOnboardingError.textContent = qbConnectionWarning
             ? `QuickBooks connection check needs attention: ${qbConnectionWarning}`
@@ -5254,6 +5330,7 @@ if (disconnectBtn) {
         clearQboOnboardingState();
       }
       await openQboOnboardingModal({ step: 3 });
+      ensureChecklistVisible();
       setQboOnboardingLoading(false);
       setQboSelectionsInInputs(selections);
       await runQboOnboardingSync(selections);
@@ -6330,6 +6407,7 @@ if (disconnectBtn) {
 
   function applyExceptionRulesToUI(rawValue) {
     if (!exceptionRuleCheckboxes.length) return;
+    const defaultOfflinePunchMaxAgeDays = 14;
     let parsed = null;
     if (typeof rawValue === 'string') {
       try {
@@ -6356,6 +6434,11 @@ if (disconnectBtn) {
       const num = Number(value);
       return Number.isFinite(num) && num > 0 ? num : '';
     };
+    const normalizeDays = value => {
+      const num = Number(value);
+      if (!Number.isFinite(num) || num < 1) return defaultOfflinePunchMaxAgeDays;
+      return Math.floor(num);
+    };
 
     if (exceptionRuleFields.weekly_hours_threshold) {
       const raw =
@@ -6380,9 +6463,18 @@ if (disconnectBtn) {
           : '';
       exceptionRuleFields.auto_clockout_weekly_max_hours.value = normalizeThreshold(raw);
     }
+
+    if (exceptionRuleFields.offline_punch_max_age_days) {
+      const raw =
+        parsed && Object.prototype.hasOwnProperty.call(parsed, 'offline_punch_max_age_days')
+          ? parsed.offline_punch_max_age_days
+          : defaultOfflinePunchMaxAgeDays;
+      exceptionRuleFields.offline_punch_max_age_days.value = normalizeDays(raw);
+    }
   }
 
   function collectExceptionRuleSettings() {
+    const defaultOfflinePunchMaxAgeDays = 14;
     const map = {};
     exceptionRuleCheckboxes.forEach(cb => {
       const key = cb.dataset.exceptionRule;
@@ -6397,6 +6489,14 @@ if (disconnectBtn) {
       const num = Number(raw);
       return Number.isFinite(num) && num > 0 ? num : null;
     };
+    const normalizeDays = field => {
+      if (!field) return defaultOfflinePunchMaxAgeDays;
+      const raw = String(field.value || '').trim();
+      if (!raw) return defaultOfflinePunchMaxAgeDays;
+      const num = Number(raw);
+      if (!Number.isFinite(num) || num < 1) return defaultOfflinePunchMaxAgeDays;
+      return Math.floor(num);
+    };
 
     map.weekly_hours_threshold = normalizeThreshold(
       exceptionRuleFields.weekly_hours_threshold
@@ -6406,6 +6506,9 @@ if (disconnectBtn) {
     );
     map.auto_clockout_weekly_max_hours = normalizeThreshold(
       exceptionRuleFields.auto_clockout_weekly_max_hours
+    );
+    map.offline_punch_max_age_days = normalizeDays(
+      exceptionRuleFields.offline_punch_max_age_days
     );
     return map;
   }
@@ -6601,6 +6704,7 @@ if (disconnectBtn) {
   async function loadSettings() {
     try {
       try {
+        let deferOnboardingRenderForQboResume = false;
         let meData = window.PREFETCHED_ME_DATA || null;
         window.PREFETCHED_ME_DATA = null;
         if (!meData) {
@@ -6628,10 +6732,17 @@ if (disconnectBtn) {
           if (meData?.just_bootstrapped && currentOrgId) {
             clearBootstrapOnboardingLocalState(currentOrgId);
           }
-          if (window.CURRENT_IS_SUPER_ADMIN && !isOnboardingSkipped(currentOrgId)) {
-            showPostBootstrapCard(true);
-          } else {
-            showPostBootstrapCard(false);
+          deferOnboardingRenderForQboResume =
+            !!window.QBO_JUST_CONNECTED &&
+            window.CURRENT_IS_SUPER_ADMIN &&
+            !!currentOrgId &&
+            !isOnboardingSkipped(currentOrgId);
+          if (!deferOnboardingRenderForQboResume) {
+            if (window.CURRENT_IS_SUPER_ADMIN && !isOnboardingSkipped(currentOrgId)) {
+              showPostBootstrapCard(true);
+            } else {
+              showPostBootstrapCard(false);
+            }
           }
           const currentAccess = deriveCurrentAdminAccess(meData.permissions || {});
           window.CURRENT_ACCESS_PERMS = {

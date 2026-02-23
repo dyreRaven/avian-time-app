@@ -167,6 +167,8 @@
 - POST `/api/payroll/preflight-checks` [super admin]
 - POST `/api/payroll/preview-checks` [super admin, deprecated]
 - POST `/api/payroll/create-checks` [super admin]
+- GET  `/api/payroll/active-run` [super admin]
+- POST `/api/payroll/active-run/cancel` [super admin]
 - POST `/api/payroll/unpay` [super admin]
 - GET  `/api/payroll/audit-log` [super admin]
 

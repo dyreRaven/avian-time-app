@@ -237,6 +237,7 @@
 - Review modal for approve/modify/reject (modify_time required); this is the field-review step. Payroll approval is separate and requires approve_time (payroll permissions). Approve requires a note when the entry has discrepancies or was manually modified; modify/reject always require a note.
 - All review actions recorded in an audit trail (who/when/what changed).
 - Exceptions include punch-based flags and time-entry vs punch discrepancies.
+- Punch exceptions include overlapping punch windows for the same employee.
 - Shift-shape punch flags are hierarchical to reduce duplicate labels: `multi_day` (>=24h) supersedes `long_shift` (>12h), and `long_shift` supersedes `crosses_midnight` when multiple conditions match the same punch.
 - Manual-entry exceptions: no punches linked, or hours mismatch (>= 0.10h / ~6 min).
 - Modify rules: punch edits must stay on the same day and <24h, and clock-in/out projects must match; time entry edits must be single-day with valid HH:MM times and hours between 0–24.
@@ -507,6 +508,7 @@
 - Clock in/out requires an active kiosk timesheet for the punch date/time on this device + project (set by kiosk admin). Offline punches sync using the original project and are accepted if a timesheet was active at the punch time; later project switches do not block sync. If no matching timesheet exists, show an error and prompt for admin PIN; if the PIN is a kiosk admin, route to Start Day with an optional "clock me in" checkbox.
 - Worker screen shows a prominent Active Project banner; when admins switch active timesheets, show a confirmation.
 - Punch payload includes client_id (idempotency), device_timestamp (device clock), optional lat/lng + photo, and device_id + device_secret.
+- Apply a soft punch-rate throttle per device + employee for live punch attempts; return retry guidance instead of hard-failing the worker state.
 - Clock-in: create a time_punch, attach foreman-of-day if set, compute geofence distance for kiosk clock-ins and flag violations (never block); store photo (JPEG) as clock_in_photo_path when provided.
 - Clock-out: close the open punch, capture clock-out lat/lng, and create a time entry using the employee rate; duration rounds up to the next minute; clock-out always uses the original punch project (no cross-project clock-out).
 - Offline queue with sync on reconnect; duplicate client_id returns alreadyProcessed without side effects.
@@ -647,6 +649,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - weekly_hours_threshold: numeric hours for weekly discrepancy flag; null/0 disables.
 - auto_clockout_daily_max_hours: numeric hours for daily auto clock-out + discrepancy; null/0 disables.
 - auto_clockout_weekly_max_hours: numeric hours for weekly auto clock-out + discrepancy; null/0 disables.
+- offline_punch_max_age_days: maximum queued-offline punch age accepted by sync (default 14 days; minimum 1).
 - If thresholds are unset, only midnight/catch-up auto clock-out runs.
 
 ## Shipments Statuses (legacy)
@@ -685,7 +688,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Shipments admin update queue (`avian_shipments_update_queue`): array of `{ id, client_id, if_match_updated_at, payload, queued_at }` where `payload` matches `PUT /api/shipments/:id`; new shipment creation and document uploads are blocked while offline.
 - Settings changes queue (`avian_settings_update_queue_v1`): array of `{ client_id, type, payload, queued_at }` where `type` is `notifications_prefs` or `shipments_notifications` and payload matches the corresponding `PUT /api/notifications/prefs` or `PUT /api/shipments/notifications`.
 - Shipments board cache (`avian_shipments_board_cache`): `{ at, data }` snapshot used to render the board when offline.
-- Sync behavior: attempt on `online` plus a 30s retry loop; remove on success; keep on network/auth errors; drop on hard validation errors (example: missing timesheet) to avoid blocking the queue.
+- Sync behavior: attempt on `online` plus a 30s retry loop; remove on success; keep on network/auth/rate-limit errors; drop on hard validation errors (example: missing timesheet, or `offline_punch_too_old`) to avoid blocking the queue.
 
 ## QuickBooks
 - OAuth with token encryption and connection status endpoint.

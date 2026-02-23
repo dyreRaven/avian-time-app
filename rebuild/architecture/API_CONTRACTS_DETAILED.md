@@ -365,7 +365,7 @@ Note: templates are per-org presets for access + permissions; applying a templat
 ### GET /api/settings  [view_payroll]
 - Response: `{ "settings": { "company_name": "...", "company_email": "...", "storage_daily_late_fee_default": null, "storage_container_daily_late_fee_default": null, "clock_in_photo_required": true, "time_exception_rules": { ... }, "payroll_rules": { "pay_period_length_days": 7, "pay_period_start_weekday": 1, "pay_period_anchor_date": null, "overtime_enabled": false, "overtime_daily_threshold_hours": 8, "overtime_weekly_threshold_hours": 40, "overtime_multiplier": 1.5, "double_time_enabled": false, "double_time_daily_threshold_hours": 12, "double_time_multiplier": 2.0 }, ... } }`
 Note: includes org-level settings such as clock_in_photo_required, payroll_rules, and time_exception_rules; only super admins can change access-control settings and payroll_rules. storage_daily_late_fee_default defaults to null/0 (late fees disabled) until set; storage_container_daily_late_fee_default controls container shipment fees.
-Note: time_exception_rules includes weekly_hours_threshold and auto_clockout_daily_max_hours/auto_clockout_weekly_max_hours (null/0 disables).
+Note: time_exception_rules includes weekly_hours_threshold, auto_clockout_daily_max_hours/auto_clockout_weekly_max_hours (null/0 disables), and offline_punch_max_age_days (minimum 1, default 14).
 Note: when both daily and weekly thresholds are enabled, compute daily overtime first, then apply weekly overtime to remaining regular hours above the weekly threshold (no double counting). If double-time is enabled, apply double-time first, then overtime, then weekly.
 
 ### POST /api/settings  [view_payroll]
@@ -542,6 +542,8 @@ Note: requires an active unlock; returns 403 if locked. Successful updates refre
 - Response (already processed): `{ "ok": true, "alreadyProcessed": true, "mode": "clock_in", "geofence_violation": false, "geo_distance_m": 12.3, "geo_radius_m": 100 }`
 Note: requires kiosk device auth (device_id + device_secret), a kiosk-admin session, or a desktop admin session with `modify_time`; server determines clock_in vs clock_out by open punch state.
 Note: project_id must map to an active kiosk session for the punch time on this device (created_at <= punchTime <= ended_at); otherwise return 400. Offline punches use their original project; active project changes later must not block sync. Optional `queued_at` marks a queued/offline punch.
+Note: queued/offline punches older than org `time_exception_rules.offline_punch_max_age_days` are rejected with 422 `{ "code": "offline_punch_too_old", ... }` and should be corrected manually by an admin.
+Note: non-queued punch attempts are soft rate limited per `device_id + employee_id`; excess attempts return 429 `{ "code": "punch_rate_limited", "retry_after_seconds": N, ... }`.
 Note: clock-out always uses the open punch’s project; cross-project clock-outs are not allowed.
 Note: client_id provides idempotency for offline retries; device_timestamp is used for punch time when provided.
 Note: clock-out duration is computed from clock_in/out and rounded up to the next minute.
@@ -636,6 +638,7 @@ Note: bulk approve is allowed only for clean entries (no discrepancies and no ma
 - Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id`, `hide_resolved=true|false`
 - Response: `[ { "id": 1, "source": "punch", "category": "geofence", "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "clock_in_ts": "...", "clock_out_ts": "...", "duration_hours": 8, "flags": [ "Clock-in outside geofence" ], "resolved": 0, "review_status": "open", "review_note": null, "review_by": null, "review_at": null, "updated_at": "YYYY-MM-DDTHH:MM:SSZ", "has_geo_violation": 1, "auto_clock_out": 0, "auto_clock_out_reason": null } ]`
 Note: start/end are required; results combine punch exceptions and time-entry vs punch discrepancies (categories include `time`, `geofence`, `auto_clock_out`, `time_vs_punch`).
+Note: punch flags can include `Overlapping punch window` when the same employee has overlapping punch intervals.
 Note: auto_clock_out_reason values: `midnight_auto`, `catch_up_auto`, `daily_max`, `weekly_max`.
 
 ### POST /api/time-exceptions/:id/review  [modify_time]
@@ -764,15 +767,16 @@ Note: checks that include reimbursement lines append ` + Reimbursement` to the c
 ### POST /api/payroll/create-checks  [super admin]
 - Request: `{ "preflight_id": 42, "payload_hash": "sha256:...", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "bankAccountName": "...", "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "...", "includeOvertime": true, "includeReceiptReimbursements": true, "overrides": [ { "employeeId": 1, "expenseAccountName": "...", "memo": "...", "lineDescriptionTemplate": "..." } ], "lineOverrides": [ { "employeeId": 1, "projectId": 5, "expenseAccountName": "...", "description": "...", "className": "..." } ], "customLines": [ { "employeeId": 1, "amount": 50, "description": "...", "expenseAccountName": "...", "className": "...", "projectId": 5 } ], "excludeEmployeeIds": [1, 2], "onlyEmployeeIds": [3], "isRetry": false, "originalPayrollRunId": 10, "fromAttemptId": 5, "idempotencyKey": "...", "run_type": "standard|adjustment", "adjustment_reason": "..." }`
 - Response: `{ "ok": true, "status": "COMPLETED|PARTIAL", "payrollRunId": 10, "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "totalHours": 40, "totalPay": 1200, "results": [ { "employeeId": 1, "employeeName": "...", "totalHours": 40, "totalPay": 1200, "ok": true, "error": null, "warnings": [], "warningCodes": [], "qboTxnId": "..." } ], "attempt_id": 5, "idempotencyKey": "...", "fatal_qbo_error": null, "warnings": [ { "code": "backup_failed|backup_lock_busy", "message": "...", "error": "..." } ] }`
-Note: returns 409 if a payroll run is already in progress (DB lock).
+Note: returns 409 if a payroll run is already in progress (DB lock or idempotency key already pending/in_progress), with `code=payroll_run_in_progress` plus active context: `{ "active_run": { ... }, "payroll_lock": { "locked_by": "...", "locked_at": "..." } }`.
 Note: if idempotencyKey was already completed for the same period and isRetry=false, returns ok=true with status=completed and no new checks.
 Note: if idempotencyKey exists for the same period and status is PENDING/IN_PROGRESS, return 409 (run already in progress). If status is FAILED/PARTIAL and isRetry=false, return 409 and require a retry flow or a new idempotency key.
 Note: create-checks requires a valid preflight_id + payload_hash that match the request; return 400 if missing, stale, or mismatched.
 Note: if the eligible time-entry snapshot changed since preflight, return 409 and require a new preflight.
 Note: no period-wide approval hard block. Payroll processes approved unpaid entries only; pending approvals in the date range are left unpaid and should be surfaced as warnings by UI.
-Note: standard runs reject overlapping periods; adjustment runs are allowed only with explicit run_type=adjustment + adjustment_reason.
+Note: overlapping periods are allowed; create-checks always processes only payroll-approved unpaid entries, so previously paid entries are not sent again. Adjustment runs still require explicit run_type=adjustment + adjustment_reason.
 Note: the system always creates new checks; it does not merge into existing queued checks.
 Note: per-employee failures return ok=false with an error message; successful employees are marked paid, failed employees remain unpaid.
+Note: non-reimbursement line items are sent to QuickBooks with `BillableStatus=Billable` and require a linked project/customer ref; reimbursement lines are sent with `BillableStatus=NotBillable`.
 Note: includeOvertime is persisted on the payroll run (include_overtime) and must match the preflight payload/hash.
 Note: missing expense account or class is a per-employee failure even during create-checks (no partial check creation).
 Note: missing QBO link is a per-employee failure; link in QBO and retry those employees.
@@ -784,6 +788,15 @@ Note: non-retry runs validate start/end (max 31 days); retry runs only check dat
 Note: run status is PARTIAL when any employee fails; COMPLETED requires all ok.
 Note: when includeReceiptReimbursements=true, successful employees also mark matching in-range approved reimbursements as paid and link them to payroll_run_id/payroll_check_id.
 Note: checks that include reimbursement lines append ` + Reimbursement` to the check memo/private note.
+
+### GET /api/payroll/active-run  [super admin]
+- Response: `{ "ok": true, "run": { "id": 10, "status": "pending|in_progress", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "created_at": "YYYY-MM-DD HH:MM:SS", "run_type": "standard|adjustment", "adjustment_reason": "...", "last_error": "...", "last_attempt_id": 5, "idempotency_key": "..." } | null, "payroll_lock": { "locked_by": "...", "locked_at": "YYYY-MM-DD HH:MM:SS" } | null }`
+Note: returns current in-progress/pending run context and current payroll DB lock for the org; used by Payroll Run Status UI.
+
+### POST /api/payroll/active-run/cancel  [super admin]
+- Request: `{ "payrollRunId": 10, "reason": "..." }` (`payrollRunId` optional; latest active run is used if omitted)
+- Response: `{ "ok": true, "cancelled": true|false, "cancelled_run_id": 10|null, "had_lock": true|false, "run": { ... } | null, "payroll_lock": { ... } | null }`
+Note: if the target run status is `pending` or `in_progress`, it is marked `failed` with cancellation context and the payroll lock is released; if no cancellable run exists, lock release still executes.
 
 ### POST /api/payroll/preview-checks  [super admin, deprecated]
 Legacy endpoint; do not implement in the rebuild. If kept for compatibility, it must behave exactly like /api/payroll/preflight-checks (previewOnly) and never create QBO checks (including includeOvertime handling).
