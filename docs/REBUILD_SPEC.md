@@ -126,6 +126,7 @@
 - Nav items are visible but disabled when the user lacks permissions; tooltips explain required access.
 - Gating: Payroll + Payroll Reports (and payroll actions like create checks/unpay/retries) require super admin; Review Time Entries + Time Entries Report require view_time_reports (or super admin); Shipments + Shipment Verification Report require see_shipments; Settings requires view_payroll (super admin); Access-control panel inside Settings requires is_super_admin.
 - Timesheets: super admins and view_all_timesheets can see all timesheets; other admins only see timesheets they created or are assigned/shared to.
+- Admin Home (Dashboard) includes a desktop clock panel (modify_time required) to clock employees hidden from the worker kiosk list in/out against active timesheets/devices.
 - Admin Home is available to any desktop_access user, but cards/actions hide or disable if the user lacks the underlying permission.
 
 ### QuickBooks Connection
@@ -161,6 +162,8 @@
 ### Employees
 - Table with search and active/inactive toggle.
 - Create/edit employee with: first name, last name, nickname, email, name_on_checks, rate, language (en/es/ht; default en), timekeeping access, desktop access, kiosk admin access, permission toggles.
+- `worker_timekeeping` defaults to true for new employees/admins and controls whether they appear on the worker kiosk clock-in list.
+- Employees with `worker_timekeeping=0` are hidden from the worker list but can still be clocked in/out from kiosk admin tools.
 - Language is required for every employee; if missing/invalid, the UI defaults to English and shows an admin warning until corrected.
 - Employees list shows a missing-language count and a quick filter to view only employees with missing/invalid language.
 - Kiosk shipments access if enabled.
@@ -184,6 +187,7 @@
 - Identity: first name, last name, nickname, email, active/inactive.
 - Pay: hourly rate (requires modify_pay_rates), name_on_checks (syncs to QBO on manual sync), payee linkage (employee/vendor QBO ID; vendor ID wins when both exist).
 - Access: worker_timekeeping, desktop_access, kiosk_admin_access (super admin only).
+- Payroll split profiles (super admin only): optional effective-dated fixed project percentages (must total 100%) used to distribute payroll summary/check lines by pay period.
 - Permissions: see_shipments, modify_time, approve_time, view_time_reports, view_all_timesheets, assign_timesheets, view_payroll, modify_pay_rates (super admin only).
 - Kiosk settings: PIN set/reset (override required if already set), language default (en/es/ht).
 - QuickBooks: employee/vendor QBO IDs, needs_qbo_sync flag (missing links), qbo_dirty_fields_json/qbo_conflict_fields_json, link actions.
@@ -233,6 +237,7 @@
 - Review modal for approve/modify/reject (modify_time required); this is the field-review step. Payroll approval is separate and requires approve_time (payroll permissions). Approve requires a note when the entry has discrepancies or was manually modified; modify/reject always require a note.
 - All review actions recorded in an audit trail (who/when/what changed).
 - Exceptions include punch-based flags and time-entry vs punch discrepancies.
+- Shift-shape punch flags are hierarchical to reduce duplicate labels: `multi_day` (>=24h) supersedes `long_shift` (>12h), and `long_shift` supersedes `crosses_midnight` when multiple conditions match the same punch.
 - Manual-entry exceptions: no punches linked, or hours mismatch (>= 0.10h / ~6 min).
 - Modify rules: punch edits must stay on the same day and <24h, and clock-in/out projects must match; time entry edits must be single-day with valid HH:MM times and hours between 0–24.
 - Resolve/unresolve flows are tracked separately from verification.
@@ -274,6 +279,7 @@
 - Default date range uses the org pay period rules; admins can override manually.
 - When overtime is enabled, payroll totals apply the overtime rules (regular_hours * rate + overtime_hours * rate * overtime_multiplier).
 - Overtime adjustments are computed at payroll summary/run time and do not rewrite stored time_entries.total_pay.
+- Employee payroll split profiles can override payroll project allocation: for enabled effective profiles, each employee’s pay-period totals are distributed by configured percentages across selected projects.
 - Each payroll run can toggle "Include overtime" (default on); this flag is stored with the run and used for preflight/create-checks and payroll summary totals.
 - Summary table with expandable details.
 - Preflight checks are required before create-checks (server-enforced); they are preview-only and never create QBO checks.
@@ -487,7 +493,7 @@
 - Legacy settings workers_see_shipments/workers_see_time are removed; use permissions instead.
 
 ## Kiosk (Worker)
-- Employee select with language selector; list includes workers with worker_timekeeping and kiosk admins (admins always shown).
+- Employee select with language selector; list includes only employees with worker_timekeeping enabled.
 - PIN flow (existing or create new 4-digit PIN; PIN is per employee across kiosks in the org).
 - PIN validation uses cached pin_hash for offline use; incorrect PIN shows an error and returns to selection (no lockout).
 - PIN creation requires enter + confirm (4 digits); attempt online save, else queue locally and allow punch; admin reset uses allowOverride.
@@ -540,6 +546,7 @@
 - Active timesheet is highlighted and labeled "Active" in the list; switching prompts confirmation.
 - If no open timesheet exists for today, kiosk refresh clears the active project so workers see "No active timesheet."
 - Live workers table (per kiosk): list today’s punches for the kiosk device with clock-in/out times and “time on clock”.
+- Admin Clock Tools (dedicated kiosk-admin page in the hamburger menu): select a hidden employee + project and clock in/out directly from kiosk admin; when offline, punches queue and sync on reconnect.
 - Live workers defaults to the active timesheet’s project; can view other projects with punches on this kiosk.
 - Open punches (no clock_out_ts) are highlighted as “active”; previous-day open punches are flagged for admin follow-up.
 - Timesheet filters (active, today, range).
@@ -778,6 +785,7 @@ Note: "Timesheet" is the UI name for a kiosk_session in the API/database.
 - Vendors.
 - Projects.
 - Kiosks (device list/detail; detail shows kiosk ID/device_id for super admins).
+- Admin Home includes a Desktop Clock Panel for hidden-employee clock in/out.
 - Shipments Board.
 - Review Time Entries.
 - Time Entries Report.

@@ -15,6 +15,11 @@
   ];
 
   const TIME_EVENTS = [
+    { value: 'TIME_EXCEPTION_OPEN', label: 'Exception opened' },
+    { value: 'TIME_EXCEPTION_REVIEWED', label: 'Exception reviewed' },
+    { value: 'TIME_EXCEPTION_RESOLVED', label: 'Exception resolved' },
+    { value: 'TIME_ENTRY_MANUAL_CREATED', label: 'Manual entry created' },
+    { value: 'TIME_ENTRY_MANUAL_EDITED', label: 'Manual entry edited' },
     { value: 'TIME_SHIFT_LONG', label: 'Long shifts (12+ hours)' },
     { value: 'TIME_SHIFT_MULTI_DAY', label: 'Multi-day shifts (24+ hours)' },
     { value: 'TIME_PUNCH_OPEN_LONG', label: 'Open punches (12+ hours)' },
@@ -25,6 +30,7 @@
 
   const PAYROLL_EVENTS = [
     { value: 'PAYROLL_RUN_DUE', label: 'Payroll due' },
+    { value: 'PAYROLL_RUN_STARTED', label: 'Payroll started' },
     { value: 'PAYROLL_REIMBURSEMENT_REQUESTED', label: 'Reimbursement requested' },
     { value: 'PAYROLL_RUN_SUCCESS', label: 'Payroll success' },
     { value: 'PAYROLL_RUN_PARTIAL', label: 'Payroll partial' },
@@ -60,9 +66,9 @@
     const queue = loadSettingsQueue();
     if (!queue.length) return;
 
-  const remaining = [];
+    const remaining = [];
 
-  for (const entry of queue) {
+    for (const entry of queue) {
       if (!entry || entry.type !== 'notifications_prefs') {
         continue;
       }
@@ -108,6 +114,44 @@
       output[i] = raw.charCodeAt(i);
     }
     return output;
+  }
+
+  function humanizeEventValue(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return 'Unknown event';
+    return raw
+      .split('_')
+      .filter(Boolean)
+      .map(token => {
+        if (token === 'QBO') return 'QuickBooks';
+        const upper = token.toUpperCase();
+        if (upper.length <= 2) return upper;
+        return upper.charAt(0) + upper.slice(1).toLowerCase();
+      })
+      .join(' ');
+  }
+
+  function buildEventOptions(baseOptions, selectedValues) {
+    const options = Array.isArray(baseOptions)
+      ? baseOptions.map(opt => ({
+          value: String(opt.value || ''),
+          label: String(opt.label || opt.value || '')
+        }))
+      : [];
+    const seen = new Set(options.map(opt => opt.value));
+    const selected = Array.isArray(selectedValues) ? selectedValues : [];
+
+    selected.forEach(value => {
+      const clean = String(value || '').trim();
+      if (!clean || seen.has(clean)) return;
+      seen.add(clean);
+      options.push({
+        value: clean,
+        label: `${humanizeEventValue(clean)} (saved)`
+      });
+    });
+
+    return options;
   }
 
   function renderCheckboxGroup(container, options, selectedSet) {
@@ -299,9 +343,11 @@
 
     const timeFilters = prefs.time_filters || {};
     if (timeToggle) timeToggle.checked = !!timeFilters.enabled;
+    const selectedTimeEvents = (timeFilters.event_types || []).map(String);
 
     const payrollFilters = prefs.payroll_filters || {};
     if (payrollToggle) payrollToggle.checked = !!payrollFilters.enabled;
+    const selectedPayrollEvents = (payrollFilters.event_types || []).map(String);
 
     renderStatusCheckboxes(
       statusContainer,
@@ -310,13 +356,13 @@
     );
     renderCheckboxGroup(
       timeContainer,
-      TIME_EVENTS,
-      new Set((timeFilters.event_types || []).map(String))
+      buildEventOptions(TIME_EVENTS, selectedTimeEvents),
+      new Set(selectedTimeEvents)
     );
     renderCheckboxGroup(
       payrollContainer,
-      PAYROLL_EVENTS,
-      new Set((payrollFilters.event_types || []).map(String))
+      buildEventOptions(PAYROLL_EVENTS, selectedPayrollEvents),
+      new Set(selectedPayrollEvents)
     );
 
     if (remindTime) remindTime.value = prefs.remind_time || prefs.clockout_time || '';

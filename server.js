@@ -1003,6 +1003,61 @@ function makeRuleChecker(rulesMap) {
   };
 }
 
+function buildPunchFlagSql({
+  ruleGeoIn = true,
+  ruleAutoClockOut = true
+} = {}) {
+  const activeParts = [];
+  if (ruleGeoIn) {
+    activeParts.push('(tp.geo_violation != 0 OR ks.geo_violation != 0)');
+  }
+  if (ruleAutoClockOut) {
+    activeParts.push('(tp.auto_clock_out != 0)');
+  }
+  const activeCondition = activeParts.length
+    ? `(${activeParts.join(' OR ')})`
+    : '0';
+
+  return {
+    hasGeoExpr: ruleGeoIn
+      ? `COALESCE(MAX(CASE
+          WHEN tp.geo_violation != 0 OR ks.geo_violation != 0 THEN 1
+          ELSE 0
+        END), 0)`
+      : '0',
+    hasAutoExpr: ruleAutoClockOut
+      ? 'COALESCE(MAX(tp.auto_clock_out), 0)'
+      : '0',
+    autoReasonExpr: ruleAutoClockOut
+      ? "COALESCE(MAX(tp.auto_clock_out_reason), '')"
+      : "''",
+    resolvedExpr: `COALESCE(SUM(CASE
+      WHEN (
+        ${activeCondition}
+        AND IFNULL(tp.exception_resolved, 0) != 0
+      )
+      THEN 1
+      ELSE 0
+    END), 0)`,
+    unresolvedExpr: `COALESCE(SUM(CASE
+      WHEN (
+        ${activeCondition}
+        AND IFNULL(tp.exception_resolved, 0) = 0
+      )
+      THEN 1
+      ELSE 0
+    END), 0)`,
+    unresolvedIdsExpr: `GROUP_CONCAT(DISTINCT CASE
+      WHEN (
+        ${activeCondition}
+        AND IFNULL(tp.exception_resolved, 0) = 0
+      )
+      THEN tp.id
+      ELSE NULL
+    END)`
+  };
+}
+
 
 /* ───────── UTIL HELPERS (CANDIDATE: ./util.js) ───────── */
 
@@ -1451,6 +1506,178 @@ function hashPayrollPayload(raw = {}) {
     payloadJson,
     payloadHash: `sha256:${digest}`
   };
+}
+
+function normalizePayrollSplitLines(rawLines = []) {
+  const byProject = new Map();
+  (Array.isArray(rawLines) ? rawLines : []).forEach(raw => {
+    const projectId = Number(raw?.project_id ?? raw?.projectId);
+    const percentage = Number(raw?.percentage);
+    if (!Number.isFinite(projectId) || projectId <= 0) return;
+    if (!Number.isFinite(percentage) || percentage <= 0) return;
+    const existing = byProject.get(projectId);
+    if (existing) {
+      existing.percentage += percentage;
+      return;
+    }
+    byProject.set(projectId, {
+      project_id: projectId,
+      percentage,
+      project_name: raw?.project_name || raw?.projectName || null,
+      project_name_raw: raw?.project_name_raw || raw?.projectNameRaw || raw?.project_name || null,
+      project_qbo_id: raw?.project_qbo_id || raw?.projectQboId || null,
+      project_customer_name: raw?.project_customer_name || raw?.projectCustomerName || null
+    });
+  });
+  return Array.from(byProject.values()).sort((a, b) => a.project_id - b.project_id);
+}
+
+function payrollSplitPercentTotal(lines = []) {
+  return (Array.isArray(lines) ? lines : []).reduce(
+    (sum, line) => sum + Number(line?.percentage || 0),
+    0
+  );
+}
+
+function hasUsablePayrollSplit(lines = []) {
+  const normalized = normalizePayrollSplitLines(lines);
+  if (!normalized.length) return false;
+  const total = payrollSplitPercentTotal(normalized);
+  return Math.abs(total - 100) <= 0.01;
+}
+
+function distributePayrollSplitTotal(total, splitLines = []) {
+  const normalizedTotal = Number(total || 0);
+  if (!Number.isFinite(normalizedTotal) || !Array.isArray(splitLines) || !splitLines.length) {
+    return (Array.isArray(splitLines) ? splitLines : []).map(() => 0);
+  }
+  let remaining = normalizedTotal;
+  return splitLines.map((line, idx) => {
+    if (idx === splitLines.length - 1) {
+      return roundCurrency(remaining);
+    }
+    const share = roundCurrency(normalizedTotal * (Number(line.percentage || 0) / 100));
+    remaining -= share;
+    return share;
+  });
+}
+
+function buildPayrollSplitLines({
+  totalHours,
+  totalPay,
+  splitLines = []
+}) {
+  if (!hasUsablePayrollSplit(splitLines)) return [];
+  const normalized = normalizePayrollSplitLines(splitLines);
+  const hourSplits = distributePayrollSplitTotal(totalHours, normalized);
+  const paySplits = distributePayrollSplitTotal(totalPay, normalized);
+  return normalized.map((line, idx) => ({
+    ...line,
+    project_name: line.project_name || line.project_name_raw || `(Project ${line.project_id})`,
+    project_name_raw: line.project_name_raw || line.project_name || `(Project ${line.project_id})`,
+    project_hours: hourSplits[idx],
+    project_pay: paySplits[idx]
+  }));
+}
+
+async function loadEffectiveEmployeePayrollSplitProfiles({
+  orgId,
+  endDate,
+  employeeIds = []
+}) {
+  if (!orgId || !endDate) return new Map();
+  const normalizedDate = String(endDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) return new Map();
+
+  const normalizedEmployeeIds = Array.from(
+    new Set(
+      (Array.isArray(employeeIds) ? employeeIds : [])
+        .map(Number)
+        .filter(id => Number.isFinite(id) && id > 0)
+    )
+  );
+
+  let employeeFilterSql = '';
+  const profileParams = [orgId, normalizedDate, normalizedDate];
+  if (normalizedEmployeeIds.length) {
+    employeeFilterSql = `AND p.employee_id IN (${normalizedEmployeeIds.map(() => '?').join(',')})`;
+    profileParams.push(...normalizedEmployeeIds);
+  }
+
+  const profileRows = await dbAll(
+    `
+      SELECT
+        p.id,
+        p.employee_id,
+        p.enabled,
+        p.effective_start_date,
+        p.created_at
+      FROM employee_payroll_split_profiles p
+      WHERE p.org_id = ?
+        AND p.effective_start_date <= ?
+        ${employeeFilterSql}
+        AND p.id = (
+          SELECT p2.id
+          FROM employee_payroll_split_profiles p2
+          WHERE p2.org_id = p.org_id
+            AND p2.employee_id = p.employee_id
+            AND p2.effective_start_date <= ?
+          ORDER BY p2.effective_start_date DESC, p2.id DESC
+          LIMIT 1
+        )
+    `,
+    profileParams
+  );
+
+  if (!profileRows.length) return new Map();
+
+  const profileIds = profileRows.map(row => Number(row.id)).filter(id => Number.isFinite(id) && id > 0);
+  if (!profileIds.length) return new Map();
+
+  const lineRows = await dbAll(
+    `
+      SELECT
+        l.profile_id,
+        l.project_id,
+        l.percentage,
+        p.name AS project_name,
+        p.qbo_id AS project_qbo_id,
+        p.customer_name AS project_customer_name
+      FROM employee_payroll_split_lines l
+      LEFT JOIN projects p
+        ON p.id = l.project_id
+       AND p.org_id = l.org_id
+      WHERE l.org_id = ?
+        AND l.profile_id IN (${profileIds.map(() => '?').join(',')})
+      ORDER BY l.profile_id, l.id
+    `,
+    [orgId, ...profileIds]
+  );
+
+  const linesByProfile = new Map();
+  (lineRows || []).forEach(row => {
+    const profileId = Number(row.profile_id);
+    if (!Number.isFinite(profileId) || profileId <= 0) return;
+    if (!linesByProfile.has(profileId)) linesByProfile.set(profileId, []);
+    linesByProfile.get(profileId).push(row);
+  });
+
+  const byEmployee = new Map();
+  profileRows.forEach(row => {
+    const employeeId = Number(row.employee_id);
+    if (!Number.isFinite(employeeId) || employeeId <= 0) return;
+    const profileId = Number(row.id);
+    const lines = normalizePayrollSplitLines(linesByProfile.get(profileId) || []);
+    byEmployee.set(employeeId, {
+      profile_id: profileId,
+      enabled: !!row.enabled,
+      effective_start_date: row.effective_start_date || null,
+      created_at: row.created_at || null,
+      lines
+    });
+  });
+
+  return byEmployee;
 }
 
 async function storePayrollPreflight({
@@ -7368,8 +7595,54 @@ app.get('/api/payroll-summary', requireSectionEnabled('payroll'), requireSuperAd
       });
     });
 
+    const splitProfiles = await loadEffectiveEmployeePayrollSplitProfiles({
+      orgId,
+      endDate: end,
+      employeeIds: Array.from(entriesByEmployee.keys())
+    });
+
     const lineMap = new Map();
-    entriesByEmployee.forEach(entries => {
+    entriesByEmployee.forEach((entries, empIdRaw) => {
+      const empId = Number(empIdRaw);
+      const splitProfile = splitProfiles.get(empId);
+      if (splitProfile && splitProfile.enabled && hasUsablePayrollSplit(splitProfile.lines)) {
+        const firstEntry = entries[0] || {};
+        const totalHours = entries.reduce((sum, entry) => sum + Number(entry.hours || 0), 0);
+        const totalPay = entries.reduce((sum, entry) => sum + Number(entry.adjusted_pay || 0), 0);
+        const splitLines = buildPayrollSplitLines({
+          totalHours,
+          totalPay,
+          splitLines: splitProfile.lines
+        });
+        const status = employeeStatus.get(empId) || {
+          any_paid: false,
+          payroll_run_id: null,
+          last_paid_date: null
+        };
+        splitLines.forEach(line => {
+          const key = `${empId}:${line.project_id || 'none'}`;
+          lineMap.set(key, {
+            employee_id: empId,
+            employee_name: firstEntry.employee_name || '(Unknown employee)',
+            employee_vendor_qbo_id: firstEntry.employee_vendor_qbo_id || null,
+            employee_employee_qbo_id: firstEntry.employee_employee_qbo_id || null,
+            project_id: line.project_id,
+            project_name: line.project_name,
+            project_qbo_id: line.project_qbo_id || null,
+            project_customer_name: line.project_customer_name || null,
+            project_name_raw: line.project_name_raw || line.project_name,
+            any_paid: status.any_paid ? 1 : 0,
+            last_paid_date: status.last_paid_date || null,
+            payroll_run_id: status.payroll_run_id || null,
+            line_paid: status.any_paid ? 1 : 0,
+            line_paid_date: status.last_paid_date || null,
+            project_hours: Number(line.project_hours || 0),
+            project_pay: Number(line.project_pay || 0)
+          });
+        });
+        return;
+      }
+
       entries.forEach(entry => {
         const key = `${entry.employee_id}:${entry.project_id || 'none'}`;
         if (!lineMap.has(key)) {
@@ -11732,6 +12005,280 @@ app.post('/api/employees/:id/worker-timekeeping', async (req, res) => {
   }
 });
 
+app.get('/api/employees/:id/payroll-split', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  const employeeId = parseInt(req.params.id, 10);
+  if (!employeeId) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  try {
+    const orgId = req.session && req.session.orgId;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const employee = await dbGet(
+      `
+        SELECT id, name
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [employeeId, orgId]
+    );
+    if (!employee) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+
+    const latestProfile = await dbGet(
+      `
+        SELECT
+          id,
+          enabled,
+          effective_start_date,
+          created_at
+        FROM employee_payroll_split_profiles
+        WHERE org_id = ?
+          AND employee_id = ?
+        ORDER BY effective_start_date DESC, id DESC
+        LIMIT 1
+      `,
+      [orgId, employeeId]
+    );
+
+    let latestLines = [];
+    if (latestProfile && latestProfile.id) {
+      latestLines = await dbAll(
+        `
+          SELECT
+            l.project_id,
+            l.percentage,
+            p.name AS project_name,
+            p.customer_name AS project_customer_name,
+            p.qbo_id AS project_qbo_id
+          FROM employee_payroll_split_lines l
+          LEFT JOIN projects p
+            ON p.id = l.project_id
+           AND p.org_id = l.org_id
+          WHERE l.org_id = ?
+            AND l.profile_id = ?
+          ORDER BY l.id
+        `,
+        [orgId, latestProfile.id]
+      );
+    }
+
+    const history = await dbAll(
+      `
+        SELECT
+          p.id,
+          p.enabled,
+          p.effective_start_date,
+          p.created_at,
+          (
+            SELECT COUNT(*)
+            FROM employee_payroll_split_lines l
+            WHERE l.profile_id = p.id
+          ) AS line_count
+        FROM employee_payroll_split_profiles p
+        WHERE p.org_id = ?
+          AND p.employee_id = ?
+        ORDER BY p.effective_start_date DESC, p.id DESC
+        LIMIT 20
+      `,
+      [orgId, employeeId]
+    );
+
+    return res.json({
+      ok: true,
+      employee_id: employeeId,
+      employee_name: employee.name || null,
+      latest_profile: latestProfile
+        ? {
+            id: latestProfile.id,
+            enabled: !!latestProfile.enabled,
+            effective_start_date: latestProfile.effective_start_date || null,
+            created_at: latestProfile.created_at || null,
+            lines: normalizePayrollSplitLines(latestLines || [])
+          }
+        : null,
+      history: (history || []).map(row => ({
+        id: row.id,
+        enabled: !!row.enabled,
+        effective_start_date: row.effective_start_date || null,
+        created_at: row.created_at || null,
+        line_count: Number(row.line_count || 0)
+      }))
+    });
+  } catch (err) {
+    console.error('Error loading employee payroll split:', err);
+    return res.status(500).json({ error: 'Failed to load payroll split settings.' });
+  }
+});
+
+app.post('/api/employees/:id/payroll-split', requireSectionEnabled('payroll'), requireSuperAdmin, async (req, res) => {
+  const employeeId = parseInt(req.params.id, 10);
+  if (!employeeId) {
+    return res.status(400).json({ error: 'Invalid employee id.' });
+  }
+
+  try {
+    const orgId = req.session && req.session.orgId;
+    const actorEmployeeId = req.session && req.session.employeeId ? Number(req.session.employeeId) : null;
+    if (!orgId) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const employee = await dbGet(
+      `
+        SELECT id, name
+        FROM employees
+        WHERE id = ? AND org_id = ?
+        LIMIT 1
+      `,
+      [employeeId, orgId]
+    );
+    if (!employee) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+
+    const body = req.body || {};
+    const enabled =
+      body.enabled === true ||
+      body.enabled === 1 ||
+      body.enabled === '1' ||
+      body.enabled === 'true';
+
+    const effectiveStartDateRaw = body.effective_start_date != null
+      ? String(body.effective_start_date || '').trim()
+      : '';
+    const effectiveStartDate = effectiveStartDateRaw || getTodayIsoDate(await getOrgTimezone(orgId));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveStartDate)) {
+      return res.status(400).json({ error: 'effective_start_date must be YYYY-MM-DD.' });
+    }
+
+    let lines = normalizePayrollSplitLines(Array.isArray(body.lines) ? body.lines : []);
+    if (enabled) {
+      if (!lines.length) {
+        return res.status(400).json({ error: 'At least one split line is required when enabled.' });
+      }
+      const percentTotal = payrollSplitPercentTotal(lines);
+      if (Math.abs(percentTotal - 100) > 0.01) {
+        return res.status(400).json({ error: 'Split percentages must total 100%.' });
+      }
+    } else {
+      lines = [];
+    }
+
+    const beforeProfile = await dbGet(
+      `
+        SELECT id, enabled, effective_start_date, created_at
+        FROM employee_payroll_split_profiles
+        WHERE org_id = ? AND employee_id = ?
+        ORDER BY effective_start_date DESC, id DESC
+        LIMIT 1
+      `,
+      [orgId, employeeId]
+    );
+
+    await dbRun('BEGIN');
+    let profileId = null;
+    try {
+      const insertProfile = await dbRun(
+        `
+          INSERT INTO employee_payroll_split_profiles (
+            org_id,
+            employee_id,
+            enabled,
+            effective_start_date,
+            created_by_employee_id,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+        `,
+        [orgId, employeeId, enabled ? 1 : 0, effectiveStartDate, actorEmployeeId || null]
+      );
+      profileId = insertProfile.lastID;
+
+      if (enabled && lines.length) {
+        for (const line of lines) {
+          await dbRun(
+            `
+              INSERT INTO employee_payroll_split_lines (
+                org_id,
+                profile_id,
+                project_id,
+                percentage
+              ) VALUES (?, ?, ?, ?)
+            `,
+            [orgId, profileId, line.project_id, Number(line.percentage)]
+          );
+        }
+      }
+
+      await dbRun('COMMIT');
+    } catch (err) {
+      await dbRun('ROLLBACK');
+      throw err;
+    }
+
+    const savedLines = await dbAll(
+      `
+        SELECT
+          l.project_id,
+          l.percentage,
+          p.name AS project_name,
+          p.customer_name AS project_customer_name,
+          p.qbo_id AS project_qbo_id
+        FROM employee_payroll_split_lines l
+        LEFT JOIN projects p
+          ON p.id = l.project_id
+         AND p.org_id = l.org_id
+        WHERE l.org_id = ?
+          AND l.profile_id = ?
+        ORDER BY l.id
+      `,
+      [orgId, profileId]
+    );
+
+    await logAuditEvent({
+      req,
+      orgId,
+      action: 'employee.payroll_split.update',
+      entityType: 'employee',
+      entityId: employeeId,
+      actorEmployeeId: actorEmployeeId || null,
+      before: beforeProfile
+        ? {
+            profile_id: beforeProfile.id,
+            enabled: !!beforeProfile.enabled,
+            effective_start_date: beforeProfile.effective_start_date || null,
+            created_at: beforeProfile.created_at || null
+          }
+        : null,
+      after: {
+        profile_id: profileId,
+        enabled,
+        effective_start_date: effectiveStartDate,
+        lines: normalizePayrollSplitLines(savedLines || [])
+      }
+    });
+
+    return res.json({
+      ok: true,
+      employee_id: employeeId,
+      latest_profile: {
+        id: profileId,
+        enabled,
+        effective_start_date: effectiveStartDate,
+        lines: normalizePayrollSplitLines(savedLines || [])
+      }
+    });
+  } catch (err) {
+    console.error('Error saving employee payroll split:', err);
+    return res.status(500).json({ error: 'Failed to save payroll split settings.' });
+  }
+});
+
 // Lightweight endpoint to update employment dates (kiosk admin)
 app.post('/api/employees/:id/employment-dates', async (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -14728,6 +15275,13 @@ async function loadPendingTimeEntryReviewEntries({
   isSuperAdmin = null
 }) {
   if (!orgId) return [];
+  const rulesMap = await loadExceptionRulesMap(orgId);
+  const isRuleEnabled = makeRuleChecker(rulesMap);
+  const ruleGeoIn = isRuleEnabled('geofence_clock_in');
+  const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
+  const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
+  const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
+  const punchFlagSql = buildPunchFlagSql({ ruleGeoIn, ruleAutoClockOut });
   const params = [orgId];
   const where = ['t.org_id = ?'];
   where.push('IFNULL(t.resolved, 0) = 0');
@@ -14780,29 +15334,16 @@ async function loadPendingTimeEntryReviewEntries({
       COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
       COALESCE(p.name, t.project_name_snapshot) AS project_name,
       ap.name AS approved_by_name,
-      COALESCE(MAX(CASE
-        WHEN tp.geo_violation != 0 OR ks.geo_violation != 0 THEN 1
-        ELSE 0
-      END), 0) AS has_geo_violation,
-      COALESCE(MAX(tp.auto_clock_out), 0)     AS has_auto_clock_out,
-      COALESCE(MAX(tp.auto_clock_out_reason), '') AS auto_clock_out_reason,
-      COALESCE(MAX(tp.exception_resolved), 0) AS punch_exception_resolved,
-      COALESCE(SUM(CASE
-        WHEN (
-          (tp.geo_violation != 0 OR ks.geo_violation != 0 OR tp.auto_clock_out != 0)
-          AND IFNULL(tp.exception_resolved, 0) = 0
-        )
-        THEN 1
-        ELSE 0
-      END), 0) AS punch_exception_unresolved,
-      GROUP_CONCAT(DISTINCT CASE
-        WHEN (
-          (tp.geo_violation != 0 OR ks.geo_violation != 0 OR tp.auto_clock_out != 0)
-          AND IFNULL(tp.exception_resolved, 0) = 0
-        )
-        THEN tp.id
-        ELSE NULL
-      END) AS punch_exception_ids,
+      ${punchFlagSql.hasGeoExpr} AS has_geo_violation,
+      ${punchFlagSql.hasAutoExpr} AS has_auto_clock_out,
+      ${punchFlagSql.autoReasonExpr} AS auto_clock_out_reason,
+      ${punchFlagSql.resolvedExpr} AS punch_exception_resolved,
+      ${punchFlagSql.unresolvedExpr} AS punch_exception_unresolved,
+      ${punchFlagSql.unresolvedIdsExpr} AS punch_exception_ids,
+      ${ruleGeoIn ? 1 : 0} AS rule_geofence_clock_in,
+      ${ruleAutoClockOut ? 1 : 0} AS rule_auto_clock_out,
+      ${ruleManualNoPunches ? 1 : 0} AS rule_manual_no_punches,
+      ${ruleManualHoursMismatch ? 1 : 0} AS rule_manual_hours_mismatch,
       COUNT(tp.id) AS punch_count,
       SUM(
         CASE
@@ -15331,25 +15872,23 @@ app.get('/api/time-exceptions', requireViewTimeReports, async (req, res) => {
         flags.push('Missing clock-out');
       }
 
-      // 2) Long shift (> 12h)
-      if (isRuleEnabled('long_shift') && durationHours !== null && durationHours > 12) {
-        flags.push('Long shift (>12h)');
-      }
-
-      // 3) Multi-day (>= 24h)
-      if (isRuleEnabled('multi_day') && durationHours !== null && durationHours >= 24) {
-        flags.push('Multi-day shift');
-      }
-
-      // 4) Crosses midnight
-      if (isRuleEnabled('crosses_midnight') && startTs && endTs) {
+      // 2-4) Shift shape flags use a priority order to avoid stacked duplicates:
+      // multi-day > long shift > crosses midnight.
+      let crossesMidnight = false;
+      if (startTs && endTs) {
         const startDateStr =
           r.clock_in_local_date || getIsoDateInTimezone(startTs, tz);
         const endDateStr =
           r.clock_out_local_date || getIsoDateInTimezone(endTs, tz);
-        if (startDateStr && endDateStr && startDateStr !== endDateStr) {
-          flags.push('Crosses midnight');
-        }
+        crossesMidnight = !!(startDateStr && endDateStr && startDateStr !== endDateStr);
+      }
+
+      if (isRuleEnabled('multi_day') && durationHours !== null && durationHours >= 24) {
+        flags.push('Multi-day shift');
+      } else if (isRuleEnabled('long_shift') && durationHours !== null && durationHours > 12) {
+        flags.push('Long shift (>12h)');
+      } else if (isRuleEnabled('crosses_midnight') && crossesMidnight) {
+        flags.push('Crosses midnight');
       }
 
       // 5) No project
@@ -16771,6 +17310,32 @@ app.get('/api/time-punches/open', requireViewTimeReports, async (req, res) => {
   });
 });
 
+app.get('/api/time-punches/clock-panel-employees', requireModifyTime, async (req, res) => {
+  const orgId = req.session && req.session.orgId;
+  if (!orgId) {
+    return res.status(401).json({ error: 'Not authenticated.' });
+  }
+
+  const sql = `
+    SELECT
+      id,
+      name,
+      nickname,
+      IFNULL(active, 1) AS active,
+      IFNULL(worker_timekeeping, 1) AS worker_timekeeping,
+      IFNULL(kiosk_admin_access, 0) AS kiosk_admin_access
+    FROM employees
+    WHERE org_id = ?
+      AND IFNULL(active, 1) = 1
+    ORDER BY name COLLATE NOCASE
+  `;
+
+  db.all(sql, [orgId], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    return res.json({ employees: rows || [] });
+  });
+});
+
 app.get('/api/projects', requireViewPayrollOrSeeShipments, (req, res) => {
   const status = req.query.status || 'active'; // 'active' | 'inactive' | 'all'
   const orgId = req.session && req.session.orgId;
@@ -16910,6 +17475,13 @@ app.get('/api/time-entries', requireViewTimeReports, async (req, res) => {
   const isSuperAdmin = employeeId
     ? await isEmployeeSuperAdmin({ employeeId, orgId })
     : false;
+  const rulesMap = await loadExceptionRulesMap(orgId);
+  const isRuleEnabled = makeRuleChecker(rulesMap);
+  const ruleGeoIn = isRuleEnabled('geofence_clock_in');
+  const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
+  const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
+  const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
+  const punchFlagSql = buildPunchFlagSql({ ruleGeoIn, ruleAutoClockOut });
 
   // If nothing specified, default to "today" (unless all_dates is requested)
   if (!allDates && !start && !end && !employee_id && !project_id) {
@@ -16949,28 +17521,15 @@ app.get('/api/time-entries', requireViewTimeReports, async (req, res) => {
       ap.name AS approved_by_name,
 
       -- Exception / flag info aggregated from punches
-      COALESCE(MAX(CASE
-        WHEN tp.geo_violation != 0 OR ks.geo_violation != 0 THEN 1
-        ELSE 0
-      END), 0) AS has_geo_violation,
-      COALESCE(MAX(tp.auto_clock_out), 0)     AS has_auto_clock_out,
-      COALESCE(MAX(tp.exception_resolved), 0) AS punch_exception_resolved,
-      COALESCE(SUM(CASE
-        WHEN (
-          (tp.geo_violation != 0 OR ks.geo_violation != 0 OR tp.auto_clock_out != 0)
-          AND IFNULL(tp.exception_resolved, 0) = 0
-        )
-        THEN 1
-        ELSE 0
-      END), 0) AS punch_exception_unresolved,
-      GROUP_CONCAT(DISTINCT CASE
-        WHEN (
-          (tp.geo_violation != 0 OR ks.geo_violation != 0 OR tp.auto_clock_out != 0)
-          AND IFNULL(tp.exception_resolved, 0) = 0
-        )
-        THEN tp.id
-        ELSE NULL
-      END) AS punch_exception_ids,
+      ${punchFlagSql.hasGeoExpr} AS has_geo_violation,
+      ${punchFlagSql.hasAutoExpr} AS has_auto_clock_out,
+      ${punchFlagSql.resolvedExpr} AS punch_exception_resolved,
+      ${punchFlagSql.unresolvedExpr} AS punch_exception_unresolved,
+      ${punchFlagSql.unresolvedIdsExpr} AS punch_exception_ids,
+      ${ruleGeoIn ? 1 : 0} AS rule_geofence_clock_in,
+      ${ruleAutoClockOut ? 1 : 0} AS rule_auto_clock_out,
+      ${ruleManualNoPunches ? 1 : 0} AS rule_manual_no_punches,
+      ${ruleManualHoursMismatch ? 1 : 0} AS rule_manual_hours_mismatch,
       COUNT(tp.id) AS punch_count,
       SUM(
         CASE
@@ -17350,6 +17909,13 @@ app.get('/api/kiosk/time-entries', async (req, res) => {
     if (!canViewTime) {
       return res.status(403).json({ error: 'Not authorized' });
     }
+    const rulesMap = await loadExceptionRulesMap(orgId);
+    const isRuleEnabled = makeRuleChecker(rulesMap);
+    const ruleGeoIn = isRuleEnabled('geofence_clock_in');
+    const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
+    const ruleManualNoPunches = isRuleEnabled('manual_no_punches');
+    const ruleManualHoursMismatch = isRuleEnabled('manual_hours_mismatch');
+    const punchFlagSql = buildPunchFlagSql({ ruleGeoIn, ruleAutoClockOut });
 
     const orgTimezone = await getOrgTimezone(orgId);
 
@@ -17392,29 +17958,16 @@ app.get('/api/kiosk/time-entries', async (req, res) => {
         ap.name AS approved_by_name,
 
         -- Exception / flag info aggregated from punches
-        COALESCE(MAX(CASE
-          WHEN tp.geo_violation != 0 OR ks.geo_violation != 0 THEN 1
-          ELSE 0
-        END), 0) AS has_geo_violation,
-        COALESCE(MAX(tp.auto_clock_out), 0)     AS has_auto_clock_out,
-        COALESCE(MAX(tp.auto_clock_out_reason), '') AS auto_clock_out_reason,
-        COALESCE(MAX(tp.exception_resolved), 0) AS punch_exception_resolved,
-        COALESCE(SUM(CASE
-          WHEN (
-            (tp.geo_violation != 0 OR ks.geo_violation != 0 OR tp.auto_clock_out != 0)
-            AND IFNULL(tp.exception_resolved, 0) = 0
-          )
-          THEN 1
-          ELSE 0
-        END), 0) AS punch_exception_unresolved,
-        GROUP_CONCAT(DISTINCT CASE
-          WHEN (
-            (tp.geo_violation != 0 OR ks.geo_violation != 0 OR tp.auto_clock_out != 0)
-            AND IFNULL(tp.exception_resolved, 0) = 0
-          )
-          THEN tp.id
-          ELSE NULL
-        END) AS punch_exception_ids,
+        ${punchFlagSql.hasGeoExpr} AS has_geo_violation,
+        ${punchFlagSql.hasAutoExpr} AS has_auto_clock_out,
+        ${punchFlagSql.autoReasonExpr} AS auto_clock_out_reason,
+        ${punchFlagSql.resolvedExpr} AS punch_exception_resolved,
+        ${punchFlagSql.unresolvedExpr} AS punch_exception_unresolved,
+        ${punchFlagSql.unresolvedIdsExpr} AS punch_exception_ids,
+        ${ruleGeoIn ? 1 : 0} AS rule_geofence_clock_in,
+        ${ruleAutoClockOut ? 1 : 0} AS rule_auto_clock_out,
+        ${ruleManualNoPunches ? 1 : 0} AS rule_manual_no_punches,
+        ${ruleManualHoursMismatch ? 1 : 0} AS rule_manual_hours_mismatch,
         COUNT(tp.id) AS punch_count,
         SUM(
           CASE
@@ -17791,6 +18344,8 @@ app.post('/api/time-entries', requireModifyTimeAny, async (req, res) => {
     const weeklyWindow = getWeekWindowForDate(startDate, orgTimezone);
     if (weeklyWindow) {
       const rulesMap = await loadExceptionRulesMap(orgId);
+      const isRuleEnabled = makeRuleChecker(rulesMap);
+      const ruleWeeklyHours = isRuleEnabled('weekly_hours');
       const rawWeeklyThreshold =
         rulesMap && rulesMap.weekly_hours_threshold != null
           ? Number(rulesMap.weekly_hours_threshold)
@@ -17799,7 +18354,7 @@ app.post('/api/time-entries', requireModifyTimeAny, async (req, res) => {
         Number.isFinite(rawWeeklyThreshold) && rawWeeklyThreshold > 0
           ? rawWeeklyThreshold
           : null;
-      if (weeklyThreshold) {
+      if (ruleWeeklyHours && weeklyThreshold) {
         const weeklyTotal = await sumWeeklyHoursForEmployee({
           orgId,
           employeeId: employee_id,
@@ -18142,6 +18697,8 @@ app.post('/api/time-entries/:id(\\d+)', requireModifyTimeAny, async (req, res) =
     const weeklyWindow = getWeekWindowForDate(startDate, orgTimezone);
     if (weeklyWindow) {
       const rulesMap = await loadExceptionRulesMap(orgId);
+      const isRuleEnabled = makeRuleChecker(rulesMap);
+      const ruleWeeklyHours = isRuleEnabled('weekly_hours');
       const rawWeeklyThreshold =
         rulesMap && rulesMap.weekly_hours_threshold != null
           ? Number(rulesMap.weekly_hours_threshold)
@@ -18150,7 +18707,7 @@ app.post('/api/time-entries/:id(\\d+)', requireModifyTimeAny, async (req, res) =
         Number.isFinite(rawWeeklyThreshold) && rawWeeklyThreshold > 0
           ? rawWeeklyThreshold
           : null;
-      if (weeklyThreshold) {
+      if (ruleWeeklyHours && weeklyThreshold) {
         const weeklyTotal = await sumWeeklyHoursForEmployee({
           orgId,
           employeeId: empIdNum,
@@ -18886,7 +19443,7 @@ app.post('/api/kiosk/punch', async (req, res) => {
     return res.status(403).json({ error: 'Not authorized' });
   }
 
-  let sessionIsKioskAdmin = false;
+  let sessionCanSubmitPunch = false;
   const sessionOrgId = req.session && req.session.orgId;
   const sessionEmployeeId = req.session && req.session.employeeId;
   if (hasSession && sessionOrgId && sessionEmployeeId) {
@@ -18895,13 +19452,23 @@ app.post('/api/kiosk/punch', async (req, res) => {
         employeeId: sessionEmployeeId,
         orgId: sessionOrgId
       });
-      sessionIsKioskAdmin = !!(access && access.kiosk_admin_access);
+      if (access && access.active) {
+        if (access.kiosk_admin_access) {
+          sessionCanSubmitPunch = true;
+        } else {
+          const perms = await getAdminAccessPerms({
+            employeeId: sessionEmployeeId,
+            orgId: sessionOrgId
+          });
+          sessionCanSubmitPunch = !!(perms && perms.modify_time);
+        }
+      }
     } catch (err) {
-      console.warn('Unable to resolve kiosk admin access:', err.message);
+      console.warn('Unable to resolve session punch access:', err.message);
     }
   }
 
-  if (!sessionIsKioskAdmin) {
+  if (!sessionCanSubmitPunch) {
     if (!deviceSecret) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
@@ -18910,11 +19477,11 @@ app.post('/api/kiosk/punch', async (req, res) => {
     }
   }
 
-  const orgId = sessionIsKioskAdmin ? sessionOrgId : kioskRow.org_id;
+  const orgId = sessionCanSubmitPunch ? sessionOrgId : kioskRow.org_id;
   if (!orgId) {
     return res.status(403).json({ error: 'Not authorized' });
   }
-  if (sessionIsKioskAdmin && kioskRow.org_id && Number(kioskRow.org_id) !== Number(orgId)) {
+  if (sessionCanSubmitPunch && kioskRow.org_id && Number(kioskRow.org_id) !== Number(orgId)) {
     return res.status(403).json({ error: 'Not authorized' });
   }
 
@@ -18939,7 +19506,8 @@ app.post('/api/kiosk/punch', async (req, res) => {
 
   const canTimekeep =
     (employeeRow.worker_timekeeping || 0) === 1 ||
-    (employeeRow.kiosk_admin_access || 0) === 1;
+    (employeeRow.kiosk_admin_access || 0) === 1 ||
+    !!sessionCanSubmitPunch;
 
   const orgTimezone = await getOrgTimezone(orgId);
   const queuedAtRaw = req.body && req.body.queued_at;
@@ -19388,6 +19956,8 @@ app.post('/api/kiosk/punch', async (req, res) => {
     const weeklyWindow = getWeekWindowForDate(startDate, orgTimezone);
     if (weeklyWindow) {
       const rulesMap = await loadExceptionRulesMap(orgId);
+      const isRuleEnabled = makeRuleChecker(rulesMap);
+      const ruleWeeklyHours = isRuleEnabled('weekly_hours');
       const rawWeeklyThreshold =
         rulesMap && rulesMap.weekly_hours_threshold != null
           ? Number(rulesMap.weekly_hours_threshold)
@@ -19396,7 +19966,7 @@ app.post('/api/kiosk/punch', async (req, res) => {
         Number.isFinite(rawWeeklyThreshold) && rawWeeklyThreshold > 0
           ? rawWeeklyThreshold
           : null;
-      if (weeklyThreshold) {
+      if (ruleWeeklyHours && weeklyThreshold) {
         const weeklyTotal = await sumWeeklyHoursForEmployee({
           orgId,
           employeeId,
@@ -21815,24 +22385,42 @@ app.post('/api/kiosks/:id/foreman-today', async (req, res) => {
 });
 
 app.get('/api/kiosk/open-punch', async (req, res) => {
-  const access = await ensureKioskDevice(req);
-  if (!access.ok) {
-    return res
-      .status(access.status || 401)
-      .json({ error: access.error || 'Not authenticated' });
-  }
-
   const employeeId = parseInt(req.query.employee_id, 10);
   if (!employeeId) {
     return res.status(400).json({ error: 'employee_id is required.' });
   }
 
-  const orgId =
-    access.via === 'session'
-      ? req.session && req.session.orgId
-      : access.kiosk && access.kiosk.org_id;
+  let orgId = null;
+
+  const kioskAccess = await ensureKioskDevice(req);
+  if (kioskAccess.ok) {
+    orgId =
+      kioskAccess.via === 'session'
+        ? req.session && req.session.orgId
+        : kioskAccess.kiosk && kioskAccess.kiosk.org_id;
+  }
+
+  if (!orgId && req.session && req.session.userId && req.session.orgId) {
+    const desktopStatus = await requireActiveDesktopSession(req);
+    if (!desktopStatus.ok) {
+      return res
+        .status(desktopStatus.status || 403)
+        .json({ error: desktopStatus.error || 'Org access denied.' });
+    }
+    const perms = await getAdminAccessPerms({
+      employeeId: desktopStatus.employeeId,
+      orgId: desktopStatus.orgId
+    });
+    if (!perms || !perms.modify_time) {
+      return res.status(403).json({ error: 'Modify time permission required.' });
+    }
+    orgId = desktopStatus.orgId;
+  }
+
   if (!orgId) {
-    return res.status(403).json({ error: 'Not authorized' });
+    return res
+      .status(kioskAccess.status || 401)
+      .json({ error: kioskAccess.error || 'Not authenticated' });
   }
 
   const sql = `
@@ -21840,6 +22428,7 @@ app.get('/api/kiosk/open-punch', async (req, res) => {
       tp.id,
       tp.employee_id,
       tp.project_id,
+      tp.device_id,
       tp.clock_in_ts,
       p.name AS project_name,
       p.customer_name
@@ -21864,6 +22453,7 @@ app.get('/api/kiosk/open-punch', async (req, res) => {
       punch_id: row.id,
       employee_id: row.employee_id,
       project_id: row.project_id,
+      device_id: row.device_id,
       project_name: row.project_name,
       customer_name: row.customer_name,
       clock_in_ts: row.clock_in_ts
@@ -22786,6 +23376,7 @@ async function loadNotificationRecipients(orgId) {
         u.email,
         e.name AS employee_name,
         e.desktop_access,
+        e.kiosk_admin_access,
         e.active,
         p.see_shipments,
         p.modify_time,
@@ -22799,7 +23390,10 @@ async function loadNotificationRecipients(orgId) {
       LEFT JOIN employee_permissions p ON p.employee_id = e.id
       WHERE uo.org_id = ?
         AND IFNULL(e.active, 1) = 1
-        AND IFNULL(e.desktop_access, 0) = 1
+        AND (
+          IFNULL(e.desktop_access, 0) = 1
+          OR IFNULL(e.kiosk_admin_access, 0) = 1
+        )
         AND IFNULL(uo.login_enabled, 1) = 1
     `,
     [orgId]
@@ -27949,6 +28543,11 @@ app.get('/api/time-entries/export/:format', requireViewTimeReports, async (req, 
   const isSuperAdmin = adminId
     ? await isEmployeeSuperAdmin({ employeeId: adminId, orgId })
     : false;
+  const rulesMap = await loadExceptionRulesMap(orgId);
+  const isRuleEnabled = makeRuleChecker(rulesMap);
+  const ruleGeoIn = isRuleEnabled('geofence_clock_in');
+  const ruleAutoClockOut = isRuleEnabled('auto_clock_out');
+  const punchFlagSql = buildPunchFlagSql({ ruleGeoIn, ruleAutoClockOut });
 
   // Same default as normal endpoint: if no filters, default to "today"
   if (!allDates && !start && !end && !employee_id && !project_id) {
@@ -27973,11 +28572,8 @@ app.get('/api/time-entries/export/:format', requireViewTimeReports, async (req, 
       t.paid_date,
       COALESCE(e.name, t.employee_name_snapshot) AS employee_name,
       COALESCE(p.name, t.project_name_snapshot) AS project_name,
-      COALESCE(MAX(CASE
-        WHEN tp.geo_violation != 0 OR ks.geo_violation != 0 THEN 1
-        ELSE 0
-      END), 0) AS has_geo_violation,
-      COALESCE(MAX(tp.auto_clock_out), 0) AS has_auto_clock_out
+      ${punchFlagSql.hasGeoExpr} AS has_geo_violation,
+      ${punchFlagSql.hasAutoExpr} AS has_auto_clock_out
     FROM time_entries t
     LEFT JOIN employees   e ON t.employee_id = e.id AND e.org_id = t.org_id
     LEFT JOIN projects    p ON t.project_id = p.id AND p.org_id = t.org_id
@@ -30203,6 +30799,9 @@ async function runShipmentRemindersForOrg(orgId, timeZone) {
     if (shipmentIds.length) {
       where += ` AND id IN (${shipmentIds.map(() => '?').join(',')})`;
       params.push(...shipmentIds);
+    }
+    if (!statuses.length || statuses.includes('Cleared - Ready for Pickup')) {
+      where += " AND (status != 'Cleared - Ready for Pickup' OR COALESCE(TRIM(picked_up_by), '') = '')";
     }
 
     const countRow = await dbGet(

@@ -2196,12 +2196,6 @@ function fillEmployeeSelect(sel, list) {
   sel.innerHTML = `<option value="">${getCopy('placeholder')}</option>`;
 
   const rows = (list || []).filter(e => {
-    // 🔹 Always show admins, even if uses_timekeeping is off
-    if (e.is_admin) {
-      return true;
-    }
-
-    // For normal workers, keep the "Uses timekeeping" logic
     if (e.uses_timekeeping === undefined || e.uses_timekeeping === null) {
       return true;
     }

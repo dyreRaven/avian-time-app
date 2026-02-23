@@ -2938,6 +2938,7 @@ input[type="checkbox"]:disabled {
 
 #ka-view-timesheets,
 #ka-view-workers,
+#ka-view-admin-clock,
 #ka-view-employees,
 #ka-view-time,
 #ka-view-receipts,
@@ -3969,6 +3970,7 @@ body {
 }
 
 body.ka-view-workers-active .ka-header,
+body.ka-view-admin-clock-active .ka-header,
 body.ka-view-timesheets-active .ka-header,
 body.ka-view-shipments-active .ka-header,
 body.ka-view-time-active .ka-header,
@@ -4370,6 +4372,7 @@ body.ka-view-receipts-active .ka-header {
 }
 
 body.ka-view-workers-active .ka-header-menu-toggle-inline,
+body.ka-view-admin-clock-active .ka-header-menu-toggle-inline,
 body.ka-view-timesheets-active .ka-header-menu-toggle-inline,
 body.ka-view-shipments-active .ka-header-menu-toggle-inline,
 body.ka-view-time-active .ka-header-menu-toggle-inline,
@@ -4469,6 +4472,14 @@ body:not(.ka-view-timesheets-active) #ka-start-new-btn {
 }
 
 body.ka-view-shipments-active .ka-header-subtitle {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+}
+
+body.ka-view-admin-clock-active .ka-header-subtitle {
   justify-content: flex-start;
   align-items: center;
   gap: 12px;
@@ -8055,6 +8066,7 @@ body.ka-modal-open .ka-bottom-nav {
 ========================================= */
 #ka-view-timesheets,
 #ka-view-workers,
+#ka-view-admin-clock,
 #ka-view-time,
 #ka-view-settings,
 #ka-view-account {
@@ -9073,6 +9085,7 @@ body.ka-modal-open .ka-bottom-nav {
 
   #ka-view-timesheets,
   #ka-view-workers,
+  #ka-view-admin-clock,
   #ka-view-time,
   #ka-view-settings,
   #ka-view-account {
@@ -11812,7 +11825,12 @@ body.ka-modal-open .ka-bottom-nav {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-height: 0;
   overscroll-behavior: contain;
+}
+
+.ka-items-modal-body.messages-active {
+  overflow: hidden;
 }
 
 .ka-items-modal-footer {
@@ -11892,7 +11910,10 @@ body.ka-modal-open .ka-bottom-nav {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1 1 auto;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .ka-ship-msg-layout {
@@ -11902,7 +11923,8 @@ body.ka-modal-open .ka-bottom-nav {
   grid-template-columns: var(--ka-ship-msg-sidebar-width) minmax(0, 1fr);
   gap: 0;
   min-height: 0;
-  flex: 1;
+  flex: 1 1 auto;
+  height: 100%;
   min-height: 420px;
   border: 1px solid #dbe5ee;
   border-radius: 14px;
@@ -14479,7 +14501,8 @@ body.ka-modal-open .ka-bottom-nav {
 
 /* Pull the Timesheets/Current Workers section up slightly */
 #ka-view-timesheets,
-#ka-view-workers {
+#ka-view-workers,
+#ka-view-admin-clock {
   margin-top: -8px;
 }
 
@@ -15034,6 +15057,52 @@ body.ka-modal-open .ka-bottom-nav {
   --ka-worker-control-radius: 20px;
 }
 
+#ka-view-admin-clock .ka-admin-clock-card {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.97), rgba(240, 253, 250, 0.9));
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  margin: 0 0 14px;
+}
+
+#ka-view-admin-clock .ka-admin-clock-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+  gap: 10px 14px;
+}
+
+#ka-view-admin-clock .ka-admin-clock-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+#ka-view-admin-clock .ka-admin-clock-field .ka-live-filter-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+}
+
+#ka-view-admin-clock .ka-admin-clock-field select {
+  width: 100%;
+  min-width: 0;
+}
+
+#ka-view-admin-clock .ka-admin-clock-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+#ka-admin-clock-status {
+  margin-top: 10px;
+  min-height: 1.2em;
+}
+
 body.ka-view-workers-active {
   --ka-worker-pill-bg: rgba(255, 255, 255, 0.82);
   --ka-worker-pill-border: rgba(148, 163, 184, 0.32);
@@ -15196,6 +15265,14 @@ body.ka-view-workers-active #ka-view-workers #ka-live-card .card-header.ka-live-
 @media (max-width: 700px) {
   #ka-view-workers .ka-live-controls {
     align-items: flex-start;
+  }
+
+  #ka-view-admin-clock .ka-admin-clock-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #ka-view-admin-clock .ka-admin-clock-actions {
+    flex-wrap: wrap;
   }
 
   #ka-view-workers .ka-live-filter {

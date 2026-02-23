@@ -6,7 +6,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/kiosk-admin.css?v=20260223h" />
+  <link rel="stylesheet" href="/kiosk-admin.css?v=20260223j" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#10b981" />
 
@@ -104,6 +104,17 @@
       </div>
     </div>
     <div class="ka-sidebar-actions">
+      <button type="button" class="ka-header-menu-item" data-ka-view="admin-clock" role="menuitem">
+        <span class="ka-menu-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="9" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <path d="M3.5 19c1.2-2.8 4-4.3 5.5-4.3s4.3 1.5 5.5 4.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+            <circle cx="17" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <path d="M17 10v2l1.5 1.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </span>
+        <span class="ka-menu-label">Admin Clock Tools</span>
+      </button>
       <button type="button" class="ka-header-menu-item" data-ka-action="clockin" role="menuitem">
         <span class="ka-menu-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -432,6 +443,37 @@
   <div class="card" id="ka-live-card">
     <div id="ka-live-list" class="ka-live-list" role="list" aria-live="polite">
       <div class="ka-live-item ka-live-placeholder ka-muted" data-ka-placeholder="1" role="listitem">(loading…)</div>
+    </div>
+  </div>
+</section>
+
+  <!-- ============================
+       VIEW: ADMIN CLOCK TOOLS
+       ============================ -->
+<section id="ka-view-admin-clock" class="hidden">
+  <div class="card ka-admin-clock-card" id="ka-admin-clock-card">
+    <div class="card-header">
+      <div>
+        <h3>Admin Clock Tools</h3>
+        <p class="card-sub">Clock in/out employees hidden from the worker kiosk screen.</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="ka-admin-clock-grid">
+        <label class="ka-live-filter ka-admin-clock-field">
+          <span class="ka-live-filter-label">Employee</span>
+          <select id="ka-admin-clock-employee" class="ka-select-arrow"></select>
+        </label>
+        <label class="ka-live-filter ka-admin-clock-field">
+          <span class="ka-live-filter-label">Project</span>
+          <select id="ka-admin-clock-project" class="ka-select-arrow"></select>
+        </label>
+      </div>
+      <div class="ka-admin-clock-actions">
+        <button type="button" id="ka-admin-clock-in-btn" class="btn primary btn-sm">Clock in</button>
+        <button type="button" id="ka-admin-clock-out-btn" class="btn secondary btn-sm">Clock out</button>
+      </div>
+      <div id="ka-admin-clock-status" class="ka-status"></div>
     </div>
   </div>
 </section>
@@ -1357,6 +1399,12 @@
               <span>Geofencing required</span>
             </label>
           </div>
+          <div class="ka-employee-toggle-row">
+            <label class="ka-toggle">
+              <input type="checkbox" id="ka-employee-detail-worker-timekeeping" />
+              <span>Show on worker kiosk clock-in screen</span>
+            </label>
+          </div>
           <div class="ka-employee-pin-action-row">
             <button type="button" id="ka-employee-detail-pin-open" class="btn danger btn-sm">
               Change PIN
@@ -1481,7 +1529,7 @@
 <script src="/js/utils.js"></script>
 <script src="/js/bcrypt.min.js"></script>
 <script src="/js/offline-store.js"></script>
-<script src="/kiosk-admin.js?v=20260223h"></script>
+<script src="/kiosk-admin.js?v=20260223j"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {

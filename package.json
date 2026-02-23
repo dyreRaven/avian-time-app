@@ -17,7 +17,8 @@
     "seed:test-data": "node scripts/seed-testing-data.js",
     "lint": "echo \"No lint configured.\"",
     "test": "echo \"No tests configured.\"",
-    "check:section-toggle": "node scripts/section-toggle-check.js"
+    "check:section-toggle": "node scripts/section-toggle-check.js",
+    "check:kiosk-comment-auth": "node scripts/check-kiosk-comment-auth.js"
   },
   "dependencies": {
     "axios": "^1.13.2",

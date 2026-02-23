@@ -183,7 +183,7 @@ let kaTimesheetAssigneesLoading = false;
 let kaDocViewCurrentUrl = null;
 let kaDebugTapEnabled = false;
 
-const KA_VIEWS = ['timesheets', 'workers', 'employees', 'shipments', 'time', 'receipts', 'account', 'settings'];
+const KA_VIEWS = ['timesheets', 'workers', 'admin-clock', 'employees', 'shipments', 'time', 'receipts', 'account', 'settings'];
 const KA_PENDING_PIN_KEY = 'avian_kiosk_pending_pins_v1';
 const KA_OFFLINE_QUEUE_KEY = 'avian_kiosk_offline_punches_v1';
 const KA_VERIFY_QUEUE_KEY = 'avian_kiosk_verify_queue_v1';
@@ -297,6 +297,9 @@ let kaLiveRefreshTimer = null;
 let kaLiveRefreshInFlight = false;
 let kaSessionRefreshInFlight = false;
 let kaLiveProjectOverride = null;
+let kaAdminClockControlsBound = false;
+let kaAdminClockOpenPunch = null;
+let kaAdminClockLookupEmployeeId = null;
 let kaDialogsOverridden = false;
 let kaTimeOrientationListenerBound = false;
 let kaBottomNavPositionBound = false;
@@ -1257,11 +1260,362 @@ function kaCurrentLiveProjectId() {
   return null;
 }
 
+function kaAdminClockElements() {
+  return {
+    card: document.getElementById('ka-admin-clock-card'),
+    employee: document.getElementById('ka-admin-clock-employee'),
+    project: document.getElementById('ka-admin-clock-project'),
+    clockIn: document.getElementById('ka-admin-clock-in-btn'),
+    clockOut: document.getElementById('ka-admin-clock-out-btn'),
+    status: document.getElementById('ka-admin-clock-status')
+  };
+}
+
+function kaEmployeeWorkerScreenEnabled(employee) {
+  if (!employee) return true;
+  const value = employee.worker_timekeeping;
+  if (value === undefined || value === null) return true;
+  return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function kaAdminClockHiddenEmployees() {
+  const rows = (Array.isArray(kaEmployees) ? kaEmployees : [])
+    .filter(emp => Number(emp && emp.id) > 0)
+    .filter(emp => Number(emp.active) !== 0)
+    .filter(emp => !kaEmployeeWorkerScreenEnabled(emp))
+    .map(emp => ({
+      id: Number(emp.id),
+      label: String(emp.nickname || emp.name || `Employee ${emp.id}`).trim() || `Employee ${emp.id}`
+    }));
+
+  rows.sort((a, b) =>
+    String(a.label || '').localeCompare(String(b.label || ''), undefined, { sensitivity: 'base' })
+  );
+  return rows;
+}
+
+function kaAdminClockPendingForEmployee(employeeId) {
+  if (!employeeId) return false;
+  const queue = kaLoadOfflinePunches();
+  return queue.some(item => Number(item && item.employee_id) === Number(employeeId));
+}
+
+function kaQueueOfflinePunch(payload) {
+  if (!payload || !payload.employee_id) return;
+  const queue = kaLoadOfflinePunches();
+  const clientId = String(payload.client_id || '').trim();
+  const next = {
+    ...payload,
+    queued_at: payload.queued_at || new Date().toISOString()
+  };
+  let nextQueue = queue;
+  if (clientId) {
+    nextQueue = queue.filter(item => String(item && item.client_id || '') !== clientId);
+  }
+  nextQueue.push(next);
+  kaSaveOfflinePunches(nextQueue);
+}
+
+function kaSetAdminClockStatus(message, variant = '') {
+  const els = kaAdminClockElements();
+  if (!els.status) return;
+  els.status.textContent = message || '';
+  els.status.className = 'ka-status';
+  if (variant === 'ok') els.status.classList.add('ka-status-ok');
+  if (variant === 'error') els.status.classList.add('ka-status-error');
+}
+
+function kaRenderAdminClockEmployees() {
+  const els = kaAdminClockElements();
+  if (!els.employee) return [];
+
+  const rows = kaAdminClockHiddenEmployees();
+  const previous = Number(els.employee.value || 0);
+  els.employee.innerHTML = '';
+
+  if (!rows.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(no hidden employees)';
+    els.employee.appendChild(opt);
+    els.employee.disabled = true;
+    return rows;
+  }
+
+  rows.forEach(row => {
+    const opt = document.createElement('option');
+    opt.value = String(row.id);
+    opt.textContent = row.label;
+    els.employee.appendChild(opt);
+  });
+
+  const nextId = rows.some(row => row.id === previous) ? previous : rows[0].id;
+  els.employee.value = String(nextId);
+  els.employee.disabled = false;
+  return rows;
+}
+
+function kaRenderAdminClockProjects() {
+  const els = kaAdminClockElements();
+  if (!els.project) return [];
+
+  const rows = kaActiveProjectOptions();
+  const previous = Number(els.project.value || 0);
+  const preferred = Number(kaCurrentLiveProjectId() || (kaKiosk && kaKiosk.project_id) || 0);
+
+  els.project.innerHTML = '';
+  if (!rows.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(no active projects)';
+    els.project.appendChild(opt);
+    els.project.disabled = true;
+    return rows;
+  }
+
+  rows.forEach(row => {
+    const opt = document.createElement('option');
+    opt.value = String(row.project_id);
+    opt.textContent = row.label || `Project ${row.project_id}`;
+    els.project.appendChild(opt);
+  });
+
+  let nextId = rows[0].project_id;
+  if (rows.some(row => Number(row.project_id) === previous)) {
+    nextId = previous;
+  } else if (rows.some(row => Number(row.project_id) === preferred)) {
+    nextId = preferred;
+  }
+  els.project.value = String(nextId);
+  els.project.disabled = false;
+  return rows;
+}
+
+async function kaRefreshAdminClockPanel({ force = false } = {}) {
+  const els = kaAdminClockElements();
+  if (!els.card || !els.employee || !els.project) return;
+
+  const employeeRows = kaRenderAdminClockEmployees();
+  const projectRows = kaRenderAdminClockProjects();
+  const hasProjectOptions = projectRows.length > 0;
+  if (!employeeRows.length) {
+    kaAdminClockOpenPunch = null;
+    kaAdminClockLookupEmployeeId = null;
+    if (els.clockIn) els.clockIn.disabled = true;
+    if (els.clockOut) els.clockOut.disabled = true;
+    kaSetAdminClockStatus('No employees are currently hidden from the worker kiosk clock-in screen.');
+    return;
+  }
+
+  const employeeId = Number(els.employee.value || 0);
+  const projectId = Number(els.project.value || 0);
+  const pendingOffline = kaAdminClockPendingForEmployee(employeeId);
+
+  if (kaAdminClockLookupEmployeeId !== employeeId) {
+    kaAdminClockOpenPunch = null;
+  }
+
+  if (!employeeId) {
+    if (els.clockIn) els.clockIn.disabled = true;
+    if (els.clockOut) els.clockOut.disabled = true;
+    kaSetAdminClockStatus('Select an employee.');
+    return;
+  }
+
+  const shouldFetch =
+    navigator.onLine &&
+    !pendingOffline &&
+    (force || kaAdminClockLookupEmployeeId !== employeeId || !kaAdminClockOpenPunch);
+
+  if (shouldFetch) {
+    try {
+      kaAdminClockOpenPunch = await fetchJSON(`/api/kiosk/open-punch?employee_id=${employeeId}`);
+      kaAdminClockLookupEmployeeId = employeeId;
+    } catch (err) {
+      console.warn('Unable to refresh admin clock panel status:', err);
+      kaAdminClockOpenPunch = null;
+      kaAdminClockLookupEmployeeId = employeeId;
+    }
+  }
+
+  let statusMessage = '';
+  let statusVariant = '';
+  if (pendingOffline) {
+    statusMessage = 'Offline punch queued for this employee. It will sync when the kiosk reconnects.';
+    statusVariant = 'ok';
+  } else if (!navigator.onLine) {
+    statusMessage = 'Offline: changes can be queued for sync, but live punch status may be stale.';
+  } else if (kaAdminClockOpenPunch && kaAdminClockOpenPunch.open) {
+    const projectLabel =
+      kaAdminClockOpenPunch.project_name ||
+      kaProjectLabelById(kaAdminClockOpenPunch.project_id) ||
+      `Project ${kaAdminClockOpenPunch.project_id || ''}`.trim();
+    const since = kaFmtTimeShortTZ(kaAdminClockOpenPunch.clock_in_ts);
+    statusMessage = since
+      ? `Clocked in on ${projectLabel} since ${since}.`
+      : `Clocked in on ${projectLabel}.`;
+    statusVariant = 'ok';
+  } else {
+    const selectedProjectLabel =
+      kaProjectLabelById(projectId) ||
+      (projectId ? `Project ${projectId}` : 'the selected project');
+    statusMessage = `Not clocked in. Clock-in will use ${selectedProjectLabel}.`;
+  }
+
+  if (kaClockInPhotoRequired && !(kaAdminClockOpenPunch && kaAdminClockOpenPunch.open)) {
+    statusMessage += ' Photo is required for clock-in; use the worker screen if enabled.';
+  }
+
+  if (!hasProjectOptions && !(kaAdminClockOpenPunch && kaAdminClockOpenPunch.open)) {
+    statusMessage += ' No active projects are available. Create or activate a project first.';
+    statusVariant = statusVariant || 'error';
+  }
+
+  const activeProjectId = Number(kaCurrentLiveProjectId() || (kaKiosk && kaKiosk.project_id) || 0);
+  if (
+    !pendingOffline &&
+    !(kaAdminClockOpenPunch && kaAdminClockOpenPunch.open) &&
+    (!Number.isFinite(activeProjectId) || activeProjectId <= 0)
+  ) {
+    statusMessage += ' No active kiosk timesheet is set; start or activate one first.';
+  }
+  if (
+    !pendingOffline &&
+    !(kaAdminClockOpenPunch && kaAdminClockOpenPunch.open) &&
+    Number.isFinite(activeProjectId) &&
+    activeProjectId > 0 &&
+    projectId > 0 &&
+    projectId !== activeProjectId
+  ) {
+    const activeLabel = kaProjectLabelById(activeProjectId) || `Project ${activeProjectId}`;
+    statusMessage += ` Active kiosk project is ${activeLabel}; set that timesheet active first to avoid punch conflicts.`;
+  }
+
+  const canClockIn = !pendingOffline && !!employeeId && hasProjectOptions && !!projectId && !(kaAdminClockOpenPunch && kaAdminClockOpenPunch.open) && !kaClockInPhotoRequired;
+  const canClockOut = !pendingOffline && !!employeeId && !!(kaAdminClockOpenPunch && kaAdminClockOpenPunch.open);
+  if (els.clockIn) els.clockIn.disabled = !canClockIn;
+  if (els.clockOut) els.clockOut.disabled = !canClockOut;
+  kaSetAdminClockStatus(statusMessage, statusVariant);
+}
+
+async function kaHandleAdminClockPunch(intendedMode) {
+  const mode = intendedMode === 'clock_out' ? 'clock_out' : 'clock_in';
+  const els = kaAdminClockElements();
+  if (!els.employee || !els.project) return;
+
+  const employeeId = Number(els.employee.value || 0);
+  const selectedProjectId = Number(els.project.value || 0);
+  if (!employeeId) {
+    kaSetAdminClockStatus('Select an employee first.', 'error');
+    return;
+  }
+  if (mode === 'clock_in' && !selectedProjectId) {
+    kaSetAdminClockStatus('Select a project first.', 'error');
+    return;
+  }
+  if (mode === 'clock_in' && kaClockInPhotoRequired) {
+    kaSetAdminClockStatus('Photo is required to clock in. Use the worker screen while this requirement is enabled.', 'error');
+    return;
+  }
+
+  const projectId =
+    mode === 'clock_out' &&
+    kaAdminClockOpenPunch &&
+    kaAdminClockOpenPunch.open &&
+    Number(kaAdminClockOpenPunch.project_id) > 0
+      ? Number(kaAdminClockOpenPunch.project_id)
+      : selectedProjectId;
+
+  if (mode === 'clock_out' && !(kaAdminClockOpenPunch && kaAdminClockOpenPunch.open)) {
+    kaSetAdminClockStatus('No open punch found for this employee.', 'error');
+    return;
+  }
+
+  const pos = await kaGetPosition();
+  const clientId =
+    `admin_${mode}_${employeeId}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const payload = {
+    client_id: clientId,
+    employee_id: employeeId,
+    project_id: projectId,
+    intended_mode: mode,
+    lat: pos && pos.lat != null ? pos.lat : null,
+    lng: pos && pos.lng != null ? pos.lng : null,
+    device_timestamp: new Date().toISOString(),
+    photo_base64: null,
+    device_id: kaDeviceId || null
+  };
+
+  if (els.clockIn) els.clockIn.disabled = true;
+  if (els.clockOut) els.clockOut.disabled = true;
+  kaSetAdminClockStatus(mode === 'clock_in' ? 'Clocking in…' : 'Clocking out…');
+
+  try {
+    await fetchJSON('/api/kiosk/punch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    await kaRefreshSessionsAndLive();
+    await kaRefreshAdminClockPanel({ force: true });
+    kaSetAdminClockStatus(
+      mode === 'clock_in'
+        ? 'Clock-in recorded for selected employee.'
+        : 'Clock-out recorded for selected employee.',
+      'ok'
+    );
+  } catch (err) {
+    if (kaIsConnectionIssue(err)) {
+      kaQueueOfflinePunch({
+        ...payload,
+        device_id: kaDeviceId || null,
+        device_secret: kaGetDeviceSecret() || null
+      });
+      kaSetAdminClockStatus('Offline: punch queued and will sync when online.', 'ok');
+      await kaRefreshAdminClockPanel({ force: true });
+      return;
+    }
+
+    if (mode === 'clock_in' && err && err.data && Number(err.data.active_project_id) > 0) {
+      const activeProjectId = Number(err.data.active_project_id);
+      if (els.project && Array.from(els.project.options).some(opt => Number(opt.value) === activeProjectId)) {
+        els.project.value = String(activeProjectId);
+      }
+    }
+
+    kaSetAdminClockStatus(err && err.message ? err.message : 'Could not submit punch.', 'error');
+    await kaRefreshAdminClockPanel({ force: true });
+  }
+}
+
+function kaBindAdminClockControls() {
+  if (kaAdminClockControlsBound) return;
+  const els = kaAdminClockElements();
+  if (!els.employee || !els.project || !els.clockIn || !els.clockOut) return;
+
+  els.employee.addEventListener('change', () => {
+    kaRefreshAdminClockPanel({ force: true });
+  });
+  els.project.addEventListener('change', () => {
+    kaRefreshAdminClockPanel({ force: false });
+  });
+  els.clockIn.addEventListener('click', () => {
+    kaHandleAdminClockPunch('clock_in');
+  });
+  els.clockOut.addEventListener('click', () => {
+    kaHandleAdminClockPunch('clock_out');
+  });
+  kaAdminClockControlsBound = true;
+}
+
 async function kaRefreshLiveData() {
   if (kaLiveRefreshInFlight) return;
   kaLiveRefreshInFlight = true;
   try {
     const tasks = [kaLoadLiveWorkers()];
+    if (kaCurrentView === 'admin-clock') {
+      tasks.push(kaRefreshAdminClockPanel({ force: false }));
+    }
     if (kaCurrentView === 'time' && kaTimeReportHasRun) {
       tasks.push(kaLoadTimeEntries());
     }
@@ -1628,6 +1982,15 @@ async function kaDispatchEmployeeUpdate(entry) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name_on_checks: payload.name_on_checks || null, ...auth })
+      });
+    case 'worker_timekeeping':
+      return fetchJSON(`/api/employees/${id}/worker-timekeeping`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          worker_timekeeping: payload.worker_timekeeping ? 1 : 0,
+          ...auth
+        })
       });
     case 'employment_dates':
       return fetchJSON(`/api/employees/${id}/employment-dates`, {
@@ -4363,7 +4726,23 @@ function kaCanAssignTimesheets() {
   );
 }
 
+function kaShouldHideClockInShortcut() {
+  return kaEmployeeWorkerScreenEnabled(kaCurrentAdmin);
+}
+
+function kaApplyClockInShortcutVisibility() {
+  const hideClockInShortcut = kaShouldHideClockInShortcut();
+  const navItems = document.querySelectorAll(
+    '.ka-header-menu-item[data-ka-action="clockin"]'
+  );
+  navItems.forEach(btn => {
+    btn.style.display = hideClockInShortcut ? 'none' : '';
+  });
+}
+
 function kaApplyAccessUI() {
+  kaApplyClockInShortcutVisibility();
+
   const shipmentNavItems = document.querySelectorAll('.ka-header-menu-item[data-ka-view=\"shipments\"], .ka-bottom-nav button[data-ka-view=\"shipments\"]');
   shipmentNavItems.forEach(btn => {
     btn.style.display = kaCanViewShipments() ? '' : 'none';
@@ -5173,6 +5552,8 @@ function kaUpdateHeaderTitle(view = kaCurrentView) {
   } else if (current === 'workers') {
     title = 'Current Workers';
     dateLabel = kaCurrentWorkersProjectLabel();
+  } else if (current === 'admin-clock') {
+    title = 'Admin Clock Tools';
   } else if (current === 'shipments') {
     const label = kaCurrentShipmentsHeaderLabel();
     title = label ? `Shipments – ${label}` : 'Shipments';
@@ -6091,6 +6472,7 @@ function kaUpdateEmployeeRecord(id, updates = {}) {
   Object.assign(emp, updates);
   if (kaCurrentAdmin && Number(kaCurrentAdmin.id) === Number(id)) {
     Object.assign(kaCurrentAdmin, updates);
+    kaApplyClockInShortcutVisibility();
   }
   return emp;
 }
@@ -6563,6 +6945,7 @@ function kaEmployeeSheetElements() {
     rateField: sheet.querySelector('.ka-employee-rate-field'),
     rateInput: sheet.querySelector('#ka-employee-detail-rate'),
     geofenceToggle: sheet.querySelector('#ka-employee-detail-geofence'),
+    workerTimekeepingToggle: sheet.querySelector('#ka-employee-detail-worker-timekeeping'),
     reactivateBtn: sheet.querySelector('#ka-employee-detail-reactivate'),
     reactivateNote: sheet.querySelector('#ka-employee-detail-reactivate-note'),
     historyBtn: sheet.querySelector('#ka-employee-detail-history-open'),
@@ -7772,6 +8155,9 @@ function kaPopulateEmployeeSheet(employee) {
   if (els.geofenceToggle) {
     els.geofenceToggle.checked = false;
   }
+  if (els.workerTimekeepingToggle) {
+    els.workerTimekeepingToggle.checked = kaEmployeeWorkerScreenEnabled(employee);
+  }
   if (els.reactivateBtn) {
     const isInactive = employee.active === 0;
     els.reactivateBtn.classList.toggle('hidden', !isInactive);
@@ -8296,6 +8682,9 @@ function kaRenderEmployeesGrid() {
     if (emp.active === 0) {
       tags.push('<span class="ka-tag red">Inactive</span>');
     }
+    if (!kaEmployeeWorkerScreenEnabled(emp)) {
+      tags.push('<span class="ka-tag gray">Worker hidden</span>');
+    }
     if (emp.pin_hash) {
       tags.push('<span class="ka-tag orange">PIN set</span>');
     }
@@ -8803,6 +9192,7 @@ function kaShowView(view, opts = {}) {
   if (addBtn) addBtn.classList.toggle('hidden', view !== 'employees');
   if (document.body) {
     document.body.classList.toggle('ka-view-workers-active', view === 'workers');
+    document.body.classList.toggle('ka-view-admin-clock-active', view === 'admin-clock');
     document.body.classList.toggle('ka-view-timesheets-active', view === 'timesheets');
     document.body.classList.toggle('ka-view-shipments-active', view === 'shipments');
     document.body.classList.toggle('ka-view-employees-active', view === 'employees');
@@ -8832,6 +9222,11 @@ function kaShowView(view, opts = {}) {
     kaBindLiveTimesheetFilter();
     kaRenderLiveTimesheetFilter();
     kaLoadLiveWorkers();
+  }
+
+  if (view === 'admin-clock') {
+    kaBindAdminClockControls();
+    kaRefreshAdminClockPanel({ force: true });
   }
 
   if (view === 'employees') {
@@ -11418,6 +11813,7 @@ async function kaInit() {
       kaEmployeeStatusFilter = e.target && e.target.value ? e.target.value : 'all';
       kaRenderEmployeesGrid();
     });
+  kaBindAdminClockControls();
   document
     .getElementById('ka-employee-detail-save')
     ?.addEventListener('click', kaHandleEmployeeSheetSave);
@@ -11482,6 +11878,7 @@ async function kaInit() {
     kaSyncOfflineData('online');
     kaStartOfflineSyncLoop();
     kaUpdateOfflineIndicator();
+    kaRefreshAdminClockPanel({ force: true });
     if (kaItemsModalShipmentId) {
       kaLoadShipmentMessages(kaItemsModalShipmentId, { preserveThread: true }).catch(err => {
         console.warn('Shipment messages refresh failed after reconnect:', err);
@@ -11496,6 +11893,7 @@ async function kaInit() {
   });
   window.addEventListener('offline', () => {
     kaUpdateOfflineIndicator();
+    kaRefreshAdminClockPanel({ force: false });
   });
   kaResetRatesUI();
   kaInitSettingsToggles();
@@ -12422,6 +12820,7 @@ async function kaInit() {
         kaEmployees.find(
           (e) => String(e.id) === String(kaStartEmployeeId)
         ) || null;
+      kaApplyClockInShortcutVisibility();
     }
 
     if (!kaCurrentAdmin || !kaCurrentAdmin.is_admin) {
@@ -12474,6 +12873,7 @@ async function kaInit() {
     await kaInitAdminConsoleSwitch();
     kaSetupStartOfDayUI();
     await kaLoadSessions();
+    await kaRefreshAdminClockPanel({ force: true });
 
     await Promise.all([
       kaLoadForeman(),
@@ -12743,6 +13143,10 @@ function kaSyncModalOpenState() {
 
 function kaSetItemsTab(tab) {
   kaItemsActiveTab = tab || 'items';
+  const modalBody = document.querySelector('.ka-items-modal-body');
+  if (modalBody) {
+    modalBody.classList.toggle('messages-active', kaItemsActiveTab === 'messages');
+  }
   const panels = document.querySelectorAll('[data-ka-items-panel]');
   const buttons = document.querySelectorAll('[data-ka-items-tab]');
   panels.forEach(panel => {
@@ -18093,6 +18497,11 @@ function kaApplyEmployeeUpdateLocal(employeeId, action, payload = {}) {
     case 'name_on_checks':
       kaUpdateEmployeeRecord(employeeId, { name_on_checks: payload.name_on_checks || null });
       break;
+    case 'worker_timekeeping':
+      kaUpdateEmployeeRecord(employeeId, {
+        worker_timekeeping: payload.worker_timekeeping ? 1 : 0
+      });
+      break;
     case 'employment_dates': {
       const updates = {
         start_date: payload.start_date || null,
@@ -18144,6 +18553,8 @@ async function kaHandleEmployeeSheetSave() {
   const lang = els.language && els.language.value ? els.language.value : 'en';
   const nameChecks = els.nameChecks && els.nameChecks.value ? els.nameChecks.value : '';
   const nameChecksValue = nameChecks.trim();
+  const workerTimekeeping =
+    els.workerTimekeepingToggle && !els.workerTimekeepingToggle.checked ? 0 : 1;
   const canRates = kaCanModifyPayRates();
   const rateInputValue = els.rateInput && els.rateInput.value !== undefined
     ? String(els.rateInput.value || '').trim()
@@ -18172,6 +18583,8 @@ async function kaHandleEmployeeSheetSave() {
   const phoneChanged = norm(emp?.phone) !== phone;
   const langChanged = norm(emp?.language || 'en') !== norm(lang);
   const nameChecksChanged = norm(emp?.name_on_checks || '') !== nameChecksValue;
+  const currentWorkerTimekeeping = kaEmployeeWorkerScreenEnabled(emp) ? 1 : 0;
+  const workerTimekeepingChanged = currentWorkerTimekeeping !== workerTimekeeping;
   const startChanged = norm(emp?.start_date) !== startDate;
   const termChanged = norm(emp?.termination_date) !== termDate;
   const currentRate = emp && emp.rate != null ? Number(emp.rate) : null;
@@ -18195,6 +18608,9 @@ async function kaHandleEmployeeSheetSave() {
   if (langChanged) updates.push({ action: 'language', payload: { language: lang } });
   if (nameChecksChanged) {
     updates.push({ action: 'name_on_checks', payload: { name_on_checks: nameChecksValue || null } });
+  }
+  if (workerTimekeepingChanged) {
+    updates.push({ action: 'worker_timekeeping', payload: { worker_timekeeping: workerTimekeeping } });
   }
   if (reactivatePending) {
     updates.push({
@@ -18236,6 +18652,7 @@ async function kaHandleEmployeeSheetSave() {
     kaSetInlineStatus(els.saveStatus, 'Saved offline. Will sync when online.', 'ok');
     kaRenderEmployeesGrid();
     kaRenderSettingsForm();
+    await kaRefreshAdminClockPanel({ force: true });
     kaCloseEmployeeSheet();
     return;
   }
@@ -18256,6 +18673,7 @@ async function kaHandleEmployeeSheetSave() {
           kaSetInlineStatus(els.saveStatus, 'Saved offline. Will sync when online.', 'ok');
           kaRenderEmployeesGrid();
           kaRenderSettingsForm();
+          await kaRefreshAdminClockPanel({ force: true });
           kaCloseEmployeeSheet();
           return;
         }
@@ -18268,6 +18686,7 @@ async function kaHandleEmployeeSheetSave() {
     kaSetInlineStatus(els.saveStatus, 'Changes saved.', 'ok');
     kaRenderEmployeesGrid();
     kaRenderSettingsForm();
+    await kaRefreshAdminClockPanel({ force: true });
     kaCloseEmployeeSheet();
   } catch (err) {
     console.error('Error saving employee sheet', err);
@@ -18404,10 +18823,12 @@ async function kaHandleHelperAdd() {
     if (kaStartEmployeeId) {
       kaCurrentAdmin =
         kaEmployees.find((e) => String(e.id) === String(kaStartEmployeeId)) || kaCurrentAdmin;
+      kaApplyClockInShortcutVisibility();
     }
     kaRenderSettingsForm();
     kaRenderPinStatus();
     kaRenderEmployeesGrid();
+    await kaRefreshAdminClockPanel({ force: true });
     if (kaEmployeeSheetState.open) kaRefreshEmployeeSheet();
     if (kaRatesUnlockedAll) {
       kaRenderRatesTable(kaEmployees);
@@ -19113,6 +19534,18 @@ function kaTimeEntryEndLabel(entry) {
   return entry.end_time ? kaFormatTimeValue12(entry.end_time) : '—';
 }
 
+function kaEntryRuleEnabled(entry, fieldName, fallback = true) {
+  if (!entry || !fieldName) return fallback;
+  const val = entry[fieldName];
+  if (val === undefined || val === null || val === '') return fallback;
+  return !(
+    val === false ||
+    val === 'false' ||
+    val === 0 ||
+    val === '0'
+  );
+}
+
 function kaTimeEntryMeta(entry) {
   const isOpen = !!entry._open;
   const resolvedStatus = String(entry.resolved_status || '').toLowerCase();
@@ -19127,10 +19560,18 @@ function kaTimeEntryMeta(entry) {
   const hasPunchExceptionField = punchExceptionRaw !== undefined && punchExceptionRaw !== null;
   const punchExceptionUnresolved = Number(punchExceptionRaw || 0);
   const punchExceptionResolved = Number(entry.punch_exception_resolved || 0);
-  const hasFlags = !!entry.has_geo_violation || !!entry.has_auto_clock_out;
+  const ruleGeoIn = kaEntryRuleEnabled(entry, 'rule_geofence_clock_in', true);
+  const ruleAutoClockOut = kaEntryRuleEnabled(entry, 'rule_auto_clock_out', true);
+  const ruleManualNoPunches = kaEntryRuleEnabled(entry, 'rule_manual_no_punches', true);
+  const ruleManualHoursMismatch = kaEntryRuleEnabled(entry, 'rule_manual_hours_mismatch', true);
+  const hasGeoFlag = ruleGeoIn && !!entry.has_geo_violation;
+  const hasAutoFlag = ruleAutoClockOut && !!entry.has_auto_clock_out;
+  const hasFlags = hasGeoFlag || hasAutoFlag;
   const entryMismatch = !isOpen &&
-    (punchCount === 0 ||
-      (Number.isFinite(entryHours) && Math.abs(punchHours - entryHours) >= 0.1));
+    ((ruleManualNoPunches && punchCount === 0) ||
+      (ruleManualHoursMismatch &&
+        Number.isFinite(entryHours) &&
+        Math.abs(punchHours - entryHours) >= 0.1));
   const hasPendingNote = !isOpen && resolvedStatus === 'open' && !!entry.resolved_note;
   const flagged = !!entryMismatch ||
     (hasPunchExceptionField ? punchExceptionUnresolved > 0 : hasFlags) ||
@@ -19158,29 +19599,26 @@ function kaTimeReviewIssues(entry, opts = {}) {
     if (!label) return;
     issues.push({ label, help: help || '' });
   };
-  const punchExceptionDetails = () => {
-    const details = [];
-    if (entry.has_geo_violation) details.push('Geofence flag');
-    if (entry.has_auto_clock_out) {
-      const reason = kaFormatAutoClockoutReason(entry.auto_clock_out_reason);
-      details.push(reason ? `Auto clock-out: ${reason}` : 'Auto clock-out');
-    }
-    return details;
-  };
+  const ruleGeoIn = kaEntryRuleEnabled(entry, 'rule_geofence_clock_in', true);
+  const ruleAutoClockOut = kaEntryRuleEnabled(entry, 'rule_auto_clock_out', true);
+  const ruleManualNoPunches = kaEntryRuleEnabled(entry, 'rule_manual_no_punches', true);
+  const ruleManualHoursMismatch = kaEntryRuleEnabled(entry, 'rule_manual_hours_mismatch', true);
   const isOpen = !!entry._open;
   const punchCount = Number(entry.punch_count || 0);
   const punchHours = Number(entry.punch_hours || 0);
   const entryHours = Number(entry.hours || 0);
-  const punchExceptionRaw = entry.punch_exception_unresolved;
-  const punchExceptionUnresolved = Number(punchExceptionRaw || 0);
 
   if (!isOpen) {
-    if (punchCount === 0) {
+    if (ruleManualNoPunches && punchCount === 0) {
       addIssue(
         'Missing punches',
         'No punch records were captured for this time entry.'
       );
-    } else if (Number.isFinite(entryHours) && Math.abs(punchHours - entryHours) >= 0.1) {
+    } else if (
+      ruleManualHoursMismatch &&
+      Number.isFinite(entryHours) &&
+      Math.abs(punchHours - entryHours) >= 0.1
+    ) {
       addIssue(
         `Hours mismatch (${punchHours.toFixed(2)}h vs ${entryHours.toFixed(2)}h)`,
         'Punch hours do not match the entry hours.'
@@ -19188,13 +19626,13 @@ function kaTimeReviewIssues(entry, opts = {}) {
     }
   }
 
-  if (entry.has_geo_violation) {
+  if (ruleGeoIn && entry.has_geo_violation) {
     addIssue(
       'Geofence flag',
       'A punch or kiosk session was recorded outside the geofence (advisory only).'
     );
   }
-  if (entry.has_auto_clock_out) {
+  if (ruleAutoClockOut && entry.has_auto_clock_out) {
     const reason = kaFormatAutoClockoutReason(entry.auto_clock_out_reason);
     const label = reason ? `Auto clock-out: ${reason}` : 'Auto clock-out';
     addIssue(label, kaAutoClockOutHelpText(reason));

@@ -13,6 +13,9 @@ let pendingEmployees = [];
 let pendingQboStatus = null;
 let employeeMissingLanguageFilter = false;
 let employeeMissingLanguageCount = 0;
+let employeePayrollSplitProjects = [];
+let employeePayrollSplitOriginal = null;
+let employeePayrollSplitLoadSeq = 0;
 
 async function refreshTimesheetAdminsIfAvailable() {
   if (typeof window.refreshTimesheetAdminLists !== 'function') return;
@@ -44,6 +47,272 @@ function isEmployeeLanguageMissing(value) {
   return !code || !SUPPORTED_EMP_LANGS.includes(code);
 }
 
+function employeeTodayIso() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function normalizeEmployeePayrollSplitConfig(raw = {}) {
+  const enabled =
+    raw.enabled === true ||
+    raw.enabled === 1 ||
+    raw.enabled === '1' ||
+    raw.enabled === 'true';
+  const effective = (raw.effective_start_date || raw.effectiveStartDate || '').toString().trim();
+  const lineMap = new Map();
+  (Array.isArray(raw.lines) ? raw.lines : []).forEach(line => {
+    const projectId = Number(line?.project_id ?? line?.projectId);
+    const percentage = Number(line?.percentage);
+    if (!Number.isFinite(projectId) || projectId <= 0) return;
+    if (!Number.isFinite(percentage) || percentage <= 0) return;
+    lineMap.set(projectId, (lineMap.get(projectId) || 0) + percentage);
+  });
+  const lines = Array.from(lineMap.entries())
+    .map(([project_id, percentage]) => ({ project_id, percentage }))
+    .sort((a, b) => a.project_id - b.project_id);
+  return {
+    enabled,
+    effective_start_date: /^\d{4}-\d{2}-\d{2}$/.test(effective) ? effective : employeeTodayIso(),
+    lines
+  };
+}
+
+function employeePayrollSplitConfigsEqual(left, right) {
+  const a = normalizeEmployeePayrollSplitConfig(left || {});
+  const b = normalizeEmployeePayrollSplitConfig(right || {});
+  if (!!a.enabled !== !!b.enabled) return false;
+  if ((a.effective_start_date || '') !== (b.effective_start_date || '')) return false;
+  if (a.lines.length !== b.lines.length) return false;
+  for (let i = 0; i < a.lines.length; i += 1) {
+    const al = a.lines[i];
+    const bl = b.lines[i];
+    if (Number(al.project_id) !== Number(bl.project_id)) return false;
+    if (Math.abs(Number(al.percentage || 0) - Number(bl.percentage || 0)) > 0.0001) return false;
+  }
+  return true;
+}
+
+async function loadEmployeePayrollSplitProjects({ force = false } = {}) {
+  if (!force && employeePayrollSplitProjects.length) {
+    return employeePayrollSplitProjects;
+  }
+  const rows = await fetchJSON('/api/projects?status=active');
+  employeePayrollSplitProjects = (Array.isArray(rows) ? rows : [])
+    .map(row => ({
+      id: Number(row.id),
+      label: row.customer_name && row.customer_name !== row.name
+        ? `${row.customer_name} - ${row.name || `(Project ${row.id})`}`
+        : (row.name || `(Project ${row.id})`)
+    }))
+    .filter(row => Number.isFinite(row.id) && row.id > 0)
+    .sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { sensitivity: 'base' }));
+  return employeePayrollSplitProjects;
+}
+
+function getEmployeePayrollSplitEls() {
+  return {
+    section: document.getElementById('employee-payroll-split-section'),
+    enabled: document.getElementById('edit-employee-payroll-split-enabled'),
+    effective: document.getElementById('edit-employee-payroll-split-effective'),
+    lines: document.getElementById('edit-employee-payroll-split-lines'),
+    addLine: document.getElementById('edit-employee-payroll-split-add-line'),
+    status: document.getElementById('edit-employee-payroll-split-status')
+  };
+}
+
+function setEmployeePayrollSplitStatus(message = '', color = '') {
+  const els = getEmployeePayrollSplitEls();
+  if (!els.status) return;
+  els.status.textContent = message || '';
+  els.status.style.color = color || '';
+}
+
+function employeePayrollSplitPercentSumFromDom() {
+  const els = getEmployeePayrollSplitEls();
+  if (!els.lines) return 0;
+  const rows = Array.from(els.lines.querySelectorAll('.employee-payroll-split-row'));
+  return rows.reduce((sum, row) => {
+    const valueEl = row.querySelector('.employee-payroll-split-percent');
+    const value = Number(valueEl ? valueEl.value : 0);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
+}
+
+function updateEmployeePayrollSplitEditorState() {
+  const els = getEmployeePayrollSplitEls();
+  if (!els.section || !els.enabled || !els.lines || !els.addLine) return;
+  const enabled = !!els.enabled.checked;
+  els.lines.classList.toggle('hidden', !enabled);
+  els.addLine.classList.toggle('hidden', !enabled);
+  if (!enabled) {
+    setEmployeePayrollSplitStatus('');
+    return;
+  }
+  const total = employeePayrollSplitPercentSumFromDom();
+  const color = Math.abs(total - 100) <= 0.01 ? 'green' : '#b45309';
+  setEmployeePayrollSplitStatus(`Total: ${total.toFixed(2)}%`, color);
+}
+
+function createEmployeePayrollSplitRow(line = {}) {
+  const row = document.createElement('div');
+  row.className = 'employee-payroll-split-row form-grid';
+
+  const projectField = document.createElement('div');
+  projectField.className = 'form-field';
+  const projectLabel = document.createElement('label');
+  projectLabel.textContent = 'Project';
+  const projectSelect = document.createElement('select');
+  projectSelect.className = 'employee-payroll-split-project';
+  const emptyOpt = document.createElement('option');
+  emptyOpt.value = '';
+  emptyOpt.textContent = '(select project)';
+  projectSelect.appendChild(emptyOpt);
+  employeePayrollSplitProjects.forEach(project => {
+    const opt = document.createElement('option');
+    opt.value = String(project.id);
+    opt.textContent = project.label;
+    projectSelect.appendChild(opt);
+  });
+  if (line.project_id) {
+    projectSelect.value = String(line.project_id);
+  }
+  projectField.appendChild(projectLabel);
+  projectField.appendChild(projectSelect);
+
+  const percentField = document.createElement('div');
+  percentField.className = 'form-field';
+  const percentLabel = document.createElement('label');
+  percentLabel.textContent = 'Percent';
+  const percentInput = document.createElement('input');
+  percentInput.type = 'number';
+  percentInput.step = '0.01';
+  percentInput.min = '0';
+  percentInput.max = '100';
+  percentInput.className = 'employee-payroll-split-percent';
+  percentInput.value = line.percentage != null ? Number(line.percentage).toFixed(2) : '';
+  percentField.appendChild(percentLabel);
+  percentField.appendChild(percentInput);
+
+  const actionField = document.createElement('div');
+  actionField.className = 'form-field form-field-button';
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'btn danger btn-sm employee-payroll-split-remove';
+  removeBtn.textContent = 'Remove';
+  actionField.appendChild(removeBtn);
+
+  [projectSelect, percentInput].forEach(el => {
+    el.addEventListener('input', updateEmployeePayrollSplitEditorState);
+    el.addEventListener('change', updateEmployeePayrollSplitEditorState);
+  });
+  removeBtn.addEventListener('click', () => {
+    row.remove();
+    updateEmployeePayrollSplitEditorState();
+  });
+
+  row.appendChild(projectField);
+  row.appendChild(percentField);
+  row.appendChild(actionField);
+  return row;
+}
+
+function renderEmployeePayrollSplitLines(lines = []) {
+  const els = getEmployeePayrollSplitEls();
+  if (!els.lines) return;
+  els.lines.innerHTML = '';
+  const normalized = normalizeEmployeePayrollSplitConfig({ lines }).lines;
+  if (!normalized.length) {
+    els.lines.appendChild(createEmployeePayrollSplitRow({}));
+    updateEmployeePayrollSplitEditorState();
+    return;
+  }
+  normalized.forEach(line => {
+    els.lines.appendChild(createEmployeePayrollSplitRow(line));
+  });
+  updateEmployeePayrollSplitEditorState();
+}
+
+function setEmployeePayrollSplitReadOnly(isReadOnly) {
+  const els = getEmployeePayrollSplitEls();
+  if (!els.section || !els.enabled || !els.effective || !els.addLine || !els.lines) return;
+  const canEdit = !isReadOnly && window.CURRENT_IS_SUPER_ADMIN === true;
+  els.enabled.disabled = !canEdit;
+  els.effective.disabled = !canEdit;
+  els.addLine.disabled = !canEdit;
+  Array.from(els.lines.querySelectorAll('select,input,button')).forEach(input => {
+    input.disabled = !canEdit;
+  });
+}
+
+function readEmployeePayrollSplitFromForm() {
+  const els = getEmployeePayrollSplitEls();
+  if (!els.enabled || !els.effective || !els.lines) {
+    return normalizeEmployeePayrollSplitConfig({});
+  }
+  const lines = Array.from(els.lines.querySelectorAll('.employee-payroll-split-row')).map(row => ({
+    project_id: Number(row.querySelector('.employee-payroll-split-project')?.value || 0),
+    percentage: Number(row.querySelector('.employee-payroll-split-percent')?.value || 0)
+  }));
+  return normalizeEmployeePayrollSplitConfig({
+    enabled: !!els.enabled.checked,
+    effective_start_date: els.effective.value || employeeTodayIso(),
+    lines
+  });
+}
+
+function validateEmployeePayrollSplitConfig(config) {
+  const normalized = normalizeEmployeePayrollSplitConfig(config || {});
+  if (!normalized.enabled) return normalized;
+  if (!normalized.lines.length) {
+    throw new Error('Add at least one project split line or turn off payroll split.');
+  }
+  const total = normalized.lines.reduce((sum, line) => sum + Number(line.percentage || 0), 0);
+  if (Math.abs(total - 100) > 0.01) {
+    throw new Error('Payroll split percentages must total 100%.');
+  }
+  return normalized;
+}
+
+async function loadEmployeePayrollSplitForModal(employeeId) {
+  const seq = ++employeePayrollSplitLoadSeq;
+  const els = getEmployeePayrollSplitEls();
+  if (!els.section) return;
+  if (window.CURRENT_IS_SUPER_ADMIN !== true) {
+    els.section.classList.add('hidden');
+    employeePayrollSplitOriginal = null;
+    return;
+  }
+  els.section.classList.remove('hidden');
+  setEmployeePayrollSplitStatus('Loading split profile...', '#6b7280');
+  try {
+    await loadEmployeePayrollSplitProjects();
+    const data = await fetchJSON(`/api/employees/${employeeId}/payroll-split`);
+    if (seq !== employeePayrollSplitLoadSeq || Number(editingEmployeeId) !== Number(employeeId)) return;
+    const latest = data && data.latest_profile ? data.latest_profile : null;
+    const normalized = normalizeEmployeePayrollSplitConfig({
+      enabled: latest ? latest.enabled : false,
+      effective_start_date: latest ? latest.effective_start_date : employeeTodayIso(),
+      lines: latest && Array.isArray(latest.lines) ? latest.lines : []
+    });
+    employeePayrollSplitOriginal = normalized;
+    if (els.enabled) els.enabled.checked = !!normalized.enabled;
+    if (els.effective) els.effective.value = normalized.effective_start_date || employeeTodayIso();
+    renderEmployeePayrollSplitLines(normalized.lines);
+    setEmployeePayrollSplitStatus('');
+  } catch (err) {
+    console.warn('Failed to load payroll split settings:', err);
+    const fallback = normalizeEmployeePayrollSplitConfig({});
+    employeePayrollSplitOriginal = fallback;
+    if (els.enabled) els.enabled.checked = false;
+    if (els.effective) els.effective.value = fallback.effective_start_date;
+    renderEmployeePayrollSplitLines([]);
+    setEmployeePayrollSplitStatus('Could not load payroll split settings.', '#b45309');
+  }
+}
+
 function updateMissingLanguageButton() {
   const btn = document.getElementById('employee-toggle-missing-language');
   if (!btn) return;
@@ -72,15 +341,17 @@ function applyRateAccessToEmployees(perms = {}) {
 }
 
 function applySuperAdminAccessToEmployees(isSuperAdmin) {
+  const workerTimekeeping = document.getElementById('employee-worker-timekeeping');
   const desktopAccess = document.getElementById('employee-desktop-access');
   const kioskAdminAccess = document.getElementById('employee-kiosk-admin-access');
   const roleTitleInput = document.getElementById('employee-role-title');
   const templateSelect = document.getElementById('employee-permission-template');
+  const modalWorkerTimekeeping = document.getElementById('edit-employee-worker-timekeeping');
   const modalRoleTitleInput = document.getElementById('edit-employee-role-title');
   const modalTemplateSelect = document.getElementById('edit-employee-template');
   const shouldLock = !isSuperAdmin;
 
-  [desktopAccess, kioskAdminAccess].forEach(el => {
+  [workerTimekeeping, desktopAccess, kioskAdminAccess, modalWorkerTimekeeping].forEach(el => {
     if (el) el.disabled = shouldLock;
   });
   [roleTitleInput, templateSelect, modalRoleTitleInput, modalTemplateSelect].forEach(el => {
@@ -624,11 +895,15 @@ function findPermissionTemplate(id) {
 function applyTemplateToCreateForm(template) {
   if (!template) return;
   const roleTitleInput = document.getElementById('employee-role-title');
+  const workerTimekeeping = document.getElementById('employee-worker-timekeeping');
   const desktopAccess = document.getElementById('employee-desktop-access');
   const kioskAdminAccess = document.getElementById('employee-kiosk-admin-access');
 
   if (roleTitleInput) {
     roleTitleInput.value = template.role_title || template.name || '';
+  }
+  if (workerTimekeeping) {
+    workerTimekeeping.checked = template.access?.worker_timekeeping !== false;
   }
   if (desktopAccess) desktopAccess.checked = !!template.access?.desktop_access;
   if (kioskAdminAccess) kioskAdminAccess.checked = !!template.access?.kiosk_admin_access;
@@ -637,6 +912,7 @@ function applyTemplateToCreateForm(template) {
 function applyTemplateToEditForm(template) {
   if (!template || editingEmployeeIsSuperAdmin) return;
   const roleTitleInput = document.getElementById('edit-employee-role-title');
+  const workerTimekeeping = document.getElementById('edit-employee-worker-timekeeping');
   const desktopAccess = document.getElementById('edit-employee-desktop-access');
   const kioskAdminAccess = document.getElementById('edit-employee-kiosk-admin-access');
   const permSeeShipments = document.getElementById('edit-employee-perm-see-shipments');
@@ -650,6 +926,9 @@ function applyTemplateToEditForm(template) {
 
   if (roleTitleInput) {
     roleTitleInput.value = template.role_title || template.name || '';
+  }
+  if (workerTimekeeping) {
+    workerTimekeeping.checked = template.access?.worker_timekeeping !== false;
   }
   if (desktopAccess) desktopAccess.checked = !!template.access?.desktop_access;
   if (kioskAdminAccess) kioskAdminAccess.checked = !!template.access?.kiosk_admin_access;
@@ -864,7 +1143,7 @@ function renderEmployeesTable(filterTerm = '') {
         ? `(no ${employeeListStatus} employees)`
         : (employeeMissingLanguageFilter ? '(no employees missing language)' : '(no matching employees)');
 
-    tbody.innerHTML = `<tr><td colspan="5">${label}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6">${label}</td></tr>`;
     return;
   }
 
@@ -890,6 +1169,18 @@ function renderEmployeesTable(filterTerm = '') {
 
     const nickname = emp.nickname || '';
     const nameOnChecks = emp.name_on_checks || '';
+    const workerTimekeepingEnabled =
+      emp.worker_timekeeping === undefined || emp.worker_timekeeping === null
+        ? true
+        : (
+            emp.worker_timekeeping === true ||
+            emp.worker_timekeeping === 1 ||
+            emp.worker_timekeeping === '1' ||
+            emp.worker_timekeeping === 'true'
+          );
+    const workerTimekeepingPill = workerTimekeepingEnabled
+      ? '<span class="pill pill-good" title="Shown on worker kiosk clock-in screen">Shown</span>'
+      : '<span class="pill pill-warn" title="Hidden from worker kiosk clock-in screen">Hidden</span>';
     const languageMissing = isEmployeeLanguageMissing(emp.language);
     const nameBadge = languageMissing
       ? ' <span class="pill pill-warn" title="Language missing; defaulting to English">Language missing</span>'
@@ -904,6 +1195,7 @@ function renderEmployeesTable(filterTerm = '') {
         : 'Linked';
 
     tr.innerHTML = `
+      <td>${workerTimekeepingPill}</td>
       <td>${displayName}</td>
       <td>${nickname}</td>
       <td>${nameOnChecks}</td>
@@ -1176,6 +1468,7 @@ async function saveEmployee() {
   const rateInput = document.getElementById('employee-rate');
   const roleTitleInput = document.getElementById('employee-role-title');
   const templateSelect = document.getElementById('employee-permission-template');
+  const workerTimekeepingCheckbox = document.getElementById('employee-worker-timekeeping');
   const desktopAccessCheckbox = document.getElementById('employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('employee-kiosk-admin-access');
   const msgEl = document.getElementById('employee-message');
@@ -1186,6 +1479,7 @@ async function saveEmployee() {
   const name_on_checks = nameOnChecksInput.value.trim();
   const email = emailInput ? emailInput.value.trim() : '';
   const rate = parseFloat(rateInput.value);
+  const worker_timekeeping = workerTimekeepingCheckbox ? workerTimekeepingCheckbox.checked : true;
   const desktop_access = desktopAccessCheckbox ? desktopAccessCheckbox.checked : false;
   const kiosk_admin_access = kioskAdminAccessCheckbox ? kioskAdminAccessCheckbox.checked : false;
   const isSuperAdmin = window.CURRENT_IS_SUPER_ADMIN === true;
@@ -1209,7 +1503,7 @@ async function saveEmployee() {
   };
 
   if (isSuperAdmin) {
-    payload.worker_timekeeping = 1;
+    payload.worker_timekeeping = worker_timekeeping ? 1 : 0;
     payload.desktop_access = desktop_access ? 1 : 0;
     payload.kiosk_admin_access = kiosk_admin_access ? 1 : 0;
     if (templateSelect) {
@@ -1255,6 +1549,7 @@ function clearEmployeeForm() {
   const rateInput = document.getElementById('employee-rate');
   const roleTitleInput = document.getElementById('employee-role-title');
   const templateSelect = document.getElementById('employee-permission-template');
+  const workerTimekeepingCheckbox = document.getElementById('employee-worker-timekeeping');
   const desktopAccessCheckbox = document.getElementById('employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('employee-kiosk-admin-access');
   const msgEl = document.getElementById('employee-message');
@@ -1267,6 +1562,7 @@ function clearEmployeeForm() {
   if (rateInput) rateInput.value = '';
   if (roleTitleInput) roleTitleInput.value = '';
   if (templateSelect) templateSelect.value = '';
+  if (workerTimekeepingCheckbox) workerTimekeepingCheckbox.checked = true;
   if (desktopAccessCheckbox) desktopAccessCheckbox.checked = false;       // default OFF
   if (kioskAdminAccessCheckbox) kioskAdminAccessCheckbox.checked = false; // default OFF
   if (msgEl) msgEl.textContent = '';
@@ -1283,6 +1579,7 @@ function setEmployeeInputsReadOnly(isReadOnly) {
   const emailInput = document.getElementById('edit-employee-email');
   const rateInput = document.getElementById('edit-employee-rate');
   const templateSelect = document.getElementById('edit-employee-template');
+  const workerTimekeepingCheckbox = document.getElementById('edit-employee-worker-timekeeping');
   const desktopAccessCheckbox = document.getElementById('edit-employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('edit-employee-kiosk-admin-access');
   const languageSelect = document.getElementById('edit-employee-language');
@@ -1338,6 +1635,7 @@ function setEmployeeInputsReadOnly(isReadOnly) {
 
   // checkboxes use disabled instead of readOnly
   const accessLocked = isReadOnly || !isSuperAdmin;
+  if (workerTimekeepingCheckbox) workerTimekeepingCheckbox.disabled = accessLocked;
   if (desktopAccessCheckbox) desktopAccessCheckbox.disabled = accessLocked;
   if (kioskAdminAccessCheckbox) kioskAdminAccessCheckbox.disabled = accessLocked;
 
@@ -1367,6 +1665,8 @@ function setEmployeeInputsReadOnly(isReadOnly) {
       input.style.backgroundColor = isReadOnly ? '#f9fafb' : '#ffffff';
     }
   });
+
+  setEmployeePayrollSplitReadOnly(isReadOnly);
 }
 
 
@@ -1465,6 +1765,7 @@ function openEmployeeModal(emp) {
   const nameOnChecksInput = document.getElementById('edit-employee-name-on-checks');
   const rateInput = document.getElementById('edit-employee-rate');
   const templateSelect = document.getElementById('edit-employee-template');
+  const workerTimekeepingCheckbox = document.getElementById('edit-employee-worker-timekeeping');
   const desktopAccessCheckbox = document.getElementById('edit-employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('edit-employee-kiosk-admin-access');
   const languageSelect = document.getElementById('edit-employee-language');
@@ -1507,6 +1808,12 @@ function openEmployeeModal(emp) {
   editingEmployeeOriginalRate = emp.rate != null ? Number(emp.rate) : null;
   editingEmployeeOriginalNameOnChecks = emp.name_on_checks || '';
 
+  if (workerTimekeepingCheckbox) {
+    workerTimekeepingCheckbox.checked =
+      emp.worker_timekeeping === undefined || emp.worker_timekeeping === null
+        ? true
+        : !!emp.worker_timekeeping;
+  }
   if (desktopAccessCheckbox) desktopAccessCheckbox.checked = !!emp.desktop_access;
   if (kioskAdminAccessCheckbox) kioskAdminAccessCheckbox.checked = !!emp.kiosk_admin_access;
   syncEmployeeAdminLoginState();
@@ -1577,6 +1884,9 @@ function openEmployeeModal(emp) {
   refreshEmployeeAdminLoginSection(emp).catch(err => {
     console.warn('Failed to load admin login status', err);
   });
+  loadEmployeePayrollSplitForModal(editingEmployeeId).catch(err => {
+    console.warn('Failed to load employee payroll split settings', err);
+  });
 
   if (modal) modal.classList.remove('hidden');
   if (backdrop) backdrop.classList.remove('hidden');
@@ -1594,6 +1904,7 @@ async function saveEmployeeFromModal() {
   const emailInput = document.getElementById('edit-employee-email');
   const rateInput = document.getElementById('edit-employee-rate');
   const templateSelect = document.getElementById('edit-employee-template');
+  const workerTimekeepingCheckbox = document.getElementById('edit-employee-worker-timekeeping');
   const desktopAccessCheckbox = document.getElementById('edit-employee-desktop-access');
   const kioskAdminAccessCheckbox = document.getElementById('edit-employee-kiosk-admin-access');
   const languageSelect = document.getElementById('edit-employee-language');
@@ -1633,6 +1944,8 @@ async function saveEmployeeFromModal() {
   const canEditRate = canCurrentAdminModifyPayRates();
   let rate = incomingRate;
 
+  const worker_timekeeping =
+    workerTimekeepingCheckbox && workerTimekeepingCheckbox.checked ? 1 : 0;
   const desktop_access = desktopAccessCheckbox && desktopAccessCheckbox.checked ? 1 : 0;
   const kiosk_admin_access =
     kioskAdminAccessCheckbox && kioskAdminAccessCheckbox.checked ? 1 : 0;
@@ -1690,7 +2003,7 @@ async function saveEmployeeFromModal() {
   };
 
   if (isSuperAdmin) {
-    payload.worker_timekeeping = 1;
+    payload.worker_timekeeping = worker_timekeeping;
     payload.desktop_access = desktop_access;
     payload.kiosk_admin_access = kiosk_admin_access;
     payload.see_shipments = permSeeShipments && permSeeShipments.checked ? 1 : 0;
@@ -1705,6 +2018,13 @@ async function saveEmployeeFromModal() {
     if (templateSelect) {
       payload.permission_template_id = templateId || null;
     }
+  }
+
+  let payrollSplitConfig = null;
+  if (isSuperAdmin) {
+    payrollSplitConfig = validateEmployeePayrollSplitConfig(
+      readEmployeePayrollSplitFromForm()
+    );
   }
 
   let linkedAdminUser = null;
@@ -1767,6 +2087,19 @@ async function saveEmployeeFromModal() {
         body: JSON.stringify({ name_on_checks })
       });
       editingEmployeeOriginalNameOnChecks = name_on_checks || '';
+    }
+
+    if (isSuperAdmin && payrollSplitConfig) {
+      const changed = !employeePayrollSplitOriginal ||
+        !employeePayrollSplitConfigsEqual(employeePayrollSplitOriginal, payrollSplitConfig);
+      if (changed) {
+        await fetchJSON(`/api/employees/${editingEmployeeId}/payroll-split`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payrollSplitConfig)
+        });
+        employeePayrollSplitOriginal = normalizeEmployeePayrollSplitConfig(payrollSplitConfig);
+      }
     }
 
     // Handle PIN (optional)
@@ -1864,6 +2197,8 @@ function closeEmployeeEditModal() {
   editingEmployeeOriginalRate = null;
   editingEmployeeOriginalNameOnChecks = '';
   editingEmployeeAdminUser = null;
+  employeePayrollSplitOriginal = null;
+  employeePayrollSplitLoadSeq += 1;
 
   const modal = document.getElementById('employee-edit-modal');
   const backdrop = document.getElementById('employee-edit-backdrop');
@@ -1881,6 +2216,7 @@ function closeEmployeeEditModal() {
   if (pinStatusEl) {
     pinStatusEl.textContent = '';
   }
+  setEmployeePayrollSplitStatus('');
   clearEmployeeAdminLoginSection();
 
   // Reset modal back to view mode for next time
@@ -2013,6 +2349,9 @@ function initEmployeeModalControls() {
   const adminLoginPassword = document.getElementById('employee-admin-login-password');
   const adminLoginPasswordConfirm = document.getElementById('employee-admin-login-password-confirm');
   const adminAccessToggle = document.getElementById('edit-employee-desktop-access');
+  const payrollSplitEnabled = document.getElementById('edit-employee-payroll-split-enabled');
+  const payrollSplitEffective = document.getElementById('edit-employee-payroll-split-effective');
+  const payrollSplitAddLine = document.getElementById('edit-employee-payroll-split-add-line');
 
   // Close actions
   [closeBtn, xBtn, cancelBtn].forEach(btn => {
@@ -2080,6 +2419,20 @@ function initEmployeeModalControls() {
       }
       syncEmployeeAdminLoginState();
       updateEmployeeAdminLoginActionLabel();
+    });
+  }
+  if (payrollSplitEnabled) {
+    payrollSplitEnabled.addEventListener('change', updateEmployeePayrollSplitEditorState);
+  }
+  if (payrollSplitEffective) {
+    payrollSplitEffective.addEventListener('change', updateEmployeePayrollSplitEditorState);
+  }
+  if (payrollSplitAddLine) {
+    payrollSplitAddLine.addEventListener('click', () => {
+      const els = getEmployeePayrollSplitEls();
+      if (!els.lines) return;
+      els.lines.appendChild(createEmployeePayrollSplitRow({}));
+      updateEmployeePayrollSplitEditorState();
     });
   }
 }

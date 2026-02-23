@@ -1,5 +1,13 @@
 # Change Log
 
+- 2026-02-23: Notifications were hardened so kiosk-only admins are included as notification recipients, shipment reminders now suppress `Cleared - Ready for Pickup` rows that already have `picked_up_by`, and the Notifications screen now exposes all currently supported time/payroll event types while preserving previously saved unknown event selections.
+- 2026-02-23: Payroll template UX now includes always-visible date-token hints, a live memo/line preview panel with selectable employee/project examples, and save-time validation that blocks unknown template tokens with explicit allowed-token guidance.
+- 2026-02-23: Time exception rule toggles are now applied consistently across desktop/kiosk time-entry flags, pending-review queues, and time-entry exports; disabling `weekly_hours` now also suppresses weekly-threshold notification events.
+- 2026-02-23: Payroll Settings now includes a token-help `?` control that explains each template token and clarifies that `{start}`, `{end}`, and `{dateRange}` come from the Payroll page Start/End period; memo token context now also fills `{hours}` from employee total hours and uses `Multiple Projects` when memo `{project}` spans more than one project.
+- 2026-02-23: Payroll Settings token chips under memo/line-description templates are now interactive: click inserts the token at the current cursor position, and drag/drop onto the input inserts the token as text.
+- 2026-02-23: Sidebar pending-review badges now cover both Reimbursements and Review Time Entries; reimbursement badge counts only `requested` (needs review) receipts and time-entry badge counts open review items.
+- 2026-02-23: Shift-shape time-exception labels now use a priority order per punch to reduce noisy duplicates (`Multi-day shift` > `Long shift` > `Crosses midnight`).
+- 2026-02-23: Review Time Entries flag rendering no longer duplicates auto clock-out labels; flags now display exactly once from server-provided exception text.
 - 2026-02-23: Backup operations were hardened with env-configurable schedule/retention/path (`BACKUP_*`), a new super-admin backup runtime status summary in Settings, and a `backup-health-check` script plus production backup runbook.
 - 2026-02-23: Reimbursements now support duplicate guards on upload (file hash + detail match) with a user-confirmed override path (`allow_duplicate=1`) on desktop and kiosk admin flows.
 - 2026-02-23: Added reimbursement timeline history tracking (`payroll_reimbursement_status_history`) and new history endpoints for desktop/kiosk reimbursement detail views.
@@ -1016,3 +1024,8 @@
 - 2026-02-23: Shipment message search now supports Enter/Arrow key cycling across matches without clearing the search query.
 - 2026-02-23: Increased shipment-message touch targets (search results, rename icons, inline actions) to improve kiosk/tablet usability.
 - 2026-02-23: Added `check:kiosk-comment-auth` regression check to verify kiosk shipment comment requests include device + employee auth on GET/POST/DELETE.
+- 2026-02-23: Employee access now includes a dedicated "Show on worker kiosk clock-in screen" toggle in both desktop Employee Details and kiosk-admin Employee Details (default on).
+- 2026-02-23: Added a dedicated kiosk-admin "Admin Clock Tools" page in the hamburger menu for clocking hidden employees in/out; offline punches queue and sync on reconnect.
+- 2026-02-23: Kiosk-admin hamburger menu now lists "Admin Clock Tools" first and hides "Clock In Page" shortcuts for admins who are configured to use the regular worker clock-in screen.
+- 2026-02-23: Added a desktop "Desktop Clock Panel" directly on Dashboard so admins can clock hidden employees in/out using active timesheets/devices.
+- 2026-02-23: Added effective-dated employee payroll split profiles (project percentages totaling 100%) and applied them to payroll summary/check generation and QuickBooks draft check line allocation.

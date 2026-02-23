@@ -5,6 +5,15 @@
 
 const DEFAULT_PAYROLL_MEMO_TEMPLATE = 'Payroll {start} – {end}';
 const DEFAULT_PAYROLL_LINE_TEMPLATE = 'Labor {hours} hrs – {project}';
+const PAYROLL_TEMPLATE_TOKENS = Object.freeze([
+  '{start}',
+  '{end}',
+  '{dateRange}',
+  '{employee}',
+  '{project}',
+  '{hours}'
+]);
+const PAYROLL_TEMPLATE_TOKEN_SET = new Set(PAYROLL_TEMPLATE_TOKENS);
 
 let currentPayrollSettings = {
   bank_account_name: null,
@@ -366,6 +375,361 @@ function applyPayrollSummaryAccess() {
     btn.title = title;
     btn.style.display = canEdit ? '' : 'none';
   });
+}
+
+function rememberInputCaretPosition(input) {
+  if (!input) return;
+  const start = Number(input.selectionStart);
+  const end = Number(input.selectionEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+  input.dataset.caretStart = String(start);
+  input.dataset.caretEnd = String(end);
+}
+
+function getInputCaretPosition(input) {
+  const valueLength = String(input?.value || '').length;
+  const isFocused = document.activeElement === input;
+  let start = isFocused ? Number(input?.selectionStart) : Number(input?.dataset?.caretStart);
+  let end = isFocused ? Number(input?.selectionEnd) : Number(input?.dataset?.caretEnd);
+
+  if (!Number.isFinite(start) && isFocused) start = Number(input?.dataset?.caretStart);
+  if (!Number.isFinite(end) && isFocused) end = Number(input?.dataset?.caretEnd);
+
+  if (!Number.isFinite(start)) start = valueLength;
+  if (!Number.isFinite(end)) end = start;
+
+  start = Math.min(Math.max(0, start), valueLength);
+  end = Math.min(Math.max(start, end), valueLength);
+
+  return { start, end };
+}
+
+function insertTemplateTokenAtCaret(input, token) {
+  if (!input || input.disabled || input.readOnly) return;
+  const text = String(token || '');
+  if (!text) return;
+
+  const { start, end } = getInputCaretPosition(input);
+  if (typeof input.setRangeText === 'function') {
+    input.setRangeText(text, start, end, 'end');
+  } else {
+    const value = String(input.value || '');
+    input.value = value.slice(0, start) + text + value.slice(end);
+  }
+
+  const cursor = start + text.length;
+  input.dataset.caretStart = String(cursor);
+  input.dataset.caretEnd = String(cursor);
+  input.focus({ preventScroll: true });
+  try {
+    input.setSelectionRange(cursor, cursor);
+  } catch {}
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function setupPayrollTemplateTagPalettes() {
+  if (!isPayrollFeatureEnabled()) return;
+  document.querySelectorAll('.tag-palette[data-target]').forEach(palette => {
+    if (!palette || palette.dataset.bound === '1') return;
+    const targetId = palette.dataset.target;
+    if (!targetId) return;
+    const targetInput = document.getElementById(targetId);
+    if (!targetInput) return;
+
+    palette.dataset.bound = '1';
+
+    const trackCaret = () => rememberInputCaretPosition(targetInput);
+    ['focus', 'click', 'keyup', 'input', 'select', 'blur'].forEach(evtName => {
+      targetInput.addEventListener(evtName, trackCaret);
+    });
+
+    palette.addEventListener('click', evt => {
+      const chip = evt.target.closest('.tag-chip[data-tag]');
+      if (!chip) return;
+      insertTemplateTokenAtCaret(targetInput, chip.dataset.tag || chip.textContent || '');
+    });
+
+    palette.addEventListener('dragstart', evt => {
+      const chip = evt.target.closest('.tag-chip[data-tag]');
+      if (!chip || !evt.dataTransfer) return;
+      const token = chip.dataset.tag || chip.textContent || '';
+      evt.dataTransfer.effectAllowed = 'copy';
+      evt.dataTransfer.setData('text/plain', token);
+    });
+
+    targetInput.addEventListener('dragover', evt => {
+      if (targetInput.disabled || targetInput.readOnly) return;
+      if (!evt.dataTransfer) return;
+      evt.preventDefault();
+      evt.dataTransfer.dropEffect = 'copy';
+    });
+
+    targetInput.addEventListener('drop', evt => {
+      if (targetInput.disabled || targetInput.readOnly) return;
+      if (!evt.dataTransfer) return;
+      const token = evt.dataTransfer.getData('text/plain');
+      if (!token) return;
+      evt.preventDefault();
+      rememberInputCaretPosition(targetInput);
+      insertTemplateTokenAtCaret(targetInput, token);
+    });
+  });
+}
+
+function setupPayrollTemplateHelpToggle() {
+  if (!isPayrollFeatureEnabled()) return;
+  const help = document.getElementById('payroll-template-help-text');
+  const btn = document.getElementById('payroll-template-help-btn');
+  if (!help || !btn || btn.dataset.bound === '1') return;
+  btn.dataset.bound = '1';
+  btn.addEventListener('click', () => {
+    const isHidden = help.classList.contains('hidden');
+    help.classList.toggle('hidden', !isHidden);
+    btn.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+  });
+}
+
+function getPayrollTemplatePreviewEmployeeOptions() {
+  const byId = new Map();
+  (currentPayrollRows || []).forEach(row => {
+    const id = Number(row?.employee_id);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const key = String(id);
+    if (byId.has(key)) return;
+    const name = String(row?.employee_name || '').trim() || `Employee ${id}`;
+    byId.set(key, { id: key, name });
+  });
+  (payrollEmployees || []).forEach(emp => {
+    const id = Number(emp?.id);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const key = String(id);
+    if (byId.has(key)) return;
+    const name = String(emp?.name || '').trim() || `Employee ${id}`;
+    byId.set(key, { id: key, name });
+  });
+  return Array.from(byId.values());
+}
+
+function getPayrollTemplatePreviewProjectOptions() {
+  const byId = new Map();
+  (currentPayrollRows || []).forEach(row => {
+    const id = Number(row?.project_id);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const key = String(id);
+    if (byId.has(key)) return;
+    const rawName = String(row?.project_name_raw || row?.project_name || '').trim();
+    const label = getProjectLabel(id, rawName || row?.project_name || '', row?.project_customer_name || '');
+    byId.set(key, {
+      id: key,
+      name: rawName || String(row?.project_name || '').trim() || `Project ${id}`,
+      label: label || rawName || `Project ${id}`
+    });
+  });
+  (payrollProjects || []).forEach(project => {
+    const id = Number(project?.id);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const key = String(id);
+    if (byId.has(key)) return;
+    const name = String(project?.name || '').trim() || `Project ${id}`;
+    const label = project?.customer_name ? `${project.customer_name} : ${name}` : name;
+    byId.set(key, { id: key, name, label });
+  });
+  return Array.from(byId.values());
+}
+
+function populatePayrollTemplatePreviewSelectors(options = {}) {
+  const { preserveSelection = true } = options || {};
+  const employeeSelect = document.getElementById('payroll-template-preview-employee');
+  const projectSelect = document.getElementById('payroll-template-preview-project');
+  if (!employeeSelect || !projectSelect) return;
+
+  const prevEmployee = preserveSelection ? employeeSelect.value : '';
+  const prevProject = preserveSelection ? projectSelect.value : '';
+
+  const employeeOptions = getPayrollTemplatePreviewEmployeeOptions();
+  const projectOptions = getPayrollTemplatePreviewProjectOptions();
+
+  employeeSelect.innerHTML = '';
+  if (!employeeOptions.length) {
+    employeeSelect.innerHTML = '<option value="">Sample Employee</option>';
+  } else {
+    employeeOptions.forEach(option => {
+      const el = document.createElement('option');
+      el.value = option.id;
+      el.textContent = option.name;
+      employeeSelect.appendChild(el);
+    });
+  }
+
+  projectSelect.innerHTML = '';
+  if (!projectOptions.length) {
+    projectSelect.innerHTML = '<option value="">Sample Project</option>';
+  } else {
+    projectOptions.forEach(option => {
+      const el = document.createElement('option');
+      el.value = option.id;
+      el.textContent = option.label || option.name;
+      projectSelect.appendChild(el);
+    });
+  }
+
+  if (prevEmployee && employeeSelect.querySelector(`option[value="${prevEmployee}"]`)) {
+    employeeSelect.value = prevEmployee;
+  } else if (employeeSelect.options.length) {
+    employeeSelect.selectedIndex = 0;
+  }
+
+  if (prevProject && projectSelect.querySelector(`option[value="${prevProject}"]`)) {
+    projectSelect.value = prevProject;
+  } else if (projectSelect.options.length) {
+    projectSelect.selectedIndex = 0;
+  }
+}
+
+function getPayrollTemplatePreviewContext() {
+  const startInput = document.getElementById('payroll-start');
+  const endInput = document.getElementById('payroll-end');
+  const employeeSelect = document.getElementById('payroll-template-preview-employee');
+  const projectSelect = document.getElementById('payroll-template-preview-project');
+
+  const selectedEmployeeId = Number(employeeSelect?.value || 0);
+  const selectedProjectId = Number(projectSelect?.value || 0);
+
+  const employeeRows = (currentPayrollRows || []).filter(
+    row => Number(row?.employee_id) === selectedEmployeeId
+  );
+  const employeeProjectRow = employeeRows.find(
+    row => Number(row?.project_id) === selectedProjectId
+  );
+  const anyProjectRow = (currentPayrollRows || []).find(
+    row => Number(row?.project_id) === selectedProjectId
+  ) || null;
+  const employeeFallbackRow = employeeRows[0] || null;
+
+  const employeeFromList = (payrollEmployees || []).find(
+    emp => Number(emp?.id) === selectedEmployeeId
+  ) || null;
+  const projectFromList = (payrollProjects || []).find(
+    project => Number(project?.id) === selectedProjectId
+  ) || null;
+
+  const employeeName = String(
+    employeeFallbackRow?.employee_name ||
+      employeeFromList?.name ||
+      employeeSelect?.selectedOptions?.[0]?.textContent ||
+      'Sample Employee'
+  ).trim() || 'Sample Employee';
+
+  const projectName = String(
+    employeeProjectRow?.project_name_raw ||
+      employeeProjectRow?.project_name ||
+      anyProjectRow?.project_name_raw ||
+      anyProjectRow?.project_name ||
+      projectFromList?.name ||
+      projectSelect?.selectedOptions?.[0]?.textContent ||
+      'Sample Project'
+  ).trim() || 'Sample Project';
+
+  const totalHoursRaw = employeeRows.reduce(
+    (sum, row) => sum + Number(row?.project_hours || row?.total_hours || 0),
+    0
+  );
+  const lineHoursRaw = Number(
+    employeeProjectRow?.project_hours ||
+      employeeProjectRow?.total_hours ||
+      anyProjectRow?.project_hours ||
+      anyProjectRow?.total_hours ||
+      employeeFallbackRow?.project_hours ||
+      employeeFallbackRow?.total_hours ||
+      0
+  );
+  const lineHours = lineHoursRaw > 0 ? lineHoursRaw : 8;
+  const totalHours = totalHoursRaw > 0 ? totalHoursRaw : lineHours;
+  const start = startInput?.value || currentPayrollRange?.start || '';
+  const end = endInput?.value || currentPayrollRange?.end || '';
+
+  return {
+    start,
+    end,
+    employeeName,
+    projectName,
+    lineHours,
+    totalHours,
+    memoRow: {
+      employee_name: employeeName,
+      project_name: projectName,
+      total_hours: totalHours,
+      project_hours: lineHours
+    },
+    lineRow: {
+      employee_name: employeeName,
+      project_name: projectName,
+      project_hours: lineHours,
+      total_hours: totalHours
+    }
+  };
+}
+
+function renderPayrollTemplatePreview() {
+  const memoInput = document.getElementById('payroll-memo-template');
+  const lineDescInput = document.getElementById('payroll-line-desc-template');
+  const memoPreview = document.getElementById('payroll-template-preview-memo');
+  const linePreview = document.getElementById('payroll-template-preview-line');
+  const contextEl = document.getElementById('payroll-template-preview-context');
+  if (!memoInput || !lineDescInput || !memoPreview || !linePreview || !contextEl) return;
+
+  const context = getPayrollTemplatePreviewContext();
+  const memoText = buildMemoFromTemplate(
+    memoInput.value,
+    context.memoRow,
+    context.start,
+    context.end
+  );
+  const lineText = buildLineDescription(
+    lineDescInput.value,
+    context.lineRow,
+    context.start,
+    context.end
+  );
+
+  memoPreview.textContent = memoText || '(empty)';
+  linePreview.textContent = lineText || '(empty)';
+  const rangeLabel = context.start && context.end
+    ? `${formatDateUS(context.start)} – ${formatDateUS(context.end)}`
+    : 'set Start/End below';
+  contextEl.textContent =
+    `Using ${context.employeeName} / ${context.projectName} / ${context.lineHours.toFixed(2)} hrs / ${rangeLabel}.`;
+}
+
+function setupPayrollTemplatePreviewBindings() {
+  if (!isPayrollFeatureEnabled()) return;
+  const memoInput = document.getElementById('payroll-memo-template');
+  const lineDescInput = document.getElementById('payroll-line-desc-template');
+  const employeeSelect = document.getElementById('payroll-template-preview-employee');
+  const projectSelect = document.getElementById('payroll-template-preview-project');
+  const startInput = document.getElementById('payroll-start');
+  const endInput = document.getElementById('payroll-end');
+  if (!memoInput || !lineDescInput) return;
+
+  const bindPreviewRefresh = (el, events = ['change']) => {
+    if (!el || el.dataset.previewBound === '1') return;
+    el.dataset.previewBound = '1';
+    events.forEach(evtName => {
+      el.addEventListener(evtName, () => {
+        renderPayrollTemplatePreview();
+      });
+    });
+  };
+
+  bindPreviewRefresh(memoInput, ['input', 'change']);
+  bindPreviewRefresh(lineDescInput, ['input', 'change']);
+  bindPreviewRefresh(employeeSelect, ['change']);
+  bindPreviewRefresh(projectSelect, ['change']);
+  bindPreviewRefresh(startInput, ['input', 'change']);
+  bindPreviewRefresh(endInput, ['input', 'change']);
+
+  populatePayrollTemplatePreviewSelectors();
+  renderPayrollTemplatePreview();
 }
 
 // app.js hydrates CURRENT_ACCESS_PERMS after payroll.js runs; expose a hook to re-apply access gates.
@@ -827,6 +1191,36 @@ function buildMemoFromTemplate(template, row, start, end) {
     .replace('{end}', endUS || '');
 }
 
+function collectUnknownPayrollTemplateTokens(templateText) {
+  const matches = String(templateText || '').match(/\{[^{}]+\}/g) || [];
+  const seen = new Set();
+  const unknown = [];
+  matches.forEach(token => {
+    if (PAYROLL_TEMPLATE_TOKEN_SET.has(token)) return;
+    if (seen.has(token)) return;
+    seen.add(token);
+    unknown.push(token);
+  });
+  return unknown;
+}
+
+function buildPayrollTemplateValidationMessage(memoUnknown = [], lineUnknown = []) {
+  const chunks = [];
+  if (memoUnknown.length) {
+    chunks.push(
+      `Default memo template has unknown token${memoUnknown.length === 1 ? '' : 's'}: ${memoUnknown.join(', ')}.`
+    );
+  }
+  if (lineUnknown.length) {
+    chunks.push(
+      `Line description template has unknown token${lineUnknown.length === 1 ? '' : 's'}: ${lineUnknown.join(', ')}.`
+    );
+  }
+  if (!chunks.length) return '';
+  chunks.push(`Allowed tokens are: ${PAYROLL_TEMPLATE_TOKENS.join(', ')} (case-sensitive).`);
+  return chunks.join(' ');
+}
+
 function appendReimbursementMemoSuffix(baseMemo, hasReimbursementLines) {
   if (!hasReimbursementLines) return baseMemo;
   const suffix = ' + Reimbursement';
@@ -1143,6 +1537,7 @@ async function setDefaultBillingCycleDates() {
     startInput.value = start;
     endInput.value = end;
     currentPayrollRange = { start, end };
+    renderPayrollTemplatePreview();
   } catch (err) {
     console.warn('Failed to compute payroll default dates, falling back.', err);
     const today = new Date();
@@ -1156,6 +1551,7 @@ async function setDefaultBillingCycleDates() {
     startInput.value = fmt(startDate);
     endInput.value = fmt(endDate);
     currentPayrollRange = { start: fmt(startDate), end: fmt(endDate) };
+    renderPayrollTemplatePreview();
   }
 }
 
@@ -1416,6 +1812,8 @@ async function loadPayrollSettings() {
     }
     if (memoInput) memoInput.value = currentPayrollSettings.default_memo;
     if (lineDescInput) lineDescInput.value = currentPayrollSettings.line_description_template;
+    populatePayrollTemplatePreviewSelectors();
+    renderPayrollTemplatePreview();
     populatePayrollReimbursementFormOptions();
     ensurePayrollReimbursementDateDefault();
     if (statusEl) statusEl.textContent = '';
@@ -1440,6 +1838,25 @@ async function savePayrollSettings() {
   const memoInput = document.getElementById('payroll-memo-template');
   const lineDescInput = document.getElementById('payroll-line-desc-template');
   const statusEl = getPayrollSettingsStatusEl();
+  const memoTemplateRaw = memoInput ? String(memoInput.value || '') : '';
+  const lineTemplateRaw = lineDescInput ? String(lineDescInput.value || '') : '';
+  const memoUnknownTokens = collectUnknownPayrollTemplateTokens(memoTemplateRaw);
+  const lineUnknownTokens = collectUnknownPayrollTemplateTokens(lineTemplateRaw);
+  const validationMessage = buildPayrollTemplateValidationMessage(
+    memoUnknownTokens,
+    lineUnknownTokens
+  );
+  if (validationMessage) {
+    if (statusEl) {
+      statusEl.textContent = validationMessage;
+      statusEl.style.color = '#b91c1c';
+    } else {
+      alert(validationMessage);
+    }
+    if (memoUnknownTokens.length && memoInput) memoInput.focus();
+    else if (lineUnknownTokens.length && lineDescInput) lineDescInput.focus();
+    return;
+  }
   const payload = {
     bank_account_name: bankSelect ? bankSelect.value || null : null,
     expense_account_name: expenseSelect ? expenseSelect.value || null : null,
@@ -1475,6 +1892,7 @@ async function savePayrollSettings() {
     return;
   }
   currentPayrollSettings = payload;
+  renderPayrollTemplatePreview();
   const applyResult = applySavedSettingsToLoadedChecks(currentPayrollSettings);
   const body = document.getElementById('payroll-settings-body');
   if (body) body.classList.add('hidden');
@@ -2157,6 +2575,32 @@ function getPayrollEmployeeName(employeeId) {
   return row?.dataset?.employeeName || '';
 }
 
+function getPayrollEmployeeTemplateContext(employeeId, fallbackName = '') {
+  const targetId = Number(employeeId);
+  const rows = (currentPayrollRows || []).filter(
+    row => Number(row?.employee_id) === targetId
+  );
+  const uniqueProjects = new Set();
+  let totalHours = 0;
+
+  rows.forEach(row => {
+    totalHours += Number(row?.project_hours || row?.total_hours || 0);
+    const projectName = String(row?.project_name_raw || row?.project_name || '').trim();
+    if (projectName) uniqueProjects.add(projectName);
+  });
+
+  const projectNames = Array.from(uniqueProjects);
+  const projectName = projectNames.length === 1
+    ? projectNames[0]
+    : (projectNames.length > 1 ? 'Multiple Projects' : '');
+
+  return {
+    employee_name: fallbackName || rows[0]?.employee_name || '',
+    total_hours: totalHours,
+    project_name: projectName
+  };
+}
+
 function findPayrollSummaryProject(employeeId, projectId) {
   if (!employeeId || projectId === undefined || projectId === null || projectId === '') return null;
   return (currentPayrollRows || []).find(
@@ -2197,9 +2641,10 @@ function applySavedSettingsToLoadedChecks(savedSettings) {
   const memoUpdates = memoInputs.map(input => {
     const employeeId = Number(input.dataset.employeeId || 0);
     const employeeName = getPayrollEmployeeName(employeeId);
+    const memoContext = getPayrollEmployeeTemplateContext(employeeId, employeeName);
     const memoBase = buildMemoFromTemplate(
       memoTemplate,
-      { employee_name: employeeName },
+      memoContext,
       rangeStart,
       rangeEnd
     );
@@ -2768,9 +3213,10 @@ function renderPayrollSummaryTable() {
         </div>
       </td>
     `;
+    const memoContext = getPayrollEmployeeTemplateContext(employeeId, employeeNameRaw);
     const memoBase = buildMemoFromTemplate(
       currentPayrollSettings.default_memo,
-      { employee_name: employeeNameRaw },
+      memoContext,
       currentPayrollRange.start,
       currentPayrollRange.end
     );
@@ -3070,6 +3516,8 @@ async function loadPayrollSummary(options = {}) {
     const pendingCount = Number(payload?.pending_approvals?.pending_count);
 
     currentPayrollRows = rows;
+    populatePayrollTemplatePreviewSelectors();
+    renderPayrollTemplatePreview();
     setPayrollPendingApprovals(pendingRows, Number.isFinite(pendingCount) ? pendingCount : pendingRows.length);
     renderPayrollSummaryTable();
     setupPayrollOverrideInputs();
@@ -3087,6 +3535,8 @@ async function loadPayrollSummary(options = {}) {
   } catch (err) {
     console.error('[PAYROLL] loadPayrollSummary error', err);
     currentPayrollRows = [];
+    populatePayrollTemplatePreviewSelectors();
+    renderPayrollTemplatePreview();
     clearPayrollPendingApprovals();
     renderPayrollSummaryTable();
     await loadPayrollReimbursements();
@@ -3862,6 +4312,9 @@ function initPayrollUiTab() {
   if (window.payrollUiInitialized) return;
   window.payrollUiInitialized = true;
   setupPayrollSettingsCollapse();
+  setupPayrollTemplateHelpToggle();
+  setupPayrollTemplateTagPalettes();
+  setupPayrollTemplatePreviewBindings();
   setupPayrollRowToggle();
   setupViewTimeEntriesButtons();
   setupPayrollPendingApprovalsBannerActions();

@@ -24,6 +24,8 @@ window.CURRENT_ACCESS_PERMS = window.CURRENT_ACCESS_PERMS || {};
 window.CURRENT_SECTION_FEATURES = window.CURRENT_SECTION_FEATURES || {};
 let reimbursementBadgeIntervalId = null;
 let reimbursementBadgeInFlight = false;
+let timeEntryBadgeIntervalId = null;
+let timeEntryBadgeInFlight = false;
 const SECTION_FEATURE_DEFAULTS = {
   time: true,
   payroll: true,
@@ -107,6 +109,8 @@ function applyTimeSectionForAccess() {
     const section = document.getElementById(id);
     if (section) section.remove();
   });
+  stopTimeEntryBadgePolling();
+  setTimeEntryNavBadge(0);
 }
 
 function applyPayrollNavForAccess(perms = {}) {
@@ -156,12 +160,33 @@ function setReimbursementNavBadge(count) {
   badge.classList.remove('hidden');
 }
 
+function setTimeEntryNavBadge(count) {
+  const badge = document.getElementById('time-entries-nav-badge');
+  if (!badge) return;
+  const num = Number(count || 0);
+  if (!Number.isFinite(num) || num <= 0) {
+    badge.classList.add('hidden');
+    badge.textContent = '0';
+    return;
+  }
+  badge.textContent = num > 99 ? '99+' : String(num);
+  badge.classList.remove('hidden');
+}
+
 function stopReimbursementBadgePolling() {
   if (reimbursementBadgeIntervalId) {
     clearInterval(reimbursementBadgeIntervalId);
     reimbursementBadgeIntervalId = null;
   }
   reimbursementBadgeInFlight = false;
+}
+
+function stopTimeEntryBadgePolling() {
+  if (timeEntryBadgeIntervalId) {
+    clearInterval(timeEntryBadgeIntervalId);
+    timeEntryBadgeIntervalId = null;
+  }
+  timeEntryBadgeInFlight = false;
 }
 
 async function refreshReimbursementPendingBadge() {
@@ -184,13 +209,43 @@ async function refreshReimbursementPendingBadge() {
   }
 }
 
+async function refreshTimeEntryPendingBadge() {
+  const canViewTimeEntries =
+    (
+      coerceAccessFlag(window.CURRENT_ACCESS_PERMS?.view_time_reports) ||
+      coerceAccessFlag(window.CURRENT_ACCESS_PERMS?.view_payroll)
+    ) &&
+    isSectionFeatureEnabled('time', window.CURRENT_SECTION_FEATURES);
+  if (!canViewTimeEntries) {
+    setTimeEntryNavBadge(0);
+    return;
+  }
+  if (timeEntryBadgeInFlight) return;
+  timeEntryBadgeInFlight = true;
+  try {
+    const payload = await fetchJSON('/api/time-entries/pending-count');
+    setTimeEntryNavBadge(Number(payload?.pending || 0));
+  } catch (err) {
+    console.warn('Failed to refresh time-entry pending badge:', err?.message || err);
+  } finally {
+    timeEntryBadgeInFlight = false;
+  }
+}
+
 function startReimbursementBadgePolling() {
   stopReimbursementBadgePolling();
   refreshReimbursementPendingBadge();
   reimbursementBadgeIntervalId = setInterval(refreshReimbursementPendingBadge, 60 * 1000);
 }
 
+function startTimeEntryBadgePolling() {
+  stopTimeEntryBadgePolling();
+  refreshTimeEntryPendingBadge();
+  timeEntryBadgeIntervalId = setInterval(refreshTimeEntryPendingBadge, 60 * 1000);
+}
+
 window.refreshReimbursementPendingBadge = refreshReimbursementPendingBadge;
+window.refreshTimeEntryPendingBadge = refreshTimeEntryPendingBadge;
 
 function applySectionAccessNav(perms = {}) {
   applyTimeSectionForAccess();
@@ -232,6 +287,13 @@ function navigateToSection(sectionKey, { force = false } = {}) {
 
   if (sectionKey === 'time-entries') {
     initTimeEntriesIfNeeded();
+    refreshTimeEntryPendingBadge();
+  }
+
+  if (sectionKey === 'kiosks' && typeof loadSessionsSection === 'function') {
+    Promise.resolve(loadSessionsSection()).catch(err => {
+      console.warn('Failed to refresh timesheets section:', err);
+    });
   }
 
   if (sectionKey === 'time-entries-report') {
@@ -1213,10 +1275,6 @@ async function loadTimeEntryFlagsMap(filters = {}, entries = []) {
 
       const list = map.get(String(entryId)) || [];
       const flags = Array.isArray(row.flags) ? [...row.flags] : [];
-      const autoReason = formatAutoClockoutReason(row.auto_clock_out_reason);
-      if (autoReason) {
-        flags.push(`Auto clock-out: ${autoReason}`);
-      }
       flags.forEach(flag => {
         const text = String(flag || '').trim();
         if (!text) return;
@@ -6581,6 +6639,18 @@ if (disconnectBtn) {
             ...currentAccess
           };
           applySectionAccessNav(window.CURRENT_ACCESS_PERMS);
+          const canViewTimeEntriesBadge =
+            (
+              coerceAccessFlag(window.CURRENT_ACCESS_PERMS.view_time_reports) ||
+              coerceAccessFlag(window.CURRENT_ACCESS_PERMS.view_payroll)
+            ) &&
+            isSectionFeatureEnabled('time', window.CURRENT_SECTION_FEATURES);
+          if (canViewTimeEntriesBadge) {
+            startTimeEntryBadgePolling();
+          } else {
+            stopTimeEntryBadgePolling();
+            setTimeEntryNavBadge(0);
+          }
           if (coerceAccessFlag(window.CURRENT_ACCESS_PERMS.view_payroll)) {
             startReimbursementBadgePolling();
           } else {

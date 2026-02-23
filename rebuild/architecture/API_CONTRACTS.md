@@ -112,7 +112,7 @@
 - GET  `/api/kiosk-sessions/shareable-admins` [super admin]
 - GET  `/api/kiosks/:id/foreman-today` [kiosk admin]
 - POST `/api/kiosks/:id/foreman-today` [kiosk admin]
-- GET  `/api/kiosk/open-punch` [kiosk]
+- GET  `/api/kiosk/open-punch` [kiosk or modify_time]
 - GET  `/api/kiosks/:id/open-punches` [kiosk admin]
 - POST `/api/kiosk/admin/verify-pin` [kiosk admin]
 - POST `/api/kiosk-sessions/:id/share` [super admin]
@@ -125,8 +125,9 @@
 - POST `/api/kiosk/rates/:id` [kiosk admin + modify_pay_rates]
 
 ## Timekeeping
-- POST `/api/kiosk/punch` [kiosk]
+- POST `/api/kiosk/punch` [kiosk or modify_time]
 - GET  `/api/time-punches/open` [view_time_reports or view_payroll]
+- GET  `/api/time-punches/clock-panel-employees` [modify_time]
 - GET  `/api/time-entries` [view_time_reports or view_payroll]
 - GET  `/api/time-entries/pending-count` [view_time_reports or view_payroll]
 - GET  `/api/time-entries/pending` [view_time_reports or view_payroll]

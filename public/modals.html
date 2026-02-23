@@ -73,6 +73,14 @@
       <div class="two-col">
         <label class="checkbox-inline">
           <input
+            id="edit-employee-worker-timekeeping"
+            type="checkbox"
+          />
+          Show on worker kiosk clock-in screen
+        </label>
+
+        <label class="checkbox-inline">
+          <input
             id="edit-employee-desktop-access"
             type="checkbox"
           />
@@ -87,7 +95,40 @@
           Kiosk admin access
         </label>
       </div>
-      <p class="field-help">Admins can sign in to the app and manage settings based on their permissions.</p>
+      <p class="field-help">
+        Employees hidden from the worker screen can still be clocked in/out from Admin Kiosk tools.
+      </p>
+    </div>
+
+    <div class="modal-section hidden" id="employee-payroll-split-section">
+      <h2>Payroll Project Split</h2>
+      <label class="checkbox-inline">
+        <input
+          id="edit-employee-payroll-split-enabled"
+          type="checkbox"
+        />
+        Split this employee's payroll hours/pay by fixed project percentages
+      </label>
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="edit-employee-payroll-split-effective">Effective start date</label>
+          <input id="edit-employee-payroll-split-effective" type="date" />
+        </div>
+      </div>
+      <div id="edit-employee-payroll-split-lines"></div>
+      <div class="settings-actions">
+        <button
+          id="edit-employee-payroll-split-add-line"
+          type="button"
+          class="btn secondary btn-sm"
+        >
+          Add project split
+        </button>
+      </div>
+      <p class="field-help">
+        Percentages must total 100%.
+      </p>
+      <p id="edit-employee-payroll-split-status" class="message"></p>
     </div>
 
     <!-- ADMIN LOGIN -->

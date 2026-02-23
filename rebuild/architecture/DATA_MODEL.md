@@ -69,6 +69,10 @@
 ## Payroll
 - `payroll_settings`: id, org_id, bank_account_name, expense_account_name,
   receipt_expense_account_name, receipt_class_name, default_memo, line_description_template.
+- `employee_payroll_split_profiles`: id, org_id, employee_id, enabled,
+  effective_start_date, created_by_employee_id, created_at, updated_at.
+- `employee_payroll_split_lines`: id, org_id, profile_id, project_id,
+  percentage, created_at.
 - `payroll_runs`: id, org_id, start_date, end_date, created_by, created_at,
   total_hours, total_pay, status, include_overtime, run_type, adjustment_reason,
   idempotency_key, last_attempt_id, last_error.

@@ -149,6 +149,186 @@ function makeRuleChecker(rulesMap) {
   };
 }
 
+function normalizePayrollSplitLines(rawLines = []) {
+  const byProject = new Map();
+  (Array.isArray(rawLines) ? rawLines : []).forEach(raw => {
+    const projectId = Number(raw?.project_id ?? raw?.projectId);
+    const percentage = Number(raw?.percentage);
+    if (!Number.isFinite(projectId) || projectId <= 0) return;
+    if (!Number.isFinite(percentage) || percentage <= 0) return;
+    const existing = byProject.get(projectId);
+    if (existing) {
+      existing.percentage += percentage;
+      return;
+    }
+    byProject.set(projectId, {
+      project_id: projectId,
+      percentage,
+      project_name: raw?.project_name || raw?.projectName || null,
+      project_name_raw: raw?.project_name_raw || raw?.projectNameRaw || raw?.project_name || null,
+      project_qbo_id: raw?.project_qbo_id || raw?.projectQboId || null,
+      project_customer_name: raw?.project_customer_name || raw?.projectCustomerName || null
+    });
+  });
+  return Array.from(byProject.values()).sort((a, b) => a.project_id - b.project_id);
+}
+
+function payrollSplitPercentTotal(lines = []) {
+  return (Array.isArray(lines) ? lines : []).reduce(
+    (sum, line) => sum + Number(line?.percentage || 0),
+    0
+  );
+}
+
+function hasUsablePayrollSplit(lines = []) {
+  const normalized = normalizePayrollSplitLines(lines);
+  if (!normalized.length) return false;
+  const total = payrollSplitPercentTotal(normalized);
+  return Math.abs(total - 100) <= 0.01;
+}
+
+function distributePayrollSplitTotal(total, splitLines = []) {
+  const normalizedTotal = Number(total || 0);
+  if (!Number.isFinite(normalizedTotal) || !Array.isArray(splitLines) || !splitLines.length) {
+    return (Array.isArray(splitLines) ? splitLines : []).map(() => 0);
+  }
+  let remaining = normalizedTotal;
+  return splitLines.map((line, idx) => {
+    if (idx === splitLines.length - 1) {
+      return roundCurrency(remaining);
+    }
+    const share = roundCurrency(normalizedTotal * (Number(line.percentage || 0) / 100));
+    remaining -= share;
+    return share;
+  });
+}
+
+function buildPayrollSplitLines({
+  totalHours,
+  totalPay,
+  splitLines = []
+}) {
+  if (!hasUsablePayrollSplit(splitLines)) return [];
+  const normalized = normalizePayrollSplitLines(splitLines);
+  const hourSplits = distributePayrollSplitTotal(totalHours, normalized);
+  const paySplits = distributePayrollSplitTotal(totalPay, normalized);
+  return normalized.map((line, idx) => ({
+    ...line,
+    project_name: line.project_name || line.project_name_raw || `(Project ${line.project_id})`,
+    project_name_raw: line.project_name_raw || line.project_name || `(Project ${line.project_id})`,
+    project_hours: hourSplits[idx],
+    project_pay: paySplits[idx]
+  }));
+}
+
+async function loadEffectiveEmployeePayrollSplitProfiles({
+  orgId,
+  endDate,
+  employeeIds = []
+}) {
+  if (!orgId || !endDate) return new Map();
+  const normalizedDate = String(endDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) return new Map();
+
+  const normalizedEmployeeIds = Array.from(
+    new Set(
+      (Array.isArray(employeeIds) ? employeeIds : [])
+        .map(Number)
+        .filter(id => Number.isFinite(id) && id > 0)
+    )
+  );
+
+  let employeeFilterSql = '';
+  const profileParams = [orgId, normalizedDate, normalizedDate];
+  if (normalizedEmployeeIds.length) {
+    employeeFilterSql = `AND p.employee_id IN (${normalizedEmployeeIds.map(() => '?').join(',')})`;
+    profileParams.push(...normalizedEmployeeIds);
+  }
+
+  const profileRows = await new Promise((resolve, reject) => {
+    db.all(
+      `
+        SELECT
+          p.id,
+          p.employee_id,
+          p.enabled,
+          p.effective_start_date,
+          p.created_at
+        FROM employee_payroll_split_profiles p
+        WHERE p.org_id = ?
+          AND p.effective_start_date <= ?
+          ${employeeFilterSql}
+          AND p.id = (
+            SELECT p2.id
+            FROM employee_payroll_split_profiles p2
+            WHERE p2.org_id = p.org_id
+              AND p2.employee_id = p.employee_id
+              AND p2.effective_start_date <= ?
+            ORDER BY p2.effective_start_date DESC, p2.id DESC
+            LIMIT 1
+          )
+      `,
+      profileParams,
+      (err, rows) => (err ? reject(err) : resolve(rows || []))
+    );
+  });
+
+  if (!profileRows.length) return new Map();
+
+  const profileIds = profileRows
+    .map(row => Number(row.id))
+    .filter(id => Number.isFinite(id) && id > 0);
+  if (!profileIds.length) return new Map();
+
+  const lineRows = await new Promise((resolve, reject) => {
+    db.all(
+      `
+        SELECT
+          l.profile_id,
+          l.project_id,
+          l.percentage,
+          p.name AS project_name,
+          p.qbo_id AS project_qbo_id,
+          p.customer_name AS project_customer_name
+        FROM employee_payroll_split_lines l
+        LEFT JOIN projects p
+          ON p.id = l.project_id
+         AND p.org_id = l.org_id
+        WHERE l.org_id = ?
+          AND l.profile_id IN (${profileIds.map(() => '?').join(',')})
+        ORDER BY l.profile_id, l.id
+      `,
+      [orgId, ...profileIds],
+      (err, rows) => (err ? reject(err) : resolve(rows || []))
+    );
+  });
+
+  const linesByProfile = new Map();
+  (lineRows || []).forEach(row => {
+    const profileId = Number(row.profile_id);
+    if (!Number.isFinite(profileId) || profileId <= 0) return;
+    if (!linesByProfile.has(profileId)) linesByProfile.set(profileId, []);
+    linesByProfile.get(profileId).push(row);
+  });
+
+  const byEmployee = new Map();
+  profileRows.forEach(row => {
+    const employeeId = Number(row.employee_id);
+    if (!Number.isFinite(employeeId) || employeeId <= 0) return;
+    const profileId = Number(row.id);
+    const lines = normalizePayrollSplitLines(linesByProfile.get(profileId) || []);
+    byEmployee.set(employeeId, {
+      profile_id: profileId,
+      enabled: !!row.enabled,
+      effective_start_date: row.effective_start_date || null,
+      created_at: row.created_at || null,
+      lines
+    });
+  });
+
+  return byEmployee;
+}
+
 function normalizeQboResults(data, key) {
   const raw = data && data.QueryResponse ? data.QueryResponse[key] : null;
   if (!raw) return [];
@@ -2445,27 +2625,75 @@ async function buildCheckDrafts(start, end, options = {}) {
     entriesByEmployee.get(r.employee_id).push(entry);
   }
 
+  const splitProfiles = await loadEffectiveEmployeePayrollSplitProfiles({
+    orgId,
+    endDate: end,
+    employeeIds: Array.from(entriesByEmployee.keys())
+  });
+
   const byEmployee = new Map();
-  entriesByEmployee.forEach(entries => {
+  entriesByEmployee.forEach((entries, employeeIdRaw) => {
     applyOvertimeAllocations(entries, payrollRules, includeOvertime);
-    entries.forEach(entry => {
+    const employeeId = Number(employeeIdRaw);
+    const splitProfile = splitProfiles.get(employeeId);
+
+    const ensureDraft = (entry) => {
       let draft = byEmployee.get(entry.employee_id);
-      if (!draft) {
-        const displayName = entry.name_on_checks || entry.employee_name;
-        draft = {
-          employee_id: entry.employee_id,
-          employee_name: displayName,
-          employee_name_raw: entry.employee_name,
-          name_on_checks: entry.name_on_checks || null,
-          vendor_qbo_id: entry.vendor_qbo_id,
-          employee_qbo_id: entry.employee_qbo_id,
-          total_hours: 0,
-          total_pay: 0,
-          lines: [],
-          _lineMap: new Map()
-        };
-        byEmployee.set(entry.employee_id, draft);
-      }
+      if (draft) return draft;
+      const displayName = entry.name_on_checks || entry.employee_name;
+      draft = {
+        employee_id: entry.employee_id,
+        employee_name: displayName,
+        employee_name_raw: entry.employee_name,
+        name_on_checks: entry.name_on_checks || null,
+        vendor_qbo_id: entry.vendor_qbo_id,
+        employee_qbo_id: entry.employee_qbo_id,
+        total_hours: 0,
+        total_pay: 0,
+        lines: [],
+        _lineMap: new Map()
+      };
+      byEmployee.set(entry.employee_id, draft);
+      return draft;
+    };
+
+    if (splitProfile && splitProfile.enabled && hasUsablePayrollSplit(splitProfile.lines)) {
+      const firstEntry = entries[0];
+      if (!firstEntry) return;
+      const draft = ensureDraft(firstEntry);
+      const totalHours = entries.reduce((sum, entry) => sum + Number(entry.hours || 0), 0);
+      const totalPay = entries.reduce((sum, entry) => sum + Number(entry.adjusted_pay || 0), 0);
+      draft.total_hours += totalHours;
+      draft.total_pay += totalPay;
+
+      const splitLines = buildPayrollSplitLines({
+        totalHours,
+        totalPay,
+        splitLines: splitProfile.lines
+      });
+
+      splitLines.forEach(line => {
+        const lineKey = line.project_id || 'none';
+        if (!draft._lineMap.has(lineKey)) {
+          draft._lineMap.set(lineKey, {
+            project_id: line.project_id,
+            project_name: line.project_name,
+            project_name_raw: line.project_name_raw,
+            project_qbo_id: line.project_qbo_id || null,
+            project_customer_name: line.project_customer_name || null,
+            project_hours: 0,
+            project_pay: 0
+          });
+        }
+        const current = draft._lineMap.get(lineKey);
+        current.project_hours += Number(line.project_hours || 0);
+        current.project_pay += Number(line.project_pay || 0);
+      });
+      return;
+    }
+
+    entries.forEach(entry => {
+      const draft = ensureDraft(entry);
       draft.total_hours += Number(entry.hours || 0);
       draft.total_pay += Number(entry.adjusted_pay || 0);
 

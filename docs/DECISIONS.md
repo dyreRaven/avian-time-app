@@ -1,5 +1,6 @@
 # Decisions Log
 
+- 2026-02-23: Shift-shape exception flags are displayed with a priority order to avoid duplicate labels on the same punch: `multi_day` first, then `long_shift`, then `crosses_midnight`.
 - 2026-02-23: Kiosk Admin receipts behavior is upload-first for all kiosk admins; receipt list visibility is permission-scoped so super admins or admins with `view_payroll` can see all receipts, while other kiosk admins can only see receipts they uploaded.
 - 2026-02-23: Reimbursement lists (desktop + kiosk) are paginated and default to a server-applied 30-day window when no explicit start/end filters are provided.
 - 2026-02-23: Reimbursement submissions enforce duplicate protection (file hash and detail match) with an explicit `upload anyway` override (`allow_duplicate=1`) for intentional repeats.
@@ -146,3 +147,7 @@
 - 2025-01-XX: Bootstrap admin employee defaults worker_timekeeping=true (kiosk admins can clock in).
 - 2025-01-XX: Org timezone is stored on orgs (single source); org_settings does not duplicate timezone.
 - 2025-01-XX: storage_daily_late_fee_default is null/0 by default; late fees are disabled until set by admin.
+- 2026-02-23: `worker_timekeeping` is the single worker-list visibility switch (including admins); hidden employees are clocked from kiosk-admin tools instead of the worker screen.
+- 2026-02-23: Kiosk admin has a dedicated hamburger-menu Admin Clock Tools page for hidden-employee clock in/out, with offline queueing/sync on reconnect.
+- 2026-02-23: Desktop admin Dashboard includes a dedicated Desktop Clock Panel for hidden-employee clock in/out; it requires modify_time and targets active timesheets/devices.
+- 2026-02-23: Payroll supports effective-dated employee split profiles that distribute pay-period totals by fixed project percentages (must equal 100%).

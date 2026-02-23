@@ -505,10 +505,10 @@ Note: sets the active session for new punches only; it does not close other open
 - Response: `[ { "id": 123, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "customer_name": "...", "clock_in_ts": "...", "clock_out_ts": null } ]`
 Note: returns today’s punches for this kiosk’s device (open + closed); used for live workers and clock-out alerts. Active workers are rows with `clock_out_ts = null`.
 
-### GET /api/kiosk/open-punch  [kiosk]
+### GET /api/kiosk/open-punch  [kiosk or modify_time]
 - Query: `employee_id=123`
-- Response: `{ "open": false }` or `{ "open": true, "punch_id": 55, "employee_id": 123, "project_id": 5, "project_name": "...", "customer_name": "...", "clock_in_ts": "..." }`
-Note: requires kiosk device auth or admin session; used to set the clock-in/out button state.
+- Response: `{ "open": false }` or `{ "open": true, "punch_id": 55, "employee_id": 123, "project_id": 5, "device_id": "KIOSK-ABC", "project_name": "...", "customer_name": "...", "clock_in_ts": "..." }`
+Note: requires kiosk device auth, kiosk-admin session, or desktop admin session with `modify_time`; used to set the clock-in/out button state.
 
 ### GET /api/kiosks/:id/foreman-today  [kiosk admin]
 - Response: `{ "foreman_employee_id": 12, "foreman_name": "..." }`
@@ -535,12 +535,12 @@ Note: requires an active unlock; returns 403 if locked. Returns all active emplo
 Note: requires an active unlock; returns 403 if locked. Successful updates refresh the unlock timer.
 
 ## Timekeeping
-### POST /api/kiosk/punch  [kiosk]
+### POST /api/kiosk/punch  [kiosk or modify_time]
 - Request: `{ "client_id": "...", "employee_id": 1, "project_id": 5, "lat": 0, "lng": 0, "device_timestamp": "...", "photo_base64": "...", "device_id": "...", "device_secret": "..." }`
 - Response (clock_in): `{ "ok": true, "mode": "clock_in", "punch_id": 1, "geofence_violation": false, "geo_distance_m": 12.3, "geo_radius_m": 100 }`
 - Response (clock_out): `{ "ok": true, "mode": "clock_out", "hours": 7.5, "total_pay": 90, "time_entry_id": 55 }`
 - Response (already processed): `{ "ok": true, "alreadyProcessed": true, "mode": "clock_in", "geofence_violation": false, "geo_distance_m": 12.3, "geo_radius_m": 100 }`
-Note: requires kiosk device auth (device_id + device_secret) or an admin session; server determines clock_in vs clock_out by open punch state.
+Note: requires kiosk device auth (device_id + device_secret), a kiosk-admin session, or a desktop admin session with `modify_time`; server determines clock_in vs clock_out by open punch state.
 Note: project_id must map to an active kiosk session for the punch time on this device (created_at <= punchTime <= ended_at); otherwise return 400. Offline punches use their original project; active project changes later must not block sync. Optional `queued_at` marks a queued/offline punch.
 Note: clock-out always uses the open punch’s project; cross-project clock-outs are not allowed.
 Note: client_id provides idempotency for offline retries; device_timestamp is used for punch time when provided.
@@ -550,6 +550,10 @@ Note: photo_base64 is used for clock-in only and stored as clock_in_photo_path; 
 ### GET /api/time-punches/open  [view_time_reports or view_payroll]
 - Response: `[ { "id": 1, "employee_id": 7, "employee_name": "...", "project_id": 5, "project_name": "...", "customer_name": "...", "clock_in_ts": "..." } ]`
 Note: if the requester lacks `view_all_timesheets`, `view_payroll`, and is not a super admin, results are limited to open punches tied to timesheets they created, are assigned, or that are shared (legacy sessions without a creator are included).
+
+### GET /api/time-punches/clock-panel-employees  [modify_time]
+- Response: `{ "employees": [ { "id": 7, "name": "...", "nickname": "...", "active": 1, "worker_timekeeping": 0, "kiosk_admin_access": 0 } ] }`
+Note: desktop clock-panel helper endpoint; returns active employees scoped to org for hidden-worker clock in/out flows.
 
 ### GET /api/time-entries  [view_time_reports or view_payroll]
 - Query: `start=YYYY-MM-DD`, `end=YYYY-MM-DD`, `employee_id`, `project_id`, optional `all_dates=1`, optional `hide_paid=1`, optional `hide_payroll_approved=1` (defaults to today if empty unless `all_dates=1`)

@@ -22,6 +22,7 @@ and auto clock-out behaves as specified (including config gating).
 Each row should appear in `/api/time-exceptions` with the expected flag text.
 Also confirm time-entry aggregates (`has_geo_violation`, `has_auto_clock_out`) via
 `/api/time-entries` where applicable.
+Note: shift-shape flags are hierarchical per punch (`Multi-day shift` > `Long shift` > `Crosses midnight`), so only the highest-priority matching label appears for that punch.
 
 ### Punch-based flags
 1) Missing clock-out

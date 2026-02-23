@@ -70,6 +70,7 @@
         <button class="nav-item" data-section="time-entries">
           <img src="/icons/clock.svg" class="nav-icon" alt="" aria-hidden="true" />
           <span>Review Time Entries</span>
+          <span id="time-entries-nav-badge" class="nav-pill hidden">0</span>
         </button>
 
         <button class="nav-item" data-section="payroll">
@@ -415,42 +416,75 @@
 
         </div>
 
-        <div class="card">
-          <div class="dashboard-spotlight-header">
-            <h3>Operations</h3>
+        <div id="desktop-clock-card" class="card hidden">
+          <div class="card-header">
+            <div>
+              <h2>Desktop Clock Panel</h2>
+              <p class="card-sub">Clock hidden workers in/out using an active timesheet and device.</p>
+            </div>
+            <div>
+              <button id="desktop-clock-refresh-btn" class="btn secondary btn-sm" type="button">Refresh</button>
+            </div>
           </div>
-          <div class="dashboard-stats">
-            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="employees">
-              <div class="dashboard-stat-label">Employees</div>
-              <div id="dashboard-stat-employees" class="dashboard-stat-value">--</div>
-              <div id="dashboard-stat-employees-note" class="dashboard-stat-note"></div>
-            </button>
-            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="projects">
-              <div class="dashboard-stat-label">Projects</div>
-              <div id="dashboard-stat-projects" class="dashboard-stat-value">--</div>
-              <div id="dashboard-stat-projects-note" class="dashboard-stat-note"></div>
-            </button>
-            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="vendors">
-              <div class="dashboard-stat-label">Vendors</div>
-              <div id="dashboard-stat-vendors" class="dashboard-stat-value">--</div>
-              <div id="dashboard-stat-vendors-note" class="dashboard-stat-note"></div>
-            </button>
-            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="shipments">
-              <div class="dashboard-stat-label">Shipments</div>
-              <div id="dashboard-stat-shipments" class="dashboard-stat-value">--</div>
-              <div id="dashboard-stat-shipments-note" class="dashboard-stat-note"></div>
-            </button>
-            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="kiosks">
-              <div class="dashboard-stat-label">Open timesheets</div>
-              <div id="dashboard-stat-open-timesheets" class="dashboard-stat-value">--</div>
-              <div id="dashboard-stat-open-timesheets-note" class="dashboard-stat-note"></div>
-            </button>
-            <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="kiosks">
-              <div class="dashboard-stat-label">Current workers</div>
-              <div id="dashboard-stat-current-workers" class="dashboard-stat-value">--</div>
-              <div id="dashboard-stat-current-workers-note" class="dashboard-stat-note"></div>
-            </button>
+          <div class="card-body desktop-clock-body">
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="desktop-clock-employee">Employee (hidden from worker kiosk)</label>
+                <select id="desktop-clock-employee">
+                  <option value="">(loading employees...)</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label for="desktop-clock-timesheet">Timesheet / device</label>
+                <select id="desktop-clock-timesheet">
+                  <option value="">(loading timesheets...)</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-actions desktop-clock-actions">
+              <button id="desktop-clock-in-btn" class="btn primary btn-sm desktop-clock-in-cta" type="button">Clock in</button>
+              <button id="desktop-clock-out-btn" class="btn secondary btn-sm" type="button">Clock out</button>
+            </div>
+            <p id="desktop-clock-status" class="message"></p>
           </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="dashboard-spotlight-header">
+          <h3>Operations</h3>
+        </div>
+        <div class="dashboard-stats">
+          <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="employees">
+            <div class="dashboard-stat-label">Employees</div>
+            <div id="dashboard-stat-employees" class="dashboard-stat-value">--</div>
+            <div id="dashboard-stat-employees-note" class="dashboard-stat-note"></div>
+          </button>
+          <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="projects">
+            <div class="dashboard-stat-label">Projects</div>
+            <div id="dashboard-stat-projects" class="dashboard-stat-value">--</div>
+            <div id="dashboard-stat-projects-note" class="dashboard-stat-note"></div>
+          </button>
+          <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="vendors">
+            <div class="dashboard-stat-label">Vendors</div>
+            <div id="dashboard-stat-vendors" class="dashboard-stat-value">--</div>
+            <div id="dashboard-stat-vendors-note" class="dashboard-stat-note"></div>
+          </button>
+          <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="shipments">
+            <div class="dashboard-stat-label">Shipments</div>
+            <div id="dashboard-stat-shipments" class="dashboard-stat-value">--</div>
+            <div id="dashboard-stat-shipments-note" class="dashboard-stat-note"></div>
+          </button>
+          <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="kiosks">
+            <div class="dashboard-stat-label">Open timesheets</div>
+            <div id="dashboard-stat-open-timesheets" class="dashboard-stat-value">--</div>
+            <div id="dashboard-stat-open-timesheets-note" class="dashboard-stat-note"></div>
+          </button>
+          <button class="dashboard-stat dashboard-stat-button" type="button" data-dashboard-link="kiosks">
+            <div class="dashboard-stat-label">Current workers</div>
+            <div id="dashboard-stat-current-workers" class="dashboard-stat-value">--</div>
+            <div id="dashboard-stat-current-workers-note" class="dashboard-stat-note"></div>
+          </button>
         </div>
       </div>
 
@@ -494,6 +528,14 @@
             <button class="btn secondary btn-sm" type="button" data-dashboard-link="time-entries">
               Review time entries
             </button>
+            <button
+              class="btn secondary btn-sm"
+              type="button"
+              data-dashboard-link="dashboard"
+              data-dashboard-expand-card="desktop-clock-card"
+            >
+              Desktop clock panel
+            </button>
             <button class="btn secondary btn-sm" type="button" data-dashboard-link="payroll">Payroll</button>
             <button class="btn secondary btn-sm" type="button" data-dashboard-link="reimbursements">Reimbursements</button>
           </div>
@@ -525,6 +567,7 @@
           </div>
         </div>
       </div>
+
     </div>
   </section>
 
@@ -574,7 +617,7 @@
           <div class="form-field checkbox-field">
             <label>
               <input type="checkbox" id="employee-worker-timekeeping" checked />
-              Worker timekeeping access
+              Show on worker kiosk clock-in screen
             </label>
           </div>
 
@@ -1983,6 +2026,7 @@
               </table>
             </div>
           </div>
+
         </section>
 
         <!-- PAYROLL SECTION -->
@@ -2041,6 +2085,9 @@
                   type="text"
                   placeholder="Payroll {start} – {end}"
                 />
+                <p class="payroll-template-date-hint">
+                  Date tokens (<code>{start}</code>, <code>{end}</code>, <code>{dateRange}</code>) use the Payroll period Start/End dates below.
+                </p>
                 <div class="tag-palette" data-target="payroll-memo-template">
                   <span class="tag-chip" draggable="true" data-tag="{start}">{start}</span>
                   <span class="tag-chip" draggable="true" data-tag="{end}">{end}</span>
@@ -2059,6 +2106,9 @@
                   type="text"
                   placeholder="Labor {hours} hrs – {project}"
                 />
+                <p class="payroll-template-date-hint">
+                  Date tokens (<code>{start}</code>, <code>{end}</code>, <code>{dateRange}</code>) use the Payroll period Start/End dates below.
+                </p>
                 <div class="tag-palette" data-target="payroll-line-desc-template">
                   <span class="tag-chip" draggable="true" data-tag="{start}">{start}</span>
                   <span class="tag-chip" draggable="true" data-tag="{end}">{end}</span>
@@ -2067,6 +2117,64 @@
                   <span class="tag-chip" draggable="true" data-tag="{project}">{project}</span>
                   <span class="tag-chip" draggable="true" data-tag="{hours}">{hours}</span>
                 </div>
+              </div>
+
+              <div class="payroll-template-preview">
+                <div class="payroll-template-preview-title">Live Preview</div>
+                <p class="payroll-template-preview-sub">
+                  Preview uses your selected payroll period plus one employee/project example.
+                </p>
+                <div class="form-grid payroll-template-preview-controls">
+                  <div class="form-field">
+                    <label for="payroll-template-preview-employee">Preview employee</label>
+                    <select id="payroll-template-preview-employee">
+                      <option value="">(loading employees)</option>
+                    </select>
+                  </div>
+                  <div class="form-field">
+                    <label for="payroll-template-preview-project">Preview project</label>
+                    <select id="payroll-template-preview-project">
+                      <option value="">(loading projects)</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="payroll-template-preview-output">
+                  <div class="payroll-template-preview-row">
+                    <div class="payroll-template-preview-label">Memo preview</div>
+                    <code id="payroll-template-preview-memo" class="payroll-template-preview-value">(loading)</code>
+                  </div>
+                  <div class="payroll-template-preview-row">
+                    <div class="payroll-template-preview-label">Line preview</div>
+                    <code id="payroll-template-preview-line" class="payroll-template-preview-value">(loading)</code>
+                  </div>
+                </div>
+                <p id="payroll-template-preview-context" class="payroll-template-preview-context"></p>
+              </div>
+
+              <div class="payroll-template-help-toggle">
+                <button
+                  id="payroll-template-help-btn"
+                  type="button"
+                  class="payroll-template-help-btn"
+                  aria-expanded="false"
+                  aria-controls="payroll-template-help-text"
+                  title="Show template token help"
+                  aria-label="Show template token help"
+                >
+                  ?
+                </button>
+                <span class="payroll-template-help-label">Template token help</span>
+              </div>
+              <div id="payroll-template-help-text" class="help-text payroll-template-help-text hidden">
+                <p><strong>Template tokens</strong></p>
+                <ul>
+                  <li><code>{start}</code>: Uses the Payroll <strong>Start date</strong> selected below in the Payroll section.</li>
+                  <li><code>{end}</code>: Uses the Payroll <strong>End date</strong> selected below in the Payroll section.</li>
+                  <li><code>{dateRange}</code>: Expands to <code>{start} – {end}</code> for that selected payroll period.</li>
+                  <li><code>{employee}</code>: Employee name for the check.</li>
+                  <li><code>{hours}</code>: Total check hours in memo templates; per-line hours in line-description templates.</li>
+                  <li><code>{project}</code>: Project on line-description templates; memo templates use project name only when one project exists, otherwise <code>Multiple Projects</code>.</li>
+                </ul>
               </div>
 
               <button id="payroll-settings-save" class="btn secondary">
